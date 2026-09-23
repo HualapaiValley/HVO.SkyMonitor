@@ -76,6 +76,7 @@ a { color: var(--hvo-info-fg); }
 .transient-band__stages li { border-left-color: #bc8cff; }
 .transient-band__stages li { position: relative; }
 .transient-band__stages span { color: var(--hvo-muted); }
+.transient-band__stages time { color: var(--hvo-muted-weak); font-size: .68rem; }
 .run-inspector__tabs { display: flex; gap: 1rem; border-bottom: 1px solid var(--hvo-border-muted); }
 .run-inspector__tabs button { min-height: 2.75rem; padding: .5rem .25rem; border: 0; border-bottom: 2px solid transparent; color: var(--hvo-muted-strong); background: transparent; }
 .run-inspector__tabs button[aria-pressed="true"] { border-bottom-color: var(--hvo-accent); color: var(--hvo-body-color); }

@@ -19,7 +19,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private string _runSearch = string.Empty;
     private string _outcomeFilter = "all";
     private bool _requiredOnly;
-    private TransientCaptureRunState? _transient;
+    private TransientCaptureStageView? _transient;
     private CameraAgentProcessingExecutionsView? _recent;
     private bool _transientUnavailable;
     private CancellationTokenSource? _loadCancellation;
@@ -31,7 +31,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
 
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
-    [Inject] internal ITransientRuntimeManagement TransientRuntime { get; set; } = default!;
+    [Inject] internal ICameraAgentTransientUiService TransientService { get; set; } = default!;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
 
@@ -71,8 +71,20 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
 
     private string TransientLabel => !TransientEnabled ? "Disabled"
         : _transientUnavailable ? "State unavailable"
-        : _transient is null ? "No transient work recorded for this capture"
-        : $"{_transient.WorkState} / {_transient.FrameState ?? "frame not recorded"}";
+        : _transient is null || _transient.Events.Count == 0 ? "Not recorded for this capture"
+        : $"{_transient.Events.Count} recorded milestone{(_transient.Events.Count == 1 ? "" : "s")}";
+
+    private static string TransientStageLabel(string stageKey) => stageKey switch
+    {
+        "frame-staged" => "Durable frame window",
+        "causal-scan" => "Causal candidate scan",
+        "candidate-allocated" => "Candidate identity allocated",
+        "candidate-persisted" => "Candidate persisted",
+        "event-finalized" => "Event evidence retained",
+        "relay-pending" => "Candidate relay queued",
+        "central-acknowledged" => "Central acknowledgement",
+        _ => OperationsPage.SplitWords(stageKey)
+    };
 
     private void SelectStageTab() => _tab = "stage";
     private void SelectArtifactsTab() => _tab = "artifacts";
@@ -116,13 +128,20 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                     _selectedNodeId = detail.Nodes.Count > 0 ? detail.Nodes[0].NodeId : null;
                 _loading = false;
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
-                TransientCaptureRunState? transient = null;
+                TransientCaptureStageView? transient = null;
                 var transientUnavailable = false;
                 if (TransientEnabled)
                 {
                     try
                     {
-                        transient = await TransientRuntime.ReadCaptureRunAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
+                        var stages = await TransientService.GetCaptureStagesAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
+                        if (stages.Kind == OperatorUiResultKind.Unauthorized)
+                        {
+                            NavigationManager.NavigateTo("/Account/AccessDenied");
+                            return;
+                        }
+                        transient = stages.IsSuccess ? stages.Value : null;
+                        transientUnavailable = !stages.IsSuccess;
                     }
                     catch (Exception) when (!cancellation.IsCancellationRequested)
                     {

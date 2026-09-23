@@ -25,7 +25,24 @@ public sealed class ProcessingExecutionPagesTests
     private static void ConfigureTransientRun(BunitContext context)
     {
         context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions()));
-        context.Services.AddSingleton(Mock.Of<ITransientRuntimeManagement>());
+        context.Services.AddSingleton<ICameraAgentTransientUiService>(new RecordedTransientUiService());
+    }
+
+    private sealed class RecordedTransientUiService : ICameraAgentTransientUiService
+    {
+        public IReadOnlyList<TransientStageEvent> Events { get; init; } = [];
+
+        public ValueTask<OperatorUiResult<TransientCaptureStageView>> GetCaptureStagesAsync(
+            Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<TransientCaptureStageView>.Success(new(captureId, Events)));
+
+        public ValueTask<OperatorUiResult<CameraAgentTransientOperatorPage>> GetPageAsync(
+            CameraAgentTransientOperatorQuery query, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CameraAgentTransientOperatorDetail>> GetCandidateAsync(
+            Guid candidateId, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 
     [TestMethod]
@@ -187,6 +204,45 @@ public sealed class ProcessingExecutionPagesTests
             StringAssert.Contains(cut.Find(".run-workspace__rail").TextContent, "Recent captures are unavailable", StringComparison.Ordinal);
         });
         waiting.SetResult(OperatorUiResult<CameraAgentProcessingExecutionsView>.Success(View([], [])));
+    }
+
+    [TestMethod]
+    public void DetailPage_TransientBandShowsOnlyAuthorizedRecordedMilestones()
+    {
+        using var context = new BunitContext();
+        context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions
+        {
+            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Hybrid }
+        }));
+        var captured = Now.AddMinutes(-1);
+        context.Services.AddSingleton<ICameraAgentTransientUiService>(new RecordedTransientUiService
+        {
+            Events =
+            [
+                new TransientStageEvent("frame-staged", null, "pending", "transient_capture_work", captured),
+                new TransientStageEvent("causal-scan", null, "succeeded", "transient_worker_frames", captured.AddSeconds(2)),
+                new TransientStageEvent("relay-pending", Guid.NewGuid(), "HandoffPending", "transient_candidates", captured.AddSeconds(3))
+            ]
+        });
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var completed = CameraAgentProcessingExecutionProjection.Summarize(
+            Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed));
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new CameraAgentProcessingExecutionDetailView(Now, completed, "shared", "local", [])
+        });
+
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+
+        cut.WaitForAssertion(() =>
+        {
+            var stages = cut.FindAll(".transient-band__stages li");
+            Assert.HasCount(3, stages);
+            StringAssert.Contains(stages[0].TextContent, "Durable frame window", StringComparison.Ordinal);
+            StringAssert.Contains(stages[1].TextContent, "Causal candidate scan", StringComparison.Ordinal);
+            StringAssert.Contains(stages[2].TextContent, "Candidate relay queued", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".transient-band").TextContent.Contains("Central acknowledgement", StringComparison.Ordinal));
+        });
     }
 
     [TestMethod]
