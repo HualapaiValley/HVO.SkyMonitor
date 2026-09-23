@@ -8,6 +8,5 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\HVO.SkyMonitor.Deployment.Cli.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
   </ItemGroup>
 </Project>

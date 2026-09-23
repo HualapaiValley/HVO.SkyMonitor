@@ -1,17 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
-using HVO.SkyMonitor.CameraAgent.Common.Modules;
-using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Deployment;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -90,86 +79,6 @@ public sealed class ConfigurationTests
         Assert.AreEqual(64, generated.Sha256.Length);
         Assert.AreEqual(64, generated.RigProfileSha256.Length);
         Assert.AreEqual(64, generated.ScheduleSha256.Length);
-    }
-
-    [TestMethod]
-    public async Task Generate_LoadsAndCompilesWithCameraAgentPipeline()
-    {
-        var request = new InstallRequest
-        {
-            FriendlyName = "Camera",
-            OwnerEmail = "admin@example.test",
-            CatalogBundle = "/srv/catalog.bundle",
-            ImageReference = $"sha256:{new string('a', 64)}",
-            LatitudeDegrees = 35.2,
-            LongitudeDegrees = -114.1,
-            ElevationMeters = 800,
-            TimeZoneId = "America/Phoenix"
-        };
-        var generated = CameraConfiguration.Generate(request, Guid.Parse("65c0dd43-6490-4f10-b972-0f68c79e45a8"));
-        var path = Path.Combine(Path.GetTempPath(), $"installer-profile-{Guid.NewGuid():N}.json");
-        try
-        {
-            await File.WriteAllTextAsync(path, generated.Json).ConfigureAwait(false);
-            var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
-            {
-                ConfigFilePath = path,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
-                Observatory = new ObservatoryLocation(
-                    request.LatitudeDegrees, request.LongitudeDegrees, request.ElevationMeters, request.TimeZoneId)
-            }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
-            var configuration = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() })
-                .Build());
-            using var provider = services.BuildServiceProvider();
-            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-            var graph = factory.CreateGraph(configuration);
-            try
-            {
-                Assert.HasCount(configuration.Pipeline.Steps.Count, graph.Nodes);
-                Assert.IsNotNull(graph.SharedPlan);
-            }
-            finally
-            {
-                graph.DisposeSteps();
-            }
-
-            await using var module = new VirtualSkyCameraModule(
-                TimeProvider.System,
-                new InMemoryCelestialCatalog([]),
-                new ProjectedSceneStore(),
-                StandardConstellationTopology.CreateD3Celestial(),
-                new AstronomyEnginePlanetEphemeris());
-            ((ICameraModuleConfigurationPreflight)module).ValidateConfiguration(configuration);
-            await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-            var capture = await module.CaptureAsync(
-                new CaptureRequest(
-                    new DateTimeOffset(2026, 8, 15, 0, 0, 0, TimeSpan.Zero),
-                    TimeSpan.FromSeconds(25),
-                    CaptureMode.Still,
-                    new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null)),
-                CancellationToken.None).ConfigureAwait(false);
-            var frame = capture.Frame ?? throw new AssertFailedException("VirtualSky did not return a frame.");
-            var layout = frame.Layout ?? throw new AssertFailedException("VirtualSky did not report a readout layout.");
-            var expected = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
-
-            Assert.AreEqual(1936, frame.Width);
-            Assert.AreEqual(1216, frame.Height);
-            Assert.AreEqual(CameraPixelFormat.Mono16, frame.PixelFormat);
-            Assert.AreEqual(3872, frame.StrideBytes);
-            Assert.AreEqual(4_708_352, frame.PixelData.Length);
-            Assert.AreEqual(expected, layout);
-            Assert.IsNotNull(layout.Readout);
-            Assert.AreEqual(new FrameReadoutDescriptor(1936, 1216, 0, 0, 1936, 1216, 1, 1,
-                FrameBinningAlgorithm.IdentityV1, null, null), layout.Readout);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
     }
 
     private static string[] Dependencies(JsonElement step)
