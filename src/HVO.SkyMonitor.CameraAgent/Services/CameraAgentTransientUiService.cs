@@ -10,6 +10,9 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal interface ICameraAgentTransientUiService
 {
+    ValueTask<OperatorUiResult<TransientCaptureStageView>> GetCaptureStagesAsync(
+        Guid captureId, CancellationToken cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentTransientOperatorPage>> GetPageAsync(
         CameraAgentTransientOperatorQuery query,
         CancellationToken cancellationToken);
@@ -19,13 +22,43 @@ internal interface ICameraAgentTransientUiService
         CancellationToken cancellationToken);
 }
 
+/// <summary>One capture's prospectively recorded stage events; an empty list means not recorded.</summary>
+internal sealed record TransientCaptureStageView(Guid CaptureId, IReadOnlyList<TransientStageEvent> Events);
+
 internal sealed class CameraAgentTransientUiService(
     AuthenticationStateProvider authenticationStateProvider,
     IAuthorizationService authorizationService,
     ICameraAgentTransientOperatorProjection projection,
+    ITransientRuntimeManagement runtime,
     CameraAgentOperatorTelemetry telemetry,
     ILogger<CameraAgentTransientUiService> logger) : ICameraAgentTransientUiService
 {
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authorized read boundary logs internal failures and returns a fixed sanitized state.")]
+    public async ValueTask<OperatorUiResult<TransientCaptureStageView>> GetCaptureStagesAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync().ConfigureAwait(false))
+        {
+            return OperatorUiResult<TransientCaptureStageView>.Failure(OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        try
+        {
+            var events = await runtime.ReadCaptureStageEventsAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<TransientCaptureStageView>.Success(new(captureId, events));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent transient capture stage read failed.");
+            return OperatorUiResult<TransientCaptureStageView>.Failure(OperatorUiResultKind.Unavailable,
+                "Transient stage evidence is temporarily unavailable.");
+        }
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns a fixed sanitized state.")]
     public async ValueTask<OperatorUiResult<CameraAgentTransientOperatorPage>> GetPageAsync(

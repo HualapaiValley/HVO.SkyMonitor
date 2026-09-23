@@ -482,6 +482,9 @@ public sealed class ArchivePagesTests
 
     private sealed class RecordingTransientUiService : ICameraAgentTransientUiService
     {
+        public ValueTask<OperatorUiResult<TransientCaptureStageView>> GetCaptureStagesAsync(Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<TransientCaptureStageView>.Success(new(captureId, [])));
+
         internal CameraAgentTransientOperatorQuery? LastQuery { get; private set; }
         internal OperatorUiResult<CameraAgentTransientOperatorDetail> Detail { get; set; } =
             OperatorUiResult<CameraAgentTransientOperatorDetail>.Failure(OperatorUiResultKind.NotFound, "The transient candidate was not found.");

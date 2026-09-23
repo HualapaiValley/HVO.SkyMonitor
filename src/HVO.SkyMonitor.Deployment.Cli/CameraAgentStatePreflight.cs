@@ -658,6 +658,8 @@ internal static class CameraAgentStatePreflight
         return (migrations, Convert.ToInt64(identityTables.ExecuteScalar(), CultureInfo.InvariantCulture) == 0);
     }
 
+    internal static long ReadRawIngressVersion(string databasePath) => ReadRawIngressSchema(databasePath).UserVersion;
+
     private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var database = ReadOnlyDatabase.Open(databasePath);
@@ -672,6 +674,7 @@ internal static class CameraAgentStatePreflight
         objects.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';";
         return (userVersion, Convert.ToInt64(objects.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
+
 
     /// <summary>
     /// Opens a persisted CameraAgent database without writing anything beside it. A plain read-only connection is

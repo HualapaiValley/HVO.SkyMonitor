@@ -197,7 +197,7 @@ internal sealed class ImageReleaseFixture : IDisposable
         ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
         ["io.hvo.skymonitor.minimum-compatible-revision"] = MinimumRevision,
         ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-        ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+        ["io.hvo.skymonitor.raw-ingress-schema"] = "13",
         ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
         ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
         ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",

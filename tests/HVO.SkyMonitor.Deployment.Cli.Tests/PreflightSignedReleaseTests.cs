@@ -43,7 +43,7 @@ public enum JournalShape
 public sealed class PreflightSignedReleaseTests
 {
     private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
-    private const int CurrentRawIngressSchema = 12;
+    private const int CurrentRawIngressSchema = 13;
     private const int CurrentCatalogManifestVersion = 2;
 
     private static readonly uint RuntimeUid = NativeLinux.getuid();
@@ -265,7 +265,7 @@ public sealed class PreflightSignedReleaseTests
         using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
         var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
         {
-            ["io.hvo.skymonitor.raw-ingress-schema"] = "13"
+            ["io.hvo.skymonitor.raw-ingress-schema"] = "14"
         };
         using var release = SignedImageReleaseFixture.Create(instance.Root, $"sha256:{new string('c', 64)}", drifted);
 
@@ -278,8 +278,36 @@ public sealed class PreflightSignedReleaseTests
         Assert.IsFalse(report.Compatible);
         var finding = report.Findings.Single(static value => value.Code == "raw-ingress-schema");
         Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual("13", finding.Observed);
+        Assert.AreEqual("14", finding.Expected);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ExecuteAsync_SignedSchema13ReleaseRejectsPersistedSchema12WithoutMutation()
+    {
+        using var instance = await InstalledInstanceFixture.CreateCurrentAsync();
+        var path = CameraAgentStateLayout.RawIngressDatabasePath(instance.Paths.StateRoot);
+        await using (var connection = new SqliteConnection($"Data Source={path}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA user_version = 12;";
+            await command.ExecuteNonQueryAsync();
+        }
+        using var release = SignedImageReleaseFixture.Create(
+            instance.Root, $"sha256:{new string('c', 64)}", SignedImageReleaseFixture.ContractLabels);
+
+        var report = await CameraAgentStatePreflightManager.ExecuteAsync(
+            instance.Request(release.ManifestPath), new RefusingProcessRunner(), CancellationToken.None,
+            release.CreateAcquirer);
+
+        Assert.IsFalse(report.Compatible);
+        var finding = report.Findings.Single(static value => value.Code == "raw-ingress-schema");
+        Assert.IsTrue(finding.Blocking);
         Assert.AreEqual("12", finding.Observed);
         Assert.AreEqual("13", finding.Expected);
+        Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(path));
     }
 
     /// <summary>
