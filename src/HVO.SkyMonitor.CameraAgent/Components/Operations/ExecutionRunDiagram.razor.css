@@ -1,8 +1,10 @@
 .run-diagram__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--hvo-muted); font-size: .82rem; }
-.run-diagram__toolbar > div { display: flex; gap: .3rem; }
+.run-diagram__toolbar > div { display: flex; align-items: center; gap: .3rem; }
+.run-diagram__zoom { min-width: 3.2rem; color: var(--hvo-muted-strong); text-align: center; font-variant-numeric: tabular-nums; }
 .run-diagram__scroll { overflow: auto; margin-top: .75rem; border-top: 1px solid var(--run-border, #253244); border-bottom: 1px solid var(--run-border, #253244); background-color: #080e16; background-image: linear-gradient(rgba(37, 50, 68, .16) 1px, transparent 1px), linear-gradient(90deg, rgba(37, 50, 68, .16) 1px, transparent 1px); background-size: 28px 28px; }
 .run-diagram { display: block; min-width: 100%; font-family: var(--hvo-font-family); }
 .run-diagram__edge { fill: none; stroke: var(--hvo-muted-strong); stroke-width: 2; }
+.run-diagram__edge--highlighted { stroke: var(--hvo-info-strong); stroke-width: 3; }
 .run-diagram__band rect { fill: rgba(46, 66, 88, .12); stroke: var(--hvo-border-muted); stroke-width: 1; }
 .run-diagram__band:nth-of-type(even) rect { fill: rgba(10, 22, 35, .35); }
 .run-diagram__band text { fill: var(--hvo-muted-strong); font-size: 11px; letter-spacing: .05em; }
@@ -10,6 +12,8 @@
 .run-diagram__source text, .run-diagram__boundary text { fill: var(--hvo-body-color); font-size: 12px; }
 .run-diagram__unavailable { fill: var(--hvo-muted); font-size: 12px; }
 .run-diagram__transient > rect { fill: rgba(188, 140, 255, .07); stroke: #493c61; }
+.run-diagram__cloud-placeholder rect { fill: rgba(88, 166, 255, .035); stroke: var(--hvo-border-muted); stroke-dasharray: 4 4; }
+.run-diagram__cloud-placeholder text { fill: var(--hvo-muted-strong); font-size: 12px; }
 .run-diagram__transient text { fill: var(--hvo-muted-strong); font-size: 12px; }
 .run-diagram__transient .run-diagram__transient-title { fill: #bc8cff; font-size: 13px; font-weight: 700; }
 .run-diagram__transient-node rect { fill: #171624; stroke: #bc8cff; }
@@ -19,8 +23,8 @@
 .run-diagram__edge--optional { stroke-dasharray: 6 5; }
 .run-diagram__node { cursor: pointer; }
 .run-diagram__node rect { fill: var(--hvo-surface-elevated); stroke: var(--hvo-border-stronger); stroke-width: 2; }
-.run-diagram__node text { fill: var(--hvo-body-color); font-size: 13px; font-weight: 650; }
-.run-diagram__node .run-diagram__meta { fill: var(--hvo-muted-strong); font-size: 11px; font-weight: 400; }
+.run-diagram__node text { fill: var(--hvo-body-color); font-size: 12px; font-weight: 650; }
+.run-diagram__node .run-diagram__meta { fill: var(--hvo-muted-strong); font-size: 10px; font-weight: 400; }
 .run-diagram__node .run-diagram__status { fill: var(--hvo-muted-strong); font-size: 16px; }
 .run-diagram__node--completed .run-diagram__status { fill: var(--hvo-success-strong); }
 .run-diagram__node--running .run-diagram__status { fill: var(--hvo-info-strong); }
