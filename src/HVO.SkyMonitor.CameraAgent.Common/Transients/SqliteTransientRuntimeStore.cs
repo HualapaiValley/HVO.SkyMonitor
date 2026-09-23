@@ -190,7 +190,11 @@ public sealed record TransientStageEvent(
     Guid? CandidateId,
     string State,
     string Source,
-    DateTimeOffset RecordedUtc);
+    DateTimeOffset RecordedUtc)
+{
+    /// <summary>Durable allocation slot; null for capture-wide or unmapped milestones.</summary>
+    public int? SlotOrdinal { get; init; }
+}
 
 internal sealed record TransientRuntimeFrame(
     long RawCaptureRowId,
@@ -271,9 +275,13 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT event.stage_key, event.candidate_id, event.state, event.source, event.event_unix_ms
+            SELECT event.stage_key, event.candidate_id, event.state, event.source, event.event_unix_ms,
+                   candidate.slot_ordinal
             FROM raw_captures raw
             JOIN raw_capture_stage_events event ON event.raw_capture_row_id = raw.raw_capture_row_id
+            LEFT JOIN transient_worker_candidates candidate
+              ON candidate.candidate_id = event.candidate_id
+             AND candidate.target_raw_capture_row_id = raw.raw_capture_row_id
             WHERE raw.capture_id = $capture
             ORDER BY event.event_unix_ms, event.stage_key, event.candidate_id;
             """;
@@ -284,7 +292,10 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         {
             var candidate = reader.GetString(1);
             events.Add(new(reader.GetString(0), candidate.Length == 0 ? null : Guid.ParseExact(candidate, "N"),
-                reader.GetString(2), reader.GetString(3), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4))));
+                reader.GetString(2), reader.GetString(3), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)))
+            {
+                SlotOrdinal = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(5)
+            });
         }
         return events;
     }

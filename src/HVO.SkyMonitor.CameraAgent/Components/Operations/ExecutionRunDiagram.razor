@@ -21,7 +21,7 @@
     <div class="run-diagram__scroll">
         <svg class="run-diagram" style="@GraphSizeStyle" viewBox="0 0 @Width @Height" role="group" aria-labelledby="@TitleId @DescriptionId">
             <title id="@TitleId">Execution dependency graph</title>
-            <desc id="@DescriptionId">@string.Join(" ", Nodes.Select(node => $"{node.NodeId}: {node.Status}; {(node.Dependencies.Count == 0 ? "no dependencies" : "depends on " + string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId)))}."))</desc>
+            <desc id="@DescriptionId">@GraphDescription</desc>
             @foreach (var band in _bands)
             {
                 <g class="run-diagram__band"><rect x="@band.X" y="0" width="@band.Width" height="@Height" /><text x="@(band.X + 12)" y="18">@band.Label</text></g>
@@ -70,7 +70,7 @@
                             {
                                 <path class="run-diagram__transient-edge" d="M@(EdgeX + (CaptureLaneCount - 1) * (NodeWidth + ColumnGap) + NodeWidth),@(CaptureLaneY + 53) C@(x - 28),@(CaptureLaneY + 53) @(x - 28),@(lane.Y + 53) @x,@(lane.Y + 53)" />
                             }
-                            <g class="@(StageSucceeded(stage) ? "run-diagram__transient-node" : "run-diagram__transient-node run-diagram__transient-node--attention")" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
+                            <g class="@(StageSucceeded(stage) ? "run-diagram__transient-node" : "run-diagram__transient-node run-diagram__transient-node--attention")" role="group" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
                                 <rect x="@x" y="@(lane.Y + 27)" width="@NodeWidth" height="52" rx="7" />
                                 <text x="@(x + 9)" y="@(lane.Y + 48)">@TransientName(stage.StageKey)</text>
                                 <text class="run-diagram__meta" x="@(x + 9)" y="@(lane.Y + 67)">@stage.State / @stage.RecordedUtc.ToString("HH:mm:ss") UTC</text>
@@ -108,6 +108,12 @@
 
     private string TitleId => $"execution-graph-title-{_instance}";
     private string DescriptionId => $"execution-graph-description-{_instance}";
+    private string GraphDescription => string.Join(" ", Nodes.Select(node =>
+        $"{node.NodeId}: {node.Status}; {(node.Dependencies.Count == 0 ? "no dependencies" : "depends on " + string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId)))}.")) +
+        (TransientEnabled ? TransientUnavailable ? " Transient evidence unavailable." : TransientEvents.Count == 0
+            ? " No transient stage events recorded." : " Transient milestones: " + string.Join(" ", TransientLanes.Select(lane =>
+                $"{LaneLabel(lane.CandidateId)}: {string.Join(", ", lane.Events.Select(stage => $"{TransientName(stage.StageKey)} {stage.State}"))}."))
+            : " Local transient detector disabled.");
     private int Width => Math.Max(LogicHostX + SourceWidth + Margin,
         EdgeX + (CaptureLaneCount + (TransientLanes.Count == 0 ? 0 : TransientLanes.Where(static lane => lane.CandidateId is not null).Select(static lane => lane.Events.Count).DefaultIfEmpty().Max())) * (NodeWidth + ColumnGap) + Margin);
     private int EdgeX => Margin + SourceWidth + ColumnGap;
@@ -131,6 +137,7 @@
     private IReadOnlyList<TransientLane> TransientLanes => TransientEvents
         .GroupBy(static stage => stage.CandidateId)
         .OrderBy(static group => group.Key.HasValue)
+        .ThenBy(static group => group.Min(static stage => stage.SlotOrdinal ?? int.MaxValue))
         .ThenBy(static group => group.Key)
         .Select((group, index) => new TransientLane(group.Key, TransientTop + 40 + index * 112,
             group.OrderBy(static stage => StageRank(stage.StageKey)).ThenBy(static stage => stage.RecordedUtc).ToArray()))

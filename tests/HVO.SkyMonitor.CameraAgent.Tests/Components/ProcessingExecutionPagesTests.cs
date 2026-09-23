@@ -274,6 +274,33 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void RunDiagram_OrdersCandidateRowsByPersistedSlotAndDescribesEvents()
+    {
+        using var context = new BunitContext();
+        var lowerGuid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var higherGuid = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        var events = new TransientStageEvent[]
+        {
+            new("frame-staged", null, "pending", "transient_capture_work", Now),
+            new("causal-scan", null, "succeeded", "transient_worker_frames", Now.AddSeconds(1)),
+            new("candidate-allocated", lowerGuid, "pending", "transient_worker_candidates", Now.AddSeconds(2)) { SlotOrdinal = 1 },
+            new("candidate-allocated", higherGuid, "pending", "transient_worker_candidates", Now.AddSeconds(3)) { SlotOrdinal = 0 }
+        };
+
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, [])
+            .Add(component => component.TransientEnabled, true)
+            .Add(component => component.TransientEvents, events));
+
+        var labels = cut.FindAll(".run-diagram__transient-label").Select(static item => item.TextContent).ToArray();
+        CollectionAssert.AreEqual(new[] { "Capture", $"Candidate {higherGuid:D}", $"Candidate {lowerGuid:D}" }, labels);
+        Assert.HasCount(3, cut.FindAll(".run-diagram__transient-edge"));
+        var description = cut.Find(".run-diagram desc").TextContent;
+        StringAssert.Contains(description, $"Candidate {higherGuid:D}: Candidate allocated pending", StringComparison.Ordinal);
+        StringAssert.Contains(description, "Causal candidate scan succeeded", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void RunDiagram_DrawsFrozenOptionalEdgeAndSelectsNodes()
     {
         using var context = new BunitContext();
