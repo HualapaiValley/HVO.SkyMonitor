@@ -141,10 +141,28 @@
                             {
                                 <li class="window-item" @key="window">
                                     <div class="window-item__head">
-                                        <label>Identifier<input class="form-control" @bind="window.Id" @bind:after="FormChanged" /></label>
-                                        <label>Day<select class="form-select" @bind="window.Day" @bind:after="FormChanged">@foreach (var day in Enum.GetNames<DayOfWeek>()) { <option value="@day">@day</option> }</select></label>
+                                        <div class="window-days" role="group" aria-label="Days for window @window.Id">
+                                            <span>Days</span>
+                                            @foreach (var day in Enum.GetValues<DayOfWeek>())
+                                            {
+                                                var selectedDay = day;
+                                                <label class="check"><input type="checkbox" checked="@window.Days.Contains(day)" @onchange="e => SetWindowDay(window, selectedDay, e.Value is true)" />@day</label>
+                                            }
+                                        </div>
                                         <label>Setpoint profile<select class="form-select" @bind="window.SetpointProfileId" @bind:after="FormChanged">@foreach (var setpoint in _model.Setpoints) { <option value="@setpoint.Id">@setpoint.Id</option> }</select></label>
                                         <button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove window @window.Id" @onclick="() => RemoveWindow(window)">Remove</button>
+                                    </div>
+                                    <div class="window-identifiers">
+                                        @foreach (var day in window.Days.Order())
+                                        {
+                                            <div @key="day">
+                                                <label>@day identifier<input class="form-control" @bind="window.DayIds[day]" @bind:after="FormChanged" /></label>
+                                                @if (window.Days.Count > 1)
+                                                {
+                                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Split @day from window @window.Id" @onclick="() => SplitWindow(window, day)">Split @day</button>
+                                                }
+                                            </div>
+                                        }
                                     </div>
                                     <div class="boundary-grid">
                                         @BoundaryFields(("Start", window.Start))
