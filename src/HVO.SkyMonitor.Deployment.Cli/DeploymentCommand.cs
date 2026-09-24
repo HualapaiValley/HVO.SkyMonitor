@@ -202,6 +202,8 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string ProductRoot { get; init; }
     public bool DryRun { get; init; }
     public bool Resume { get; init; }
+    public bool RestoreOnly { get; init; }
+    public Guid? RecoveryOperationId { get; init; }
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
@@ -253,6 +255,15 @@ internal sealed record LifecycleRequest : DeploymentCommand
             throw new InstallUsageException("--resume requires a lifecycle operation.");
         }
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
+        if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
+                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty ||
+                            ImageManifest is not null || ImageIndex is not null))
+        {
+            throw new InstallUsageException(
+                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; signed-release recovery is not supported.");
+        }
+        if (!RestoreOnly && RecoveryOperationId is not null)
+            throw new InstallUsageException("--operation-id requires --restore-only.");
         ValidateOperationOptions();
     }
 
