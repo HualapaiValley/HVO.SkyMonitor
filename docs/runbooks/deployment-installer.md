@@ -818,7 +818,11 @@ not retained, rather than inventing a cause. Superseded success reports
 `restored-previous-healthy-resume-superseded-current-admission-preserved`; the journal
 retains the executed resume receipt separately from the current post-recovery boundary.
 Both are validated on read, including nonnegative counters, initialization, versions,
-capture sequence and receipt timing. Repeating a successful restore-only request
+capture sequence and receipt timing. The identical complete invariant is checked
+before terminal publication against one captured post-resume boundary. Inconsistent
+timestamps (including a future receipt or a backward clock) leave the operation
+`Restoring` with its mutation flag and command UUID retained for a later valid replay;
+they never publish terminal success. Repeating a successful restore-only request
 verifies the current result without another resume command. It never reports the
 upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 

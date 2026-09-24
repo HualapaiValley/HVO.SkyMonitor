@@ -358,14 +358,13 @@ internal sealed class CameraAgentLifecycleManager
         if (!IsValidRecoveryReceipt(boundary, receipt) || !paused && !receipt.Replayed)
             throw new InstallerException("Restore-only command receipt does not prove the retained resume.");
         continuity = await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false);
-        if (!continuity.CaptureInitialized || !IsRecoveryAdmissionAfterResume(boundary, ToBoundary(continuity)))
-            throw new InstallerException("Restore-only resume was acknowledged but the expected admission boundary was not verified.");
+        var postBoundary = ToBoundary(continuity);
         await RecordAsync(paths, operation with
         {
             Phase = LifecycleOperationPhase.Restored,
             Status = InstallationStatus.Failed,
             MutationStarted = false,
-            PostMutationContinuity = ToBoundary(continuity),
+            PostMutationContinuity = postBoundary,
             RestoreResumeReceipt = receipt
         }, cancellationToken).ConfigureAwait(false);
         return Result(operation.Kind, RecoveryOutcome(boundary, continuity), operation.OperationId,
@@ -1406,6 +1405,8 @@ internal sealed class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         state = state with { UpdatedUtc = DateTimeOffset.UtcNow };
+        // Never replace resumable intent with a terminal record the reader would reject.
+        if (state.Phase == LifecycleOperationPhase.Restored) ValidateOperationState(state);
         await SafeFileSystem.WriteJsonAtomicAsync(
             paths.LifecycleStatePath, state, DeploymentJsonContext.Default.LifecycleOperationState, cancellationToken)
             .ConfigureAwait(false);
@@ -1427,6 +1428,12 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("The retained lifecycle operation is invalid JSON.", exception);
         }
+        ValidateOperationState(value);
+        return value;
+    }
+
+    private static void ValidateOperationState(LifecycleOperationState value)
+    {
         if (value.SchemaVersion != DeploymentSchemaVersions.LifecycleOperation || value.OperationId == Guid.Empty ||
             value.InstanceId is null || value.InstanceId == Guid.Empty || value.RequestSha256.Length != 64 ||
             value.RequestSha256.Any(static character => character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')) ||
@@ -1471,7 +1478,6 @@ internal sealed class CameraAgentLifecycleManager
              !IsRecoveryAdmissionAfterResume(before, value.PostMutationContinuity!) ||
              value.RestoreResumeReceipt!.CompletedUtc > value.PostMutationContinuity!.RecordedUtc))
             throw new InstallerException("The restored lifecycle operation has inconsistent recovery evidence.");
-        return value;
     }
 
     private static async Task<LifecycleResult> ResumeInterruptedPurgeAsync(

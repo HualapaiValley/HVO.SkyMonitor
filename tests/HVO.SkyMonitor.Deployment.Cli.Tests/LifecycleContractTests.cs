@@ -1969,6 +1969,64 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_FutureResumeReceiptRemainsResumableUntilConsistentReplay(bool laterOperatorPause)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var lifecycle = new FakeLifecycleClient { RecoveryReceiptClockOffset = TimeSpan.FromHours(1) };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+
+        var interrupted = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Restoring, interrupted!.Phase);
+        Assert.AreEqual(InstallationStatus.Running, interrupted.Status);
+        Assert.IsTrue(interrupted.MutationStarted);
+        Assert.IsNull(interrupted.PostMutationContinuity);
+        Assert.IsNull(interrupted.RestoreResumeReceipt);
+        Assert.AreEqual("Running", lifecycle.RecoveryContinuity.CaptureState);
+        Assert.AreEqual(3L, lifecycle.RecoveryContinuity.CaptureVersion);
+        var commandId = interrupted.RestoreResumeCommandId;
+
+        if (laterOperatorPause)
+            lifecycle.RecoveryContinuity = lifecycle.RecoveryContinuity with { CaptureState = "Paused", CaptureVersion = 5 };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+        var repeated = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Restoring, repeated!.Phase);
+        Assert.IsTrue(repeated.MutationStarted);
+        Assert.AreEqual(commandId, repeated.RestoreResumeCommandId);
+        Assert.IsNull(repeated.RestoreResumeReceipt);
+        Assert.AreEqual(1, lifecycle.RecoveryCommands.Count);
+
+        lifecycle.RecoveryReceiptClockOffset = TimeSpan.Zero;
+        var result = await ExecuteRestoreAsync(fixture, request, lifecycle);
+        var restored = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(laterOperatorPause
+            ? "restored-previous-healthy-resume-superseded-current-admission-preserved"
+            : "restored-previous-healthy-admission-resumed", result.Outcome);
+        Assert.AreEqual(LifecycleOperationPhase.Restored, restored!.Phase);
+        Assert.AreEqual(InstallationStatus.Failed, restored.Status);
+        Assert.IsFalse(restored.MutationStarted);
+        Assert.AreEqual(commandId, restored.RestoreResumeCommandId);
+        Assert.IsTrue(restored.RestoreResumeReceipt!.Replayed);
+        Assert.IsTrue(restored.RestoreResumeReceipt.CompletedUtc <= restored.PostMutationContinuity!.RecordedUtc);
+        Assert.AreEqual(laterOperatorPause ? "Paused" : "Running", restored.PostMutationContinuity.CaptureState);
+        Assert.AreEqual(laterOperatorPause ? 5L : 3L, restored.PostMutationContinuity.CaptureVersion);
+        Assert.AreEqual(3, lifecycle.RecoveryResumeCalls);
+        var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        await ExecuteRestoreAsync(fixture, request, lifecycle);
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(3, lifecycle.RecoveryResumeCalls);
+        Assert.AreEqual(1, lifecycle.RecoveryCommands.Count);
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+        var next = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Uninstall),
+            fixture.Paths, LifecycleOperationKind.Uninstall, fixture.Manifest, CancellationToken.None);
+        Assert.AreNotEqual(restored.OperationId, next.OperationId);
+    }
+
+    [TestMethod]
     [DataRow("reference")]
     [DataRow("id")]
     [DataRow("archive")]
@@ -2040,7 +2098,12 @@ public sealed class LifecycleContractTests
             "post-time" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { RecordedUtc = default } },
             _ => throw new InvalidOperationException()
         };
-        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation, CancellationToken.None);
+        var validTerminal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation, CancellationToken.None));
+        CollectionAssert.AreEqual(validTerminal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.LifecycleStatePath, operation,
+            DeploymentJsonContext.Default.LifecycleOperationState, CancellationToken.None);
         var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
         await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
         CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
@@ -2790,6 +2853,7 @@ public sealed class LifecycleContractTests
         public int RecoveryResumeCalls { get; private set; }
         public bool LoseRecoveryAcknowledgement { get; set; }
         public bool RejectRecoveryRead { get; set; }
+        public TimeSpan RecoveryReceiptClockOffset { get; set; }
         public HashSet<Guid> RecoveryCommands { get; } = [];
         public LifecycleContinuity RecoveryContinuity { get; set; } = new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0);
 
@@ -2817,7 +2881,7 @@ public sealed class LifecycleContractTests
                 throw new HttpRequestException("simulated lost recovery acknowledgement");
             }
             return Task.FromResult(new LifecycleResumeReceipt("Running", expectedVersion + 1, true, replayed,
-                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+                DateTimeOffset.UtcNow + RecoveryReceiptClockOffset, DateTimeOffset.UtcNow + RecoveryReceiptClockOffset));
         }
 
         public Task<LifecycleContinuity> PauseAndDrainAsync(
