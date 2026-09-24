@@ -302,7 +302,7 @@
 @media (max-width: 780px) {
     .shell-header__bar {
         grid-template-columns: minmax(0, 1fr) auto;
-        min-height: 4rem;
+        min-height: calc(4rem - 1px);
         gap: 0.75rem;
     }
 
@@ -341,6 +341,7 @@
 
     .shell-menu__panel {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         align-items: stretch;
         gap: 0.5rem;
         padding: 0.45rem;
@@ -373,6 +374,7 @@
     .nav-avatar-button,
     .nav-login-pill {
         width: 100%;
+        min-width: 0;
     }
 
     .nav-account-menu {
