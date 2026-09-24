@@ -1,7 +1,9 @@
 # Shared Shell Candidate Evidence (#1034)
 
-Local candidate, not visual acceptance of the page bodies and not authorization
-to push, open a PR, merge, or deploy. Independent exact-range review is pending.
+The initial local candidate below was reviewed with REQUEST CHANGES. See
+[Correction Evidence](#correction-evidence) for F1-F4 dispositions and new pixels.
+The operator subsequently authorized a draft PR only. Independent correction
+review is pending; no ready transition, merge, or live deployment is authorized.
 
 ## Source And Isolation
 
@@ -173,3 +175,138 @@ later shell-only CSS/JS corrections; focused/browser checks cover those deltas.
 The selected lane's protected coverage thresholds and protected CI have not run.
 No independent review has occurred. These remain required before advancing the
 local candidate through the main owner's PR lifecycle.
+
+## Correction Evidence
+
+Correction code and screenshot source:
+`813f211c915a5a07fea06450066e3c755a412b00`. The correction range starts at the
+independently reviewed `441cf57ade1ba19b244ffaa149f62dc23c524150`; this evidence
+update is documentation-only. The full initial review range was
+`b9da049ed4e1d06f9c73c5652d4ff73e392f067e..441cf57ade1ba19b244ffaa149f62dc23c524150`.
+
+The main owner relayed the complete supplied review summary, REQUEST CHANGES
+with four P2 findings, in
+[issue comment 5813156146](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1034#issuecomment-5813156146).
+The delegate was not supplied the independent execution identity, provider,
+model or reasoning effort; those values remain explicitly unknown, not inferred
+from main's forwarding identity. Main must attach that provenance before claiming
+review convergence. The retained local summary is
+`/tmp/opencode/1034-shell-evidence/initial-review-441cf57a.md`.
+
+### Finding Dispositions
+
+These are implementation dispositions, not independent verification of the fixes.
+All four findings must be individually verified by the correction reviewer.
+
+1. **F1, P2: delayed import/initialization can outlive disposal. Corrected.**
+   Initialization owns its module and callback reference locally until both
+   awaits complete, checks disposal after each await, and releases late resources
+   without installing them on the disposed component. Disposal is idempotent;
+   callbacks do not render after disposal. JS rejects null/detached panels and
+   toggles. Two delayed-interop bUnit cases separately suspend import and
+   initialization, dispose, then prove no invalid callback use and exactly one
+   module release; the initialization case also proves JS cleanup. The real
+   browser calls `initialize` with null and detached elements safely.
+2. **F2, P2: route-close callback steals FocusOnNavigate heading focus. Corrected.**
+   Route close suppresses explicit toggle restoration; Escape/cancel still
+   restores it. Normal anchor activation closes native modality synchronously
+   before Blazor focuses the destination heading. The real browser checks both
+   menus and explicitly orders `close(false)`, heading focus, then the native
+   queued close event, asserting that heading focus remains.
+3. **F3, P2: first-dialog assertions select the shell rather than confirmation.
+   Corrected.** Both assertions evaluate their existing `dialog.confirmation`
+   locator and require native modality plus contained active focus. The new
+   focused browser scenario invokes the actual existing capture pause/resume and
+   seeded artifact-quarantine abandon helpers, including Escape/focus-return and
+   confirmation actions. It does not substitute a fake confirmation dialog.
+4. **F4, P2: action blue gives only 3.58:1 normal-text contrast. Corrected.**
+   Text-bearing `--hvo-accent-strong` is restored to `#2563eb`; decorative
+   `--hvo-accent` and the prototype soft-blue palette remain. Computed browser
+   styles for the primary button and both selected segmented-state forms report
+   `#f8fafc` on `#2563eb`, 13.12px/600, **4.939955:1**. Accessibility takes priority
+   over the prototype's lighter action fill; no blanket styling waiver is used.
+
+### Shared Geometry
+
+The review additionally found that the initial measurements only proved the
+Calendar desktop subnav, not Captures or the mobile inset. Captures uses the
+prototype's padded `.site-main` while Calendar/Products use `.archive-main`.
+`ArchiveNavigation` now applies that route-specific top padding/max-width and
+the respective mobile media-query gutters. No page-body files were edited.
+
+| Subnav boundary | Initial candidate | Prototype | Corrected |
+| --- | --- | --- | --- |
+| Captures desktop y | 65 | 102.44 | 102.44 |
+| Captures mobile y | 64 | 80 | 80 |
+| Calendar/Products mobile x | 12 | 10.39 | 10.39 |
+
+The retained browser scenario asserts x/y with 0.1px tolerance on all three
+archive routes at 1440x900, 390x844 and 320x844. The disposable-image probe also
+compares x/y/width/height to the actual prototype measurements at those widths.
+All 18 route/viewport no-overflow checks pass. Actual name/aggregate header health
+remain unwired and incomplete acceptance, as the review explicitly allowed for
+this correction. The actual account and neutral footer remain disclosed
+preservation boundaries, not invented prototype state. Current Sky/other page
+internals remain outside this issue's acceptance claim.
+
+### Corrected Artifacts
+
+Under `/tmp/opencode/1034-shell-evidence/`, without overwriting the initial PNGs:
+
+- `correction-{sky,events,operations,captures,calendar,products}-{1440x900,390x844}.png`:
+  twelve new exact-image direct-navigation screenshots.
+- `correction-{site-menu,operations-menu,route-heading}-390x844.png`: three
+  interaction screenshots including real destination-heading focus.
+- `correction-measurements.json`: source/image identity, eighteen geometry and
+  overflow observations, computed contrast, image dimensions, focus result,
+  zero page/console errors, and screenshot SHA-256 hashes.
+- `correction-browser.mjs`: reproducible probe. It privately reads only the
+  disposable instance's credential and never prints it.
+- `browser-results/correction-browser.trx`: focused real browser regression;
+  `unit-results/correction-unit.trx` and `integration-results/correction-*.trx`:
+  candidate test results.
+
+Image `sha256:7dd7dc3385a61c2827a582a6054931283fd9645427af93d06fc7b7e9c1682250`
+declares source `813f211c915a5a07fea06450066e3c755a412b00`. Instance UUID
+`10340000-0924-4000-8000-000000000006` uses the same isolated product root,
+loopback `:5234`, bundle, profile, observer and schedule inputs as the initial
+evidence. Real retained catalog-backed frames/layers remain present. No primary
+instance, pointer, configuration, data, credential or live deployment was changed.
+The correction instance was preserve-by-default uninstalled after capture; no
+disposable container remains running and private retained state is not published.
+
+### Correction Gates
+
+Selector `./scripts/ci:classify pull_request 441cf57ade1ba19b244ffaa149f62dc23c524150 HEAD`
+reports `mode=full complete=false cameraagent=true`, all other component and
+deployment flags false. The full PR range against freshly fetched
+`origin/development/v1` selects the same lane. Target tip at the check was
+`7040f216258c22834f54279b048ca5401c560a17`; merge base remains `b9da049e`.
+No final target synchronization has been performed or claimed.
+
+| Correction gate | Result |
+| --- | --- |
+| Focused shell Unit | 14/14, including delayed import and initialization disposal |
+| CameraAgent Unit, invalid Docker endpoint | 1932 passed, one macOS-only skip, 1933 discovered |
+| Acceptance Unit | 27/27 |
+| CameraAgent storage Integration | 219/219 |
+| Standalone acceptance Integration | 7/7 |
+| Host Integration | 21/21 |
+| Existing actual-browser shell test | Pass |
+| New `SharedShellReviewRegressionsAsync` | Pass: focus ordering, null/detached initialization, both real confirmation flows, contrast, archive boxes/overflow |
+| Exact-image disposable browser | Pass: 15 screenshots, 18 geometry/overflow observations, both route-heading focus transitions, 4.94:1 action contrast, no page/console errors |
+| Category discovery | Pass: Unit=3744, Integration=672, Manual=117, Soak=1, External=0, Hardware=1 |
+| Four CI-control guards | Pass |
+| Affected host/Unit/acceptance format | Pass |
+| Release build and exact-SHA Docker publish | Pass, warnings-as-errors in affected test builds |
+| Documentation audit / diff check | Pass |
+
+The initial correction-browser attempt used central integration disabled, which
+hides artifact quarantine; using the existing isolated fixture's central-enabled
+mode made the actual seeded confirmation workflow available. A geometry probe
+initially sampled before interactive rendering; it now waits for the visible
+subnav. Neither fix weakens the assertion. Category discovery exceeded the
+120-second tool limit while gates competed for CPU, then passed with a larger
+limit. Initial package/architecture evidence is retained because those boundaries
+are unchanged. Independent correction review, protected coverage/CI, and final
+base synchronization remain pending. The PR must remain draft.
