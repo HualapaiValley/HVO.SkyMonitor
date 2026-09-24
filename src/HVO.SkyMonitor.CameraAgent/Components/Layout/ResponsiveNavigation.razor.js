@@ -27,11 +27,14 @@ export function initialize(panel, toggle, breakpoint, receiver) {
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     };
     const backdrop = event => { if (event.target === panel && panel.matches(':modal')) close(panel); };
+    // A layout can disappear before .NET disposal reaches JS. Release media listeners locally.
+    const observer = new MutationObserver(() => { if (!panel.isConnected) dispose(panel); });
+    observer.observe(document.body, { childList: true, subtree: true });
     panel.addEventListener('close', closed);
     panel.addEventListener('keydown', keydown);
     panel.addEventListener('click', backdrop);
     media.addEventListener('change', resize);
-    panels.set(panel, { media, resize, closed, keydown, backdrop, notify, opened: () => { returnFocus = true; } });
+    panels.set(panel, { media, resize, closed, keydown, backdrop, notify, observer, opened: () => { returnFocus = true; } });
     resize();
 }
 
@@ -47,12 +50,13 @@ export function open(panel) {
 }
 
 export function close(panel) {
-    if (panel.matches(':modal')) panel.close();
+    if (panel?.matches(':modal')) panel.close();
 }
 
 export function dispose(panel) {
     const state = panels.get(panel);
     if (!state) return;
+    state.observer.disconnect();
     panel.removeEventListener('close', state.closed);
     panel.removeEventListener('keydown', state.keydown);
     panel.removeEventListener('click', state.backdrop);

@@ -47,6 +47,7 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
     {
         try { await CloseAsync(); }
         catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
         catch (ObjectDisposedException) { }
     }
 
@@ -61,6 +62,7 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
                 await _module.DisposeAsync();
             }
             catch (JSDisconnectedException) { }
+            catch (TaskCanceledException) { }
         }
         _reference?.Dispose();
     }

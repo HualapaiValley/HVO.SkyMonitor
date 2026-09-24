@@ -477,6 +477,13 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true })
                 .GetAttributeAsync("aria-current").ConfigureAwait(false));
         await AssertOperationsWorkspaceAsync(page).ConfigureAwait(false);
+        await page.Locator(".shell-primary a[href='/transients']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.shell-primary a[aria-current=\"page\"]')?.textContent.trim() === 'Events'")
+            .ConfigureAwait(false);
+        await page.GoBackAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.shell-primary a[aria-current=\"page\"]')?.textContent.trim() === 'Operations'")
+            .ConfigureAwait(false);
+        Assert.IsFalse(await page.Locator("#blazor-error-ui").IsVisibleAsync().ConfigureAwait(false));
 
         foreach (var asset in new[]
         {
