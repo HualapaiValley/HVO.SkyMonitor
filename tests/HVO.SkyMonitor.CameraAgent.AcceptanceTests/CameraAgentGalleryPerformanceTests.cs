@@ -1338,7 +1338,8 @@ public sealed class CameraAgentGalleryPerformanceTests
             ReadOnlyMemory<byte> payload,
             int maximumDimension,
             int maximumEncodedBytes,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            HVO.SkyMonitor.Imaging.Mono16DisplayStretchOptions? displayOptions = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Count++;

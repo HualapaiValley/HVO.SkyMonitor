@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -19,7 +20,8 @@ internal interface ICameraAgentPreviewEncoder
         ReadOnlyMemory<byte> payload,
         int maximumDimension,
         int maximumEncodedBytes,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Mono16DisplayStretchOptions? displayOptions = null);
 }
 
 internal sealed record CameraAgentEncodedPreview(byte[] Content, int Width, int Height);
@@ -31,8 +33,28 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
         ReadOnlyMemory<byte> payload,
         int maximumDimension,
         int maximumEncodedBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Mono16DisplayStretchOptions? displayOptions = null)
     {
+        // Explicit comparison policies use the full source histogram, just like the retained recipe.
+        // Convert once before resizing; Mono8/RGB and already encoded derivatives are never restretched.
+        if (displayOptions is not null && layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16)
+        {
+            var mono = layout.PixelFormat == CameraPixelFormat.Mono16;
+            payload = mono
+                ? Mono16DisplayStretch.Apply(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions)
+                : BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions);
+            layout = layout with
+            {
+                PixelFormat = mono ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24,
+                StrideBytes = checked(layout.Width * (mono ? 1 : 3)),
+                ByteLength = payload.Length,
+                ByteOrder = FrameByteOrder.NotApplicable,
+                SampleDepthBits = 8,
+                ContainerDepthBits = 8,
+                CfaPattern = ColorFilterArrayPattern.None
+            };
+        }
         var dimension = maximumDimension;
         while (true)
         {
@@ -85,13 +107,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly object _cacheGate = new();
     private readonly Dictionary<PreviewCacheKey, PreviewCacheEntry> _previewCache = [];
     private readonly Dictionary<PreviewCacheKey, PreviewGenerationGate> _previewGenerationGates = [];
-    private readonly Dictionary<Guid, PreviewGenerationGate> _previewRequestGates = [];
+    private readonly Dictionary<PreviewRequestKey, PreviewGenerationGate> _previewRequestGates = [];
     private readonly Dictionary<ArtifactValidationCacheKey, ArtifactValidationCacheEntry> _validationCache = [];
     private long _previewCacheBytes;
     private long _cacheSequence;
     private long _validationCacheSequence;
     private long _payloadValidationReads;
     private long _evidenceValidationReads;
+    private long _jpegValidationReads;
 
     public CameraAgentArtifactService(
         IOptions<CameraAgentHostOptions> options,
@@ -207,7 +230,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 CreateFileName(validated.ArtifactId, validated.MediaType),
                 validated.Descriptor,
                 validated.EncodedWidth,
-                validated.EncodedHeight);
+                validated.EncodedHeight)
+            { ProductManifest = validated.ProductManifest };
             payload = null;
             return new(CameraAgentArtifactReadStatus.Found, content);
         }
@@ -260,9 +284,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoding failures are converted to a sanitized retrieval status.")]
     public async ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
         Guid artifactId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? displayReference = null)
     {
-        var requestGate = AddPreviewRequestWaiter(artifactId);
+        if (displayReference == Guid.Empty) return new(CameraAgentArtifactReadStatus.InvalidRequest);
+        // Coalesce the complete read, including reference validation, even with one preview slot and no cache.
+        // This key lives only for overlapping requests; subsequent requests must validate evidence again.
+        var requestKey = new PreviewRequestKey(artifactId, displayReference);
+        var requestGate = AddPreviewRequestWaiter(requestKey);
         try
         {
             await requestGate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -272,7 +301,24 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 {
                     return completed;
                 }
-                var result = await GetPreviewCoreAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                DisplayReferencePolicy? policy = null;
+                if (displayReference is { } referenceId)
+                {
+                    await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        policy = await ResolveDisplayReferenceAsync(artifactId, referenceId, cancellationToken).ConfigureAwait(false);
+                        if (policy is null) return requestGate.Result = new(CameraAgentArtifactReadStatus.Conflict);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                        JsonException or KeyNotFoundException or FormatException or OverflowException or IOException or InvalidDataException or SqliteException)
+                    {
+                        return requestGate.Result = new(CameraAgentArtifactReadStatus.Conflict);
+                    }
+                    finally { _previewGate.Release(); }
+                }
+                var result = await GetPreviewCoreAsync(artifactId, policy, cancellationToken).ConfigureAwait(false);
                 requestGate.Result = result;
                 return result;
             }
@@ -283,12 +329,136 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
         finally
         {
-            RemovePreviewRequestWaiter(artifactId, requestGate);
+            RemovePreviewRequestWaiter(requestKey, requestGate);
         }
+    }
+
+    private async ValueTask<DisplayReferencePolicy?> ResolveDisplayReferenceAsync(
+        Guid artifactId,
+        Guid referenceId,
+        CancellationToken cancellationToken)
+    {
+        var referenceRead = await OpenContentCoreAsync(referenceId, null, true, cancellationToken).ConfigureAwait(false);
+        if (referenceRead.Content is not { } reference) return null;
+        await using var referenceLease = reference.ConfigureAwait(false);
+        var referenceArtifact = reference.Descriptor?.Artifact ?? reference.ProductManifest?.Artifact;
+        if (reference.Role != FrameArtifactRole.Preview || referenceArtifact is null ||
+            referenceArtifact.SourceArtifactIds.Count != 1 ||
+            referenceArtifact.SourceArtifactIds[0] == referenceId ||
+            referenceArtifact.Recipe is not
+            {
+                Name: BuiltInProcessingRecipes.EncodedPreview,
+                SemanticVersion: "1.0.0", ImplementationVersion: "encoded-preview-v1"
+            } recipe)
+            return null;
+
+        var options = recipe.Options;
+        if (options.GetProperty("schema").GetString() != ProcessingIdentity.BoundInputSchemaVersion ||
+            options.GetProperty("annotationIdentitySha256").ValueKind != JsonValueKind.Null ||
+            options.GetProperty("auxiliaryInputs").GetArrayLength() != 0)
+            return null;
+        var parameters = options.GetProperty("parameters");
+        var stretch = new Mono16DisplayStretchOptions(
+            parameters.GetProperty("blackPercentile").GetDouble(),
+            parameters.GetProperty("whitePercentile").GetDouble(),
+            parameters.GetProperty("asinhStrength").GetDouble());
+        stretch.Validate();
+        if (stretch.AsinhStrength is < 0.01 or > 1000 || parameters.GetProperty("jpegQuality").GetInt32() is < 1 or > 100)
+            return null;
+        var encoding = parameters.GetProperty("outputEncoding").GetString();
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256;
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            referenceArtifact.Role, referenceArtifact.Variant, recipeIdentity, referenceArtifact.SourceArtifactIds);
+        if (ProcessingIdentity.CreateArtifactId(outputIdentity) != referenceId) return null;
+        var recorded = await _processingStore.ReadOutputByArtifactIdAsync(referenceId, cancellationToken).ConfigureAwait(false);
+        if (recorded is null || recorded.AvailabilityState != "Available" || recorded.OutputIdentitySha256 != outputIdentity ||
+            recorded.RecipeIdentitySha256 != recipeIdentity || recorded.Artifact.ChecksumSha256 != reference.ChecksumSha256)
+            return null;
+
+        var sourceRead = await OpenContentCoreAsync(referenceArtifact.SourceArtifactIds[0], null, true, cancellationToken).ConfigureAwait(false);
+        if (sourceRead.Content is not { } source) return null;
+        await using var sourceLease = source.ConfigureAwait(false);
+        if (source.Descriptor is not { } sourceDescriptor ||
+            source.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined) ||
+            source.CaptureId != reference.CaptureId)
+            return null;
+        var input = options.GetProperty("input");
+        var kind = input.GetProperty("kind").GetString();
+        var inputRecipe = input.GetProperty("recipeIdentitySha256").GetString();
+        var inputVariant = input.GetProperty("variant").GetString();
+        if (input.GetProperty("role").GetString() != source.Role.ToString() ||
+            (kind != source.Role.ToString() && kind != nameof(ProcessingInputKind.RecipeResult)) ||
+            (kind == nameof(ProcessingInputKind.RecipeResult) && inputRecipe is null) ||
+            (inputRecipe is not null && inputRecipe != ProcessingIdentity.CreateRecipeIdentity(sourceDescriptor.Artifact.Recipe).IdentitySha256) ||
+            (inputVariant is not null && inputVariant != sourceDescriptor.Artifact.Variant))
+            return null;
+
+        var layout = sourceDescriptor.Layout;
+        var displayFormat = layout.PixelFormat switch
+        {
+            CameraPixelFormat.Mono16 => CameraPixelFormat.Mono8,
+            CameraPixelFormat.BayerRggb16 => CameraPixelFormat.Rgb24,
+            _ => layout.PixelFormat
+        };
+        if (encoding == "Packed")
+        {
+            if (reference.MediaType != "application/x-hvo-packed-image" || reference.Descriptor is not { } derivative ||
+                derivative.Capture != sourceDescriptor.Capture ||
+                derivative.Profiles.Rig != sourceDescriptor.Profiles.Rig ||
+                derivative.Profiles.Sensor != sourceDescriptor.Profiles.Sensor ||
+                derivative.Layout.Width != layout.Width || derivative.Layout.Height != layout.Height ||
+                derivative.Layout.PixelFormat != displayFormat)
+                return null;
+        }
+        else if (encoding == "Jpeg")
+        {
+            if (reference.MediaType != JpegImageCodec.MediaType ||
+                reference.ProductManifest is not DurableEncodedProductManifestV2 encoded ||
+                encoded.Capture != sourceDescriptor.Capture || encoded.EncodedWidth != layout.Width ||
+                encoded.EncodedHeight != layout.Height || encoded.EncodedPixelFormat != displayFormat)
+                return null;
+            var bytes = new byte[checked((int)reference.ByteLength)];
+            await reference.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+            var info = JpegImageCodec.InspectJpeg(bytes);
+            if (info.Width != layout.Width || info.Height != layout.Height || info.PixelFormat != displayFormat) return null;
+            Interlocked.Increment(ref _jpegValidationReads);
+            JpegImageCodec.ValidateJpeg(bytes, cancellationToken);
+        }
+        else return null;
+
+        var targetRead = await OpenContentCoreAsync(artifactId, null, true, cancellationToken).ConfigureAwait(false);
+        if (targetRead.Content is not { } target) return null;
+        await using var targetLease = target.ConfigureAwait(false);
+        if (artifactId != referenceId)
+        {
+            if (target.Role is not (FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined) ||
+                target.Descriptor is not { } targetDescriptor || targetDescriptor.Capture != sourceDescriptor.Capture ||
+                targetDescriptor.Profiles.Rig != sourceDescriptor.Profiles.Rig ||
+                targetDescriptor.Profiles.Sensor != sourceDescriptor.Profiles.Sensor ||
+                targetDescriptor.Layout.Width != layout.Width || targetDescriptor.Layout.Height != layout.Height ||
+                targetDescriptor.Layout.PixelFormat != layout.PixelFormat ||
+                targetDescriptor.Layout.CfaPattern != layout.CfaPattern ||
+                (target.Role == FrameArtifactRole.Combined && target.ArtifactId != source.ArtifactId))
+                return null;
+        }
+
+        var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            version = "capture-display-reference-v1",
+            algorithm = Mono16DisplayStretch.AlgorithmVersion,
+            referenceId,
+            recipeIdentity,
+            reference.ChecksumSha256,
+            sourceDescriptor = CaptureContractJson.ComputeDescriptorSha256(sourceDescriptor)
+        });
+        var description = FormattableString.Invariant(
+            $"Capture-bound display policy from retained artifact {referenceId:D} (recipe {recipeIdentity}; {Mono16DisplayStretch.AlgorithmVersion}, black={stretch.BlackPercentile} white={stretch.WhitePercentile} asinh={stretch.AsinhStrength}). Same percentile settings, each image's own histogram; not a locked transfer curve and not calibration. Source pixels are never replaced. Mono8/RGB/JPEG pixels are not restretched.");
+        return new(identity, stretch, description);
     }
 
     private async ValueTask<CameraAgentArtifactPreviewResult> GetPreviewCoreAsync(
         Guid artifactId,
+        DisplayReferencePolicy? policy,
         CancellationToken cancellationToken)
     {
         await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -307,7 +477,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             var content = opened.Content;
             if (CameraAgentPreviewEligibilityPolicy.IsEncodedJpeg(content.Role, content.MediaType))
             {
-                return await ReadEncodedJpegAsync(content, cancellationToken).ConfigureAwait(false);
+                var jpeg = await ReadEncodedJpegAsync(content, cancellationToken).ConfigureAwait(false);
+                return jpeg with { DisplayPolicyIdentity = policy?.Identity, DisplayPolicy = policy?.Description };
             }
             if (content.Descriptor is not { } descriptor ||
                 !CameraAgentPreviewEligibilityPolicy.IsSupportedLayout(descriptor.Layout))
@@ -321,7 +492,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 content.ChecksumSha256,
                 layout.Width,
                 layout.Height,
-                layout.PixelFormat);
+                layout.PixelFormat,
+                policy?.Identity);
             CameraAgentArtifactPreviewResult cached;
             bool cacheHit;
             lock (_cacheGate)
@@ -362,7 +534,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                     previewGateHeld = true;
                     contentOwned = false;
-                    var result = await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
+                    var result = await EncodePreviewAsync(cacheKey, content, descriptor, policy, cancellationToken).ConfigureAwait(false);
                     generationGate.Result = result;
                     return result;
                 }
@@ -413,7 +585,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 encoded,
                 content.ChecksumSha256,
                 info.Width,
-                info.Height);
+                info.Height,
+                Operation: CameraAgentPreviewOperation.EncodedPassthrough);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -438,6 +611,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         PreviewCacheKey cacheKey,
         CameraAgentArtifactContentStream content,
         ReconstructionDescriptor descriptor,
+        DisplayReferencePolicy? policy,
         CancellationToken cancellationToken)
     {
         await using var contentLease = content.ConfigureAwait(false);
@@ -455,7 +629,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 source,
                 _options.MaximumPreviewDimension,
                 Math.Min(_options.MaximumPreviewEncodedBytes, AbsoluteMaximumPreviewEncodedBytes),
-                cancellationToken);
+                cancellationToken,
+                policy?.Options);
         }
         catch (NotSupportedException)
         {
@@ -481,7 +656,11 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             encoded.Content,
             PayloadChecksum.ComputeSha256(encoded.Content),
             encoded.Width,
-            encoded.Height);
+            encoded.Height,
+            policy?.Identity,
+            policy?.Description,
+            descriptor.Layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
+                ? CameraAgentPreviewOperation.PerImageStretch : CameraAgentPreviewOperation.EncodeOnly);
         cancellationToken.ThrowIfCancellationRequested();
         AddCached(cacheKey, result);
         return result;
@@ -575,7 +754,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     product.RelativeArtifactPath,
                     null,
                     encoded?.EncodedWidth,
-                    encoded?.EncodedHeight);
+                    encoded?.EncodedHeight,
+                    product);
             }
         }
         catch (JsonException exception)
@@ -942,28 +1122,28 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
-    private PreviewGenerationGate AddPreviewRequestWaiter(Guid artifactId)
+    private PreviewGenerationGate AddPreviewRequestWaiter(PreviewRequestKey key)
     {
         lock (_cacheGate)
         {
-            if (!_previewRequestGates.TryGetValue(artifactId, out var gate))
+            if (!_previewRequestGates.TryGetValue(key, out var gate))
             {
                 gate = new PreviewGenerationGate();
-                _previewRequestGates.Add(artifactId, gate);
+                _previewRequestGates.Add(key, gate);
             }
             gate.Waiters++;
             return gate;
         }
     }
 
-    private void RemovePreviewRequestWaiter(Guid artifactId, PreviewGenerationGate gate)
+    private void RemovePreviewRequestWaiter(PreviewRequestKey key, PreviewGenerationGate gate)
     {
         lock (_cacheGate)
         {
             gate.Waiters--;
             if (gate.Waiters == 0)
             {
-                _previewRequestGates.Remove(artifactId);
+                _previewRequestGates.Remove(key);
                 gate.Semaphore.Dispose();
             }
         }
@@ -1063,6 +1243,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     internal long EvidenceValidationReads => Interlocked.Read(ref _evidenceValidationReads);
 
+    internal long JpegValidationReads => Interlocked.Read(ref _jpegValidationReads);
+
     internal int PreviewRequestWaiters
     {
         get
@@ -1144,13 +1326,19 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         string PayloadRelativePath,
         ReconstructionDescriptor? Descriptor,
         int? EncodedWidth,
-        int? EncodedHeight);
+        int? EncodedHeight,
+        IDurableProcessingProductManifest? ProductManifest = null);
+
+    private sealed record DisplayReferencePolicy(string Identity, Mono16DisplayStretchOptions Options, string Description);
+
+    private sealed record PreviewRequestKey(Guid ArtifactId, Guid? ReferenceId);
 
     private sealed record PreviewCacheKey(
         string ChecksumSha256,
         int Width,
         int Height,
-        CameraPixelFormat PixelFormat);
+        CameraPixelFormat PixelFormat,
+        string? PolicyIdentity);
 
     private sealed class PreviewCacheEntry(CameraAgentArtifactPreviewResult result, long sequence)
     {

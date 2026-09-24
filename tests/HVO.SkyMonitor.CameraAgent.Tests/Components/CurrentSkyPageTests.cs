@@ -369,8 +369,7 @@ public sealed class CurrentSkyPageTests
         var reads = 0;
         service.PresentationHandler = (id, _) => Interlocked.Increment(ref reads) == 1
             ? new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(pending.Task)
-            : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64),
-                Guid.Parse("00000000-0000-0000-0000-000000000103"))));
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
         context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
             .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
         var cut = context.Render<CurrentSkyPage>();
@@ -388,7 +387,7 @@ public sealed class CurrentSkyPageTests
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".sky-layer-canvas").ClassList.Contains("sky-layer-canvas--verified")));
         Assert.AreEqual(2, reads);
-        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview?attempt=0",
+        Assert.AreEqual($"{CombinedDisplayUrl}&attempt=0",
             cut.Find(".sky-layer-canvas img").GetAttribute("src"));
         Assert.IsEmpty(cut.FindAll(".capture-image img"));
     }
@@ -412,6 +411,8 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed base unavailable", StringComparison.Ordinal);
     }
 
+    private const string CombinedDisplayUrl = "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000104/preview?displayReference=00000000-0000-0000-0000-000000000104";
+
     private static CameraAgentCurrentImagePresentation WithStructuredBase()
     {
         var source = OperatorUiTestData.CurrentImage();
@@ -421,14 +422,289 @@ public sealed class CurrentSkyPageTests
             Stages = source.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined
                 ? new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", Guid.Parse("00000000-0000-0000-0000-000000000103"), HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined,
-                    null, "image/jpeg", new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview", UriKind.Relative))
+                    null, "application/x-hvo-linear-frame", new Uri(CombinedDisplayUrl, UriKind.Relative),
+                    Guid.Parse("00000000-0000-0000-0000-000000000104"), CameraAgentPresentationDisplayBasis.RetainedDerivative,
+                    "Retained encoded-preview derivative 00000000-0000-0000-0000-000000000104; one configured display stretch applied when it was produced.",
+                    Guid.Parse("00000000-0000-0000-0000-000000000104"), CameraAgentPreviewOperation.EncodeOnly)
                 : slot).ToArray()
         };
     }
 
+    // C (...103), D (...104), and A (...102) must remain distinct in both pending and loaded-layer tests.
+    private static CameraAgentCurrentImagePresentation WithRetainedCombinedDerivative()
+        => WithStructuredBase();
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task LiveMeanAndPendingProcessedShareRetainedDerivativeWhileDownloadStaysLinear(bool advertisedLayers)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
+            WithRetainedCombinedDerivative() with { StructuredLayersAvailable = advertisedLayers }));
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PresentationHandler = (_, _) => new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(pending.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".capture-image img");
+
+        // Processed selected, layers pending: the unannotated base is the retained derivative, not the linear frame
+        // or the annotated artifact, and the download link names the linear Combined frame.
+        Assert.AreEqual(CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "retained display derivative", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "Stage artifact 00000000-0000-0000-0000-000000000103", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "shown pixels from artifact 00000000-0000-0000-0000-000000000104", StringComparison.Ordinal);
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/content",
+            cut.Find(".stage-display-policy a").GetAttribute("href"));
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Display basisRetained display derivative", StringComparison.Ordinal);
+
+        await cut.Find("button[title='Show Combined image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "Showing Combined (retained display derivative)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Arithmetic mean, not a sum", StringComparison.Ordinal);
+
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview",
+            cut.Find(".capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "Showing Raw (per-image normalization)", StringComparison.Ordinal);
+        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/content",
+            cut.Find(".stage-display-policy a").GetAttribute("href"));
+        pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Layers unavailable"));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task LoadedProcessedWithAllOverlaysOffDescribesActualDerivativeAndDownloadsLinearSource(bool advertisedLayers)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var presentation = WithRetainedCombinedDerivative() with { StructuredLayersAvailable = advertisedLayers };
+        var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreNotEqual(combined.ArtifactId, combined.DisplayArtifactId);
+        Assert.AreNotEqual(annotated.ArtifactId, combined.ArtifactId);
+        Assert.AreNotEqual(annotated.ArtifactId, combined.DisplayArtifactId);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            Layered(id, new string('D', 64), combined.DisplayArtifactId)));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-layer-canvas--verified");
+
+        foreach (var checkbox in cut.FindAll(".sky-layer-controls input[data-layer-target]"))
+            await checkbox.ChangeAsync(false).ConfigureAwait(false);
+
+        Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
+        Assert.IsTrue(cut.FindAll(".sky-layer-controls input[data-layer-target]").All(static input => !input.HasAttribute("checked")));
+        Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
+        var shown = cut.Find(".sky-layer-canvas img").GetAttribute("src")!;
+        Assert.AreEqual($"{combined.PreviewUrl}&attempt=0", shown);
+        var policy = cut.Find(".stage-display-policy");
+        StringAssert.Contains(policy.TextContent, $"shown pixels from artifact {combined.DisplayArtifactId:D}", StringComparison.Ordinal);
+        StringAssert.Contains(policy.TextContent, $"Stage artifact {combined.ArtifactId:D}", StringComparison.Ordinal);
+        Assert.IsFalse(policy.TextContent.Contains(annotated.ArtifactId!.Value.ToString("D"), StringComparison.Ordinal));
+        Assert.AreEqual($"/api/v1/operations/artifacts/{combined.ArtifactId:D}/content", policy.QuerySelector("a")!.GetAttribute("href"));
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Display basisRetained display derivative", StringComparison.Ordinal);
+
+        await cut.Find("button[title='Show Combined image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(combined.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"));
+        await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+        cut.WaitForElement(".sky-layer-canvas--verified");
+        Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
+        Assert.AreEqual(shown, cut.Find(".sky-layer-canvas img").GetAttribute("src"));
+    }
+
+    [TestMethod]
+    public async Task RawComparisonUsesOwnArtifactUrlAndExplicitReferencePolicy()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var source = WithRetainedCombinedDerivative();
+        var reference = source.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId!.Value;
+        var raw = source.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Raw);
+        var expected = $"/api/v1/operations/artifacts/{raw.ArtifactId:D}/preview?displayReference={reference:D}";
+        source = source with
+        {
+            Stages = source.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Raw ? slot with
+            {
+                PreviewUrl = new Uri(expected, UriKind.Relative),
+                DisplayReferenceId = reference,
+                DisplayPolicy = "Capture-bound comparison: same percentile settings, each image's own histogram; not a locked transfer curve."
+            } : slot).ToArray()
+        };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(source));
+        var cut = context.Render<CurrentSkyPage>();
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(expected, cut.Find(".capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "not a locked transfer curve", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Capture-bound per-image normalization", StringComparison.Ordinal);
+        Assert.AreEqual($"/api/v1/operations/artifacts/{raw.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    [DataRow("annotated")]
+    [DataRow("linear")]
+    [DataRow("unrelated")]
+    [DataRow("unresolved")]
+    public void LayerManifestMustMatchResolvedCombinedDerivativeBeforeShowingLayers(string scenario)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var presentation = WithRetainedCombinedDerivative();
+        var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var manifestBase = scenario switch
+        {
+            "annotated" => presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).ArtifactId,
+            "linear" => combined.ArtifactId,
+            "unresolved" => combined.DisplayArtifactId,
+            _ => Guid.NewGuid()
+        };
+        if (scenario == "unresolved")
+            presentation = presentation with
+            {
+                Stages = presentation.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined
+                    ? slot with { DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact } : slot).ToArray()
+            };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            Layered(id, new string('D', 64), manifestBase)));
+        var cut = context.Render<CurrentSkyPage>();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-unavailable").TextContent,
+            "manifest base does not match", StringComparison.Ordinal));
+        Assert.AreEqual(combined.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-canvas, .sky-layer-overlay"));
+        Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+        Assert.IsEmpty(context.JSInterop.Invocations);
+        Assert.IsFalse(cut.Find(".stage-status").TextContent.Contains("with selected presentation overlays", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow(false, true, true)]
+    [DataRow(false, false, false)]
+    [DataRow(true, true, true)]
+    [DataRow(true, false, false)]
+    public async Task PendingProcessedDistinguishesConfirmedLegacyAbsenceFromRetainedLayerFailure(
+        bool advertisedLayers, bool notRetained, bool showsAnnotated)
+    {
+        var terminalKind = notRetained ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable;
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var presentation = WithStructuredBase() with { StructuredLayersAvailable = advertisedLayers };
+        var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        service.PresentationHandler = (_, _) => new(pending.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".capture-image img");
+        AssertBaseOnly(cut, "pending");
+        await cut.InvokeAsync(() => pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(terminalKind,
+            terminalKind == OperatorUiResultKind.NotFound ? "Structured layers were not retained." : "Retained layer read failed."))).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src")));
+        Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
+        if (showsAnnotated)
+        {
+            StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, annotated.ArtifactId!.Value.ToString("D"), StringComparison.Ordinal);
+            Assert.AreEqual($"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
+            StringAssert.Contains(cut.Find(".stage-status").TextContent, "retained encoded bytes; no display stretch", StringComparison.Ordinal);
+        }
+        else await cut.WaitForAssertionAsync(() => AssertBaseOnly(cut, "unavailable")).ConfigureAwait(false);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src")));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-overlay"));
+    }
+
+    [TestMethod]
+    [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8, false)]
+    [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8, true)]
+    [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Rgb24, false)]
+    [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Rgb24, true)]
+    public void EightBitStageLabelsDescribeEncodingNotNormalization(HVO.SkyMonitor.AgentCore.CameraPixelFormat format, bool comparison)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var projector = new CameraAgentCapturePresentationProjector(Microsoft.Extensions.Options.Options.Create(
+            new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions()));
+        var capture = OperatorUiTestData.Capture() with { RawState = "committed" };
+        capture = capture with
+        {
+            Artifacts = capture.Artifacts.Select(artifact => artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw
+            ? artifact with { PixelFormat = format, MediaType = "application/x-hvo-packed-image" } : artifact).ToArray()
+        };
+        var raw = projector.Project(capture).Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Raw);
+        Assert.AreEqual(CameraAgentPreviewOperation.EncodeOnly, raw.DisplayOperation);
+        if (comparison) raw = raw with { DisplayReferenceId = Guid.NewGuid() };
+        var presentation = OperatorUiTestData.CurrentImage();
+        presentation = presentation with { Stages = presentation.Stages.Select(slot => slot.Stage == raw.Stage ? raw : slot).ToArray() };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.Find("button[title='Show Raw image']").Click();
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "encoding only; no display stretch", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Encoding only; no display stretch", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".stage-status").TextContent.Contains("normalization", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task SameCaptureReferenceOutageRequiresNewBindAndPreservesAllLayersOff()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var original = WithStructuredBase();
+        var current = original;
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        var binding = module.Setup<string>("bindLayerToggles", _ => true);
+        binding.SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-layer-canvas--verified");
+        await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
+        current = original with
+        {
+            Stages = original.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined ? slot with
+            {
+                DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact,
+                DisplayArtifactId = slot.ArtifactId,
+                DisplayReferenceId = null,
+                PreviewUrl = new Uri($"/api/v1/operations/artifacts/{slot.ArtifactId:D}/preview", UriKind.Relative)
+            } : slot).ToArray()
+        };
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".sky-layer-canvas"));
+        Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+        var before = module.Invocations.Count(static call => call.Identifier == "bindLayerToggles");
+        var rebound = module.Setup<string>("bindLayerToggles", _ => true);
+        current = original;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual(before + 1, module.Invocations.Count(static call => call.Identifier == "bindLayerToggles")));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-canvas--verified"));
+        Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
+        rebound.SetResult("valid");
+        cut.WaitForElement(".sky-layer-canvas--verified");
+        Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
+        IReadOnlyList<string>? saved = null;
+        service.MaterializationHandler = (id, selected, _) =>
+        {
+            saved = selected;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(
+                new(id, Guid.NewGuid(), new string('A', 64), new string('B', 64), 1, false)));
+        };
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
+        Assert.IsNotNull(saved);
+        Assert.IsEmpty(saved);
+        StringAssert.Contains(cut.Find(".sky-layer-canvas").GetAttribute("style")!, "min(640px, 100%", StringComparison.Ordinal);
+    }
+
     private static void AssertBaseOnly(IRenderedComponent<CurrentSkyPage> cut, string state)
     {
-        Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000103/preview",
+        Assert.AreEqual(CombinedDisplayUrl,
             cut.Find(".capture-image img").GetAttribute("src"));
         Assert.IsEmpty(cut.FindAll(".sky-layer-overlay svg"));
         StringAssert.Contains(cut.Find(".stage-status").TextContent, $"processed layers are {state}", StringComparison.Ordinal);
