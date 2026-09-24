@@ -1166,6 +1166,76 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UpgradeAsync_ProtectedReadFailureOnResumeNeverPausesOrMutates(bool callerCancels)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+        // Reproduce the retained Prepared/Running, MutationStarted=false state using the normal journal writer.
+        var begun = await CameraAgentLifecycleManager.BeginAsync(
+            request, fixture.Paths, LifecycleOperationKind.Upgrade, fixture.Manifest, CancellationToken.None);
+        var manifestBefore = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
+        var resultBefore = await File.ReadAllTextAsync(fixture.Paths.ResultPath);
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var environmentPath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "instance.env");
+        var composeBefore = await File.ReadAllTextAsync(composePath);
+        var environmentBefore = await File.ReadAllTextAsync(environmentPath);
+        using var caller = new CancellationTokenSource();
+        using var handler = new ScriptedHandler(async (_, _, cancellationToken) =>
+        {
+            if (callerCancels) await caller.CancelAsync();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new AssertFailedException("The protected read must be canceled.");
+        });
+        var owner = new OwnerBootstrapClient(new Uri("http://verification.invalid"), handler, TimeSpan.FromMilliseconds(100));
+        Task<LifecycleResult> ResumeAsync() => CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => owner,
+            fixture.Uid, fixture.Gid, caller.Token);
+
+        if (callerCancels)
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(ResumeAsync);
+        }
+        else
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(ResumeAsync);
+            Assert.AreEqual("CameraAgent installation verification request timed out.", exception.Message);
+        }
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(begun.OperationId, retained!.OperationId);
+        Assert.AreEqual(LifecycleOperationPhase.Prepared, retained.Phase);
+        Assert.IsFalse(retained.MutationStarted);
+        Assert.AreEqual(callerCancels ? InstallationStatus.Running : InstallationStatus.Failed, retained.Status);
+        Assert.AreEqual(callerCancels ? null : CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
+        Assert.IsNull(retained.BackupManifestSha256);
+        Assert.AreEqual(0, fixture.Runner.BackupCount);
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeDownCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeRestartCount);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
+        Assert.AreEqual(resultBefore, await File.ReadAllTextAsync(fixture.Paths.ResultPath));
+        Assert.AreEqual(composeBefore, await File.ReadAllTextAsync(composePath));
+        Assert.AreEqual(environmentBefore, await File.ReadAllTextAsync(environmentPath));
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_CancellationBeforeMutationIsNotRefusedAndDoesNotBlock()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1901,6 +1971,8 @@ public sealed class LifecycleContractTests
         public int ComposeDownCount { get; private set; }
         public int ComposeUpCount { get; private set; }
         public int ComposeRestartCount { get; private set; }
+        public int ComposeStopCount { get; private set; }
+        public int BackupCount { get; private set; }
         public int? DaemonDriftAtInfoCall { get; set; }
         public bool DriftDaemonAfterComposeUp { get; set; }
         public bool RetainOwnedOrphanAfterDown { get; set; }
@@ -1942,6 +2014,7 @@ public sealed class LifecycleContractTests
             InvocationCount++;
             if (fileName == "tar")
             {
+                if (arguments.Contains("--create", StringComparer.Ordinal)) BackupCount++;
                 if (RejectNextBackup && arguments.Contains("--create", StringComparer.Ordinal))
                 {
                     RejectNextBackup = false;
@@ -2016,6 +2089,7 @@ public sealed class LifecycleContractTests
                 }
                 if (arguments.Contains("stop", StringComparer.Ordinal))
                 {
+                    ComposeStopCount++;
                     if (RejectNextStop)
                     {
                         RejectNextStop = false;
