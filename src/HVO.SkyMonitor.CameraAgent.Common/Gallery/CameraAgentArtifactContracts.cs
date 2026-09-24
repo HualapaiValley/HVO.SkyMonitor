@@ -1,6 +1,16 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
+
+[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CameraAgentPreviewOperation>))]
+public enum CameraAgentPreviewOperation
+{
+    Unknown,
+    PerImageStretch,
+    EncodeOnly,
+    EncodedPassthrough
+}
 
 public enum CameraAgentArtifactReadStatus
 {
@@ -10,7 +20,8 @@ public enum CameraAgentArtifactReadStatus
     Gone,
     TooLarge,
     UnsupportedMediaType,
-    Unavailable
+    Unavailable,
+    InvalidRequest
 }
 
 public sealed record CameraAgentArtifactContentResult(
@@ -22,7 +33,10 @@ public sealed record CameraAgentArtifactPreviewResult(
     ReadOnlyMemory<byte> Content = default,
     string? ChecksumSha256 = null,
     int? Width = null,
-    int? Height = null);
+    int? Height = null,
+    string? DisplayPolicyIdentity = null,
+    string? DisplayPolicy = null,
+    CameraAgentPreviewOperation Operation = CameraAgentPreviewOperation.Unknown);
 
 public interface ICameraAgentArtifactService
 {
@@ -37,7 +51,8 @@ public interface ICameraAgentArtifactService
 
     ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
         Guid artifactId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Guid? displayReference = null);
 }
 
 public sealed class CameraAgentArtifactContentStream : Stream
@@ -86,6 +101,8 @@ public sealed class CameraAgentArtifactContentStream : Stream
     public string FileName { get; }
 
     internal ReconstructionDescriptor? Descriptor { get; }
+
+    internal IDurableProcessingProductManifest? ProductManifest { get; init; }
 
     internal int? EncodedWidth { get; }
 

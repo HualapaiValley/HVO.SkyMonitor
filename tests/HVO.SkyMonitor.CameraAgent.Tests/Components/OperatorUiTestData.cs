@@ -130,14 +130,18 @@ internal static class OperatorUiTestData
             [
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", rawArtifactId, FrameArtifactRole.Raw, null, "image/jpeg",
-                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview", UriKind.Relative)),
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview", UriKind.Relative),
+                    rawArtifactId, CameraAgentPresentationDisplayBasis.OwnArtifact,
+                    "On-demand per-image percentile normalization (test policy).", DisplayOperation: CameraAgentPreviewOperation.PerImageStretch),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing,
                     "NotProduced"),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing,
                     "NotProduced"),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", annotatedArtifactId, FrameArtifactRole.AnnotatedPreview, "display", "image/jpeg",
-                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative))
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative),
+                    annotatedArtifactId, DisplayPolicy: "Retained encoded bytes shown as produced; no display stretch applied here.",
+                    DisplayOperation: CameraAgentPreviewOperation.EncodedPassthrough)
             ];
         return new CameraAgentCurrentImagePresentation(
             Now,
@@ -238,6 +242,9 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
             capture,
             CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(Project(capture))));
     }
+
+    public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture)
+        => Project(capture);
 
     public CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture)
     {

@@ -52,8 +52,8 @@
             @if (ShowLayeredHero)
             {
                 <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
-                    <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")" style="aspect-ratio: @_layers.WidthPixels / @_layers.HeightPixels; width: min(100%, calc(70vh * @LayerAspectRatio))">
-                        <img @key="_layerPreviewAttempt" src="@($"/api/v1/operations/artifacts/{_layers.BaseArtifactId:D}/preview?attempt={_layerPreviewAttempt}")" alt="@ImageAlt" />
+                    <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")" style="aspect-ratio: @_layers.WidthPixels / @_layers.HeightPixels; width: min(@(_layers.WidthPixels)px, 100%, calc(70vh * @LayerAspectRatio))">
+                        <img @key="_layerPreviewAttempt" src="@LayerPreviewUrl" alt="@ImageAlt" />
                         <div class="sky-layer-overlay" aria-hidden="true">@LayerSvg</div>
                         <div class="sky-layer-actions">
                             <a class="btn btn-overlay btn-sm image-action" href="@DetailUrl">Open capture details</a>
@@ -96,6 +96,17 @@
                 </div>
                 <p id="stage-unavailable" class="stage-unavailable">@foreach (var slot in _presentation.Stages.Where(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available)) { <span>@slot.Label: @StageUnavailableReason(slot)</span> }</p>
                 <p class="stage-status" aria-live="polite">@StageStatus</p>
+                @if (DisplaySlot is { DisplayPolicy: { } displayPolicy } displayed)
+                {
+                    <p class="stage-display-policy" aria-label="Display policy">
+                        <strong>Display:</strong> @displayPolicy
+                        @if (displayed.ArtifactId is { } stageArtifactId)
+                        {
+                            <span> Stage artifact <code>@stageArtifactId</code>@(displayed.DisplayArtifactId is { } shown && shown != stageArtifactId ? $"; shown pixels from artifact {shown:D}" : string.Empty).</span>
+                            @if (DisplayContentUrl is { } contentUrl) { <a href="@contentUrl" download>Download stage artifact</a> }
+                        }
+                    </p>
+                }
                 @if (ShowLayeredHero)
                 {
                     <p class="stage-status">Large image view is unavailable for the layered stack; use the capture details to inspect retained artifacts.</p>
@@ -133,9 +144,9 @@
                     <p class="lineage-note">Causal arithmetic mean, not a registered stack. Observation span is not recorded in this view.</p>
                 </section>
             }
-            @if (_layerMessage is not null && _presentation?.DisplayCapture is not null)
+            @if (LayerMessage is { } layerMessage && _presentation?.DisplayCapture is not null)
             {
-                <p class="sky-layer-unavailable" role="status">@_layerMessage</p>
+                <p class="sky-layer-unavailable" role="status">@layerMessage</p>
             }
         </article>
 
@@ -204,6 +215,7 @@
                     <div><dt>Captured</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToLocalTime().ToString("g")</time></dd></div>
                     <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
                     <div><dt>Stage</dt><dd>@(ShowLayeredHero && _layerInteractive ? "Processed base + selected overlays" : ProcessedBaseFallback ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)" : SelectedSlot?.Label ?? "Unavailable")</dd></div>
+                    <div><dt>Display basis</dt><dd>@DisplayBasisLabel</dd></div>
                     <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
                     <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
                     @if (_facts is { } facts)
