@@ -628,6 +628,61 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FreshProcessedWithoutQualifiedDerivativeUsesOwnCombinedUntilConfirmedLayerAbsence(bool notRetained)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var source = WithStructuredBase();
+        var combined = source.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        combined = combined with
+        {
+            DisplayArtifactId = combined.ArtifactId,
+            DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact,
+            DisplayReferenceId = null,
+            DisplayOperation = CameraAgentPreviewOperation.PerImageStretch,
+            PreviewUrl = new Uri($"/api/v1/operations/artifacts/{combined.ArtifactId:D}/preview", UriKind.Relative),
+            DisplayPolicy = "On-demand per-image normalization, global default; retained comparison reference unavailable."
+        };
+        var presentation = source with
+        {
+            StructuredLayersAvailable = false,
+            Stages = source.Stages.Select(slot => slot.Stage == combined.Stage ? combined : slot).ToArray()
+        };
+        var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>();
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
+        service.PresentationHandler = (_, _) => new(pending.Task);
+        var cut = context.Render<CurrentSkyPage>();
+
+        cut.WaitForElement(".capture-image img");
+        Assert.AreEqual(combined.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"),
+            "Unknown layer state must never expose baked annotations, even without qualified D.");
+        StringAssert.Contains(cut.Find(".stage-status").TextContent, "processed layers are pending", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "global default", StringComparison.Ordinal);
+        Assert.AreEqual($"/api/v1/operations/artifacts/{combined.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
+        await cut.InvokeAsync(() => pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+            notRetained ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable,
+            notRetained ? "No retained layers." : "Retained layer base is unavailable."))).ConfigureAwait(false);
+        for (var attempt = 0; attempt < 500 && cut.Find(".stage-status").TextContent.Contains("layers are pending", StringComparison.Ordinal); attempt++)
+            await Task.Delay(10).ConfigureAwait(false);
+
+        var displayed = notRetained ? annotated : combined;
+        Assert.AreEqual(displayed.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"));
+        Assert.AreEqual($"/api/v1/operations/artifacts/{displayed.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
+        Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-overlay"));
+        StringAssert.Contains(cut.Find(".stage-status").TextContent,
+            notRetained ? "retained encoded bytes" : "processed layers are unavailable", StringComparison.Ordinal);
+        if (!notRetained)
+        {
+            StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "global default", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".stage-display-policy").TextContent.Contains(annotated.ArtifactId!.Value.ToString("D"), StringComparison.Ordinal));
+        }
+    }
+
+    [TestMethod]
     [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8, false)]
     [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono8, true)]
     [DataRow(HVO.SkyMonitor.AgentCore.CameraPixelFormat.Rgb24, false)]

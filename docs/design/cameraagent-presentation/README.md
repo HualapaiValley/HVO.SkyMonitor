@@ -108,6 +108,10 @@ Once the layer service confirms that no overlay manifest was retained, a legacy
 Processed selection shows its retained flattened annotated artifact instead.
 Failure to read existing structured layers is not proof of absence and retains
 the explicit unannotated fallback. Pending reads never claim that layers loaded.
+This remains true when the comparison derivative cannot qualify: use the
+available Combined artifact's own preview and its fallback policy, or show no
+image if Combined is unavailable. Baked annotated pixels require confirmed
+manifest absence, not merely a false structured-layer availability flag.
 Losing the layered DOM or changing its base invalidates verification; same-capture
 recovery must bind the replacement DOM and reapply the saved layer selection
 before enabling overlays or saving. Both standard and layered images are capped

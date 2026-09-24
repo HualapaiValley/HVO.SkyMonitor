@@ -374,9 +374,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         ? "The retained layer manifest base does not match the resolved Combined display derivative. Showing the unannotated Combined base without layers."
         : _layerMessage;
 
-    private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained &&
-        (_presentation?.StructuredLayersAvailable == true || _layers is not null ||
-            ProcessedBaseSlot?.DisplayBasis == CameraAgentPresentationDisplayBasis.RetainedDerivative);
+    // Unknown or failed layer reads are not proof that a capture has no retained layers.
+    private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained;
 
     private string? LayerPreviewUrl => ProcessedBaseSlot?.PreviewUrl is { } url
         ? Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(url.OriginalString, "attempt",
