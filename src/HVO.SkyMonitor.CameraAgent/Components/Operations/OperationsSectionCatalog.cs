@@ -21,6 +21,7 @@ public sealed record OperationsSection(
         "schedule" => "M3 4h14v13H3zM6 2v4m8-4v4M3 8h14",
         "focus" => "M13 10a3 3 0 1 0-6 0 3 3 0 0 0 6 0M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4",
         "calibration" => "M6 3h8v4l3 6a3 3 0 0 1-3 4H6a3 3 0 0 1-3-4l3-6V3ZM6 10h8",
+        "pipeline" => "M6 10a2 2 0 1 0-4 0 2 2 0 0 0 4 0M12 5a2 2 0 1 0-4 0 2 2 0 0 0 4 0M18 10a2 2 0 1 0-4 0 2 2 0 0 0 4 0M12 15a2 2 0 1 0-4 0 2 2 0 0 0 4 0M6 9l2.5-2.5m3 0L14 9m-8 2 2.5 2.5m3-1L14 11",
         "environment" => "M7 12a4 4 0 1 1 6-3 3 3 0 1 1 1 6H7a3 3 0 1 1 0-6",
         "transients" => "m12 2-1 6 5-2-7 12 1-7-5 2 7-11Z",
         "automations" => "M4 5h8m-8 5h12M4 15h1m4 0h1M17 5a2 2 0 1 0-4 0 2 2 0 0 0 4 0M9 15a2 2 0 1 0-4 0 2 2 0 0 0 4 0",

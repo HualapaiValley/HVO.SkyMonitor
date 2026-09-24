@@ -11,6 +11,8 @@ export function initialize(panel, toggle, breakpoint, receiver) {
         notify();
     };
     const closed = () => {
+        // The native close event is queued. Restore desktop visibility after it, too.
+        if (!media.matches) panel.setAttribute('open', '');
         if (returnFocus && media.matches && toggle.isConnected) toggle.focus({ preventScroll: true });
         returnFocus = false;
         notify();

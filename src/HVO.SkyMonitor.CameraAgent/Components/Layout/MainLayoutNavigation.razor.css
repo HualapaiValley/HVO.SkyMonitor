@@ -24,6 +24,7 @@
     gap: 0.65rem;
     color: var(--hvo-body-color);
     text-decoration: none;
+    line-height: normal;
 }
 
 .shell-brand:hover,
@@ -194,6 +195,7 @@
 
 .nav-avatar {
     display: inline-flex;
+    flex: 0 0 auto;
     width: 1.9rem;
     height: 1.9rem;
     align-items: center;
@@ -209,6 +211,7 @@
     display: flex;
     max-width: 13rem;
     min-width: 0;
+    flex: 1;
     flex-direction: column;
     line-height: 1.1;
 }
@@ -287,6 +290,13 @@
     font-size: 0.75rem;
     font-weight: 700;
     text-decoration: none;
+}
+
+@media (min-width: 781px) and (max-width: 1100px) {
+    .shell-header__bar { grid-template-columns: 16.5rem minmax(0, 1fr); }
+    .shell-primary ::deep .nav-badge { padding-inline: .55rem; }
+    .shell-primary ::deep .nav-badge.active::after { right: .55rem; left: .55rem; }
+    .nav-account-details { display: none; }
 }
 
 @media (max-width: 780px) {

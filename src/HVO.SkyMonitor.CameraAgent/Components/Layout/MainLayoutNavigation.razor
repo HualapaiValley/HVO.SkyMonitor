@@ -31,7 +31,7 @@
                     <AuthorizeView Context="authState">
                         <Authorized>
                             <details class="nav-account-info">
-                                <summary class="nav-avatar-button">
+                                <summary class="nav-avatar-button" aria-label="@($"Account for {GetUserDisplayName(authState.User)}")">
                                     <span class="nav-avatar">@GetUserInitials(authState.User)</span>
                                     <span class="nav-account-details">
                                         <span class="nav-account-name">@GetUserDisplayName(authState.User)</span>

@@ -426,13 +426,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await keyboardPage.CloseAsync().ConfigureAwait(false);
         }
 
-        var menuToggle = page.Locator("button.shell-menu__toggle");
+        var menuToggle = page.Locator("button[aria-controls='shell-menu-panel']");
         await VisibleAsync(menuToggle).ConfigureAwait(false);
         await OpenMenuWithKeyboardAsync(menuToggle).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true }).First)
             .ConfigureAwait(false);
+        await AssertNavigationModalAsync(page, "shell-menu-panel").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.querySelector('button.shell-menu__toggle')?.getAttribute('aria-expanded') === 'false'")
+        await page.WaitForFunctionAsync("() => document.querySelector('button[aria-controls=\"shell-menu-panel\"]')?.getAttribute('aria-expanded') === 'false'")
             .ConfigureAwait(false);
         await WaitForFocusAsync(page, menuToggle).ConfigureAwait(false);
         await OpenMenuWithKeyboardAsync(menuToggle).ConfigureAwait(false);
@@ -462,9 +463,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.SetViewportSizeAsync(1024, 768).ConfigureAwait(false);
         await page.GotoAsync("/").ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        var desktopCurrentSky = page.GetByRole(AriaRole.Link, new() { Name = "Current sky", Exact = true });
+        var desktopCurrentSky = page.GetByRole(AriaRole.Link, new() { Name = "Current Sky", Exact = true });
         await VisibleAsync(desktopCurrentSky).ConfigureAwait(false);
-        Assert.IsFalse(await page.Locator("button.shell-menu__toggle").IsVisibleAsync().ConfigureAwait(false));
+        Assert.IsFalse(await page.Locator("button[aria-controls='shell-menu-panel']").IsVisibleAsync().ConfigureAwait(false));
         await desktopCurrentSky.FocusAsync().ConfigureAwait(false);
         await WaitForFocusAsync(page, desktopCurrentSky).ConfigureAwait(false);
         await page.GotoAsync("/schedule").ConfigureAwait(false);
@@ -957,10 +958,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
                       `[${item.rect.left.toFixed(1)},${item.rect.right.toFixed(1)}]`);
                   const structure = [
                     'body', '.app-frame', '.shell-header', '.shell-header__bar',
-                    '.shell-brand', '.shell-menu', '.shell-menu__toggle'
+                    '.shell-brand', '.shell-menu', 'button[aria-controls="shell-menu-panel"]'
                   ].map(describe);
                   return `viewport inner=${innerWidth} outer=${outerWidth} visual=${visualViewport?.width} ` +
-                    `mobile=${matchMedia('(max-width: 767.98px)').matches}; ` +
+                    `mobile=${matchMedia('(max-width: 780px)').matches}; ` +
                     `document ${root.clientWidth}/${root.scrollWidth}; ${structure.join('; ')}; ` +
                     `offenders: ${offenders.join('; ')}`;
                 }
@@ -2107,26 +2108,41 @@ public sealed class CameraAgentBrowserAcceptanceTests
             "page",
             await sidebarNavigation.GetByRole(AriaRole.Link, new() { Name = "Capture schedule", Exact = true })
                 .GetAttributeAsync("aria-current").ConfigureAwait(false));
-        Assert.IsFalse(await page.Locator("button.operations-nav-toggle").IsVisibleAsync().ConfigureAwait(false));
-        foreach (var group in new[] { "Setup", "Capture", "Processing", "Data", "System" })
+        Assert.IsFalse(await page.Locator("button[aria-controls='operations-sections']").IsVisibleAsync().ConfigureAwait(false));
+        foreach (var group in new[] { "Setup", "Capture", "Processing", "Automation", "Data", "System" })
         {
             await VisibleAsync(sidebarNavigation.Locator($"#operations-group-{group}")).ConfigureAwait(false);
         }
 
         // Narrow: the sidebar collapses behind a toggle that opens the drawer, and Escape returns focus to the toggle.
         await page.SetViewportSizeAsync(390, 844).ConfigureAwait(false);
-        var toggle = page.Locator("button.operations-nav-toggle");
+        var toggle = page.Locator("button[aria-controls='operations-sections']");
         await VisibleAsync(toggle).ConfigureAwait(false);
         await sidebarNavigation.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await toggle.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
         Assert.AreEqual("true", await toggle.GetAttributeAsync("aria-expanded").ConfigureAwait(false));
+        await AssertNavigationModalAsync(page, "operations-sections").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "() => document.querySelector('button.operations-nav-toggle')?.getAttribute('aria-expanded') === 'false' && document.activeElement?.classList.contains('operations-nav-toggle') === true")
+            "() => document.querySelector('button[aria-controls=\"operations-sections\"]')?.getAttribute('aria-expanded') === 'false' && document.activeElement?.getAttribute('aria-controls') === 'operations-sections'")
             .ConfigureAwait(false);
         await sidebarNavigation.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.SetViewportSizeAsync(originalViewport?.Width ?? 1440, originalViewport?.Height ?? 900).ConfigureAwait(false);
+        await VisibleAsync(sidebarNavigation).ConfigureAwait(false);
+    }
+
+    private static async Task AssertNavigationModalAsync(IPage page, string id)
+    {
+        var dialog = page.Locator($"#{id}");
+        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.matches(':modal')").ConfigureAwait(false));
+        for (var index = 0; index < 32; index++)
+        {
+            await page.Keyboard.PressAsync(index < 16 ? "Tab" : "Shift+Tab").ConfigureAwait(false);
+            Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.contains(document.activeElement)").ConfigureAwait(false), id);
+        }
+        await page.Locator(".shell-brand").EvaluateAsync("element => element.focus()").ConfigureAwait(false);
+        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.contains(document.activeElement)").ConfigureAwait(false), "Background must be inert.");
     }
 
     private static async Task AssertCurrentSkyResponsiveAsync(IPage page, ViewportSize viewport)
@@ -2315,15 +2331,15 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForFunctionAsync(
             """
             expectedMobile => {
-              const toggle = document.querySelector('.shell-menu__toggle');
+              const toggle = document.querySelector('button[aria-controls="shell-menu-panel"]');
               const menu = document.querySelector('.shell-menu');
-              if (!toggle || !menu || matchMedia('(max-width: 767.98px)').matches !== expectedMobile) return false;
+              if (!toggle || !menu || matchMedia('(max-width: 780px)').matches !== expectedMobile) return false;
               const toggleVisible = getComputedStyle(toggle).display !== 'none';
               return toggleVisible === expectedMobile &&
                 (!expectedMobile || toggle.getBoundingClientRect().width <= menu.getBoundingClientRect().width + 1);
             }
             """,
-            viewportWidth <= 767).ConfigureAwait(false);
+            viewportWidth <= 780).ConfigureAwait(false);
     }
 
     private static async Task AssertDialogCancelIsSynchronouslyGuardedAsync(ILocator dialog)
