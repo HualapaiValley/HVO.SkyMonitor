@@ -135,7 +135,7 @@ internal static class CameraConfiguration
             ExposureControl = AutomaticControlOwnership.Disabled,
             GainControl = AutomaticControlOwnership.Disabled
         },
-        ProfileVersion: "installer-virtualsky-v2",
+        ProfileVersion: "installer-virtualsky-v3",
         Readout: new SensorReadoutProfile(
             new SensorCrop(0, 0, 1936, 1216),
             1, 1, FrameBinningAlgorithm.IdentityV1,
@@ -166,8 +166,8 @@ internal static class CameraConfiguration
             recipeVersion = "mono16-asinh-v2",
             outputVariant = "combined-preview",
             blackPercentile = 0.5,
-            whitePercentile = 0.9999,
-            asinhStrength = 4.0
+            whitePercentile = 0.9997,
+            asinhStrength = 8.0
         }, RollingDependency),
         Step("ScenePresentation", "ScenePresentationLayer", 70, new
         {

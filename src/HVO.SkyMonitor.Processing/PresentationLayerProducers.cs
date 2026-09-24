@@ -96,7 +96,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v4-plex";
+    public const string SceneProducerVersion = "projected-scene-presentation-v5-plex-star-scale";
     public const string MetadataProducerVersion = "metadata-corner-presentation-v2-plex";
     public const string CloudProducerVersion = "cloud-presentation-v2-plex";
 
@@ -243,7 +243,7 @@ public static class PresentationLayerProducers
             }
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
-            var scale = PresentationFont.FrameScale(width, height, style.LabelScale);
+            var scale = PresentationFont.StarFrameScale(width, height, style.LabelScale);
             using var font = PresentationFont.Create(scale);
             var occupied = new List<SKRect>();
             foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)

@@ -117,6 +117,7 @@ public sealed class PresentationLayerPayloadTests
         Assert.HasCount(2, first.StarAnnotations.Markers);
         Assert.HasCount(1, first.StarAnnotations.TextBlocks);
         Assert.AreEqual("BRIGHT", first.StarAnnotations.TextBlocks[0].Lines[0]);
+        Assert.AreEqual(PresentationFont.StarFrameScale(800, 600), first.StarAnnotations.TextBlocks[0].Scale);
         Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
         Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
     }
@@ -149,10 +150,13 @@ public sealed class PresentationLayerPayloadTests
         var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
 
         Assert.HasCount(5, groups.StarAnnotations.Markers);
+        Assert.HasCount(1, groups.StarAnnotations.TextBlocks);
+        using var starFont = PresentationFont.Create(groups.StarAnnotations.TextBlocks[0].Scale);
+        Assert.AreEqual(14, starFont.Size);
+        Assert.AreEqual(PresentationFont.FrameScale(width, height, 2), groups.CardinalDirections.TextBlocks[0].Scale);
         Assert.HasCount(4, groups.CardinalDirections.TextBlocks);
         foreach (var direction in new[] { "N", "E", "S", "W" })
             Assert.HasCount(1, groups.CardinalDirections.TextBlocks.Where(block => block.Lines[0] == direction));
-        Assert.HasCount(1, groups.StarAnnotations.TextBlocks);
         Assert.AreEqual("CENTER", groups.StarAnnotations.TextBlocks[0].Lines[0]);
         Assert.AreEqual(groups.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
     }

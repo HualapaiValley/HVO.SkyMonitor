@@ -27,6 +27,10 @@ public static class PresentationFont
         Math.Clamp(Math.Max(minimum, (int)Math.Round(Math.Min(width, height) * 0.019 / 5,
             MidpointRounding.AwayFromZero)), 1, 16);
 
+    public static int StarFrameScale(int width, int height, int minimum = 1) =>
+        Math.Clamp(Math.Max(minimum, (int)Math.Round(Math.Min(width, height) * 0.013 / 7,
+            MidpointRounding.AwayFromZero)), 1, 16);
+
     public static int Halo(int scale) => scale > 2 ? Math.Max(1, scale / 4) : 0;
 
     public static SKPath LinePath(SKFont font, string text, float x, float y)
