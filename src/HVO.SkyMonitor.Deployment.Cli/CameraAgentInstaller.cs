@@ -1197,20 +1197,3 @@ internal sealed class CameraAgentInstaller
         return new UriBuilder("http", host, request.Port).Uri;
     }
 }
-
-internal sealed class InstallerException : Exception
-{
-    public InstallerException()
-    {
-    }
-
-    public InstallerException(string message)
-        : base(message)
-    {
-    }
-
-    public InstallerException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}

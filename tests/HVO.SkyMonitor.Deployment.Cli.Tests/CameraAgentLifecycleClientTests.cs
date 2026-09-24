@@ -471,13 +471,19 @@ public sealed class CameraAgentLifecycleClientTests
             Assert.AreEqual(2L, document.RootElement.GetProperty("expectedVersion").GetInt64());
             StringAssert.Contains(document.RootElement.GetProperty("reason").GetString(), operationId.ToString("D"), StringComparison.Ordinal);
             if (sequence == 1) throw new HttpRequestException("lost acknowledgement");
-            return new HttpResponseMessage(HttpStatusCode.OK);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"state\":1,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}", Encoding.UTF8, "application/json")
+            };
         });
         var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
         await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(operationId, commandId, 2, "lifecycle-token", CancellationToken.None));
-        await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+        var receipt = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
             .ResumeRecoveryAsync(operationId, commandId, 2, "lifecycle-token", CancellationToken.None);
 
+        Assert.IsTrue(receipt.Replayed);
+        Assert.AreEqual("Running", receipt.State);
+        Assert.AreEqual(3L, receipt.Version);
         Assert.AreEqual(2, payloads.Count);
         Assert.AreEqual(payloads[0], payloads[1]);
     }
@@ -522,6 +528,24 @@ public sealed class CameraAgentLifecycleClientTests
         await Assert.ThrowsExactlyAsync<InstallerException>(() => new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
             .ReadContinuityAsync("lifecycle-token", CancellationToken.None));
         Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow("{}")]
+    [DataRow("{invalid token=must-not-leak")]
+    [DataRow("{\"state\":3,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":5,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":3,\"changed\":false,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:01Z\",\"completedUtc\":\"2026-09-24T00:00:00Z\"}")]
+    public async Task ResumeRecovery_RejectsInvalidExecutedReceiptWithoutSensitiveDiagnostics(string json)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        }));
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ResumeRecoveryAsync(Guid.NewGuid(), Guid.NewGuid(), 2, "lifecycle-token", CancellationToken.None));
+        Assert.IsFalse(exception.ToString().Contains("must-not-leak", StringComparison.Ordinal));
     }
 
     private static async Task<HttpResponseMessage> CommandAsync(

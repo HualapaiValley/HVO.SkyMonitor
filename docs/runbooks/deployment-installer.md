@@ -791,7 +791,8 @@ upgrades only, not signed-release selectors, rollback, or catalog operations.
 The original manifest/result and operation snapshots must agree exactly, including
 the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
 hash, rendered original Compose hash, daemon identity, root ownership/inode checks,
-container image/user/mount/port/security checks, original image schema boundaries,
+container image/user/mount/port/security checks, protected schema-1 bound application
+identity, original image schema boundaries and candidate request/platform correlation,
 protected installation identity/owner verification, and both retained tokens remain
 required. Admission must match the recorded paused version and capture sequence.
 Changed state, candidate-running, absent/unhealthy original runtime, foreign admission,
@@ -805,12 +806,20 @@ cold-start or candidate-to-old-image restoration procedure.
 
 Before resuming admission the journal retains a command UUID. Retries reuse that
 UUID and the original pause version, so a lost acknowledgement cannot create a new
-command or override a later operator pause. Success reports
+command or override a later operator pause. The authenticated executed receipt is
+validated separately from current admission: if a lost acknowledgement was followed
+by an operator pause, replay proves the earlier Running result while leaving that
+newer pause intact, including after restart. This settles recovery instead of leaving
+an interrupted operation permanently blocking further lifecycle work. Normal success reports
 `restored-previous-healthy-admission-resumed`; the original upgrade remains terminal
 `Failed` / `Restored`, with `mutationStarted=false` and the original failure retained.
 Older interrupted journals lacking a failure detail explicitly record that it was
-not retained, rather than inventing a cause. Repeating a successful restore-only
-request verifies the result without another resume command. It never reports the
+not retained, rather than inventing a cause. Superseded success reports
+`restored-previous-healthy-resume-superseded-current-admission-preserved`; the journal
+retains the executed resume receipt separately from the current post-recovery boundary.
+Both are validated on read, including nonnegative counters, initialization, versions,
+capture sequence and receipt timing. Repeating a successful restore-only request
+verifies the current result without another resume command. It never reports the
 upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 
 Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains

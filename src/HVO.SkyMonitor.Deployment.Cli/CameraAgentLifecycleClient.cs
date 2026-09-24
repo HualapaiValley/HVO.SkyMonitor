@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -11,7 +12,7 @@ internal interface ICameraAgentLifecycleClient
     Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken);
     Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken);
-    Task ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
+    Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
 }
 
 internal sealed record LifecycleContinuity(
@@ -110,15 +111,15 @@ internal sealed class CameraAgentLifecycleClient(
         }
     }
 
-    public async Task ResumeRecoveryAsync(
+    public async Task<LifecycleResumeReceipt> ResumeRecoveryAsync(
         Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)
     {
         using var client = CreateClient(verificationToken);
-        await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
-            cancellationToken, commandId, expectedVersion).ConfigureAwait(false);
+        return (await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+            cancellationToken, commandId, expectedVersion).ConfigureAwait(false))!;
     }
 
-    private async Task PostCommandAsync(
+    private async Task<LifecycleResumeReceipt?> PostCommandAsync(
         HttpClient client,
         string action,
         Guid operationId,
@@ -152,7 +153,22 @@ internal sealed class CameraAgentLifecycleClient(
                     cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
-                    return;
+                    if (retainedCommandId is null) return null;
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+                    var root = document.RootElement;
+                    var state = root.GetProperty("state");
+                    // The shipped endpoint uses the numeric CaptureAdmissionState enum (Running=1).
+                    // Accept its named representation too when a host configures string enum serialization.
+                    if (!(state.ValueKind == JsonValueKind.Number && state.GetInt32() == 1 ||
+                          state.ValueKind == JsonValueKind.String && state.GetString() == "Running"))
+                        throw new InstallerException("CameraAgent recovery receipt does not prove a successful resume.");
+                    var receipt = new LifecycleResumeReceipt("Running", root.GetProperty("version").GetInt64(),
+                        root.GetProperty("changed").GetBoolean(), root.GetProperty("replayed").GetBoolean(),
+                        root.GetProperty("requestedUtc").GetDateTimeOffset(), root.GetProperty("completedUtc").GetDateTimeOffset());
+                    if (!receipt.Changed || receipt.Version != checked(expectedVersion!.Value + 1) ||
+                        receipt.RequestedUtc == default || receipt.CompletedUtc < receipt.RequestedUtc)
+                        throw new InstallerException("CameraAgent recovery receipt does not match the retained pause version.");
+                    return receipt;
                 }
                 if (!IsTransientCommandStatus(response.StatusCode))
                 {
@@ -174,6 +190,10 @@ internal sealed class CameraAgentLifecycleClient(
         {
             throw new InstallerException(
                 $"CameraAgent did not accept the lifecycle {action} command: {Redaction.SafeDiagnostic(exception.Message)}", exception);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
+        {
+            throw new InstallerException("CameraAgent returned an invalid recovery command receipt.");
         }
     }
 
