@@ -200,19 +200,38 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.IsFalse(serialized.Contains("options", StringComparison.OrdinalIgnoreCase));
     }
 
+    [TestMethod]
+    [DataRow(CameraAgentLayeredPresentationStatus.NotRetained, true)]
+    [DataRow(CameraAgentLayeredPresentationStatus.Unavailable, false)]
+    [DataRow(CameraAgentLayeredPresentationStatus.Malformed, false)]
+    public async Task OnlyConfirmedManifestAbsenceMapsToNotFoundAsync(CameraAgentLayeredPresentationStatus status, bool absent)
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>();
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var layers = new Mock<ICameraAgentLayeredPresentationService>();
+        layers.Setup(value => value.GetAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentLayeredPresentationResult(status, Reason: "Retained layer status."));
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, layers: layers.Object);
+        var result = await service.GetLayeredPresentationAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(absent ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable, result.Kind);
+    }
+
     private static CameraAgentOperatorUiService CreateService(
         AuthenticationStateProvider authentication,
         IAuthorizationService authorization,
-        OutboxOperationsTokenService? tokenService = null) => new(
+        OutboxOperationsTokenService? tokenService = null,
+        ICameraAgentLayeredPresentationService? layers = null) => new(
             authentication,
             authorization,
-            null!,
-            null!,
-            null!,
-            null!,
-            null!,
-            null!,
-            null!,
+            operationsProvider: null!,
+            gallery: null!,
+            archive: null!,
+            observingDays: null!,
+            capturePresentation: null!,
+            currentImagePresentation: null!,
+            layeredPresentations: layers!,
             null!,
             null!,
             null!,

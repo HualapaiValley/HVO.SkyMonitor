@@ -32,6 +32,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private bool _layerImageFailed;
     private int _layerPreviewAttempt;
     private bool _layerLoading;
+    private bool _layersNotRetained;
     private bool _accessDenied;
     private long _layerGeneration;
     private long _bindGeneration;
@@ -152,6 +153,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             {
                 if (result.IsSuccess && result.Value is not null)
                 {
+                    var wasLayered = ShowLayeredHero;
+                    var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
                     _presentation = result.Value.Presentation;
                     _facts = result.Value.Facts;
                     if (_runCaptureId != displayCaptureId)
@@ -174,6 +177,14 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     }
                     _factsUnavailableReason = result.Value.FactsUnavailableReason;
                     _selectedStage = ResolveSelection(result.Value.Presentation, _selectedStage);
+                    if (_layers is not null && (wasLayered != ShowLayeredHero || previousBaseUrl != ProcessedBaseSlot?.PreviewUrl))
+                    {
+                        // Verification belongs to a particular rendered base. A same-capture outage destroys
+                        // that DOM; its replacement must reapply the retained checkbox selection before use.
+                        _layerInteractive = false;
+                        _bindGeneration++;
+                        _bindLayers = true;
+                    }
                     if (_selectedStage is null || ShowLayeredHero || ProcessedBaseFallback)
                     {
                         _viewerOpen = false;
@@ -268,6 +279,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _layerImageFailed = false;
         _layerPreviewAttempt = 0;
         _layerLoading = false;
+        _layersNotRetained = false;
         _saving = false;
         _bindLayers = false;
         if (captureId is { } id)
@@ -304,6 +316,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 else if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
                 {
                     _layers = value;
+                    _layersNotRetained = false;
                     _layerMessage = null;
                     _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
                         .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
@@ -313,6 +326,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 }
                 else
                 {
+                    _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
                     _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
                     StateHasChanged();
                 }
@@ -350,17 +364,59 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
         _layers is not null &&
         _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
-        SelectedSlot is not null;
+        LayerBaseMatches && SelectedSlot is not null;
 
-    private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated &&
-        _presentation?.StructuredLayersAvailable == true;
+    private bool LayerBaseMatches => _layers is not null &&
+        ProcessedBaseSlot is { DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative, DisplayArtifactId: { } displayId } &&
+        displayId == _layers.BaseArtifactId;
 
+    private string? LayerMessage => _layers is not null && !LayerBaseMatches
+        ? "The retained layer manifest base does not match the resolved Combined display derivative. Showing the unannotated Combined base without layers."
+        : _layerMessage;
+
+    // Unknown or failed layer reads are not proof that a capture has no retained layers.
+    private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained;
+
+    private string? LayerPreviewUrl => ProcessedBaseSlot?.PreviewUrl is { } url
+        ? Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(url.OriginalString, "attempt",
+            _layerPreviewAttempt.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        : null;
+
+    // The Processed hero and its overlays-off/pending fallback share the Combined slot's display artifact:
+    // the lineage-matched retained derivative when one exists, never a generic Preview or the annotated
+    // artifact. The slot's ArtifactId stays the linear Combined frame for identity and download.
     private CameraAgentPresentationSlot? ProcessedBaseSlot => _presentation?.Stages.SingleOrDefault(slot =>
         slot.Stage == CameraAgentPresentationStage.Combined &&
         slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
 
-    private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback && !ShowLayeredHero
+    private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback
         ? ProcessedBaseSlot : SelectedSlot;
+
+    private string? DisplayContentUrl => DisplaySlot?.ArtifactId is { } artifactId
+        ? FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content")
+        : null;
+
+    private string DisplayBasisLabel => DisplaySlot switch
+    {
+        null => "Unavailable",
+        { DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative } => "Retained display derivative",
+        { DisplayOperation: CameraAgentPreviewOperation.EncodeOnly } => "Encoding only; no display stretch",
+        { DisplayOperation: CameraAgentPreviewOperation.EncodedPassthrough } => "Retained encoded bytes; no display stretch",
+        { DisplayOperation: CameraAgentPreviewOperation.PerImageStretch, DisplayReferenceId: not null } => "Capture-bound per-image normalization",
+        { DisplayOperation: CameraAgentPreviewOperation.PerImageStretch } => "Per-image normalization",
+        _ => "Preview operation unavailable"
+    };
+
+    private string DisplayBasisPhrase => DisplaySlot switch
+    {
+        null => "unavailable",
+        { DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative } => "retained display derivative",
+        { DisplayOperation: CameraAgentPreviewOperation.EncodeOnly } => "encoding only; no display stretch",
+        { DisplayOperation: CameraAgentPreviewOperation.EncodedPassthrough } => "retained encoded bytes; no display stretch",
+        { DisplayOperation: CameraAgentPreviewOperation.PerImageStretch, DisplayReferenceId: not null } => "capture-bound per-image normalization",
+        { DisplayOperation: CameraAgentPreviewOperation.PerImageStretch } => "per-image normalization",
+        _ => "preview operation unavailable"
+    };
 
     private string? SavedArtifactUrl => _savedArtifactUrl;
 
@@ -410,8 +466,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private static string StageCaption(CameraAgentPresentationStage stage) => stage switch
     {
         CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Presentation layers",
-        CameraAgentPresentationStage.Combined => "Causal arithmetic mean",
-        CameraAgentPresentationStage.Calibrated => "Single capture",
+        CameraAgentPresentationStage.Combined => "Arithmetic mean, not a sum",
+        CameraAgentPresentationStage.Calibrated => "Single capture, own pixels",
         _ => "Immutable source"
     };
 
@@ -631,15 +687,15 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 : _presentation.System.Message;
 
     private string StageStatus => ShowLayeredHero && _layerInteractive
-        ? "Showing processed base image with selected presentation overlays; not the separate processed artifact."
+        ? "Showing processed base image with selected presentation overlays; the base is the retained Combined display derivative, not the separate processed artifact."
         : ShowLayeredHero
-        ? "Showing unannotated Combined base while processed layers are pending verification. Layer toggles do not affect this image yet."
+        ? "Showing the unannotated Combined display base while processed layers are pending verification. Layer toggles do not affect this image yet."
         : ProcessedBaseFallback && ProcessedBaseSlot is null
         ? "Processed layers are pending or unavailable; the unannotated Combined base is unavailable. No processed image is displayed."
         : ProcessedBaseFallback
-        ? $"Showing unannotated Combined base; processed layers are {(_layerLoading ? "pending" : "unavailable")}. Layer toggles do not affect this image."
+        ? $"Showing unannotated Combined base ({DisplayBasisPhrase}); processed layers are {(_layerLoading ? "pending" : "unavailable")}. Layer toggles do not affect this image."
         : SelectedSlot is { } selected
-        ? $"Showing {selected.Label}."
+        ? $"Showing {selected.Label} ({DisplayBasisPhrase})."
         : "No image stage is currently displayable.";
 
     private int UnavailableStageCount => _presentation?.Stages.Count(static slot =>

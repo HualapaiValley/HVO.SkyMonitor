@@ -29,6 +29,7 @@ internal static class CameraAgentArtifactEndpoints
             .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
         artifacts.MapMethods("/{artifactId:guid}/preview", [HttpMethods.Get, HttpMethods.Head], WritePreviewAsync)
             .WithName("GetCameraAgentArtifactPreview")
+            .ProducesProblem(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status200OK, contentType: "image/jpeg")
             .Produces(StatusCodes.Status304NotModified)
             .ProducesProblem(StatusCodes.Status404NotFound)
@@ -139,7 +140,17 @@ internal static class CameraAgentArtifactEndpoints
         long outputBytes = 0;
         try
         {
-            var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken).ConfigureAwait(false);
+            Guid? displayReference = null;
+            if (context.Request.Query.TryGetValue("displayReference", out var values))
+            {
+                if (values.Count != 1 || !Guid.TryParseExact(values[0], "D", out var referenceId) || referenceId == Guid.Empty)
+                {
+                    await WriteFailureAsync(context, CameraAgentArtifactReadStatus.InvalidRequest, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                displayReference = referenceId;
+            }
+            var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken, displayReference).ConfigureAwait(false);
             if (preview.Status != CameraAgentArtifactReadStatus.Found || preview.ChecksumSha256 is null)
             {
                 outcome = preview.Status switch
@@ -153,10 +164,14 @@ internal static class CameraAgentArtifactEndpoints
                 return;
             }
 
-            var etag = CreateETag(preview.ChecksumSha256);
+            var etag = CreateETag(preview.DisplayPolicyIdentity is { } policyIdentity
+                ? $"{preview.ChecksumSha256}-{policyIdentity}" : preview.ChecksumSha256);
             SetPrivateHeaders(context.Response, immutable: false);
             context.Response.Headers.ETag = etag;
             context.Response.Headers[ChecksumHeader] = preview.ChecksumSha256;
+            context.Response.Headers["X-Display-Operation"] = preview.Operation.ToString();
+            if (preview.DisplayPolicyIdentity is { } identity)
+                context.Response.Headers["X-Display-Policy"] = identity;
             context.Response.Headers.XContentTypeOptions = "nosniff";
             if (MatchesIfNoneMatch(context.Request, etag))
             {
@@ -190,6 +205,7 @@ internal static class CameraAgentArtifactEndpoints
     {
         var (statusCode, title) = status switch
         {
+            CameraAgentArtifactReadStatus.InvalidRequest => (StatusCodes.Status400BadRequest, "Artifact preview request is invalid."),
             CameraAgentArtifactReadStatus.NotFound => (StatusCodes.Status404NotFound, "Artifact was not found."),
             CameraAgentArtifactReadStatus.Conflict => (StatusCodes.Status409Conflict, "Artifact content is unavailable."),
             CameraAgentArtifactReadStatus.Gone => (StatusCodes.Status410Gone, "Artifact content has expired."),

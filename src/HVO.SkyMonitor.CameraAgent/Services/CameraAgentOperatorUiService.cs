@@ -882,7 +882,7 @@ internal sealed class CameraAgentOperatorUiService(
             return result.Status == CameraAgentLayeredPresentationStatus.Found && result.Presentation is { } presentation
                 ? OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)
                 : OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
-                    result.Status == CameraAgentLayeredPresentationStatus.Unavailable
+                    result.Status == CameraAgentLayeredPresentationStatus.NotRetained
                         ? OperatorUiResultKind.NotFound
                         : OperatorUiResultKind.Unavailable,
                     result.Reason ?? "Structured layers are unavailable for this capture.");

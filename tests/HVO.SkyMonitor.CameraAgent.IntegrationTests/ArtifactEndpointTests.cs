@@ -295,7 +295,8 @@ public sealed class ArtifactEndpointTests
 
         public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
             Guid artifactId,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Guid? displayReference = null)
             => ValueTask.FromResult(artifactId == ArtifactId
                 ? new CameraAgentArtifactPreviewResult(
                     CameraAgentArtifactReadStatus.Found,
