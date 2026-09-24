@@ -1,0 +1,9 @@
+<button type="button" class="navigation-toggle" aria-controls="@Id" aria-expanded="@_expanded.ToString().ToLowerInvariant()" @ref="_toggle" @onclick="OpenAsync">
+    @ToggleContent
+</button>
+<dialog open id="@Id" class="navigation-panel" aria-label="@Label" @ref="_panel">
+    <button type="button" class="navigation-close" aria-label="@($"Close {Label}")" @onclick="CloseAsync">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+    </button>
+    @ChildContent
+</dialog>

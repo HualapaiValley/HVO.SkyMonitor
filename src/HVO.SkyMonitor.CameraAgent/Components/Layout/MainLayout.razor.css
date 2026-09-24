@@ -33,9 +33,8 @@
     padding: 2rem clamp(1rem, 3vw, 2.5rem) 0;
 }
 
-/* The pipeline run uses the prototype's full-height rail and graph canvas, not
-   the centered/padded content frame used by ordinary operator pages. */
-.content-container:has(.execution-page) {
+/* These page roots already own their gutters; layouts must not add a second set. */
+.content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page) {
     width: 100%;
     max-width: none;
     padding: 0;

@@ -1,18 +1,19 @@
 :root[data-theme="hvo-dark"] {
-    --hvo-font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --hvo-font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --bs-font-monospace: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     --hvo-body-bg: #05070d;
-    --hvo-body-color: #f8fafc;
-    --hvo-accent: #3b82f6;
+    --hvo-body-color: #f7f9fc;
+    --hvo-accent: #58a6ff;
+    /* Text-bearing actions need 4.5:1; the lighter prototype blue remains decorative. */
     --hvo-accent-strong: #2563eb;
     --hvo-accent-stronger: #1d4ed8;
-    --hvo-accent-soft: rgba(59, 130, 246, 0.2);
+    --hvo-accent-soft: rgba(47, 129, 247, 0.16);
     --hvo-focus-ring-inner: rgba(59, 130, 246, 0.5);
     --hvo-focus-ring-outer: rgba(56, 189, 248, 0.35);
-    --hvo-border-muted: rgba(148, 163, 184, 0.18);
-    --hvo-border-strong: rgba(148, 163, 184, 0.2);
-    --hvo-muted: rgba(226, 232, 240, 0.75);
-    --hvo-muted-strong: rgba(226, 232, 240, 0.85);
+    --hvo-border-muted: #253244;
+    --hvo-border-strong: #3a4a60;
+    --hvo-muted: #98a7bb;
+    --hvo-muted-strong: #c1cbda;
     --hvo-muted-weak: #aeb9c8;
     --hvo-success-bg: rgba(34, 197, 94, 0.25);
     --hvo-success-fg: #bbf7d0;
@@ -21,15 +22,15 @@
     --hvo-warning-bg: rgba(250, 204, 21, 0.25);
     --hvo-warning-fg: #fef9c3;
     --hvo-info-bg: rgba(56, 189, 248, 0.25);
-    --hvo-info-fg: #e0f2fe;
-    --hvo-card-bg: linear-gradient(145deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.65));
+    --hvo-info-fg: #58a6ff;
+    --hvo-card-bg: #0d1420;
     --hvo-card-glass: rgba(30, 41, 59, 0.6);
     --hvo-panel-shadow: 0 12px 35px rgba(15, 23, 42, 0.45);
-    --hvo-footer-bg: rgba(15, 23, 42, 0.92);
+    --hvo-footer-bg: #0a111b;
     --hvo-navbar-bg: rgba(2, 6, 23, 0.85);
-    --hvo-surface: rgba(15, 23, 42, 0.92);
-    --hvo-surface-elevated: rgba(15, 23, 42, 0.75);
-    --hvo-surface-hover: rgba(59, 130, 246, 0.08);
+    --hvo-surface: #0d1420;
+    --hvo-surface-elevated: #111c2a;
+    --hvo-surface-hover: #142235;
     --hvo-border-stronger: rgba(148, 163, 184, 0.28);
     --hvo-nav-badge-bg: rgba(148, 163, 184, 0.16);
     --hvo-nav-badge-bg-hover: rgba(148, 163, 184, 0.25);
@@ -51,15 +52,15 @@
     --hvo-tab-color: rgba(248, 250, 252, 0.92);
     --hvo-tab-color-muted: rgba(148, 163, 184, 0.78);
     --hvo-tab-indicator: var(--hvo-accent);
-    --hvo-danger-strong: #f87171;
-    --hvo-success-strong: #34d399;
-    --hvo-warning-strong: #facc15;
-    --hvo-info-strong: #0ea5e9;
+    --hvo-danger-strong: #f85149;
+    --hvo-success-strong: #3fb950;
+    --hvo-warning-strong: #d29922;
+    --hvo-info-strong: #58a6ff;
     --history-chart-color: #60a5fa;
     --hvo-action-btn-font-size: 0.82rem;
     --hvo-action-btn-padding-y: 0.44rem;
     --hvo-action-btn-padding-x: 1rem;
-    --hvo-action-btn-radius: 0.75rem;
+    --hvo-action-btn-radius: 0.45rem;
     --hvo-action-btn-gap: 0.45rem;
 }
 
@@ -361,7 +362,7 @@ body[data-theme="hvo-dark"] .app-frame {
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-columns: 100%;
     align-content: stretch;
-    background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 55%), var(--hvo-body-bg);
+    background: radial-gradient(circle at 78% 8%, rgba(38, 99, 161, .09), transparent 28rem), var(--hvo-body-bg);
 }
 
 body[data-theme="hvo-dark"] .app-frame > header,
@@ -610,15 +611,13 @@ body[data-theme="hvo-dark"] .footer-chip {
     align-items: center;
     gap: 0.4rem;
     padding: calc(var(--hvo-nav-badge-padding-y) * 0.95) calc(var(--hvo-nav-badge-padding-x) * 1.05);
-    border-radius: 999px;
+    border-radius: 0;
     font-size: var(--hvo-nav-badge-font-size);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    background: var(--hvo-nav-badge-bg);
-    color: var(--hvo-nav-badge-color);
-    border: 1px solid var(--hvo-nav-badge-border);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    letter-spacing: normal;
+    background: transparent;
+    color: var(--hvo-muted);
+    border: 0;
     transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     white-space: nowrap;
 }
@@ -934,7 +933,8 @@ body[data-theme="hvo-dark"] .diagnostics-page {
     color: var(--hvo-body-color);
 }
 
-body[data-theme="hvo-dark"] .page-heading {
+body[data-theme="hvo-dark"] :is(h1, h2, h3).page-heading,
+body[data-theme="hvo-dark"] .page-heading > h1 {
     font-size: clamp(2rem, 2.4vw + 1rem, 2.6rem);
     font-weight: 600;
     letter-spacing: 0.01em;

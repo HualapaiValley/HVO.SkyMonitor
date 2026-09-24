@@ -596,31 +596,28 @@ public sealed class CurrentSkyPageTests
         var service = Configure(context);
         var presentation = WithStructuredBase() with { StructuredLayersAvailable = advertisedLayers };
         var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
-        // Complete on the renderer below so the terminal read and its finally-render are observed together.
-        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>();
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
         service.PresentationHandler = (_, _) => new(pending.Task);
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement(".capture-image img");
         AssertBaseOnly(cut, "pending");
-        await cut.InvokeAsync(() => pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(terminalKind,
-            terminalKind == OperatorUiResultKind.NotFound ? "Structured layers were not retained." : "Retained layer read failed."))).ConfigureAwait(false);
-        await cut.WaitForAssertionAsync(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
-            cut.Find(".capture-image img").GetAttribute("src")), TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
-        if (showsAnnotated)
+        pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(terminalKind,
+            terminalKind == OperatorUiResultKind.NotFound ? "Structured layers were not retained." : "Retained layer read failed."));
+        await cut.WaitForAssertionAsync(() =>
         {
-            StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, annotated.ArtifactId!.Value.ToString("D"), StringComparison.Ordinal);
-            Assert.AreEqual($"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
-            StringAssert.Contains(cut.Find(".stage-status").TextContent, "retained encoded bytes; no display stretch", StringComparison.Ordinal);
-        }
-        else
-        {
-            // Observe the asynchronous finally-render without coupling the assertion to bUnit's render-event subscription.
-            for (var attempt = 0; attempt < 500 && cut.Find(".stage-status").TextContent.Contains("layers are pending", StringComparison.Ordinal); attempt++)
-                await Task.Delay(10).ConfigureAwait(false);
-            AssertBaseOnly(cut, "unavailable");
-        }
+            Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
+                cut.Find(".capture-image img").GetAttribute("src"));
+            Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
+            if (showsAnnotated)
+            {
+                StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, annotated.ArtifactId!.Value.ToString("D"), StringComparison.Ordinal);
+                Assert.AreEqual($"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
+                StringAssert.Contains(cut.Find(".stage-status").TextContent, "retained encoded bytes; no display stretch", StringComparison.Ordinal);
+            }
+            else
+                AssertBaseOnly(cut, "unavailable");
+        }, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         await cut.WaitForAssertionAsync(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
             cut.Find(".capture-image img").GetAttribute("src")), TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -651,7 +648,7 @@ public sealed class CurrentSkyPageTests
             Stages = source.Stages.Select(slot => slot.Stage == combined.Stage ? combined : slot).ToArray()
         };
         var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
-        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>();
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
         service.PresentationHandler = (_, _) => new(pending.Task);
         var cut = context.Render<CurrentSkyPage>();
@@ -662,11 +659,12 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".stage-status").TextContent, "processed layers are pending", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".stage-display-policy").TextContent, "global default", StringComparison.Ordinal);
         Assert.AreEqual($"/api/v1/operations/artifacts/{combined.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
-        await cut.InvokeAsync(() => pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+        pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
             notRetained ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable,
-            notRetained ? "No retained layers." : "Retained layer base is unavailable."))).ConfigureAwait(false);
-        for (var attempt = 0; attempt < 500 && cut.Find(".stage-status").TextContent.Contains("layers are pending", StringComparison.Ordinal); attempt++)
-            await Task.Delay(10).ConfigureAwait(false);
+            notRetained ? "No retained layers." : "Retained layer base is unavailable."));
+        await cut.WaitForAssertionAsync(() => StringAssert.Contains(cut.Find(".stage-status").TextContent,
+            notRetained ? "retained encoded bytes" : "processed layers are unavailable", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
         var displayed = notRetained ? annotated : combined;
         Assert.AreEqual(displayed.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"));

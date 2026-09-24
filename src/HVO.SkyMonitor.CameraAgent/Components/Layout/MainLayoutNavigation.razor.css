@@ -9,13 +9,13 @@
 
 .shell-header__bar {
     display: grid;
-    width: min(100%, 108rem);
+    width: 100%;
     min-height: 4rem;
-    grid-template-columns: minmax(13rem, auto) minmax(0, 1fr);
+    grid-template-columns: 19rem minmax(0, 1fr);
     align-items: center;
-    gap: 1.5rem;
+    gap: 0;
     margin-inline: auto;
-    padding-inline: clamp(1rem, 3vw, 2.5rem);
+    padding-inline: 1rem;
 }
 
 .shell-brand {
@@ -24,6 +24,7 @@
     gap: 0.65rem;
     color: var(--hvo-body-color);
     text-decoration: none;
+    line-height: normal;
 }
 
 .shell-brand:hover,
@@ -41,7 +42,7 @@
 }
 
 .shell-brand__mark svg,
-.shell-menu__toggle svg,
+.shell-menu ::deep .navigation-toggle svg,
 .nav-avatar-button svg {
     fill: none;
     stroke: currentColor;
@@ -69,7 +70,7 @@
 
 .shell-brand__copy small {
     margin-top: 0.12rem;
-    color: var(--hvo-muted-weak);
+    color: var(--hvo-muted);
     font-size: 0.66rem;
 }
 
@@ -106,9 +107,9 @@
     color: var(--hvo-muted-strong);
     background: transparent;
     box-shadow: none;
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     font-weight: 600;
-    letter-spacing: 0.01em;
+    letter-spacing: normal;
     text-decoration: none;
     text-transform: none;
     transition: color 0.15s ease;
@@ -194,6 +195,7 @@
 
 .nav-avatar {
     display: inline-flex;
+    flex: 0 0 auto;
     width: 1.9rem;
     height: 1.9rem;
     align-items: center;
@@ -209,6 +211,7 @@
     display: flex;
     max-width: 13rem;
     min-width: 0;
+    flex: 1;
     flex-direction: column;
     line-height: 1.1;
 }
@@ -289,10 +292,17 @@
     text-decoration: none;
 }
 
-@media (max-width: 767.98px) {
+@media (min-width: 781px) and (max-width: 1100px) {
+    .shell-header__bar { grid-template-columns: 16.5rem minmax(0, 1fr); }
+    .shell-primary ::deep .nav-badge { padding-inline: .55rem; }
+    .shell-primary ::deep .nav-badge.active::after { right: .55rem; left: .55rem; }
+    .nav-account-details { display: none; }
+}
+
+@media (max-width: 780px) {
     .shell-header__bar {
         grid-template-columns: minmax(0, 1fr) auto;
-        min-height: 3.75rem;
+        min-height: calc(4rem - 1px);
         gap: 0.75rem;
     }
 
@@ -300,7 +310,7 @@
         position: relative;
     }
 
-    .shell-menu__toggle {
+    .shell-menu ::deep .navigation-toggle {
         display: inline-flex;
         align-items: center;
         gap: 0.45rem;
@@ -309,28 +319,32 @@
         font-weight: 700;
     }
 
-    .shell-menu__toggle svg {
+    .shell-menu ::deep .navigation-toggle svg {
         width: 1rem;
         height: 1rem;
     }
 
+    .shell-menu ::deep .navigation-panel:not(:modal) { display: none; }
+
+    .shell-menu ::deep .navigation-panel:modal {
+        position: fixed;
+        inset: 4.35rem .65rem auto auto;
+        width: min(15rem, calc(100vw - 1.3rem));
+        max-height: calc(100dvh - 5rem);
+        overflow-y: auto;
+        padding: .35rem;
+        border: 1px solid var(--hvo-border-muted);
+        border-radius: .5rem;
+        background: #0a111b;
+        box-shadow: 0 18px 38px rgba(0, 0, 0, .45);
+    }
+
     .shell-menu__panel {
-        position: absolute;
-        top: calc(100% + 0.45rem);
-        right: 0;
-        display: none;
-        width: min(18rem, calc(100vw - 2rem));
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
         align-items: stretch;
         gap: 0.5rem;
         padding: 0.45rem;
-        border: 1px solid var(--hvo-border-stronger);
-        border-radius: 0.6rem;
-        background: #0a111b;
-        box-shadow: 0 18px 38px rgba(0, 0, 0, 0.45);
-    }
-
-    .shell-menu__panel--open {
-        display: grid;
     }
 
     .shell-primary {
@@ -360,6 +374,7 @@
     .nav-avatar-button,
     .nav-login-pill {
         width: 100%;
+        min-width: 0;
     }
 
     .nav-account-menu {
