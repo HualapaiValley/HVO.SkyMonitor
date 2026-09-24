@@ -767,6 +767,21 @@ Compose, image, and identity records before capture resumes. Noncurrent manifest
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
+The protected installation-verification GET used by both the pre-mutation owner
+state read and full installation identity verification has one finite **120-second
+request deadline**, including response-body receipt. Each call makes one request;
+this is not an unlimited retry or a change to the separate health/startup, login,
+or drain limits. An elapsed request deadline reports
+`CameraAgent installation verification request timed out.` without transport
+details or credentials. Caller cancellation remains cancellation, not a timeout.
+Before mutation, a timeout follows the existing refusal policy without pause,
+stop, backup, or image replacement; caller cancellation leaves an unmutated
+operation resumable. Do not manually repair the journal or reset the instance.
+Issue [#1041](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041) records
+an old-image response of about 35 seconds, beyond the former 15-second client
+limit; this CLI compatibility allowance does not fix or attribute the endpoint's
+underlying repeated work.
+
 Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture
 workers; it does not depend on the camera capture worker reaching its loop. The
