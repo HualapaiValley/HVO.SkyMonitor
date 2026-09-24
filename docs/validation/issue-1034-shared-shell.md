@@ -3,7 +3,9 @@
 The initial local candidate below was reviewed with REQUEST CHANGES. See
 [Correction Evidence](#correction-evidence) for F1-F4 dispositions and new pixels.
 The operator subsequently authorized a draft PR only. Independent correction
-review is pending; no ready transition, merge, or live deployment is authorized.
+review approved F1-F4 with one evidence nit; see [Evidence Recapture](#evidence-recapture).
+Narrow evidence review and base synchronization remain pending. No ready
+transition, merge, or live deployment is authorized.
 
 ## Source And Isolation
 
@@ -173,8 +175,8 @@ not altered contract labels or a bypass.
 Unaffected integration, script and package results are retained across the
 later shell-only CSS/JS corrections; focused/browser checks cover those deltas.
 The selected lane's protected coverage thresholds and protected CI have not run.
-No independent review has occurred. These remain required before advancing the
-local candidate through the main owner's PR lifecycle.
+At that initial checkpoint no independent review had occurred. The later
+correction and evidence-recapture sections record the subsequent review state.
 
 ## Correction Evidence
 
@@ -187,16 +189,17 @@ update is documentation-only. The full initial review range was
 The main owner relayed the complete supplied review summary, REQUEST CHANGES
 with four P2 findings, in
 [issue comment 5813156146](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1034#issuecomment-5813156146).
-The delegate was not supplied the independent execution identity, provider,
-model or reasoning effort; those values remain explicitly unknown, not inferred
-from main's forwarding identity. Main must attach that provenance before claiming
-review convergence. The retained local summary is
+At that checkpoint the delegate was not supplied the independent execution
+identity, provider, model or reasoning effort; those values were not inferred
+from main's forwarding identity. The subsequent correction-review provenance
+supplied by main is recorded below. The retained local initial summary is
 `/tmp/opencode/1034-shell-evidence/initial-review-441cf57a.md`.
 
 ### Finding Dispositions
 
-These are implementation dispositions, not independent verification of the fixes.
-All four findings must be individually verified by the correction reviewer.
+These were implementation dispositions at the correction checkpoint. The
+subsequent independent review individually verified all four fixes, as recorded
+under [Evidence Recapture](#evidence-recapture).
 
 1. **F1, P2: delayed import/initialization can outlive disposal. Corrected.**
    Initialization owns its module and callback reference locally until both
@@ -308,5 +311,90 @@ initially sampled before interactive rendering; it now waits for the visible
 subnav. Neither fix weakens the assertion. Category discovery exceeded the
 120-second tool limit while gates competed for CPU, then passed with a larger
 limit. Initial package/architecture evidence is retained because those boundaries
-are unchanged. Independent correction review, protected coverage/CI, and final
-base synchronization remain pending. The PR must remain draft.
+are unchanged. At that checkpoint independent correction review, protected
+coverage/CI, and final base synchronization remained pending. The PR remains
+draft; the newer review result and evidence-only follow-up are recorded below.
+
+## Evidence Recapture
+
+Main relayed independent correction review of
+`441cf57ade1ba19b244ffaa149f62dc23c524150..4fbbfdc7d1d2acb98c99797967001bfc2edaa2f9`:
+**APPROVE WITH NIT**, no P1/P2, F1/F2/F3/F4 each **verified corrected**.
+The attributed append-only report is
+[PR comment 5814187813](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1040#issuecomment-5814187813).
+It links the unchanged full supplied initial report in
+[PR comment 5813494314](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1040#issuecomment-5813494314).
+
+Ledger names `1034-initial-b9da049e-441cf57a` and
+`1034-correction-1-441cf57a-4fbbfdc7` identify the retained reports, not invented
+original dispatch IDs. Main supplied the actual correction-review provider/model
+as **cliproxy / gpt-6-astra**, with reasoning effort **unexposed**; **deep/high**
+was requested, not asserted as the actual effort. Reviewer session identifier
+and original request timestamps were not supplied to the delegate. Correction
+rereviews completed: **1/3**.
+
+Independent evidence reported by main: Unit **5/5**, focused browser **1/1**
+covering actual workflows, and isolated Chromium lifecycle/focus/contrast checks.
+Measured contrast was **4.939955:1 normal**, **6.405212:1 hover**. Archive geometry
+was **102.4375px desktop / 80px mobile**, with **10.390625px mobile insets**.
+
+### P3 Disposition
+
+The reviewer found that `correction-operations-menu-390x844.png` was a closed
+page, byte-identical to `correction-route-heading-390x844.png`. Both had SHA-256
+`44f1a476982210fbab9c24203ee9a73d29339753aeebb740ed921f69c70b0fb0`.
+The external capture harness clicked and took the screenshot before the server
+event opened the modal. This was a screenshot-evidence race, not a newly found
+runtime defect.
+
+The harness now explicitly waits for visible `#operations-sections:modal`,
+`aria-expanded="true"`, and visible `.operations-navigation` before capture.
+The same modality/expanded wait guards its site-menu capture. Its bounded
+`--drawer-only` path recaptures only the erroneous artifact, preserves the old
+PNG, updates the corresponding hash, and appends the measured recapture state.
+The existing credential is read privately; bootstrap/password replacement code
+was removed from this recapture harness, and a replacement-password redirect
+fails the run rather than changing credentials.
+
+Recapture command:
+`node /tmp/opencode/1034-shell-evidence/correction-browser.mjs --drawer-only`.
+At **2026-09-24T12:33:59.615Z**, against the unchanged image/source from the prior
+correction, it asserted native modality, expanded state, active focus within the
+drawer, no document overflow at **390x844**, and no page/console errors. Image
+inspection confirmed the visible open rail, close control, active Overview,
+Setup/Capture/Processing groups and disabled issue-number entries, with the
+background dimmed. The new PNG is no longer identical to the closed route page.
+
+| Retained artifact under `/tmp/opencode/1034-shell-evidence/` | SHA-256 |
+| --- | --- |
+| `correction-operations-menu-390x844.png` (corrected open drawer) | `1d8c97b7d4b587929ead40a7f1a0168ed1db712fa9bbf70eb03f7effe7e6529e` |
+| `superseded-operations-menu-44f1a4769822.png` (preserved invalid evidence) | `44f1a476982210fbab9c24203ee9a73d29339753aeebb740ed921f69c70b0fb0` |
+| `correction-route-heading-390x844.png` (unchanged) | `44f1a476982210fbab9c24203ee9a73d29339753aeebb740ed921f69c70b0fb0` |
+| `correction-browser.mjs` (fixed wait and bounded recapture) | `0a5659dedc80e86e91139f9dfe080cfcafcd1ce1f3788487ec2b11e62febae18` |
+| `correction-measurements.json` (updated drawer hash and recapture state) | `e6b2149a5d004ecea25caf59075137017c1e659a368a364d4fa1b7564bce64ae` |
+
+The retained disposable instance `10340000-0924-4000-8000-000000000006` was
+reinstalled with its existing configuration, state, image, catalog and account,
+then preserve-by-default uninstalled after capture. No schema reset, password
+change, primary `:5130` access/mutation, or live deployment occurred. No source,
+runtime, test, inventory or category-total change was needed; this repository
+delta is evidence documentation only. Harness syntax, actual bounded browser
+capture, image/hash verification, documentation audit and diff checks cover it;
+the already-reviewed unchanged long suites are not rerun.
+
+### Current Status
+
+The P3 evidence nit is corrected, pending main's narrow exact-range review of the
+documentation and retained artifact. F1-F4 remain independently verified at the
+prior reviewed head; this evidence-only update is not an additional completed
+rereview. #1039 was still open and held `workflow:finalizing` at the last direct
+check, so no finalization lock or target synchronization was attempted. A later
+target merge must reconcile the combined category totals and receive base-sync
+review; the existing totals above are evidence for their recorded heads only.
+
+PR #1040 remains draft and says **Advances #1034**, with no closing keyword.
+Actual camera-friendly name and aggregate header health remain unwired; neutral
+`Local CameraAgent` does not complete that acceptance item. #1034 must remain
+open. Actual account/footer extras remain disclosed, and page-body #1035/#992
+acceptance is still pending. No ready transition, merge or live deployment is
+authorized by this evidence correction.
