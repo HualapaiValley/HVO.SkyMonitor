@@ -514,6 +514,104 @@ public sealed class CameraAgentBrowserAcceptanceTests
     [TestMethod]
     [TestCategory("Manual")]
     [DoNotParallelize]
+    public async Task SharedShellReviewRegressionsAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(enableCentralIntegration: true).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 390, Height = 844 }
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator("button[aria-controls='shell-menu-panel']").ClickAsync().ConfigureAwait(false);
+        await page.Locator("#shell-menu-panel a[href='/operations']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'Operations overview'")
+            .ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('button[aria-controls=\"shell-menu-panel\"]')?.getAttribute('aria-expanded') === 'false'")
+            .ConfigureAwait(false);
+        Assert.AreEqual("H1", await page.EvaluateAsync<string>("() => document.activeElement.tagName").ConfigureAwait(false));
+
+        await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
+        await page.Locator("#operations-sections a[href='/operations/system']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'System snapshot'")
+            .ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('button[aria-controls=\"operations-sections\"]')?.getAttribute('aria-expanded') === 'false'")
+            .ConfigureAwait(false);
+        Assert.AreEqual("H1", await page.EvaluateAsync<string>("() => document.activeElement.tagName").ConfigureAwait(false));
+
+        Assert.IsTrue(await page.EvaluateAsync<bool>("""
+            async () => {
+              const module = await import('./Components/Layout/ResponsiveNavigation.razor.js');
+              const panel = document.createElement('dialog');
+              const toggle = document.createElement('button');
+              const receiver = { invokeMethodAsync() { throw new Error('Detached initialization must not notify .NET'); } };
+              module.initialize(null, null, 780, receiver);
+              module.initialize(panel, toggle, 780, receiver);
+              module.open(panel);
+              if (panel.open) return false;
+              document.body.append(toggle, panel);
+              module.initialize(panel, toggle, 780, { invokeMethodAsync: () => Promise.resolve() });
+              module.open(panel);
+              const closed = new Promise(resolve => panel.addEventListener('close', resolve, { once: true }));
+              module.close(panel, false);
+              const heading = document.querySelector('h1');
+              heading.focus();
+              await closed;
+              const retainedHeadingFocus = document.activeElement === heading;
+              module.dispose(panel);
+              panel.remove();
+              toggle.remove();
+              return retainedHeadingFocus;
+            }
+            """).ConfigureAwait(false));
+
+        // Exercise actual theme CSS for both selected-state forms, not a hand-coded ratio.
+        await page.EvaluateAsync("""
+            () => {
+              const controls = document.createElement('section');
+              controls.id = 'shell-contrast-regression';
+              controls.innerHTML = '<button class="btn btn-primary">Primary action</button>' +
+                '<button class="hvo-segmented__option" aria-pressed="true">Selected by aria</button>' +
+                '<button class="hvo-segmented__option hvo-segmented__option--selected">Selected by class</button>';
+              document.querySelector('main').append(controls);
+            }
+            """).ConfigureAwait(false);
+        await AssertComputedContrastAsync(page, "/operations/system", new ViewportSize { Width = 390, Height = 844 },
+            "#shell-contrast-regression button").ConfigureAwait(false);
+
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        await AssertOperationsAndCaptureControlAsync(page).ConfigureAwait(false);
+        await AssertQuarantineAsync(page).ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            foreach (var route in new[] { "/gallery", "/archive/calendar", "/archive/products" })
+            {
+                await page.GotoAsync(route).ConfigureAwait(false);
+                await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+                await VisibleAsync(page.Locator(".archive-subnav")).ConfigureAwait(false);
+                var bounds = await page.Locator(".archive-subnav").BoundingBoxAsync().ConfigureAwait(false);
+                Assert.IsNotNull(bounds);
+                var expectedX = width == 1440 ? 37.44f : 10.4f;
+                var expectedY = route == "/gallery" ? width == 1440 ? 102.44f : 80f : width == 1440 ? 65f : 64f;
+                Assert.AreEqual(expectedX, bounds.X, .1f, route);
+                Assert.AreEqual(expectedY, bounds.Y, .1f, route);
+                Assert.IsFalse(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth").ConfigureAwait(false));
+            }
+        }
+        Assert.IsFalse(await page.Locator("#blazor-error-ui").IsVisibleAsync().ConfigureAwait(false));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    [DoNotParallelize]
     public async Task OwnerOperationsGalleryAndResponsiveAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
@@ -1698,7 +1796,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(action).ConfigureAwait(false);
         var dialog = page.Locator("dialog.confirmation");
         await OpenDialogAsync(action, dialog).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>("() => document.querySelector('dialog')?.contains(document.activeElement) === true")
+        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.matches(':modal') && element.contains(document.activeElement)")
             .ConfigureAwait(false));
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
         await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
@@ -1902,7 +2000,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var triggerId = await action.GetAttributeAsync("id").ConfigureAwait(false);
         var dialog = page.Locator("dialog.confirmation");
         await OpenDialogAsync(action, dialog).ConfigureAwait(false);
-        Assert.IsTrue(await page.EvaluateAsync<bool>("() => document.querySelector('dialog')?.contains(document.activeElement) === true")
+        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.matches(':modal') && element.contains(document.activeElement)")
             .ConfigureAwait(false));
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
         await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
@@ -2249,10 +2347,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
             """).ConfigureAwait(false);
     }
 
-    private static async Task AssertComputedContrastAsync(IPage page, string route, ViewportSize viewport)
+    private static async Task AssertComputedContrastAsync(IPage page, string route, ViewportSize viewport, string? selector = null)
     {
         var result = await page.EvaluateAsync<string>("""
-            () => {
+            selector => {
               const parse = value => {
                 const channels = (value.match(/[\d.]+/g) || []).map(Number);
                 return { rgb: channels.slice(0, 3), alpha: channels.length > 3 ? channels[3] : 1 };
@@ -2302,7 +2400,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                   backdrop: worst.backdrop.rgb.map(Math.round).join(',')
                 };
               };
-              const pairs = [...document.querySelectorAll(
+              const pairs = [...document.querySelectorAll(selector ||
                 'main h1, main h2, main h3, main h4, main a, main p, main dt, main dd, main label, main button:not(:disabled), main input, main select, main textarea, main code, main time, main strong, main span, main .alert, main .state-chip, main .decision-chip')]
                 .filter(element => element.getClientRects().length > 0 &&
                   (['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) || (element.textContent || '').trim().length > 0));
@@ -2312,7 +2410,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 })).sort((left, right) => left.ratio - right.ratio);
               return JSON.stringify(measured[0] || { ratio: 21, element: 'none', text: '' });
             }
-            """).ConfigureAwait(false);
+            """, selector).ConfigureAwait(false);
         using var measurement = JsonDocument.Parse(result);
         var minimum = measurement.RootElement.GetProperty("ratio").GetDouble();
         var element = measurement.RootElement.GetProperty("element").GetString();

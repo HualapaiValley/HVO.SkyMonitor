@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -70,5 +71,72 @@ public sealed class SharedNavigationTests
         Assert.AreEqual("false", cut.Find(".navigation-toggle").GetAttribute("aria-expanded"));
         await context.DisposeAsync().ConfigureAwait(false);
         Assert.HasCount(1, module.Invocations["dispose"]);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ResponsiveDialog_DisposalReleasesLateImportOrInitialization(bool delayInitialization)
+    {
+        using var context = new BunitContext();
+        var js = new DelayedNavigationJs(delayInitialization);
+        context.Services.AddSingleton<IJSRuntime>(js);
+        var cut = context.Render<ResponsiveNavigation>(parameters => parameters
+            .Add(static component => component.Id, "delayed-menu")
+            .Add(static component => component.Label, "Delayed navigation"));
+        await js.Started.Task.ConfigureAwait(false);
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        Assert.AreEqual(0, js.ModuleDisposals, "The in-flight initialization owns its resources until it completes.");
+        if (delayInitialization) Assert.IsNotNull(js.Receiver!.Value, "The pending JS call must not receive a disposed callback reference.");
+        js.Continue.SetResult();
+        await js.Released.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(delayInitialization ? 1 : 0, js.Initializations);
+            Assert.AreEqual(delayInitialization ? 1 : 0, js.PanelDisposals);
+            Assert.AreEqual(1, js.ModuleDisposals);
+            if (delayInitialization) Assert.Throws<ObjectDisposedException>(() => _ = js.Receiver!.Value);
+        });
+        await cut.Instance.SetExpanded(true).ConfigureAwait(false);
+        Assert.AreEqual("false", cut.Find(".navigation-toggle").GetAttribute("aria-expanded"));
+    }
+
+    private sealed class DelayedNavigationJs(bool delayInitialization) : IJSRuntime, IJSObjectReference
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Continue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Released { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public DotNetObjectReference<ResponsiveNavigation>? Receiver { get; private set; }
+        public int Initializations { get; private set; }
+        public int PanelDisposals { get; private set; }
+        public int ModuleDisposals { get; private set; }
+
+        public async ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args)
+        {
+            if (identifier == "initialize")
+            {
+                Initializations++;
+                Receiver = (DotNetObjectReference<ResponsiveNavigation>)args![3]!;
+            }
+            if (identifier == (delayInitialization ? "initialize" : "import"))
+            {
+                Started.SetResult();
+                await Continue.Task.ConfigureAwait(false);
+            }
+            if (identifier == "dispose") PanelDisposals++;
+            return identifier == "import" ? (TValue)(object)this : default!;
+        }
+
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+            => InvokeAsync<TValue>(identifier, args);
+
+        public ValueTask DisposeAsync()
+        {
+            ModuleDisposals++;
+            Released.SetResult();
+            return ValueTask.CompletedTask;
+        }
     }
 }

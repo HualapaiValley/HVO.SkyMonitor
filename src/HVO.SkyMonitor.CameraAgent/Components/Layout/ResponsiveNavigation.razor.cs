@@ -17,6 +17,7 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
     private ElementReference _panel;
     private ElementReference _toggle;
     private bool _expanded;
+    private bool _disposed;
     private IJSObjectReference? _module;
     private DotNetObjectReference<ResponsiveNavigation>? _reference;
 
@@ -24,10 +25,30 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
-        _reference = DotNetObjectReference.Create(this);
-        _module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Layout/ResponsiveNavigation.razor.js");
-        await _module.InvokeVoidAsync("initialize", _panel, _toggle, Breakpoint, _reference);
+        if (!firstRender || _disposed) return;
+        IJSObjectReference? module = null;
+        DotNetObjectReference<ResponsiveNavigation>? reference = null;
+        try
+        {
+            module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Layout/ResponsiveNavigation.razor.js");
+            if (_disposed) return;
+            reference = DotNetObjectReference.Create(this);
+            await module.InvokeVoidAsync("initialize", _panel, _toggle, Breakpoint, reference);
+            if (_disposed) return;
+
+            // Initialization owns these resources until both awaits complete. Disposal cannot
+            // invalidate the callback reference or lose a module that arrives after teardown.
+            _module = module;
+            _reference = reference;
+            module = null;
+            reference = null;
+        }
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+        finally
+        {
+            if (module is not null) await ReleaseAsync(module, reference);
+        }
     }
 
     private async Task OpenAsync()
@@ -41,11 +62,19 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
     }
 
     [JSInvokable]
-    public Task SetExpanded(bool expanded) => InvokeAsync(() => { _expanded = expanded; StateHasChanged(); });
+    public Task SetExpanded(bool expanded) => InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        _expanded = expanded;
+        StateHasChanged();
+    });
 
     private async void LocationChanged(object? sender, LocationChangedEventArgs args)
     {
-        try { await CloseAsync(); }
+        try
+        {
+            if (!_disposed && _module is not null) await _module.InvokeVoidAsync("close", _panel, false);
+        }
         catch (JSDisconnectedException) { }
         catch (TaskCanceledException) { }
         catch (ObjectDisposedException) { }
@@ -53,17 +82,31 @@ public sealed partial class ResponsiveNavigation : ComponentBase, IAsyncDisposab
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         NavigationManager.LocationChanged -= LocationChanged;
-        if (_module is not null)
+        var module = _module;
+        var reference = _reference;
+        _module = null;
+        _reference = null;
+        if (module is not null) await ReleaseAsync(module, reference);
+    }
+
+    private async Task ReleaseAsync(IJSObjectReference module, DotNetObjectReference<ResponsiveNavigation>? reference)
+    {
+        try
         {
             try
             {
-                await _module.InvokeVoidAsync("dispose", _panel);
-                await _module.DisposeAsync();
+                if (reference is not null) await module.InvokeVoidAsync("dispose", _panel);
             }
-            catch (JSDisconnectedException) { }
-            catch (TaskCanceledException) { }
+            finally
+            {
+                await module.DisposeAsync();
+            }
         }
-        _reference?.Dispose();
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+        finally { reference?.Dispose(); }
     }
 }

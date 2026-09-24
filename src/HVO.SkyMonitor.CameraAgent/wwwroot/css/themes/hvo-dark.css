@@ -4,7 +4,8 @@
     --hvo-body-bg: #05070d;
     --hvo-body-color: #f7f9fc;
     --hvo-accent: #58a6ff;
-    --hvo-accent-strong: #2f81f7;
+    /* Text-bearing actions need 4.5:1; the lighter prototype blue remains decorative. */
+    --hvo-accent-strong: #2563eb;
     --hvo-accent-stronger: #1d4ed8;
     --hvo-accent-soft: rgba(47, 129, 247, 0.16);
     --hvo-focus-ring-inner: rgba(59, 130, 246, 0.5);
