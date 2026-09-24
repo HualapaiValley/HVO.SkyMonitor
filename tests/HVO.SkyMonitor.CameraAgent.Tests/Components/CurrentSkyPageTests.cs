@@ -596,7 +596,8 @@ public sealed class CurrentSkyPageTests
         var service = Configure(context);
         var presentation = WithStructuredBase() with { StructuredLayersAvailable = advertisedLayers };
         var annotated = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
-        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Complete on the renderer below so the terminal read and its finally-render are observed together.
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>();
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(presentation));
         service.PresentationHandler = (_, _) => new(pending.Task);
         var cut = context.Render<CurrentSkyPage>();
@@ -604,8 +605,8 @@ public sealed class CurrentSkyPageTests
         AssertBaseOnly(cut, "pending");
         await cut.InvokeAsync(() => pending.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(terminalKind,
             terminalKind == OperatorUiResultKind.NotFound ? "Structured layers were not retained." : "Retained layer read failed."))).ConfigureAwait(false);
-        cut.WaitForAssertion(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
-            cut.Find(".capture-image img").GetAttribute("src")));
+        await cut.WaitForAssertionAsync(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src")), TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
         if (showsAnnotated)
         {
@@ -613,10 +614,16 @@ public sealed class CurrentSkyPageTests
             Assert.AreEqual($"/api/v1/operations/artifacts/{annotated.ArtifactId:D}/content", cut.Find(".stage-display-policy a").GetAttribute("href"));
             StringAssert.Contains(cut.Find(".stage-status").TextContent, "retained encoded bytes; no display stretch", StringComparison.Ordinal);
         }
-        else await cut.WaitForAssertionAsync(() => AssertBaseOnly(cut, "unavailable")).ConfigureAwait(false);
+        else
+        {
+            // Observe the asynchronous finally-render without coupling the assertion to bUnit's render-event subscription.
+            for (var attempt = 0; attempt < 500 && cut.Find(".stage-status").TextContent.Contains("layers are pending", StringComparison.Ordinal); attempt++)
+                await Task.Delay(10).ConfigureAwait(false);
+            AssertBaseOnly(cut, "unavailable");
+        }
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
-        cut.WaitForAssertion(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
-            cut.Find(".capture-image img").GetAttribute("src")));
+        await cut.WaitForAssertionAsync(() => Assert.AreEqual(showsAnnotated ? annotated.PreviewUrl!.OriginalString : CombinedDisplayUrl,
+            cut.Find(".capture-image img").GetAttribute("src")), TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         Assert.IsEmpty(cut.FindAll(".sky-layer-overlay"));
     }
 
