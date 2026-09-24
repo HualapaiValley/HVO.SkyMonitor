@@ -137,6 +137,7 @@ public sealed record CameraAgentProcessingNodeView(
     IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
 {
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
+    public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
 }
 
 internal sealed record CameraAgentProcessingExecutionDetailView(
@@ -211,7 +212,7 @@ internal static class CameraAgentProcessingExecutionProjection
                     attempt.Duration,
                     attempt.ExecutionRoute.ToString())).ToArray(),
                 node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())
-            { Dependencies = node.Dependencies }).ToArray());
+            { Dependencies = node.Dependencies, OutputContracts = node.OutputContracts }).ToArray());
     }
 }
 

@@ -50,7 +50,13 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
                 [], [new ProcessingGraphNodeAttemptState(1, "runner-host-secret-7", Now, Now, "Completed", HVO.SkyMonitor.Processing.ProcessingOutcomeStatus.Produced, null, TimeSpan.FromSeconds(1),
                     HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingNodeExecutionRoute.InProcess)],
                  [new ProcessingGraphExecutionOutputState(0, new string('O', 64), Guid.NewGuid(), FrameArtifactRole.Preview, "display", "Missing", "/var/lib/secret failed", false)])
-             { Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")] }
+              {
+                  Dependencies = [new HVO.SkyMonitor.Processing.ProcessingGraphDependencyDefinition("$raw")],
+                  OutputContracts = [new HVO.SkyMonitor.Processing.ProcessingGraphProductContract(
+                      FrameArtifactRole.Metadata, "custom-assessment", HVO.SkyMonitor.Processing.ProcessingProductKind.Metadata,
+                      new HVO.SkyMonitor.Processing.ProcessingRecipeDefinition(
+                          HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, "1.0.0", "test", HVO.SkyMonitor.Processing.ProcessingOperationKind.Analyzer))]
+              }
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
@@ -69,6 +75,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         Assert.IsFalse(serialized.Contains("LeaseOwner", StringComparison.Ordinal));
         Assert.AreEqual("Produced", found.Value!.Nodes[0].Attempts[0].Outcome);
         Assert.AreEqual("$raw", found.Value.Nodes[0].Dependencies.Single().ProducerId);
+        Assert.AreEqual("custom-assessment", found.Value.Nodes[0].OutputContracts.Single().Variant);
         Assert.AreEqual(OperatorUiResultKind.NotFound, missing.Kind);
         Assert.AreEqual("The execution was not found.", missing.Message);
     }
