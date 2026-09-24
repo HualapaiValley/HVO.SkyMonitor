@@ -767,6 +767,57 @@ Compose, image, and identity records before capture resumes. Noncurrent manifest
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
+### Restore Only After an Interrupted Upgrade
+
+Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
+startup. **Do not use it merely to restore service after a failed backup.** For
+an operator-image upgrade whose exact original runtime is already healthy, the
+bounded recovery-only form is:
+
+```bash
+hvo-skymonitor cameraagent upgrade \
+  --instance-id <original-instance-uuid> \
+  --image-ref <original-request-candidate-reference> \
+  <same-original-request-options> \
+  --resume --restore-only --operation-id <interrupted-operation-uuid>
+```
+
+Retain the original image reference, archive checksum, `--no-download`, and
+compatibility acknowledgement exactly as supplied to that upgrade. The command
+checks the original request hash and operation UUID; it does not acquire or
+inspect the candidate image. This first recovery slice supports operator-image
+upgrades only, not signed-release selectors, rollback, or catalog operations.
+
+The original manifest/result and operation snapshots must agree exactly, including
+the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
+hash, rendered original Compose hash, daemon identity, root ownership/inode checks,
+container image/user/mount/port/security checks, original image schema boundaries,
+protected installation identity/owner verification, and both retained tokens remain
+required. Admission must match the recorded paused version and capture sequence.
+Changed state, candidate-running, absent/unhealthy original runtime, foreign admission,
+expired/rejected credentials, and committed or partially committed candidates fail
+closed. No backup archive, including a leftover partial archive, authorizes recovery.
+
+This form never pauses capture, stops/recreates/restarts a container, writes Compose,
+changes identity, or resets state. An approved Docker runtime memory override remains
+untouched; it is not a change to the authenticated Compose file. It does not provide a
+cold-start or candidate-to-old-image restoration procedure.
+
+Before resuming admission the journal retains a command UUID. Retries reuse that
+UUID and the original pause version, so a lost acknowledgement cannot create a new
+command or override a later operator pause. Success reports
+`restored-previous-healthy-admission-resumed`; the original upgrade remains terminal
+`Failed` / `Restored`, with `mutationStarted=false` and the original failure retained.
+Older interrupted journals lacking a failure detail explicitly record that it was
+not retained, rather than inventing a cause. Repeating a successful restore-only
+request verifies the result without another resume command. It never reports the
+upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
+
+Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
+open for size-aware backup deadlines, capacity, progress, cancellation/partial cleanup,
+and resource-qualified cold startup. Do not manually edit the lifecycle journal or
+reduce an approved memory override to work around those remaining limits.
+
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second
 request deadline**, including response-body receipt. Each call makes one request;

@@ -10,6 +10,8 @@ internal interface ICameraAgentLifecycleClient
     Task<LifecycleContinuity> PauseAndDrainAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken);
     Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
+    Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken);
+    Task ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
 }
 
 internal sealed record LifecycleContinuity(
@@ -95,14 +97,43 @@ internal sealed class CameraAgentLifecycleClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        try
+        {
+            return await ReadStateAsync(client, _budgets.ReadTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is BudgetExceededException or TransientReadException)
+        {
+            throw new InstallerException("CameraAgent did not provide an authenticated recovery boundary within its budget.", exception);
+        }
+    }
+
+    public async Task ResumeRecoveryAsync(
+        Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+            cancellationToken, commandId, expectedVersion).ConfigureAwait(false);
+    }
+
     private async Task PostCommandAsync(
         HttpClient client,
         string action,
         Guid operationId,
         DateTimeOffset deadline,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? retainedCommandId = null,
+        long? expectedVersion = null)
     {
-        var commandId = Guid.NewGuid();
+        var commandId = retainedCommandId ?? Guid.NewGuid();
+        var payload = new Dictionary<string, object>
+        {
+            ["operationId"] = commandId,
+            ["reason"] = $"transactional lifecycle operation {operationId:D} {action}"
+        };
+        if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;
         try
         {
             while (true)
@@ -116,11 +147,7 @@ internal sealed class CameraAgentLifecycleClient(
                     remaining,
                     token => client.PostAsJsonAsync(
                         new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
-                        new
-                        {
-                            operationId = commandId,
-                            reason = $"transactional lifecycle operation {operationId:D} {action}"
-                        },
+                        payload,
                         token),
                     cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
@@ -289,6 +316,7 @@ internal sealed class CameraAgentLifecycleClient(
             disposeHandler: handler is null)
         {
             BaseAddress = baseAddress,
+            MaxResponseContentBufferSize = 1024 * 1024,
             Timeout = Timeout.InfiniteTimeSpan
         };
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);

@@ -1,7 +1,9 @@
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -1807,6 +1809,257 @@ public sealed class LifecycleContractTests
         Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_HealthyOriginalResumesWithoutBackupOrContainerMutationAndIsTerminalIdempotent()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var lifecycle = new FakeLifecycleClient();
+        var manifestBefore = await File.ReadAllBytesAsync(fixture.Paths.ManifestPath);
+        var resultBefore = await File.ReadAllBytesAsync(fixture.Paths.ResultPath);
+        var rollbackPath = Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous.env");
+        var rollbackBefore = await File.ReadAllBytesAsync(rollbackPath);
+        var partial = Path.Combine(fixture.Paths.OperationsRoot, "partial.tar.gz");
+        await File.WriteAllTextAsync(partial, "not a valid backup");
+
+        var result = await ExecuteRestoreAsync(fixture, request, lifecycle);
+        var journal = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        var journalBytes = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var repeated = await ExecuteRestoreAsync(fixture, request, lifecycle);
+
+        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
+        Assert.AreEqual(result.Outcome, repeated.Outcome);
+        Assert.AreEqual(request.RecoveryOperationId, result.OperationId);
+        Assert.AreEqual(fixture.Manifest.Image, result.Image);
+        Assert.AreEqual(fixture.Manifest.PreviousImage, result.PreviousImage);
+        Assert.IsTrue(result.Running);
+        Assert.IsTrue(result.Healthy);
+        Assert.AreEqual(LifecycleOperationPhase.Restored, journal!.Phase);
+        Assert.AreEqual(InstallationStatus.Failed, journal.Status);
+        Assert.IsFalse(journal.MutationStarted);
+        Assert.AreEqual("lifecycle-failed", journal.FailureCode);
+        Assert.AreEqual("Original backup deadline expired.", journal.FailureMessage);
+        Assert.AreEqual("owner-ready", journal.ExpectedOwnerBootstrapState);
+        Assert.AreEqual("Running", journal.PostMutationContinuity!.CaptureState);
+        Assert.AreEqual(3L, journal.PostMutationContinuity.CaptureVersion);
+        Assert.AreEqual(1, lifecycle.RecoveryResumeCalls);
+        Assert.AreEqual(1, lifecycle.RecoveryCommands.Count);
+        CollectionAssert.AreEqual(journalBytes, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(manifestBefore, await File.ReadAllBytesAsync(fixture.Paths.ManifestPath));
+        CollectionAssert.AreEqual(resultBefore, await File.ReadAllBytesAsync(fixture.Paths.ResultPath));
+        CollectionAssert.AreEqual(rollbackBefore, await File.ReadAllBytesAsync(rollbackPath));
+        Assert.AreEqual("not a valid backup", await File.ReadAllTextAsync(partial));
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.BeginAsync(
+            request with { RestoreOnly = false, RecoveryOperationId = null }, fixture.Paths, LifecycleOperationKind.Upgrade,
+            fixture.Manifest, CancellationToken.None));
+        var next = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Uninstall),
+            fixture.Paths, LifecycleOperationKind.Uninstall, fixture.Manifest, CancellationToken.None);
+        Assert.AreNotEqual(journal.OperationId, next.OperationId);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_LostAcknowledgementReplaysSameVersionFencedCommand()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var lifecycle = new FakeLifecycleClient { LoseRecoveryAcknowledgement = true };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+        var interrupted = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsTrue(interrupted!.MutationStarted);
+        Assert.AreEqual(LifecycleOperationPhase.Restoring, interrupted.Phase);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.BeginAsync(
+            request with { RestoreOnly = false, RecoveryOperationId = null }, fixture.Paths, LifecycleOperationKind.Upgrade,
+            fixture.Manifest, CancellationToken.None));
+
+        var result = await ExecuteRestoreAsync(fixture, request, lifecycle);
+
+        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
+        Assert.AreEqual(2, lifecycle.RecoveryResumeCalls);
+        Assert.AreEqual(1, lifecycle.RecoveryCommands.Count);
+        Assert.AreEqual(interrupted.RestoreResumeCommandId, lifecycle.RecoveryCommands.Single());
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_LegacyInterruptedFailureAndAbsentRollbackRemainTruthful()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        var root = Path.Combine(fixture.Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
+        foreach (var (retained, current) in new[] { ("prior-rollback.env", "previous.env"), ("prior-rollback-compose.yml", "previous-compose.yml") })
+        {
+            File.Delete(Path.Combine(root, retained));
+            File.Delete(Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", current));
+            SafeFileSystem.WriteTextAtomic(Path.Combine(root, retained + ".absent"), string.Empty);
+        }
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with { FailureCode = null, FailureMessage = null }, CancellationToken.None);
+        var lifecycle = new FakeLifecycleClient();
+        await ExecuteRestoreAsync(fixture, request, lifecycle);
+        var restored = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual("upgrade-interrupted", restored!.FailureCode);
+        StringAssert.Contains(restored.FailureMessage, "failure detail was not retained", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous.env")));
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_TerminalRepeatDoesNotOverrideLaterOperatorPause()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var lifecycle = new FakeLifecycleClient();
+        await ExecuteRestoreAsync(fixture, request, lifecycle);
+        lifecycle.RecoveryContinuity = lifecycle.RecoveryContinuity with { CaptureState = "Paused", CaptureVersion = 5 };
+        var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+        Assert.AreEqual(1, lifecycle.RecoveryResumeCalls);
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+    }
+
+    [TestMethod]
+    [DataRow("candidate")]
+    [DataRow("unhealthy")]
+    [DataRow("absent")]
+    [DataRow("ownership")]
+    [DataRow("ports")]
+    [DataRow("capabilities")]
+    [DataRow("owner")]
+    [DataRow("expired-verification")]
+    [DataRow("expired-lifecycle")]
+    [DataRow("token-mirror")]
+    [DataRow("verification-token")]
+    [DataRow("daemon")]
+    [DataRow("operation")]
+    [DataRow("request")]
+    [DataRow("foreign-pause")]
+    [DataRow("unowned-running")]
+    [DataRow("schema-advanced")]
+    [DataRow("manifest")]
+    [DataRow("result")]
+    [DataRow("compose")]
+    [DataRow("environment")]
+    [DataRow("compose-hash")]
+    [DataRow("configuration")]
+    [DataRow("rollback-history")]
+    [DataRow("linked-snapshot")]
+    [DataRow("oversized-snapshot")]
+    [DataRow("committed")]
+    [DataRow("completed")]
+    [DataRow("partial-commit")]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_UnsafeBoundaryRefusesWithoutMutation(string fault)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync();
+        var operationRoot = Path.Combine(fixture.Paths.OperationsRoot, "lifecycle", request.RecoveryOperationId!.Value.ToString("D"));
+        var lifecycle = new FakeLifecycleClient();
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { CurrentOwnerBootstrapState = "owner-ready" };
+        var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        switch (fault)
+        {
+            case "candidate": fixture.Runner.UseCandidateRuntime(); break;
+            case "unhealthy": fixture.Runner.Unhealthy = true; break;
+            case "absent": fixture.Runner.RemoveRuntime(); break;
+            case "ownership": fixture.Runner.OmitOwnershipLabel = true; break;
+            case "ports": fixture.Runner.WrongPort = true; break;
+            case "capabilities": fixture.Runner.RetainCapabilities = true; break;
+            case "owner": owner.CurrentOwnerBootstrapState = "owner-password-change-required"; break;
+            case "expired-verification": owner.RejectNextVerification = true; break;
+            case "expired-lifecycle": lifecycle.RejectRecoveryRead = true; break;
+            case "token-mirror": SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.ConfigRoot, "secrets", "LifecycleControl__Token"), "changed"); break;
+            case "verification-token": SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.ConfigRoot, "installation-verification", "token"), "changed"); break;
+            case "daemon": fixture.Runner.DaemonDriftAtInfoCall = 1; break;
+            case "operation": request = request with { RecoveryOperationId = Guid.NewGuid() }; break;
+            case "request": request = request with { NoDownload = false }; break;
+            case "foreign-pause": lifecycle.RecoveryContinuity = lifecycle.RecoveryContinuity with { CaptureVersion = 4 }; break;
+            case "unowned-running": lifecycle.RecoveryContinuity = lifecycle.RecoveryContinuity with { CaptureState = "Running", CaptureVersion = 3 }; break;
+            case "schema-advanced":
+                await using (var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)}"))
+                {
+                    await connection.OpenAsync();
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "PRAGMA user_version=14;";
+                    await command.ExecuteNonQueryAsync();
+                }
+                break;
+            case "manifest":
+                await SafeFileSystem.WriteJsonAtomicAsync(Path.Combine(operationRoot, "previous-instance-manifest.json"),
+                    fixture.Manifest with { PreviousComposeModelSha256 = new string('0', 64) }, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+                break;
+            case "result":
+                var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+                await SafeFileSystem.WriteJsonAtomicAsync(Path.Combine(operationRoot, "previous-installation-result.json"),
+                    result with { PasswordFile = "/foreign/credential" }, DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
+                break;
+            case "compose": SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "previous-compose.yml"), "services: changed"); break;
+            case "environment": SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "previous.env"), "CAMERAAGENT_IMAGE=changed"); break;
+            case "compose-hash":
+                SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "previous-compose.yml"), "services: changed");
+                SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml"), "services: changed");
+                break;
+            case "configuration": SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.ConfigRoot, "camera-module.json"), "{\"changed\":true}"); break;
+            case "rollback-history": SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous.env"), "changed"); break;
+            case "linked-snapshot":
+                var path = Path.Combine(operationRoot, "previous.env");
+                File.Delete(path);
+                File.CreateSymbolicLink(path, Path.Combine(fixture.Paths.ConfigRoot, "compose", "instance.env"));
+                break;
+            case "oversized-snapshot": SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "previous.env"), new string('x', 1024 * 1024 + 1)); break;
+            case "committed":
+            case "completed":
+                await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+                {
+                    Phase = fault == "committed" ? LifecycleOperationPhase.Committed : LifecycleOperationPhase.Completed,
+                    Status = fault == "committed" ? InstallationStatus.Running : InstallationStatus.Completed,
+                    MutationStarted = fault == "committed",
+                    PostMutationContinuity = operation.PreMutationContinuity
+                }, CancellationToken.None);
+                break;
+            case "partial-commit":
+                await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath, fixture.Manifest with
+                {
+                    LastLifecycleOperationId = operation.OperationId
+                }, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+                break;
+            default: Assert.Fail("Unknown fault"); break;
+        }
+        var journalBefore = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var manifestBefore = await File.ReadAllBytesAsync(fixture.Paths.ManifestPath);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle, owner));
+
+        CollectionAssert.AreEqual(journalBefore, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(manifestBefore, await File.ReadAllBytesAsync(fixture.Paths.ManifestPath));
+        Assert.AreEqual(0, lifecycle.RecoveryResumeCalls);
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+    }
+
+    private static Task<LifecycleResult> ExecuteRestoreAsync(
+        LifecycleFixture fixture, LifecycleRequest request, FakeLifecycleClient lifecycle, FakeOwnerClient? owner = null)
+        => CameraAgentLifecycleManager.ExecuteAsync(request, fixture.Runner, _ => lifecycle,
+            _ => owner ?? new FakeOwnerClient(fixture.ApplicationIdentity) { CurrentOwnerBootstrapState = "owner-ready" },
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+    private static void AssertNoRecoveryContainerMutation(LifecycleFixture fixture, FakeLifecycleClient lifecycle)
+    {
+        Assert.AreEqual(0, fixture.Runner.BackupCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeRestartCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeDownCount);
+        Assert.AreEqual(0, fixture.Runner.ImagePreparationCount);
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, lifecycle.ConfirmCount);
+        Assert.AreEqual(0, fixture.Runner.LoggedContainers.Count);
+    }
+
     private sealed class LifecycleFixture : IDisposable
     {
         private LifecycleFixture(
@@ -1843,7 +2096,8 @@ public sealed class LifecycleContractTests
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile =
                 HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
             bool seedCatalogSelection = true,
-            string? daemonArchitecture = null)
+            string? daemonArchitecture = null,
+            bool recoveryState = false)
         {
             // By default the fixture records the architecture of the process running the tests, as a real
             // installation on this machine would, so host-relative tests stay deterministic on amd64 and arm64
@@ -1892,7 +2146,10 @@ public sealed class LifecycleContractTests
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
                 CatalogContract: "hyg-v42-production-p3-s2",
                 ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null,
-                RawIngressSchema: "12");
+                RawIngressSchema: recoveryState ? "13" : "12",
+                IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
+                CatalogManifestVersion: recoveryState ? "2" : null,
+                MinimumCompatibleRevision: recoveryState ? new string('7', 40) : null);
             var installationId = Guid.NewGuid();
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
@@ -1909,6 +2166,36 @@ public sealed class LifecycleContractTests
                 DateTimeOffset.UtcNow, LifecycleCondition: condition, Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"),
                 ReplayProfile: replayProfile);
+            if (recoveryState)
+            {
+                using var configuration = JsonDocument.Parse("{}");
+                manifest = manifest with
+                {
+                    ConfigurationSha256 = Convert.ToHexStringLower(Convert.FromHexString(CaptureContractJson.ComputeCanonicalJsonSha256(configuration.RootElement))),
+                    PreviousImage = image with { ImageId = $"sha256:{new string('6', 64)}" },
+                    PreviousComposeModelSha256 = manifest.ComposeModelSha256
+                };
+                SafeFileSystem.WriteTextAtomic(Path.Combine(paths.ConfigRoot, "camera-module.json"), "{}");
+                foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
+                    SafeFileSystem.CreateRuntimeDirectory(directory, uid, gid);
+                foreach (var databasePath in new[]
+                         {
+                             CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot),
+                             CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot)
+                         })
+                {
+                    SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(databasePath)!);
+                    await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+                    await connection.OpenAsync();
+                    using var command = connection.CreateCommand();
+                    if (databasePath == CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot))
+                        command.CommandText = "CREATE TABLE sentinel(value); PRAGMA user_version=13;";
+                    else
+                        command.CommandText = "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT); INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity');";
+                    await command.ExecuteNonQueryAsync();
+                    File.SetUnixFileMode(databasePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+            }
             var result = new InstallationResult(
                 1, InstallationOutcome.Installed, installationId, instanceId, applicationIdentity, "Test Camera",
                 new Uri("http://127.0.0.1:5130"), "owner@example.test", "/tmp/password", paths.ProductRoot,
@@ -1939,6 +2226,48 @@ public sealed class LifecycleContractTests
             {
                 AllowTestProductRoot = true
             };
+
+        public async Task<LifecycleRequest> PrepareRestoreAsync()
+        {
+            var request = Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = $"sha256:{new string('5', 64)}",
+                MigrationBackwardCompatible = true,
+                NoDownload = true
+            };
+            Runner.ConfigureRuntime(Paths, Manifest.Image.ImmutableReference, Manifest.Image.ImageId,
+                request.ImageReference, request.ImageReference, Uid, Gid);
+            var operation = await CameraAgentLifecycleManager.BeginAsync(request, Paths, LifecycleOperationKind.Upgrade, Manifest, CancellationToken.None);
+            var operationRoot = Path.Combine(Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
+            SafeFileSystem.CreateOwnerDirectory(Path.Combine(Paths.OperationsRoot, "lifecycle"));
+            SafeFileSystem.CreateOwnerDirectory(operationRoot);
+            foreach (var (source, destination) in new[]
+                     {
+                         (Paths.ManifestPath, "previous-instance-manifest.json"),
+                         (Paths.ResultPath, "previous-installation-result.json"),
+                         (Path.Combine(Paths.ConfigRoot, "compose", "compose.yml"), "previous-compose.yml"),
+                         (Path.Combine(Paths.ConfigRoot, "compose", "instance.env"), "previous.env")
+                     })
+            {
+                SafeFileSystem.WriteTextAtomic(source, await File.ReadAllTextAsync(source));
+                SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, destination), await File.ReadAllTextAsync(source));
+            }
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback.env"), "prior rollback environment");
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback-compose.yml"), "prior rollback compose");
+            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous.env"), "prior rollback environment");
+            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous-compose.yml"), "prior rollback compose");
+            await CameraAgentLifecycleManager.RecordAsync(Paths, operation with
+            {
+                Phase = LifecycleOperationPhase.Restoring,
+                MutationStarted = true,
+                CandidateImage = Manifest.Image with { ImageId = request.ImageReference, ImmutableReference = request.ImageReference },
+                PreMutationContinuity = new LifecycleContinuityBoundary("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow),
+                ExpectedOwnerBootstrapState = "owner-ready",
+                FailureCode = "lifecycle-failed",
+                FailureMessage = "Original backup deadline expired."
+            }, CancellationToken.None);
+            return request with { Resume = true, RestoreOnly = true, RecoveryOperationId = operation.OperationId };
+        }
 
         public void Dispose()
         {
@@ -1973,6 +2302,12 @@ public sealed class LifecycleContractTests
         public int ComposeRestartCount { get; private set; }
         public int ComposeStopCount { get; private set; }
         public int BackupCount { get; private set; }
+        public int ImagePreparationCount { get; private set; }
+        public bool Unhealthy { get; set; }
+        public bool WrongPort { get; set; }
+        public bool RetainCapabilities { get; set; }
+        public void UseCandidateRuntime() => activeImageId = candidateImageId;
+        public void RemoveRuntime() => activeImageId = null;
         public int? DaemonDriftAtInfoCall { get; set; }
         public bool DriftDaemonAfterComposeUp { get; set; }
         public bool RetainOwnedOrphanAfterDown { get; set; }
@@ -2026,6 +2361,7 @@ public sealed class LifecycleContractTests
             if (arguments is ["context", "inspect", ..])
                 return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
             if (arguments.Count >= 2 && arguments[0] == "--host") arguments = arguments.Skip(2).ToArray();
+            if (arguments[0] == "image") ImagePreparationCount++;
             if (arguments is ["info", ..])
             {
                 infoCallCount++;
@@ -2208,6 +2544,10 @@ public sealed class LifecycleContractTests
                     new { Source = paths.CatalogRoot, Destination = "/app/catalog", RW = false },
                     new { Source = Path.Combine(paths.StateRoot, "identity"), Destination = "/app/App_Data", RW = true }
                 };
+                mounts.Add(new { Source = Path.Combine(paths.ConfigRoot, "secrets"), Destination = "/run/hvo-secrets", RW = false });
+                foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess)
+                             .Where(static source => !source.ContainerPath.Equals("/app/App_Data", StringComparison.Ordinal)))
+                    mounts.Add(new { Source = source.HostPath, Destination = source.ContainerPath, RW = true });
                 if (localRunner)
                 {
                     mounts.Add(new
@@ -2221,10 +2561,20 @@ public sealed class LifecycleContractTests
                 {
                     new
                     {
-                        State = new { Running = running, Health = new { Status = "healthy" } },
+                        State = new { Running = running, Health = new { Status = Unhealthy ? "unhealthy" : "healthy" } },
                         Image = activeImageId,
                         Config = new { User = $"{uid}:{gid}", Labels = labels },
-                        HostConfig = new { ReadonlyRootfs = true, Privileged = false },
+                        HostConfig = new
+                        {
+                            ReadonlyRootfs = true, Privileged = false,
+                            Memory = 8L * 1024 * 1024 * 1024, MemorySwap = 9L * 1024 * 1024 * 1024,
+                            CapDrop = RetainCapabilities ? Array.Empty<string>() : DroppedCapabilities,
+                            SecurityOpt = ReplayRunnerSecurityOptions,
+                            PortBindings = new Dictionary<string, object>
+                            {
+                                ["8080/tcp"] = new[] { new { HostIp = "127.0.0.1", HostPort = WrongPort ? "9999" : "5130" } }
+                            }
+                        },
                         Mounts = mounts
                     }
                 }), string.Empty));
@@ -2242,6 +2592,36 @@ public sealed class LifecycleContractTests
         public bool RejectNextResume { get; set; }
         public int PauseCount { get; private set; }
         public int ConfirmCount { get; private set; }
+        public int RecoveryResumeCalls { get; private set; }
+        public bool LoseRecoveryAcknowledgement { get; set; }
+        public bool RejectRecoveryRead { get; set; }
+        public HashSet<Guid> RecoveryCommands { get; } = [];
+        public LifecycleContinuity RecoveryContinuity { get; set; } = new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0);
+
+        public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            if (RejectRecoveryRead) throw new InstallerException("CameraAgent rejected the lifecycle state read with status 401.");
+            return Task.FromResult(RecoveryContinuity);
+        }
+
+        public Task ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            Assert.AreEqual(2L, expectedVersion);
+            RecoveryResumeCalls++;
+            if (RecoveryCommands.Add(commandId))
+            {
+                Assert.AreEqual(expectedVersion, RecoveryContinuity.CaptureVersion);
+                RecoveryContinuity = RecoveryContinuity with { CaptureState = "Running", CaptureVersion = expectedVersion + 1 };
+            }
+            if (LoseRecoveryAcknowledgement)
+            {
+                LoseRecoveryAcknowledgement = false;
+                throw new HttpRequestException("simulated lost recovery acknowledgement");
+            }
+            return Task.CompletedTask;
+        }
 
         public Task<LifecycleContinuity> PauseAndDrainAsync(
             Guid operationId,

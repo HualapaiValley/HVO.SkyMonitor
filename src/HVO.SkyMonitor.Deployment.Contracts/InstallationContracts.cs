@@ -96,7 +96,8 @@ public enum LifecycleOperationPhase
     CandidateVerified,
     Committed,
     Restoring,
-    Completed
+    Completed,
+    Restored
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -211,7 +212,8 @@ public sealed record LifecycleOperationState(
     LifecycleContinuityBoundary? PreMutationContinuity = null,
     LifecycleContinuityBoundary? PostMutationContinuity = null,
     [property: JsonPropertyName("originalOwnerBootstrapState")]
-    string? ExpectedOwnerBootstrapState = null);
+    string? ExpectedOwnerBootstrapState = null,
+    Guid? RestoreResumeCommandId = null);
 
 public sealed record LifecycleContinuityBoundary(
     string CaptureState,
