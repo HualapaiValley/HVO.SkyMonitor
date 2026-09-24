@@ -210,7 +210,6 @@ public sealed class CameraAgentLifecycleEndpointsTests
                 await app.DisposeAsync().ConfigureAwait(false);
             }
             coordinator?.Dispose();
-            SqliteConnection.ClearAllPools();
             root.Delete(recursive: true);
         }
     }
