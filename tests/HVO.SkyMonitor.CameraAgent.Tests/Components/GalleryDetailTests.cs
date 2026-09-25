@@ -406,6 +406,56 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
+    public void DownloadMenuClosesOnOutsideClickSelectionEscapeAndTabChange()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement("#evidence-tab-Artifacts").Click();
+        AngleSharp.Dom.IElement Toggle() => cut.FindAll(".download-menu__toggle")[0];
+        void AssertClosed()
+        {
+            Assert.AreEqual("false", Toggle().GetAttribute("aria-expanded"));
+            Assert.IsTrue(cut.FindAll(".download-menu ul")[0].HasAttribute("hidden"));
+            Assert.IsEmpty(cut.FindAll(".download-menu-backdrop"));
+        }
+
+        AssertClosed();
+        Toggle().Click();
+        Assert.AreEqual("true", Toggle().GetAttribute("aria-expanded"));
+        Assert.IsFalse(cut.FindAll(".download-menu ul")[0].HasAttribute("hidden"));
+        Assert.HasCount(1, cut.FindAll(".download-menu-backdrop"));
+        cut.Find(".download-menu-backdrop").Click();
+        AssertClosed();
+
+        Toggle().Click();
+        cut.FindAll(".download-menu ul")[0].QuerySelector("a[data-format='original']")!.Click();
+        AssertClosed();
+
+        Toggle().Click();
+        Toggle().Click();
+        AssertClosed();
+
+        Toggle().Click();
+        cut.FindAll(".download-menu")[0].KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" });
+        AssertClosed();
+
+        Toggle().Click();
+        cut.FindAll(".download-menu__toggle")[1].Click();
+        Assert.AreEqual("false", Toggle().GetAttribute("aria-expanded"));
+        Assert.AreEqual("true", cut.FindAll(".download-menu__toggle")[1].GetAttribute("aria-expanded"));
+        cut.Find("#evidence-tab-Processing").Click();
+        cut.Find("#evidence-tab-Artifacts").Click();
+        Assert.IsEmpty(cut.FindAll(".download-menu--open"));
+    }
+
+    [TestMethod]
     public void MetadataArtifactsOfferOnlyJsonDownload()
     {
         using var context = new BunitContext();

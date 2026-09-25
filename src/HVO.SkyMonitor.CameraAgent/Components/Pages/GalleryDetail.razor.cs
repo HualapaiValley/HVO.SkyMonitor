@@ -20,6 +20,8 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private long _generation;
     private bool _isLoading;
     private EvidenceTab _evidenceTab;
+    private Guid? _openDownloadMenu;
+    private readonly Dictionary<Guid, ElementReference> _downloadMenuButtons = [];
     private Guid? _previousCaptureId;
     private Guid? _nextCaptureId;
     private readonly Dictionary<EvidenceTab, ElementReference> _evidenceTabButtons = [];
@@ -67,6 +69,8 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         _previousCaptureId = null;
         _nextCaptureId = null;
         _evidenceTab = EvidenceTab.Overview;
+        _openDownloadMenu = null;
+        _downloadMenuButtons.Clear();
         var captureId = CaptureId;
         try
         {
@@ -271,7 +275,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             _ => null
         };
         if (next is not { } selected) return;
-        _evidenceTab = selected;
+        SelectEvidenceTab(selected);
         if (_evidenceTabButtons.TryGetValue(selected, out var button))
         {
             try { await button.FocusAsync(); }
@@ -298,6 +302,29 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         FrameArtifactRole.Metadata => "Capture metadata",
         _ => OperationsPage.SplitWords(role.ToString())
     };
+
+    private void SelectEvidenceTab(EvidenceTab tab)
+    {
+        _evidenceTab = tab;
+        _openDownloadMenu = null;
+    }
+
+    private void ToggleDownloadMenu(Guid artifactId) =>
+        _openDownloadMenu = _openDownloadMenu == artifactId ? null : artifactId;
+
+    // Choosing a format closes the menu; the browser still follows the download link.
+    private void CloseDownloadMenu() => _openDownloadMenu = null;
+
+    private async Task CloseDownloadMenuOnEscapeAsync(KeyboardEventArgs args, Guid artifactId)
+    {
+        if (args.Key != "Escape" || _openDownloadMenu != artifactId) return;
+        _openDownloadMenu = null;
+        if (_downloadMenuButtons.TryGetValue(artifactId, out var button))
+        {
+            try { await button.FocusAsync(); }
+            catch (Exception exception) when (exception is Microsoft.JSInterop.JSException or InvalidOperationException) { }
+        }
+    }
 
     // Formats are declared here so new exports only add an entry; unsupported ones stay visible but disabled.
     private IEnumerable<DownloadOption> DownloadOptions(CameraAgentGalleryArtifact artifact)

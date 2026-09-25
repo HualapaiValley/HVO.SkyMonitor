@@ -44,13 +44,18 @@
             </ArchiveNavigation>
             <Evidence>
                 <section id="technical-evidence" class="capture-evidence" tabindex="-1" aria-labelledby="capture-evidence-heading">
+                    @if (_openDownloadMenu is not null)
+                    {
+                        @* Transparent click-catcher: any click outside the open menu closes it. *@
+                        <div class="download-menu-backdrop" aria-hidden="true" @onclick="CloseDownloadMenu"></div>
+                    }
                     <header class="capture-evidence__header">
                         <div><p class="eyebrow">Retained capture</p><h2 id="capture-evidence-heading">Evidence and downloads</h2></div>
                         <div class="evidence-tabs" role="tablist" aria-label="Capture evidence views">
                             @foreach (var tab in EvidenceTabs)
                             {
                                 var selected = tab == _evidenceTab;
-                                <button id="evidence-tab-@tab" type="button" role="tab" aria-selected="@(selected ? "true" : "false")" aria-controls="evidence-panel-@tab" tabindex="@(selected ? 0 : -1)" class="@(selected ? "active" : "")" @onclick="() => _evidenceTab = tab" @ref="_evidenceTabButtons[tab]" @onkeydown="args => MoveEvidenceTabAsync(args, tab)">@EvidenceTabLabel(tab)@if (tab == EvidenceTab.Artifacts) { <span>@_capture.Artifacts.Count</span> }</button>
+                                <button id="evidence-tab-@tab" type="button" role="tab" aria-selected="@(selected ? "true" : "false")" aria-controls="evidence-panel-@tab" tabindex="@(selected ? 0 : -1)" class="@(selected ? "active" : "")" @onclick="() => SelectEvidenceTab(tab)" @ref="_evidenceTabButtons[tab]" @onkeydown="args => MoveEvidenceTabAsync(args, tab)">@EvidenceTabLabel(tab)@if (tab == EvidenceTab.Artifacts) { <span>@_capture.Artifacts.Count</span> }</button>
                             }
                         </div>
                     </header>
@@ -86,15 +91,16 @@
                                             <span>@(artifactState is null ? "State unavailable" : $"{artifactState.RetentionState} / {artifactState.DeliveryAvailability}")</span>
                                             <div class="evidence-row__actions">
                                                 @if (IsProjectedArtifact(artifact.ArtifactId)) { <a href="@GalleryPage.PreviewUrl(artifact.ArtifactId)" target="_blank" rel="noopener" aria-label="Open @name preview">Preview</a> }
-                                                <details class="download-menu" name="artifact-download-menu">
-                                                    <summary aria-label="Download @name">Download <i class="bi bi-chevron-down" aria-hidden="true"></i></summary>
-                                                    <ul aria-label="@name download formats">
+                                                @{ var menuOpen = _openDownloadMenu == artifact.ArtifactId; var menuId = $"download-menu-{artifact.ArtifactId:N}"; }
+                                                <div class="download-menu @(menuOpen ? "download-menu--open" : "")" @onkeydown="args => CloseDownloadMenuOnEscapeAsync(args, artifact.ArtifactId)">
+                                                    <button type="button" class="download-menu__toggle" aria-label="Download @name" aria-haspopup="true" aria-expanded="@(menuOpen ? "true" : "false")" aria-controls="@menuId" @ref="_downloadMenuButtons[artifact.ArtifactId]" @onclick="() => ToggleDownloadMenu(artifact.ArtifactId)">Download <i class="bi bi-chevron-down" aria-hidden="true"></i></button>
+                                                    <ul id="@menuId" hidden="@(!menuOpen)" aria-label="@name download formats">
                                                         @foreach (var option in DownloadOptions(artifact))
                                                         {
                                                             <li>
                                                                 @if (option.Url is { } url)
                                                                 {
-                                                                    <a href="@url" download data-format="@option.Format"><strong>@option.Label</strong><small>@option.Description</small></a>
+                                                                    <a href="@url" download data-format="@option.Format" @onclick="CloseDownloadMenu"><strong>@option.Label</strong><small>@option.Description</small></a>
                                                                 }
                                                                 else
                                                                 {
@@ -103,7 +109,7 @@
                                                             </li>
                                                         }
                                                     </ul>
-                                                </details>
+                                                </div>
                                             </div>
                                         </div>
                                         <details class="evidence-identifiers">

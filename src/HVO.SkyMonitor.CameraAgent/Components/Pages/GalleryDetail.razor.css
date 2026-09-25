@@ -40,11 +40,13 @@ code { color: #8fc2ff; font-size: .66rem; overflow-wrap: anywhere; }
 .evidence-row__actions a { display: inline-flex; align-items: center; min-height: 2.1rem; padding: 0 .65rem; border: 1px solid var(--hvo-border-strong); border-radius: .4rem; color: var(--hvo-body-color); font-size: .68rem; font-weight: 700; text-decoration: none; }
 .evidence-row__actions a:hover { background: var(--hvo-surface-hover); text-decoration: none; }
 .download-menu { position: relative; }
-.download-menu > summary { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.1rem; padding: 0 .65rem; border: 1px solid var(--hvo-border-strong); border-radius: .4rem; color: var(--hvo-body-color); font-size: .68rem; font-weight: 700; list-style: none; cursor: pointer; }
-.download-menu > summary::-webkit-details-marker { display: none; }
-.download-menu > summary:hover, .download-menu[open] > summary { background: var(--hvo-surface-hover); }
-.download-menu > summary i { font-size: .6rem; transition: transform .15s; }
-.download-menu[open] > summary i { transform: rotate(180deg); }
+.download-menu__toggle { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.1rem; padding: 0 .65rem; border: 1px solid var(--hvo-border-strong); border-radius: .4rem; color: var(--hvo-body-color); background: transparent; font-size: .68rem; font-weight: 700; cursor: pointer; }
+.download-menu__toggle:hover, .download-menu--open .download-menu__toggle { background: var(--hvo-surface-hover); }
+.download-menu__toggle i { font-size: .6rem; transition: transform .15s; }
+.download-menu--open .download-menu__toggle i { transform: rotate(180deg); }
+.download-menu--open { z-index: 21; }
+.download-menu ul[hidden] { display: none; }
+.download-menu-backdrop { position: fixed; inset: 0; z-index: 20; }
 .download-menu ul { position: absolute; z-index: 20; top: calc(100% + .3rem); right: 0; width: 17rem; margin: 0; padding: .3rem; border: 1px solid var(--hvo-border-strong); border-radius: .5rem; background: var(--hvo-surface-elevated); box-shadow: 0 14px 35px rgba(0, 0, 0, .45); list-style: none; }
 .download-menu li > * { display: grid; gap: .1rem; min-height: 44px; padding: .45rem .6rem; border: 0 !important; border-radius: .35rem; color: var(--hvo-body-color); text-decoration: none; }
 .evidence-row__actions .download-menu li > a { display: grid; align-items: start; }
