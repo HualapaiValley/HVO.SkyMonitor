@@ -41,6 +41,11 @@
         </div>
     </header>
 
+    @if (IsArchived && ArchiveNavigation is not null)
+    {
+        @ArchiveNavigation
+    }
+
     @if (_errorMessage is not null)
     {
         <div class="state-notice state-notice--error" role="alert">

@@ -106,6 +106,9 @@ public sealed class GalleryDetailTests
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, current.CaptureId));
 
         cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".capture-navigation__control[href]")));
+        Assert.IsEmpty(cut.FindAll(".breadcrumb"));
+        Assert.AreEqual("All captures", cut.Find(".capture-navigation__archive").TextContent);
+        Assert.AreEqual("current-sky-heading", cut.Find(".capture-navigation").PreviousElementSibling?.QuerySelector("h1")?.Id);
         Assert.AreEqual(GalleryEvidenceOrigin.Simulated, observedQuery?.EvidenceOrigin);
         Assert.IsNull(observedQuery?.PageSize);
         Assert.IsNull(observedQuery?.Cursor);
@@ -423,14 +426,14 @@ public sealed class GalleryDetailTests
         var local = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
         local.WaitForAssertion(() => Assert.AreEqual(
             "/gallery?origin=Simulated&cursor=abc",
-            local.Find(".breadcrumb a").GetAttribute("href")));
+             local.Find(".capture-navigation__archive").GetAttribute("href")));
 
         navigation.NavigateTo(Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
             "/gallery/capture",
             "returnUrl",
             "https://attacker.example/gallery"));
         var rejected = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
-        rejected.WaitForAssertion(() => Assert.AreEqual("/gallery", rejected.Find(".breadcrumb a").GetAttribute("href")));
+        rejected.WaitForAssertion(() => Assert.AreEqual("/gallery", rejected.Find(".capture-navigation__archive").GetAttribute("href")));
     }
 
     [TestMethod]
@@ -636,7 +639,7 @@ public sealed class GalleryDetailTests
             Assert.AreEqual(HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, observed!.ProcessingRole);
             Assert.AreEqual("TerminalFailure", observed.ProcessingStatus);
         }
-        Assert.AreEqual($"/gallery?{query}", cut.Find(".breadcrumb a").GetAttribute("href"));
+        Assert.AreEqual($"/gallery?{query}", cut.Find(".capture-navigation__archive").GetAttribute("href"));
     }
 
     [TestMethod]

@@ -82,6 +82,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter] public CameraAgentCaptureDetailView? ArchivedView { get; set; }
+    [Parameter] public RenderFragment? ArchiveNavigation { get; set; }
 
     private bool IsArchived => ArchivedView is not null;
     private CameraAgentCaptureDetailView? _appliedArchive;

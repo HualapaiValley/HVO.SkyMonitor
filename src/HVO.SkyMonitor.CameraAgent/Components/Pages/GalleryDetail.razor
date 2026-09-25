@@ -8,7 +8,6 @@
 <PageTitle>Capture detail</PageTitle>
 
 <div class="detail-page">
-    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Archive</a><span>/</span><span aria-current="page">Capture detail</span></nav>
     @if (_isLoading)
     {
         <PageHeader Title="Capture detail" />
@@ -21,26 +20,29 @@
     }
     else
     {
-        <nav class="capture-navigation" aria-label="Adjacent captures">
-            @if (_previousCaptureId is { } previousCaptureId)
-            {
-                <a class="capture-navigation__control" href="@CaptureUrl(previousCaptureId)"><i class="bi bi-arrow-left" aria-hidden="true"></i> Previous capture</a>
-            }
-            else
-            {
-                <span class="capture-navigation__control capture-navigation__control--disabled" aria-disabled="true"><i class="bi bi-arrow-left" aria-hidden="true"></i> Previous capture</span>
-            }
-            <a class="capture-navigation__archive" href="@BackUrl">Back to archive</a>
-            @if (_nextCaptureId is { } nextCaptureId)
-            {
-                <a class="capture-navigation__control" href="@CaptureUrl(nextCaptureId)">Next capture <i class="bi bi-arrow-right" aria-hidden="true"></i></a>
-            }
-            else
-            {
-                <span class="capture-navigation__control capture-navigation__control--disabled" aria-disabled="true">Next capture <i class="bi bi-arrow-right" aria-hidden="true"></i></span>
-            }
-        </nav>
-        <CurrentSkyPage @key="_capture.CaptureId" ArchivedView="@_view" />
+        <CurrentSkyPage @key="_capture.CaptureId" ArchivedView="@_view">
+            <ArchiveNavigation>
+                <nav class="capture-navigation" aria-label="Adjacent captures">
+                    @if (_previousCaptureId is { } previousCaptureId)
+                    {
+                        <a class="capture-navigation__control" href="@CaptureUrl(previousCaptureId)" aria-label="Previous capture" title="Previous capture"><i class="bi bi-chevron-left" aria-hidden="true"></i></a>
+                    }
+                    else
+                    {
+                        <span class="capture-navigation__control capture-navigation__control--disabled" aria-label="Previous capture unavailable" title="Previous capture unavailable"><i class="bi bi-chevron-left" aria-hidden="true"></i></span>
+                    }
+                    <a class="capture-navigation__archive" href="@BackUrl">All captures</a>
+                    @if (_nextCaptureId is { } nextCaptureId)
+                    {
+                        <a class="capture-navigation__control" href="@CaptureUrl(nextCaptureId)" aria-label="Next capture" title="Next capture"><i class="bi bi-chevron-right" aria-hidden="true"></i></a>
+                    }
+                    else
+                    {
+                        <span class="capture-navigation__control capture-navigation__control--disabled" aria-label="Next capture unavailable" title="Next capture unavailable"><i class="bi bi-chevron-right" aria-hidden="true"></i></span>
+                    }
+                </nav>
+            </ArchiveNavigation>
+        </CurrentSkyPage>
 
         <details id="technical-evidence" class="technical-evidence">
         <summary>Technical evidence and downloads</summary>
