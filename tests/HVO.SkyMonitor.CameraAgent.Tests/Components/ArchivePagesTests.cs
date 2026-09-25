@@ -111,6 +111,7 @@ public sealed class ArchivePagesTests
             Assert.IsNull(day.QuerySelector("img"));
             Assert.IsNotNull(day.QuerySelector(".calendar-thumb--missing"));
             StringAssert.Contains(day.TextContent, "preview unavailable", StringComparison.Ordinal);
+            StringAssert.Contains(day.QuerySelector("a")!.GetAttribute("aria-label"), "preview unavailable", StringComparison.Ordinal);
             Assert.AreEqual("/archive/day/2026-07-21", day.QuerySelector("a")!.GetAttribute("href"));
             StringAssert.Contains(cut.Find(".calendar-day--empty").TextContent, "No retained captures", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Capture coverageUnavailable", StringComparison.Ordinal);

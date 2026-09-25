@@ -112,9 +112,9 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             ? FormattableString.Invariant($"{day.CaptureCount:N0} capture{(day.CaptureCount == 1 ? "" : "s")}")
             : "No retained captures";
 
-    private static string CellAriaLabel(CalendarCell cell)
+    private static string CellAriaLabel(CalendarCell cell, bool missingThumbnail)
         => cell.Day is { CaptureCount: > 0 } day
-            ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates")
+            ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates{(missingThumbnail ? ", preview unavailable" : string.Empty)}")
             : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no retained captures");
 
     internal static string DayUrl(DateOnly date) => FormattableString.Invariant($"/archive/day/{date:yyyy-MM-dd}");

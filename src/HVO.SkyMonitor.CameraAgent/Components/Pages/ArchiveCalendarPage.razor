@@ -55,7 +55,7 @@
                     var hasSession = day is { CaptureCount: > 0 };
                     var missingThumbnail = hasSession && (day!.RepresentativeCaptureId is not { } id || _failedThumbnails.Contains(id));
                     <li class="@CellClass(cell)" aria-current="@(cell.IsToday ? "date" : null)">
-                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell)">
+                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
                             <header class="calendar-day__date">
                                 <strong><time datetime="@cell.Date.ToString("yyyy-MM-dd")">@CellDayLabel(cell)</time></strong>
                                 @if (day is { CandidateCount: > 0 })
