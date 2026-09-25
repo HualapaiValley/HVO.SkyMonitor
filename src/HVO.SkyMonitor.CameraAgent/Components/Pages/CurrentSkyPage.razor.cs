@@ -35,7 +35,13 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _moduleImportAttempted = true;
         try
         {
-            _layerModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            var module = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (Volatile.Read(ref _disposeStarted) != 0)
+            {
+                await module.DisposeAsync();
+                return;
+            }
+            _layerModule = module;
         }
         catch (Exception)
         {
@@ -76,7 +82,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        await WarmInteropModuleAsync().ConfigureAwait(false);
+        await WarmInteropModuleAsync();
         if (!_bindLayers || !ShowLayeredHero) return;
         _bindLayers = false;
         var generation = _layerGeneration;
@@ -464,13 +470,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             ? $"{SelectedLayerCount} selected"
             : $"{SelectedLayerCount} selected / hidden at this stage";
 
-    // Data-driven frame, never the prototype's 1936x1216 fixture: the layered canvas uses the retained payload
-    // dimensions, and the plain image reserves its recorded capture dimensions so the stage does not shift on load.
+    // Data-driven frame, never the prototype's 1936x1216 fixture: the layered canvas takes the retained payload's
+    // own ratio so the SVG viewBox registers exactly. The plain image reserves height through CaptureImage's own
+    // min-height and sizes to its bytes, so no fixed ratio is applied that could clip it.
     private string StageAspectStyle => _layers is { } layers && ShowLayeredHero
         ? FormattableString.Invariant($"aspect-ratio: {layers.WidthPixels} / {layers.HeightPixels};")
-        : _facts is { Width: > 0 } facts && facts.Height is > 0
-            ? FormattableString.Invariant($"aspect-ratio: {facts.Width} / {facts.Height};")
-            : string.Empty;
+        : string.Empty;
 
     private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 
