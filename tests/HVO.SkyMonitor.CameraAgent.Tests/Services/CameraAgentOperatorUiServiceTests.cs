@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -218,19 +219,153 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(absent ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable, result.Kind);
     }
 
+    [TestMethod]
+    public async Task CaptureDetailUsesExactValidatedPresentationAndCombinedIdentityAsync()
+    {
+        var capture = OperatorUiTestData.Capture(Guid.NewGuid()) with { RawState = "committed" };
+        var raw = capture.Artifacts[0];
+        var combined = raw with
+        {
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Combined,
+            Variant = "a-selected",
+            SourceArtifactIds = [raw.ArtifactId],
+            CreatedUtc = OperatorUiTestData.Now.AddMinutes(-2)
+        };
+        var newest = combined with
+        {
+            ArtifactId = Guid.NewGuid(),
+            Variant = "z-newest",
+            CreatedUtc = OperatorUiTestData.Now,
+            SourceArtifactIds = [Guid.NewGuid(), Guid.NewGuid()]
+        };
+        var derivative = capture.Artifacts[1] with
+        {
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview,
+            SourceArtifactIds = [combined.ArtifactId],
+            Recipe = new CameraAgentGalleryRecipe("encoded-preview", "1", "encoded-preview-v1", "OPTIONS", "IDENTITY")
+        };
+        capture = capture with { Artifacts = [raw, combined, newest, derivative] };
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .ProjectWithRetainedDisplay(capture);
+        var gallery = new Mock<ICameraAgentGallery>(MockBehavior.Strict);
+        var presentations = new Mock<ICameraAgentCurrentImagePresentationService>(MockBehavior.Strict);
+        using var cancellation = new CancellationTokenSource();
+        gallery.Setup(value => value.GetCaptureAsync(capture.CaptureId, cancellation.Token)).ReturnsAsync(capture);
+        presentations.Setup(value => value.ProjectCaptureAsync(capture, cancellation.Token)).ReturnsAsync(projection);
+        var service = CreateCaptureDetailService(gallery.Object, presentations.Object);
+
+        var result = await service.GetCaptureDetailViewAsync(capture.CaptureId, cancellation.Token).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.AreSame(capture, result.Value!.Capture);
+        CollectionAssert.AreEqual(projection.Stages.ToArray(), result.Value.Presentation.Stages.ToArray());
+        var slot = result.Value.Presentation.Stages.Single(static value => value.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combined.ArtifactId, slot.ArtifactId);
+        Assert.AreEqual(derivative.ArtifactId, slot.DisplayArtifactId);
+        Assert.AreEqual(derivative.ArtifactId, slot.DisplayReferenceId);
+        Assert.IsNotNull(result.Value.Facts);
+        Assert.AreEqual(capture.CaptureId, result.Value.Facts.CaptureId);
+        Assert.AreEqual(capture.ExposureStartedUtc, result.Value.Facts.ExposureStartedUtc);
+        Assert.AreEqual(capture.Detail!.Controls!.EffectiveExposureMilliseconds, result.Value.Facts.ExposureMilliseconds);
+        Assert.AreEqual(capture.Detail.CloudAssessment!.CoverageMillionths, result.Value.Facts.Cloud.CoverageMillionths);
+        Assert.AreEqual(combined.ArtifactId, result.Value.Facts.CombinedLineage!.ArtifactId);
+        CollectionAssert.AreEqual(combined.SourceArtifactIds.ToArray(), result.Value.Facts.CombinedLineage.SourceArtifactIds.ToArray());
+        gallery.VerifyAll();
+        gallery.VerifyNoOtherCalls();
+        presentations.VerifyAll();
+        presentations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task CaptureDetailNeverBorrowsCombinedLineageWithoutAValidatedSlotAsync(bool retainedCombined, bool truncated)
+    {
+        var capture = OperatorUiTestData.Capture(Guid.NewGuid()) with { ArtifactsTruncated = truncated };
+        if (retainedCombined)
+        {
+            capture = capture with
+            {
+                Artifacts = [.. capture.Artifacts, capture.Artifacts[0] with { ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Combined }]
+            };
+        }
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())).Project(capture);
+        projection = projection with
+        {
+            Stages = projection.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined
+                ? new CameraAgentPresentationSlot(slot.Stage, slot.Label,
+                    retainedCombined || truncated ? CameraAgentPresentationSlotAvailability.Unavailable : CameraAgentPresentationSlotAvailability.Missing,
+                    retainedCombined ? "Gone" : truncated ? "ProjectionBoundReached" : "NotProduced")
+                : slot).ToArray()
+        };
+        var gallery = new Mock<ICameraAgentGallery>(MockBehavior.Strict);
+        var presentations = new Mock<ICameraAgentCurrentImagePresentationService>(MockBehavior.Strict);
+        gallery.Setup(value => value.GetCaptureAsync(capture.CaptureId, CancellationToken.None)).ReturnsAsync(capture);
+        presentations.Setup(value => value.ProjectCaptureAsync(capture, CancellationToken.None)).ReturnsAsync(projection);
+
+        var result = await CreateCaptureDetailService(gallery.Object, presentations.Object)
+            .GetCaptureDetailViewAsync(capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.IsNotNull(result.Value!.Facts);
+        Assert.IsNull(result.Value.Facts.CombinedLineage);
+        Assert.AreEqual(retainedCombined || truncated, result.Value.Facts.CombinedLineageUnavailable);
+        gallery.VerifyAll();
+        gallery.VerifyNoOtherCalls();
+        presentations.VerifyAll();
+        presentations.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CaptureDetailRejectsMissingOrWrongReturnedCaptureWithoutProjectionAsync(bool wrongId)
+    {
+        var requestedId = Guid.NewGuid();
+        var gallery = new Mock<ICameraAgentGallery>(MockBehavior.Strict);
+        var presentations = new Mock<ICameraAgentCurrentImagePresentationService>(MockBehavior.Strict);
+        gallery.Setup(value => value.GetCaptureAsync(requestedId, CancellationToken.None))
+            .ReturnsAsync(wrongId ? OperatorUiTestData.Capture(Guid.NewGuid()) : null);
+
+        var result = await CreateCaptureDetailService(gallery.Object, presentations.Object)
+            .GetCaptureDetailViewAsync(requestedId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.NotFound, result.Kind);
+        Assert.IsNull(result.Value);
+        gallery.VerifyAll();
+        gallery.VerifyNoOtherCalls();
+        presentations.VerifyNoOtherCalls();
+    }
+
+    private static CameraAgentOperatorUiService CreateCaptureDetailService(
+        ICameraAgentGallery gallery,
+        ICameraAgentCurrentImagePresentationService presentations)
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            gallery: gallery, presentations: presentations);
+    }
+
     private static CameraAgentOperatorUiService CreateService(
         AuthenticationStateProvider authentication,
         IAuthorizationService authorization,
         OutboxOperationsTokenService? tokenService = null,
-        ICameraAgentLayeredPresentationService? layers = null) => new(
+        ICameraAgentLayeredPresentationService? layers = null,
+        ICameraAgentGallery? gallery = null,
+        ICameraAgentCurrentImagePresentationService? presentations = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
-            gallery: null!,
+            gallery: gallery!,
             archive: null!,
-            observingDays: null!,
-            capturePresentation: null!,
-            currentImagePresentation: null!,
+            observingDays: new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")),
+            currentImagePresentation: presentations!,
             layeredPresentations: layers!,
             null!,
             null!,

@@ -228,6 +228,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(CancellationToken cancellationToken) => CurrentImageHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(Guid captureId, CancellationToken cancellationToken) => DetailHandler(captureId, cancellationToken);
+    internal Func<CameraAgentGalleryCapture, CameraAgentCapturePresentation>? DetailPresentationHandler { get; set; }
     public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(Guid captureId, CancellationToken cancellationToken)
     {
         var result = await DetailHandler(captureId, cancellationToken).ConfigureAwait(false);
@@ -238,9 +239,12 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
                 result.Message ?? "The capture detail is unavailable.");
         }
         var capture = result.Value;
-        return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
-            capture,
-            CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(Project(capture))));
+        var presentation = CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(DetailPresentationHandler?.Invoke(capture) ?? Project(capture));
+        var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var combinedId = combined.Availability == CameraAgentPresentationSlotAvailability.Available ? combined.ArtifactId : null;
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.Create("UTC"), combinedId);
+        if (combinedId is null) facts = facts with { CombinedLineage = null };
+        return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
     }
 
     public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture)

@@ -817,6 +817,104 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.IsTrue(artifacts.Requests.All(static request => request.Reference is null));
     }
 
+    [TestMethod]
+    [DataRow("valid-reference")]
+    [DataRow("rejected-reference")]
+    [DataRow("gone-derivative")]
+    [DataRow("missing-derivative")]
+    [DataRow("ambiguous-derivative")]
+    public async Task ExactCaptureMatchesCurrentValidationWithoutHistoryOrRuntimeReadsAsync(string scenario)
+    {
+        var rawId = Guid.NewGuid();
+        var calibratedId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var derivativeId = Guid.NewGuid();
+        var captureArtifacts = new List<CameraAgentGalleryArtifact>
+        {
+            Artifact(rawId, FrameArtifactRole.Raw, "native", "application/x-skymonitor-mono16", sources: []),
+            Artifact(calibratedId, FrameArtifactRole.Calibrated, "linear", "application/x-hvo-linear-frame", sources: [rawId]),
+            Artifact(combinedId, FrameArtifactRole.Combined, "mean", "application/x-hvo-linear-frame", sources: [calibratedId])
+        };
+        if (scenario != "missing-derivative")
+            captureArtifacts.Add(EncodedPreview(derivativeId, "combined-preview", [combinedId]));
+        if (scenario == "ambiguous-derivative")
+            captureArtifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview-alt", [combinedId]));
+        var capture = Capture(14, Now.AddDays(-3), captureArtifacts);
+        var statuses = new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [derivativeId] = scenario == "gone-derivative" ? CameraAgentArtifactReadStatus.Gone : CameraAgentArtifactReadStatus.Found
+        };
+        var exactArtifacts = new StubArtifactService(statuses)
+        {
+            RejectedPolicyTarget = scenario == "rejected-reference" ? rawId : null
+        };
+        var liveArtifacts = new StubArtifactService(statuses)
+        {
+            RejectedPolicyTarget = exactArtifacts.RejectedPolicyTarget
+        };
+        // Every dependency that can read current state is absent from the exact-capture service.
+        var exactService = new CameraAgentCurrentImagePresentationService(
+            null!, new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
+            exactArtifacts, null!, null!, null!);
+
+        var exact = await exactService.ProjectCaptureAsync(capture, CancellationToken.None).ConfigureAwait(false);
+        var live = await CreateService(new StubGallery(new CameraAgentGalleryPage([capture], null)), artifacts: liveArtifacts)
+            .GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(live.SelectedStage, exact.SelectedStage);
+        CollectionAssert.AreEqual(live.Stages.ToArray(), exact.Stages.ToArray());
+        CollectionAssert.AreEqual(liveArtifacts.Requests, exactArtifacts.Requests);
+        Assert.IsLessThanOrEqualTo(CameraAgentCurrentImagePresentationService.MaximumPreviewValidationAttempts, exactArtifacts.Requests.Count);
+        var combined = exact.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combinedId, combined.ArtifactId);
+        Assert.AreEqual(scenario == "valid-reference" ? derivativeId : combinedId, combined.DisplayArtifactId);
+        Assert.AreEqual(scenario == "valid-reference" ? CameraAgentPresentationDisplayBasis.RetainedDerivative
+            : CameraAgentPresentationDisplayBasis.OwnArtifact, combined.DisplayBasis);
+        foreach (var slot in exact.Stages.Where(static slot => slot.Stage != CameraAgentPresentationStage.Annotated))
+        {
+            Assert.AreEqual(scenario == "valid-reference" ? derivativeId : (Guid?)null, slot.DisplayReferenceId);
+        }
+        if (scenario == "valid-reference")
+        {
+            Assert.Contains((derivativeId, (Guid?)derivativeId), exactArtifacts.Requests);
+            Assert.Contains((calibratedId, (Guid?)derivativeId), exactArtifacts.Requests);
+            Assert.Contains((rawId, (Guid?)derivativeId), exactArtifacts.Requests);
+        }
+    }
+
+    [TestMethod]
+    public async Task ExactCaptureValidationIsBoundedAndNeverSubstitutesAnotherCaptureAsync()
+    {
+        var capture = Capture(15, Now.AddDays(-3), Enumerable.Range(0, 13)
+            .Select(index => Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, $"preview-{index:D2}", "application/x-hvo-packed-image"))
+            .ToArray());
+        var artifacts = new StubArtifactService(capture.Artifacts.ToDictionary(
+            static artifact => artifact.ArtifactId, static _ => CameraAgentArtifactReadStatus.Gone));
+        var service = new CameraAgentCurrentImagePresentationService(
+            null!, new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
+            artifacts, null!, null!, null!);
+
+        var result = await service.ProjectCaptureAsync(capture, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(12, artifacts.Requests);
+        Assert.IsNull(result.SelectedStage);
+        var processed = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual("ValidationBoundReached", processed.Reason);
+        Assert.IsTrue(result.Stages.All(static slot => slot.ArtifactId is null && slot.PreviewUrl is null));
+    }
+
+    [TestMethod]
+    public async Task ExactCaptureCancellationPropagatesEvenWithoutDisplayableArtifactsAsync()
+    {
+        var service = new CameraAgentCurrentImagePresentationService(null!, null!, null!, null!, null!, null!);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await service.ProjectCaptureAsync(Capture(16, Now, []), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
     private static CameraAgentCurrentImagePresentationService CreateService(
         ICameraAgentGallery gallery,
         CameraAgentPresentationSystemState systemState = CameraAgentPresentationSystemState.Capturing,

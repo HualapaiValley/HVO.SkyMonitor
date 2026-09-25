@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -13,9 +14,29 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class GalleryDetailTests
 {
     private static void ConfigureGraphService(BunitContext context)
-        => context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
+    {
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
+    }
+
+    private static CameraAgentCapturePresentation LayeredStages(CameraAgentGalleryCapture capture)
+    {
+        var stages = new TestOperatorUiService().Project(capture);
+        return stages with
+        {
+            Stages = stages.Stages.Select(slot => slot.Stage == CameraAgentPresentationStage.Combined
+                ? slot with
+                {
+                    Availability = CameraAgentPresentationSlotAvailability.Available,
+                    ArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000103"),
+                    DisplayArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000102"),
+                    DisplayBasis = CameraAgentPresentationDisplayBasis.RetainedDerivative,
+                    PreviewUrl = new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative)
+                } : slot).ToArray()
+        };
+    }
     [TestMethod]
-    public void DetailLeadsWithExactStageSummaryAndLargeViewer()
+    public void DetailReusesDashboardWithExactStageFactsAndFullscreen()
     {
         using var context = new BunitContext();
         ConfigureGraphService(context);
@@ -27,31 +48,31 @@ public sealed class GalleryDetailTests
         });
 
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
-        cut.WaitForElement(".detail-capture-image img");
+        cut.WaitForElement(".sky-image-stage img");
 
         Assert.AreEqual(
             "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview",
-            cut.Find(".detail-capture-image img").GetAttribute("src"));
-        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "Processed", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "1 sec", StringComparison.Ordinal);
+            cut.Find(".sky-image-stage img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "1 s", StringComparison.Ordinal);
         Assert.IsFalse(cut.Find(".technical-evidence").HasAttribute("open"));
+        Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
+        Assert.HasCount(1, cut.FindComponents<CurrentSkyPage>());
+        Assert.IsEmpty(cut.FindAll(".layered-workspace"));
 
-        cut.FindAll(".stage-selector__button").Single(button => button.TextContent.Contains("Raw", StringComparison.Ordinal)).Click();
+        cut.Find("button[title='Show Raw image']").Click();
 
         Assert.AreEqual(
             "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview",
-            cut.Find(".detail-capture-image img").GetAttribute("src"));
-        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "Raw", StringComparison.Ordinal);
-        cut.Find("#capture-detail-view-large").Click();
+            cut.Find(".sky-image-stage img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Raw", StringComparison.Ordinal);
+        cut.Find("#current-sky-view-large").Click();
         cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
-            invocation.Identifier.EndsWith("show", StringComparison.Ordinal))));
-        var viewer = cut.FindComponent<HVO.SkyMonitor.CameraAgent.Components.Presentation.LargeImageViewer>();
-        Assert.AreEqual(cut.Find(".detail-capture-image img").GetAttribute("src"), viewer.Find("img").GetAttribute("src"));
-        viewer.FindAll(".large-viewer__modes button")[1].Click();
-        Assert.HasCount(1, viewer.FindAll(".large-viewer__canvas--native"));
+            invocation.Identifier == "requestFullScreen")));
+        Assert.HasCount(1, cut.FindAll(".sky-image-stage img"));
 
-        cut.Find(".detail-capture-image img").TriggerEvent("onerror", EventArgs.Empty);
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "retained preview could not be loaded", StringComparison.Ordinal));
+        cut.Find(".sky-image-stage img").TriggerEvent("onerror", EventArgs.Empty);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Image preview unavailable", StringComparison.Ordinal));
         StringAssert.Contains(cut.Markup, "Download content", StringComparison.Ordinal);
     }
 
@@ -178,6 +199,7 @@ public sealed class GalleryDetailTests
         var capture = OperatorUiTestData.Capture();
         var service = new TestOperatorUiService
         {
+            DetailPresentationHandler = LayeredStages,
             DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture)),
             PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(new(
                 capture.CaptureId,
@@ -196,14 +218,17 @@ public sealed class GalleryDetailTests
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
 
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
 
         cut.WaitForAssertion(() =>
         {
-            Assert.HasCount(1, cut.FindAll(".layered-canvas > img"));
-            Assert.HasCount(1, cut.FindAll(".layered-overlay svg"));
-            Assert.HasCount(2, cut.FindAll(".layer-controls input[type='checkbox']"));
-            StringAssert.Contains(cut.Markup, "toggles run locally", StringComparison.Ordinal);
+            Assert.HasCount(1, cut.FindAll(".sky-layer-canvas > img"));
+            Assert.HasCount(1, cut.FindAll(".sky-layer-overlay svg"));
+            Assert.HasCount(2, cut.FindAll(".sky-layer-controls input[data-layer-target]"));
+            Assert.IsEmpty(cut.FindAll(".layered-workspace"));
             StringAssert.Contains(cut.Markup, "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("script"));
         });
@@ -231,6 +256,7 @@ public sealed class GalleryDetailTests
         var fail = false;
         var service = new TestOperatorUiService
         {
+            DetailPresentationHandler = LayeredStages,
             DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture)),
             PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)),
             MaterializationHandler = (captureId, selected, _) =>
@@ -245,28 +271,27 @@ public sealed class GalleryDetailTests
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
-        var module = context.JSInterop.SetupModule("./Components/Pages/GalleryDetail.razor.js");
-        module.SetupVoid("bindLayerToggles", _ => true);
-        module.Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([selectedIdentity]);
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
-        cut.WaitForElement(".layer-save button");
+        cut.WaitForElement(".sky-layer-canvas--verified");
 
-        await cut.Find(".layer-save button").ClickAsync().ConfigureAwait(false);
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
 
         CollectionAssert.AreEqual(new[] { selectedIdentity }, submitted?.ToArray());
         cut.WaitForAssertion(() => StringAssert.Contains(
-            cut.Find("[role='status']").TextContent, "new immutable artifact", StringComparison.Ordinal));
+            cut.Find(".sky-layer-result[role='status']").TextContent, "new immutable artifact", StringComparison.Ordinal));
 
         fail = true;
-        await cut.Find(".layer-save button").ClickAsync().ConfigureAwait(false);
+        await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
 
         cut.WaitForAssertion(() => StringAssert.Contains(
             cut.Find("[role='alert']").TextContent, "conflicts with the selected stack", StringComparison.Ordinal));
-        Assert.IsFalse(cut.Find(".layer-save button").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
     }
 
     [TestMethod]
-    public async Task NavigatingDuringLayerSelectionDoesNotSaveOrShowAStaleReceiptAsync()
+    public async Task NavigatingDuringSaveNeverShowsReceiptOnAnotherCaptureAsync()
     {
         using var context = new BunitContext();
         ConfigureGraphService(context);
@@ -274,8 +299,10 @@ public sealed class GalleryDetailTests
         var second = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000021"));
         var selectedIdentity = new string('D', 64);
         var materializationCalls = 0;
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var service = new TestOperatorUiService
         {
+            DetailPresentationHandler = LayeredStages,
             DetailHandler = (captureId, _) => ValueTask.FromResult(
                 OperatorUiResult<CameraAgentGalleryCapture>.Success(captureId == first.CaptureId ? first : second)),
             PresentationHandler = (captureId, _) => ValueTask.FromResult(
@@ -292,35 +319,28 @@ public sealed class GalleryDetailTests
                         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>")))),
             MaterializationHandler = (captureId, _, _) =>
             {
+                Assert.AreEqual(first.CaptureId, captureId);
                 Interlocked.Increment(ref materializationCalls);
-                return ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
-                    captureId,
-                    Guid.Parse("00000000-0000-0000-0000-000000000104"),
-                    new string('F', 64),
-                    new string('A', 64),
-                    1024,
-                    false)));
+                return new(pending.Task);
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
-        var module = context.JSInterop.SetupModule("./Components/Pages/GalleryDetail.razor.js");
-        module.SetupVoid("bindLayerToggles", _ => true);
-        var selection = module.Setup<string[]>("selectedLayerIdentities", _ => true);
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, first.CaptureId));
-        cut.WaitForElement(".layer-save button");
+        cut.WaitForElement(".sky-layer-canvas--verified");
 
-        var save = cut.Find(".layer-save button").ClickAsync();
-        cut.WaitForAssertion(() => Assert.IsTrue(module.Invocations.Any(static invocation =>
-            invocation.Identifier == "selectedLayerIdentities")));
+        var save = cut.Find(".sky-layer-save button").ClickAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, materializationCalls));
         cut.Render(parameters => parameters.Add(page => page.CaptureId, second.CaptureId));
-        selection.SetResult([selectedIdentity]);
+        pending.SetResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+            first.CaptureId, Guid.NewGuid(), new string('F', 64), new string('A', 64), 1024, false)));
         await save.ConfigureAwait(false);
-        await cut.Find(".stage-selector__button").ClickAsync().ConfigureAwait(false);
 
-        Assert.AreEqual(0, materializationCalls);
-        Assert.IsEmpty(cut.FindAll("[role='status']"));
+        Assert.AreEqual(1, materializationCalls);
+        Assert.IsEmpty(cut.FindAll(".sky-layer-result"));
         Assert.IsEmpty(cut.FindAll("[role='alert']"));
-        Assert.IsFalse(cut.Find(".layer-save button").HasAttribute("disabled"));
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
     }
 
     [TestMethod]
@@ -505,6 +525,143 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
+    public async Task ArchivedWorkspaceNeverPollsLatestAndKeepsSelectionOnRetry()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.Services.AddSingleton<TimeProvider>(new NoPollingTimeProvider());
+        var service = new TestOperatorUiService();
+        var capture = OperatorUiTestData.Capture();
+        var currentReads = 0;
+        var exactReads = 0;
+        service.CurrentSkyHandler = _ =>
+        {
+            currentReads++;
+            throw new AssertFailedException("An archived view must not read Current Sky.");
+        };
+        service.DetailHandler = (id, _) =>
+        {
+            Assert.AreEqual(capture.CaptureId, id);
+            exactReads++;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture));
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(QueryHelpers.AddQueryString($"/gallery/{capture.CaptureId:D}", "returnUrl", "/gallery?cursor=retained"));
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+        var source = cut.Find(".sky-image-stage img").GetAttribute("src");
+        await cut.Find(".refresh-link").ClickAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(0, currentReads);
+        Assert.AreEqual(1, exactReads);
+        Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
+        Assert.AreEqual(source, cut.Find(".sky-image-stage img").GetAttribute("src"));
+        Assert.AreEqual("true", cut.Find("button[title='Show Raw image']").GetAttribute("aria-pressed"));
+        Assert.IsEmpty(cut.FindAll(".live-indicator"));
+        Assert.AreEqual(new Uri(navigation.Uri).PathAndQuery + "#technical-evidence",
+            cut.Find(".figure-actions a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void MissingOrMismatchedCaptureNeverRendersAnotherCapture(bool mismatched)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var requested = Guid.NewGuid();
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(mismatched
+                ? OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture())
+                : OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.NotFound, "Capture not found."))
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, requested));
+        Assert.HasCount(1, cut.FindAll(".detail-state--error"));
+        Assert.IsEmpty(cut.FindComponents<CurrentSkyPage>());
+        Assert.IsEmpty(cut.FindAll("img"));
+    }
+
+    [TestMethod]
+    public async Task LateNeighbourResponseCannotReplaceNewCaptureNavigation()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var first = OperatorUiTestData.Capture();
+        var second = first with { CaptureId = Guid.NewGuid(), CaptureSequence = 99 };
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentGalleryNeighbours>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(id == first.CaptureId ? first : second)),
+            NeighboursHandler = (id, _, _) => id == first.CaptureId ? new(pending.Task)
+                : ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryNeighbours>.Success(new(id, null, first.CaptureId)))
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, first.CaptureId));
+        cut.Render(parameters => parameters.Add(page => page.CaptureId, second.CaptureId));
+        var unrelated = Guid.NewGuid();
+        pending.SetResult(OperatorUiResult<CameraAgentGalleryNeighbours>.Success(new(first.CaptureId, unrelated, unrelated)));
+        await cut.InvokeAsync(() => Task.CompletedTask).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("Capture #99", cut.Find("h1").TextContent));
+        var link = cut.Find(".capture-navigation__control[href]");
+        StringAssert.Contains(link.GetAttribute("href"), first.CaptureId.ToString("D"), StringComparison.Ordinal);
+        Assert.IsFalse(cut.Markup.Contains(unrelated.ToString("D"), StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow("product=Combined&outcome=TerminalFailure", true)]
+    [DataRow("q=single&product=Combined", false)]
+    public void NeighbourQueryKeepsArchiveFiltersOrDisablesPageLocalSearch(string query, bool expectedRead)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        CameraAgentGalleryQuery? observed = null;
+        var service = new TestOperatorUiService
+        {
+            NeighboursHandler = (id, filters, _) =>
+            {
+                observed = filters;
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryNeighbours>.Success(new(id, null, null)));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(QueryHelpers.AddQueryString(
+            $"/gallery/{OperatorUiTestData.Capture().CaptureId:D}", "returnUrl", $"/gallery?{query}"));
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, OperatorUiTestData.Capture().CaptureId));
+        Assert.AreEqual(expectedRead, observed is not null);
+        if (expectedRead)
+        {
+            Assert.AreEqual(HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, observed!.ProcessingRole);
+            Assert.AreEqual("TerminalFailure", observed.ProcessingStatus);
+        }
+        Assert.AreEqual($"/gallery?{query}", cut.Find(".breadcrumb a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task DisclosureInteropFailurePreservesCaptureAndManualEvidence(bool importFails)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var capture = OperatorUiTestData.Capture();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        if (importFails)
+            context.Services.AddSingleton<Microsoft.JSInterop.IJSRuntime>(new FailingImportRuntime());
+        else
+            context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+                .SetupVoid("openTechnicalEvidence", _ => true).SetException(new Microsoft.JSInterop.JSException("private browser diagnostic"));
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        await cut.Find(".figure-actions a").ClickAsync().ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".technical-evidence-error").TextContent, "below the image", StringComparison.Ordinal);
+        Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
+        Assert.HasCount(1, cut.FindAll("#technical-evidence > summary"));
+        Assert.IsFalse(cut.Markup.Contains("private browser diagnostic", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task DisposalCancelsPendingCaptureRead()
     {
         using var context = new BunitContext();
@@ -525,5 +682,20 @@ public sealed class GalleryDetailTests
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+    }
+
+    private sealed class NoPollingTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => OperatorUiTestData.Now;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+            => throw new AssertFailedException("Historical capture must not start a polling timer.");
+    }
+
+    private sealed class FailingImportRuntime : Microsoft.JSInterop.IJSRuntime
+    {
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args)
+            => ValueTask.FromException<TValue>(new Microsoft.JSInterop.JSException("private browser diagnostic"));
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+            => InvokeAsync<TValue>(identifier, args);
     }
 }

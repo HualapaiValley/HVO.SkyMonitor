@@ -196,6 +196,17 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             display is null && historyBoundReached);
     }
 
+    public async ValueTask<CameraAgentCapturePresentation> ProjectCaptureAsync(
+        CameraAgentGalleryCapture capture,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        cancellationToken.ThrowIfCancellationRequested();
+        var validation = await ValidatePresentationAsync(
+            capture, MaximumPreviewValidationAttempts, cancellationToken).ConfigureAwait(false);
+        return validation.Presentation;
+    }
+
     private async ValueTask<ValidatedPresentation> ValidatePresentationAsync(
         CameraAgentGalleryCapture capture,
         int maximumAttempts,

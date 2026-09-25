@@ -1,13 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.WebUtilities;
-using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -16,19 +14,10 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCapture? _capture;
     private CameraAgentCapturePresentation? _capturePresentation;
-    private CameraAgentLayeredPresentation? _presentation;
-    private IJSObjectReference? _module;
-    private ElementReference _presentationRoot;
+    private CameraAgentCaptureDetailView? _view;
     private string? _errorMessage;
-    private string? _presentationMessage;
-    private string? _saveError;
-    private string? _saveMessage;
     private long _generation;
-    private long _saveGeneration;
     private bool _isLoading;
-    private bool _bindPresentation;
-    private bool _isSaving;
-    private bool _viewerOpen;
     private string? _comparisonLeftArtifactId;
     private string? _comparisonRightArtifactId;
     private Guid? _previousCaptureId;
@@ -37,7 +26,6 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
-    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter] public Guid CaptureId { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "returnUrl")]
     [SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "The raw query value is validated as an application-local return URL before use.")]
@@ -57,23 +45,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     /// <summary>Archive-to-replay entry point; the submit page resolves and freezes the exact inputs.</summary>
     private string ReplayUrl => $"/operations/pipeline/replays/new?captureId={CaptureId:D}";
-    private Guid? _liveExecutionId;
-
-    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
-
     protected override Task OnParametersSetAsync() => LoadAsync();
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (!_bindPresentation)
-        {
-            return;
-        }
-        _bindPresentation = false;
-        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./Components/Pages/GalleryDetail.razor.js");
-        await _module.InvokeVoidAsync("bindLayerToggles", _presentationRoot);
-    }
 
     internal Task RefreshAuthorizationAsync() => LoadAsync();
 
@@ -89,22 +61,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         }
         _isLoading = true;
         _errorMessage = null;
-        _presentation = null;
+        _view = null;
         _capturePresentation = null;
-        _presentationMessage = null;
         _capture = null;
-        _liveExecutionId = null;
         _previousCaptureId = null;
         _nextCaptureId = null;
         _selectedStage = null;
-        _viewerOpen = false;
-        Interlocked.Increment(ref _saveGeneration);
-        _isSaving = false;
-        _saveError = null;
-        _saveMessage = null;
+        var captureId = CaptureId;
         try
         {
-            var result = await OperatorService.GetCaptureDetailViewAsync(CaptureId, cancellation.Token);
+            var result = await OperatorService.GetCaptureDetailViewAsync(captureId, cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -115,36 +81,14 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                 _errorMessage = null;
                 NavigationManager.NavigateTo("/Account/AccessDenied");
             }
-            else if (result.IsSuccess && result.Value is not null)
+            else if (result.IsSuccess && result.Value is not null && result.Value.Capture.CaptureId == captureId)
             {
+                _view = result.Value;
                 _capture = result.Value.Capture;
                 _capturePresentation = result.Value.Presentation;
                 _selectedStage = result.Value.Presentation.SelectedStage;
                 InitializeComparison();
-                await LoadCaptureNavigationAsync(cancellation.Token);
-                var presentation = await OperatorService.GetLayeredPresentationAsync(CaptureId, cancellation.Token);
-                if (generation != Volatile.Read(ref _generation))
-                {
-                    return;
-                }
-                if (presentation.Kind == OperatorUiResultKind.Unauthorized)
-                {
-                    _capture = null;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
-                }
-                else if (presentation.IsSuccess && presentation.Value is not null)
-                {
-                    _presentation = presentation.Value;
-                    _bindPresentation = true;
-                }
-                else
-                {
-                    _presentationMessage = presentation.Message ??
-                        "Structured layers were not retained for this capture.";
-                }
-                // The link is optional. Never delay the primary capture image and its layer
-                // controls for a slow execution-journal read.
-                _ = LoadLiveRunLinkAsync(CaptureId, generation, cancellation.Token);
+                await LoadCaptureNavigationAsync(captureId, generation, cancellation.Token);
             }
             else
             {
@@ -163,102 +107,20 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         }
     }
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the gallery page.")]
-    private async Task LoadLiveRunLinkAsync(Guid captureId, long generation, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(2));
-            var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
-            if (generation == Volatile.Read(ref _generation) && run.IsSuccess)
-            {
-                await InvokeAsync(() => { _liveExecutionId = run.Value?.ExecutionId; StateHasChanged(); }).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception)
-        {
-            // The gallery image and facts do not depend on a pipeline-run link.
-        }
-    }
-
     private static string ContentUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content");
-
-    private MarkupString PresentationSvg => new(
-        _presentation is null ? string.Empty : Encoding.UTF8.GetString(_presentation.Svg.Span));
-
-    private static string PreviewUrl(Guid artifactId) =>
-        FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview");
-
-    private static string LayerLabel(string kind) => kind switch
-    {
-        "scene-annotation" or "star-annotations" => "Star annotations",
-        "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
-        "scene-image-circle" or "image-circle" => "Image circle",
-        "scene-constellations" or "constellations" => "Constellations",
-        "environment" or "corner-annotations" => "Corner annotations",
-        _ => OperationsPage.SplitWords(kind)
-    };
 
     private CameraAgentPresentationSlot? SelectedSlot => _capturePresentation?.Stages
         .SingleOrDefault(slot => slot.Stage == _selectedStage &&
             slot.Availability == CameraAgentPresentationSlotAvailability.Available);
 
-    private string SelectedStageLabel => SelectedSlot?.Label ?? "Image unavailable";
-
-    private string ViewerTitle => _capture is null
-        ? "Capture image"
-        : $"{SelectedStageLabel} sky / {GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)}";
-
-    private string ImageAlt => _capture is null
-        ? "Retained sky capture"
-        : $"Capture {_capture.CaptureSequence} {SelectedStageLabel} image";
-
-    private string CaptureSummary => _capture?.Detail?.Controls is { } controls
-        ? FormattableString.Invariant($"{controls.EffectiveExposureMilliseconds / 1000d:0.###}-second sky capture")
-        : "Retained sky capture";
-
-    private string ExposureSummary => _capture?.Detail?.Controls is { } controls
-        ? FormattableString.Invariant($"{controls.EffectiveExposureMilliseconds / 1000d:0.###} sec")
-        : "Unavailable";
-
-    private string GainSummary => _capture?.Detail?.Controls is { } controls
-        ? controls.EffectiveGain.ToString("0.###", CultureInfo.InvariantCulture)
-        : "Unavailable";
-
-    private string SensorSummary => _capture?.Detail?.Controls?.EffectiveTemperatureC is { } temperature
-        ? FormattableString.Invariant($"{temperature:0.0} C")
-        : "Unavailable";
-
-    private string ConditionsSummary => _capture?.Detail?.CloudAssessment is { } cloud &&
-        string.Equals(cloud.Availability, "Available", StringComparison.OrdinalIgnoreCase)
-            ? cloud.CoverageMillionths is { } coverage
-                ? FormattableString.Invariant($"{OperationsPage.SplitWords(cloud.Quality ?? cloud.Status ?? "Available")} / {coverage / 10_000d:0.#}% cloud")
-                : OperationsPage.SplitWords(cloud.Quality ?? cloud.Status ?? "Available")
-            : "Unavailable";
-
-    private Task SelectStageAsync(CameraAgentPresentationStage stage)
-    {
-        var slot = _capturePresentation?.Stages.SingleOrDefault(candidate => candidate.Stage == stage);
-        if (slot?.Availability == CameraAgentPresentationSlotAvailability.Available)
-        {
-            _selectedStage = stage;
-        }
-        return Task.CompletedTask;
-    }
-
-    private void OpenViewer() => _viewerOpen = SelectedSlot is not null;
 
     private string CaptureUrl(Guid captureId) => QueryHelpers.AddQueryString(
         FormattableString.Invariant($"/gallery/{captureId:D}"),
         "returnUrl",
         BackUrl);
 
-    private async Task LoadCaptureNavigationAsync(CancellationToken cancellationToken)
+    private async Task LoadCaptureNavigationAsync(Guid captureId, long generation, CancellationToken cancellationToken)
     {
         if (!TryBuildArchiveQuery(BackUrl, out var query))
         {
@@ -267,13 +129,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         // Neighbours follow the originating archive filters through bounded
         // keyset reads rather than re-scanning a loaded page.
         var result = await OperatorService.GetGalleryNeighboursAsync(
-            CaptureId, query with { Cursor = null, PageSize = null }, cancellationToken);
+            captureId, query with { Cursor = null, PageSize = null }, cancellationToken);
+        if (generation != Volatile.Read(ref _generation) || CaptureId != captureId) return;
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
+            _capture = null;
+            _view = null;
             NavigationManager.NavigateTo("/Account/AccessDenied");
             return;
         }
-        if (!result.IsSuccess || result.Value is null)
+        if (!result.IsSuccess || result.Value is null || result.Value.CaptureId != captureId)
         {
             return;
         }
@@ -287,7 +152,14 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         var parsed = QueryHelpers.ParseQuery(new Uri(new Uri("https://cameraagent.invalid"), returnUrl).Query);
         var fromText = GetQueryValue(parsed, "from");
         var toText = GetQueryValue(parsed, "to");
+        // Archive search is page-local. Neighbours cannot truthfully reproduce it with a server keyset query.
+        if (GetQueryValue(parsed, "q") is not null) return false;
+        var product = GetQueryValue(parsed, "product");
+        var outcome = GetQueryValue(parsed, "outcome");
+        if (product is not (null or "all" or "Combined" or "Calibrated" or "Raw") ||
+            outcome is not (null or "all" or "Completed" or "Skipped" or "TerminalFailure" or "Running")) return false;
         if (!TryDate(fromText, out var from) || !TryDate(toText, out var to) ||
+            from > to ||
             !TryEnum(GetQueryValue(parsed, "origin"), out GalleryEvidenceOrigin? origin) ||
             !TryEnum(GetQueryValue(parsed, "role"), out FrameArtifactRole? role) ||
             !TryLong(GetQueryValue(parsed, "minSequence"), out var minimumSequence) ||
@@ -307,9 +179,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             maximumSequence,
             RawState: GetQueryValue(parsed, "rawState"),
             EvidenceOrigin: origin,
-            ProcessingRole: role,
+            ProcessingRole: product is null or "all" ? role : Enum.Parse<FrameArtifactRole>(product),
             Recipe: GetQueryValue(parsed, "recipe"),
-            ProcessingStatus: GetQueryValue(parsed, "status"));
+            ProcessingStatus: outcome is null or "all" ? GetQueryValue(parsed, "status") : outcome);
         return true;
     }
 
@@ -379,76 +251,6 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         parsed = result;
         return true;
     }
-
-    private async Task SaveSelectedStackAsync()
-    {
-        if (_presentation is null || _isSaving)
-        {
-            return;
-        }
-        var loadGeneration = Volatile.Read(ref _generation);
-        var saveGeneration = Interlocked.Increment(ref _saveGeneration);
-        var captureId = CaptureId;
-        var cancellation = _loadCancellation;
-        if (cancellation is null)
-        {
-            return;
-        }
-        _isSaving = true;
-        _saveError = null;
-        _saveMessage = null;
-        try
-        {
-            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-                "import", "./Components/Pages/GalleryDetail.razor.js");
-            var selected = await _module.InvokeAsync<string[]>("selectedLayerIdentities", _presentationRoot) ?? [];
-            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
-            {
-                return;
-            }
-            var result = await OperatorService.SaveLayeredPresentationAsync(
-                captureId, selected, cancellation.Token);
-            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
-            {
-                return;
-            }
-            if (result.Kind == OperatorUiResultKind.Unauthorized)
-            {
-                NavigationManager.NavigateTo("/Account/AccessDenied");
-            }
-            else if (result.IsSuccess && result.Value is { } receipt)
-            {
-                _saveMessage = receipt.Replayed
-                    ? "This exact flattened stack was already saved."
-                    : "Flattened stack saved as a new immutable artifact.";
-            }
-            else
-            {
-                _saveError = result.Message ?? "The presentation stack could not be saved.";
-            }
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            if (saveGeneration == Volatile.Read(ref _saveGeneration))
-            {
-                _isSaving = false;
-            }
-        }
-    }
-
-    private bool IsCurrentSave(
-        long loadGeneration,
-        long saveGeneration,
-        Guid captureId,
-        CancellationTokenSource cancellation)
-        => loadGeneration == Volatile.Read(ref _generation) &&
-           saveGeneration == Volatile.Read(ref _saveGeneration) &&
-           captureId == CaptureId &&
-           ReferenceEquals(cancellation, _loadCancellation) &&
-           !cancellation.IsCancellationRequested;
 
     private IReadOnlyList<CameraAgentGalleryArtifact> ComparisonArtifacts =>
         _capturePresentation?.Stages
@@ -599,22 +401,11 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Interlocked.Increment(ref _generation);
-        Interlocked.Increment(ref _saveGeneration);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
         if (cancellation is not null)
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
             cancellation.Dispose();
-        }
-        if (_module is not null)
-        {
-            try
-            {
-                await _module.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (JSDisconnectedException)
-            {
-            }
         }
     }
 }
