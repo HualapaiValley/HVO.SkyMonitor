@@ -39,6 +39,7 @@
 .calendar-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding: .7rem .2rem; color: var(--hvo-muted); font-size: .65rem; }
 .calendar-legend span { display: inline-flex; align-items: center; gap: .3rem; }
 .calendar-legend span:last-child { margin-left: auto; }
+.calendar-legend__badges { flex-basis: 100%; }
 .calendar-legend i { width: .5rem; height: .5rem; border-radius: 2px; }
 .calendar-legend__event { background: var(--hvo-warning-strong); }
 .calendar-legend__session { background: var(--hvo-success-strong); }

@@ -86,6 +86,8 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
             StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
             Assert.IsNotNull(cut.Find(".calendar-legend__unavailable"));
+            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "T time-lapse", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "muted badges are unavailable", StringComparison.Ordinal);
             Assert.IsFalse(cut.Find(".calendar-legend").ParentElement!.ClassList.Contains("observing-calendar"));
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
