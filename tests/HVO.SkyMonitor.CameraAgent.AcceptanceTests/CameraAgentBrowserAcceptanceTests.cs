@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.DependencyInjection;
@@ -942,43 +943,45 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailLink = page.Locator(".capture-card a[aria-label^='Open capture']").Nth(1);
         var detailUrl = await detailLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
+        var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
         await detailLink.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".detail-capture-image img")).ConfigureAwait(false);
-        Assert.IsFalse(await page.Locator(".technical-evidence").EvaluateAsync<bool>("details => details.open")
+        var image = page.Locator(".sky-image-stage img");
+        await VisibleAsync(image).ConfigureAwait(false);
+        Assert.IsFalse(await page.Locator("#technical-evidence").EvaluateAsync<bool>("details => details.open")
             .ConfigureAwait(false));
-        await VisibleAsync(page.Locator(".capture-summary")).ConfigureAwait(false);
-        Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".stage-selector__button:not(:disabled)").CountAsync().ConfigureAwait(false));
-        Assert.IsGreaterThan(0, await page.Locator(".stage-selector__button:disabled").CountAsync().ConfigureAwait(false));
+        await VisibleAsync(page.Locator(".current-sky-summary")).ConfigureAwait(false);
+        Assert.AreEqual("#technical-evidence", await page.GetByRole(AriaRole.Link,
+            new() { Name = "Technical evidence and downloads", Exact = true }).GetAttributeAsync("href").ConfigureAwait(false));
+        Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".stage-switcher button:not(:disabled)").CountAsync().ConfigureAwait(false));
+        Assert.IsGreaterThan(0, await page.Locator(".stage-switcher button:disabled").CountAsync().ConfigureAwait(false));
 
-        var rawStage = page.GetByRole(AriaRole.Button, new() { Name = "Raw", Exact = true });
+        var rawStage = page.Locator(".stage-switcher button[title='Show Raw image']");
+        var rawArtifact = capture.Artifacts.Single(artifact => artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw);
+        var rawPreviewPath = $"/api/v1/operations/artifacts/{rawArtifact.ArtifactId:D}/preview";
         await rawStage.ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync("""
-            () => [...document.querySelectorAll('.stage-selector__button')]
-                .some(button => button.textContent.trim() === 'Raw' && button.getAttribute('aria-pressed') === 'true')
-            """).ConfigureAwait(false);
-        var selectedSource = await page.Locator(".detail-capture-image img").GetAttributeAsync("src").ConfigureAwait(false);
+            path => {
+                const image = document.querySelector('.sky-image-stage img');
+                return document.querySelector('.stage-switcher button[title="Show Raw image"]')?.getAttribute('aria-pressed') === 'true' &&
+                    image?.complete && image.naturalWidth > 0 && new URL(image.src).pathname === path;
+            }
+            """, rawPreviewPath).ConfigureAwait(false);
+        var selectedSource = await image.GetAttributeAsync("src").ConfigureAwait(false);
         Assert.IsNotNull(selectedSource);
-        StringAssert.Contains(selectedSource, "/preview", StringComparison.Ordinal);
+        Assert.AreEqual(rawPreviewPath, new Uri(new Uri(page.Url), selectedSource).AbsolutePath);
+        Assert.IsNotNull(capture.Detail?.Layout);
+        Assert.AreEqual(capture.Detail.Layout.Width, await image.EvaluateAsync<int>("image => image.naturalWidth").ConfigureAwait(false));
+        Assert.AreEqual(capture.Detail.Layout.Height, await image.EvaluateAsync<int>("image => image.naturalHeight").ConfigureAwait(false));
         Assert.AreEqual("true", await rawStage.GetAttributeAsync("aria-pressed").ConfigureAwait(false));
 
-        var trigger = page.Locator("#capture-detail-view-large");
+        var trigger = page.Locator("#current-sky-view-large");
+        var figure = page.Locator("figure.sky-figure");
         await trigger.ClickAsync().ConfigureAwait(false);
-        var dialog = page.Locator(".large-viewer");
-        await VisibleAsync(dialog).ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.getAttribute('aria-label') === 'Close large image'")
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
             .ConfigureAwait(false);
-        Assert.AreEqual(selectedSource, await dialog.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
-        await page.Keyboard.PressAsync("Shift+Tab").ConfigureAwait(false);
-        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.contains(document.activeElement)")
-            .ConfigureAwait(false));
-        await page.GetByRole(AriaRole.Button, new() { Name = "100%", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            "() => [...document.querySelectorAll('.large-viewer__modes button')].some(button => button.textContent.trim() === '100%' && button.getAttribute('aria-pressed') === 'true')")
-            .ConfigureAwait(false);
-        Assert.AreEqual("true", await page.GetByRole(AriaRole.Button, new() { Name = "100%", Exact = true })
-            .GetAttributeAsync("aria-pressed").ConfigureAwait(false));
+        Assert.AreEqual(selectedSource, await figure.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
         foreach (var viewport in new[]
         {
             new ViewportSize { Width = 390, Height = 844 },
@@ -986,25 +989,24 @@ public sealed class CameraAgentBrowserAcceptanceTests
         })
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
-            await VisibleAsync(dialog).ConfigureAwait(false);
-            Assert.AreEqual(selectedSource, await dialog.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
-            await page.Keyboard.PressAsync("Tab").ConfigureAwait(false);
-            Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.contains(document.activeElement)")
+            await VisibleAsync(figure).ConfigureAwait(false);
+            Assert.IsTrue(await figure.EvaluateAsync<bool>("element => document.fullscreenElement === element")
+                .ConfigureAwait(false));
+            Assert.AreEqual(selectedSource, await figure.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
+            Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit")
                 .ConfigureAwait(false));
         }
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(
-            "capture-detail-view-large",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
+        // Exit the native browser surface, not the retired large-image dialog.
+        await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, trigger).ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
-        await VisibleAsync(dialog).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Close large image", Exact = true }).ClickAsync()
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
             .ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(
-            "capture-detail-view-large",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
+        Assert.AreEqual(selectedSource, await figure.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
+        await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, trigger).ConfigureAwait(false);
 
         foreach (var viewport in new[]
         {
@@ -1048,15 +1050,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 }
                 """).ConfigureAwait(false);
             Assert.AreEqual(string.Empty, overflow, $"capture detail overflowed at {viewport.Width}x{viewport.Height}");
-            Assert.AreEqual("contain", await page.Locator(".detail-capture-image img")
+            Assert.AreEqual("contain", await image
                 .EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+            Assert.AreEqual(selectedSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
+            await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
+                .ConfigureAwait(false);
         }
 
         Assert.AreEqual(2, await page.Locator(".capture-navigation__control[href]").CountAsync().ConfigureAwait(false));
         await CollapsibleSection.EnsureOpenAsync(
-            page.Locator(".technical-evidence"),
+            page.Locator("#technical-evidence"),
             page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
-        Assert.IsGreaterThan(0, await page.Locator("a[download]").CountAsync().ConfigureAwait(false));
+        await VisibleAsync(page.Locator("#technical-evidence").GetByText(capture.CaptureId.ToString("D"), new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.IsGreaterThan(0, await page.Locator("#technical-evidence a[download]").CountAsync().ConfigureAwait(false));
         await page.GotoAsync($"/gallery/{Guid.NewGuid():D}").ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Capture unavailable", new() { Exact = true })).ConfigureAwait(false);
 
@@ -1874,13 +1881,15 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailUrl = await detailLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
         StringAssert.Contains(detailUrl, "returnUrl=", StringComparison.Ordinal);
+        var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
         await detailLink.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
+            .ConfigureAwait(false);
         await CollapsibleSection.EnsureOpenAsync(
-            page.Locator(".technical-evidence"),
+            page.Locator("#technical-evidence"),
             page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
 
-        var image = page.Locator(".detail-capture-image img");
+        var image = page.Locator(".sky-image-stage img");
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.IsTrue(await image.EvaluateAsync<bool>("image => image.complete && image.naturalWidth > 0").ConfigureAwait(false));
         Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
@@ -1900,7 +1909,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.GetByLabel("Right artifact").InputValueAsync().ConfigureAwait(false));
 
         var previewUrl = await image.GetAttributeAsync("src").ConfigureAwait(false);
-        var contentUrl = await page.Locator("a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var contentUrl = await page.Locator("#technical-evidence a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(previewUrl);
         Assert.IsNotNull(contentUrl);
         await AssertCookieProtectedContentAsync(ownerContext, previewUrl, "image/jpeg").ConfigureAwait(false);
@@ -1924,6 +1933,25 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
         return detailUrl;
+    }
+
+    private static async Task<CameraAgentGalleryCapture> ReadGalleryCaptureAsync(IPage page, string detailUrl)
+    {
+        var captureId = Guid.Parse(new Uri(new Uri(page.Url), detailUrl).Segments[^1]);
+        var response = await page.Context.APIRequest.GetAsync($"/api/v1/operations/gallery/{captureId:D}").ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(200, response.Status);
+            var capture = JsonSerializer.Deserialize<CameraAgentGalleryCapture>(
+                await response.TextAsync().ConfigureAwait(false), JsonSerializerOptions.Web);
+            Assert.IsNotNull(capture);
+            Assert.AreEqual(captureId, capture.CaptureId);
+            return capture;
+        }
+        finally
+        {
+            await response.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private static async Task AssertCookieProtectedContentAsync(
@@ -1988,6 +2016,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static async Task AssertResponsiveAndAccessibleAsync(IPage page, string detailUrl)
     {
+        var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
         var viewports = new[]
         {
             new ViewportSize { Width = 1440, Height = 900 },
@@ -2006,7 +2035,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/operations", "Operations overview"),
             ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
             ("/gallery?pageSize=24", "Archive"),
-            (detailUrl, "Capture detail"),
+            (detailUrl, $"Capture #{capture.CaptureSequence}"),
             ("/schedule", "Capture schedule"),
             ("/calibration", "Calibration library"),
             ("/system", "System snapshot"),
@@ -2037,6 +2066,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
             foreach (var (route, heading) in routes)
             {
                 await page.GotoAsync(route).ConfigureAwait(false);
+                if (string.Equals(route, detailUrl, StringComparison.Ordinal))
+                {
+                    await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = heading, Level = 1, Exact = true }))
+                        .ConfigureAwait(false);
+                }
                 await VisibleAsync(page.Locator("main#mainContent h1").First).ConfigureAwait(false);
                 Assert.AreEqual(
                     heading,
