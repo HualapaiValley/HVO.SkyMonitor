@@ -125,4 +125,10 @@ public sealed record CameraAgentCurrentImagePresentation(
 public interface ICameraAgentCurrentImagePresentationService
 {
     ValueTask<CameraAgentCurrentImagePresentation> GetAsync(CancellationToken cancellationToken);
+
+    /// <summary>Validates the supplied capture's display stages with at most 12 preview checks,
+    /// without reading current capture history or runtime state.</summary>
+    ValueTask<CameraAgentCapturePresentation> ProjectCaptureAsync(
+        CameraAgentGalleryCapture capture,
+        CancellationToken cancellationToken);
 }
