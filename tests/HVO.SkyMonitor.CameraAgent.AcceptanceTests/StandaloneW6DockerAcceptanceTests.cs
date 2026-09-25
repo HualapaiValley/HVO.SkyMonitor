@@ -5284,6 +5284,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await savedLink.WaitForAsync().ConfigureAwait(false);
             var savedUrl = await savedLink.GetAttributeAsync("href").ConfigureAwait(false);
             Assert.IsNotNull(savedUrl);
+            StringAssert.EndsWith(savedUrl, "/preview?download=1", StringComparison.Ordinal);
             var savedArtifactId = Guid.Parse(new Uri(new Uri(page.Url), savedUrl).Segments[^2].TrimEnd('/'));
             var captureResponse = await page.Context.APIRequest.GetAsync($"/api/v1/operations/gallery/{capture.CaptureId:D}")
                 .ConfigureAwait(false);
@@ -5302,7 +5303,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(capture.CaptureId, savedCapture.CaptureId);
             var savedArtifact = savedCapture.Artifacts.Single(artifact => artifact.ArtifactId == savedArtifactId);
             Assert.IsTrue(savedArtifact.SourceArtifactIds.Contains(baseArtifactId));
-            var savedResponse = await page.Context.APIRequest.GetAsync(savedUrl).ConfigureAwait(false);
+            var savedResponse = await page.Context.APIRequest.GetAsync(
+                $"/api/v1/operations/artifacts/{savedArtifactId:D}/content").ConfigureAwait(false);
             try
             {
                 Assert.IsTrue(savedResponse.Ok);
@@ -5313,6 +5315,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
             finally
             {
                 await savedResponse.DisposeAsync().ConfigureAwait(false);
+            }
+            var savedJpeg = await page.Context.APIRequest.GetAsync(savedUrl).ConfigureAwait(false);
+            try
+            {
+                Assert.IsTrue(savedJpeg.Ok);
+                Assert.AreEqual("image/jpeg", savedJpeg.Headers["content-type"]);
+                StringAssert.StartsWith(savedJpeg.Headers["content-disposition"], "attachment", StringComparison.Ordinal);
+            }
+            finally
+            {
+                await savedJpeg.DisposeAsync().ConfigureAwait(false);
             }
             Assert.AreEqual(layeredSource, await primaryImage.GetAttributeAsync("src").ConfigureAwait(false));
             Assert.AreEqual($"/gallery/{capture.CaptureId:D}", new Uri(page.Url).AbsolutePath);

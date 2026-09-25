@@ -247,9 +247,9 @@
                 {
                     <div class="overlay-actions">
                         <button class="text-button restore-layers" type="button" disabled="@(!ShowLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
-                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Creates one immutable flattened derivative without rerunning analysis." @onclick="SaveSelectedStackAsync">@(_saving ? "Saving stack..." : "Save selected stack")</button></div>
+                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Saves the base image with the selected overlays as one immutable artifact and downloads it as a JPEG. Analysis is not rerun." @onclick="SaveSelectedStackAsync">@(_saving ? "Preparing image..." : "Download selected stack")</button></div>
                     </div>
-                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl">Open saved artifact</a></p> }
+                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl" download>Download JPEG again</a></p> }
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
@@ -285,11 +285,11 @@
                         <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
                         <div><dt>Cloud</dt><dd>@(_facts is { } cloudFacts ? FormatCloud(cloudFacts.Cloud) : "Unavailable")</dd></div>
                     </dl>
-                    <p class="summary-copy">@SummaryMessage</p>
+                    @if (!IsArchived) { <p class="summary-copy">@SummaryMessage</p> }
                     @if (_facts?.CombinedLineageUnavailable == true) { <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p> }
                     @if (_factsUnavailableReason is not null) { <p class="facts-unavailable" role="status">@_factsUnavailableReason</p> }
                     @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p> }
-                    <a class="inline-action layers-link" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">@(IsArchived ? "Open raw source downloads" : "View immutable raw source")</a>
+                    @if (!IsArchived) { <a class="inline-action layers-link" href="@DetailUrl">View immutable raw source</a> }
                 }
                 else
                 {

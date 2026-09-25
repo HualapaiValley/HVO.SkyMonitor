@@ -954,7 +954,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false));
         await VisibleAsync(page.Locator(".current-sky-summary")).ConfigureAwait(false);
         var archivedPathAndQuery = new Uri(page.Url).PathAndQuery;
-        foreach (var linkText in new[] { "Evidence and downloads", "Open raw source downloads" })
+        foreach (var linkText in new[] { "Evidence and downloads" })
         {
             var evidenceLink = page.GetByRole(AriaRole.Link, new() { Name = linkText, Exact = true });
             Assert.AreEqual(archivedPathAndQuery + "#technical-evidence",

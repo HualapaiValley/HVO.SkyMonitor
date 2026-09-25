@@ -153,6 +153,7 @@ public sealed class CurrentSkyPageTests
         };
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
         module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module.SetupVoid("downloadUrl", _ => true).SetVoidResult();
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement(".sky-layer-canvas img");
 
@@ -177,7 +178,11 @@ public sealed class CurrentSkyPageTests
         await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
         CollectionAssert.AreEqual(new[] { identity }, submitted?.ToArray());
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "new immutable artifact", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Find(".sky-layer-result a").GetAttribute("href"), "/content", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "JPEG download started", StringComparison.Ordinal);
+        var savedUrl = cut.Find(".sky-layer-result a").GetAttribute("href");
+        StringAssert.EndsWith(savedUrl, "/preview?download=1", StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find(".sky-layer-result a").HasAttribute("download"));
+        Assert.AreEqual(savedUrl, module.Invocations["downloadUrl"].Single().Arguments[0]);
     }
 
     [TestMethod]

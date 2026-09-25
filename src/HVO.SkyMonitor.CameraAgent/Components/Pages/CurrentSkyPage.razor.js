@@ -13,6 +13,17 @@ export async function openTechnicalEvidence(root) {
     (evidence.querySelector('.evidence-tabs [aria-pressed="true"]') ?? evidence).focus({ preventScroll: true });
 }
 
+// Starts a same-origin attachment download without leaving the page.
+export function downloadUrl(url) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '';
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+}
+
 // Mirrors the prototype's figure.requestFullscreen(): the same <figure> (base image, SVG layers, caption) is
 // promoted, so the enlarged view is exactly the inline selection with no second fetch or stretch.
 export async function requestFullScreen(figure) {

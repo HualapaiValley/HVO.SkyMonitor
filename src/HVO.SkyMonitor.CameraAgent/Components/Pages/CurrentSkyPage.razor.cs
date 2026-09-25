@@ -711,8 +711,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             }
             else if (result.IsSuccess && result.Value is { } receipt)
             {
-                _saveMessage = receipt.Replayed ? "This exact flattened stack was already saved." : "Flattened stack saved as a new immutable artifact.";
-                _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/content";
+                // The saved stack is a packed image; its display JPEG is the flattened composite as shown.
+                _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/preview?download=1";
+                var downloaded = await TryStartDownloadAsync(_savedArtifactUrl);
+                if (!IsCurrentLayer(generation, captureId, cancellation)) return;
+                _saveMessage = (receipt.Replayed ? "This exact stack was already saved" : "Stack saved as a new immutable artifact") +
+                    (downloaded ? "; JPEG download started." : ".");
             }
             else
                 _saveError = result.Message ?? "The presentation stack could not be saved.";
@@ -733,6 +737,27 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         finally
         {
             if (IsCurrentLayer(generation, captureId, cancellation)) _saving = false;
+        }
+    }
+
+    private async Task<bool> TryStartDownloadAsync(string url)
+    {
+        try
+        {
+            var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (Volatile.Read(ref _disposeStarted) != 0)
+            {
+                if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
+                return false;
+            }
+            _layerModule = module;
+            await module.InvokeVoidAsync("downloadUrl", url);
+            return true;
+        }
+        catch (Exception exception) when (exception is JSException or OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+        {
+            // The manual link below remains available.
+            return false;
         }
     }
 

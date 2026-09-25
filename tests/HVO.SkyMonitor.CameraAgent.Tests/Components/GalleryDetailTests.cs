@@ -61,6 +61,8 @@ public sealed class GalleryDetailTests
         Assert.IsEmpty(cut.FindAll(".image-heading .eyebrow"));
         Assert.IsNotNull(cut.Find(".sky-primary > #technical-evidence"));
         Assert.IsNotNull(cut.Find(".sky-primary > .operations-strip"));
+        Assert.IsEmpty(cut.FindAll(".current-sky-summary .layers-link"));
+        Assert.IsEmpty(cut.FindAll(".current-sky-summary .summary-copy"));
         Assert.HasCount(1, cut.FindComponents<CurrentSkyPage>());
         Assert.IsEmpty(cut.FindAll(".layered-workspace"));
 
@@ -282,6 +284,7 @@ public sealed class GalleryDetailTests
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
         module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module.SetupVoid("downloadUrl", _ => true).SetVoidResult();
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
         cut.WaitForElement(".sky-layer-canvas--verified");
 
