@@ -1,6 +1,6 @@
 .calendar-page { box-sizing: border-box; width: min(100%, 105rem); margin: 0 auto; padding: 0 clamp(.75rem, 2.6vw, 2.4rem) 4rem; color: var(--hvo-body-color); }
 .calendar-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.2rem; margin-bottom: 1.2rem; }
-.calendar-heading .eyebrow { margin: 0 0 .65rem; }
+.calendar-heading .eyebrow { margin: 0 0 .28rem; color: var(--hvo-accent); font-size: .65rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
 .calendar-heading h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: .95; letter-spacing: -.045em; }
 .calendar-heading p:last-child { max-width: 52rem; margin: .65rem 0 0; color: var(--hvo-muted); font-size: .74rem; line-height: 1.45; }
 .calendar-heading > a { flex: 0 0 auto; }
