@@ -23,6 +23,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CancellationTokenSource? _layerCancellation;
     private IJSObjectReference? _layerModule;
     private ElementReference _layerRoot;
+    private ElementReference _figure;
     private string? _layerMessage;
     private string? _saveMessage;
     private string? _saveError;
@@ -43,7 +44,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string? _errorMessage;
     private bool _initialLoading = true;
     private bool _refreshing;
-    private bool _viewerOpen;
     private Guid? _liveExecutionId;
     private int _refreshRequested;
     private int _disposeStarted;
@@ -185,10 +185,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                         _bindGeneration++;
                         _bindLayers = true;
                     }
-                    if (_selectedStage is null || ShowLayeredHero || ProcessedBaseFallback)
-                    {
-                        _viewerOpen = false;
-                    }
                     TryLoadLayers(displayCaptureId);
                     _errorMessage = null;
                 }
@@ -320,7 +316,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     _layerMessage = null;
                     _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
                         .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
-                    _viewerOpen = false;
                     _bindLayers = true;
                     StateHasChanged();
                 }
@@ -357,9 +352,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     }
 
     private MarkupString LayerSvg => new(_layers is null ? string.Empty : Encoding.UTF8.GetString(_layers.Svg.Span));
-
-    private string LayerAspectRatio => ((double)_layers!.WidthPixels / _layers.HeightPixels)
-        .ToString("0.########", System.Globalization.CultureInfo.InvariantCulture);
 
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
         _layers is not null &&
@@ -444,30 +436,52 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private int SelectedLayerCount => _layers?.Layers.Count(layer => _selectedLayers.Contains(layer.IdentitySha256)) ?? 0;
 
+    // The prototype reports retained-but-hidden layers when a stage suppresses them; the count itself stays honest.
+    private string LayerCountLabel => _layers is null || _presentation?.DisplayCapture?.CaptureId != _layers.CaptureId
+        ? "Not retained for this capture"
+        : ShowLayeredHero
+            ? $"{SelectedLayerCount} selected"
+            : $"{SelectedLayerCount} retained / hidden at this stage";
+
     private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
+
+    private IEnumerable<CameraAgentPresentationLayer> RetainedLayers(string group) =>
+        _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [];
 
     private static string LayerGroup(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "Catalog projection",
-        "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" or "scene-image-circle" or "image-circle" => "Sky context",
+        "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
 
     private static string LayerDescription(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "Projected catalog stars; not measured associations (#526)",
-        "scene-constellations" or "constellations" => "Projected constellation geometry",
-        "scene-cardinals" or "cardinal-directions" => "Projected rig directions",
-        "scene-image-circle" or "image-circle" => "Projected image boundary",
-        "environment" or "corner-annotations" => "Recorded frame annotations",
+        "scene-annotation" or "star-annotations" => "expected / projected catalog, not measured associations (#526)",
+        "scene-constellations" or "constellations" => "expected / HYG topology",
+        "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
+        "scene-image-circle" or "image-circle" => "native sensor coordinates",
+        "environment" or "corner-annotations" => "source and coordinate provenance",
+        "cloud-mask" => "image analyzer / retained tile mask",
+        "cloud-labels" => "image analyzer / retained assessment",
         _ => "Retained presentation layer"
     };
 
+    // Prototype order: Processed, Live mean, Calibrated, Raw. The service order is not a display contract.
+    private IEnumerable<CameraAgentPresentationSlot> OrderedStages => (_presentation?.Stages ?? [])
+        .OrderBy(static slot => slot.Stage switch
+        {
+            CameraAgentPresentationStage.Annotated => 0,
+            CameraAgentPresentationStage.Preview => 1,
+            CameraAgentPresentationStage.Combined => 2,
+            CameraAgentPresentationStage.Calibrated => 3,
+            _ => 4
+        });
+
     private static string StageCaption(CameraAgentPresentationStage stage) => stage switch
     {
-        CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Presentation layers",
-        CameraAgentPresentationStage.Combined => "Arithmetic mean, not a sum",
-        CameraAgentPresentationStage.Calibrated => "Single capture, own pixels",
+        CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Layers applied",
+        CameraAgentPresentationStage.Combined => "Causal mean",
+        CameraAgentPresentationStage.Calibrated => "Reference capture N",
         _ => "Immutable source"
     };
 
@@ -483,19 +497,120 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string ImageHeading => _selectedStage switch
     {
         CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Processed presentation",
-        CameraAgentPresentationStage.Combined => "Live mean",
-        CameraAgentPresentationStage.Calibrated => "Calibrated image",
-        CameraAgentPresentationStage.Raw => "Raw source",
+        CameraAgentPresentationStage.Combined => "Unregistered live mean",
+        CameraAgentPresentationStage.Calibrated => "Calibrated reference frame",
+        CameraAgentPresentationStage.Raw => "Immutable raw source",
         _ => "Current image"
     };
 
+    private string ImageSubtitle
+    {
+        get
+        {
+            if (FactCapture is not { } capture) return "Waiting for a durable image.";
+            var sources = _facts?.CombinedLineage?.SourceCount;
+            return _selectedStage switch
+            {
+                CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview =>
+                    sources is { } layered ? $"Unregistered causal mean of {layered} source frames with the selected presentation layers." : "Retained presentation with the selected presentation layers.",
+                CameraAgentPresentationStage.Combined =>
+                    sources is { } combined ? $"{combined} sources ending at capture #{capture.CaptureSequence}, combined without geometric registration." : $"Sources ending at capture #{capture.CaptureSequence}, combined without geometric registration.",
+                CameraAgentPresentationStage.Calibrated => $"Capture #{capture.CaptureSequence} after calibration, before temporal combination or presentation layers.",
+                CameraAgentPresentationStage.Raw => $"Capture #{capture.CaptureSequence} as acquired. Display conversion does not modify retained sensor evidence.",
+                _ => "Source capture and processing state remain explicit."
+            };
+        }
+    }
+
+    private string ProductBadgeLabel => _selectedStage switch
+    {
+        CameraAgentPresentationStage.Calibrated => "Single frame N",
+        CameraAgentPresentationStage.Raw => "Primary evidence",
+        _ => "Current baseline"
+    };
+
+    private string ProductBadgeClass => _selectedStage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw ? "source" : "current";
+
+    private string StageFactLabel => ShowLayeredHero && _layerInteractive
+        ? "Processed base + selected overlays"
+        : ProcessedBaseFallback
+            ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)"
+            : SelectedSlot?.Label ?? "Unavailable";
+
+    // The prototype caption names an event outcome; no transient detection exists yet (#1005), so the caption
+    // reports the capture's own processing state instead of a fixture event.
+    private string CaptureOutcomeIconClass => _presentation?.DisplayCapture is null
+        ? "pending"
+        : UnavailableStageCount > 0 ? "warning" : "success";
+
+    private string CaptureOutcomeTitle => _presentation?.DisplayCapture is null
+        ? "No durable capture"
+        : UnavailableStageCount > 0 ? "Partial image stages" : "All image stages retained";
+
+    private string CaptureOutcomeSubtitle => _presentation?.DisplayCapture is null
+        ? "Waiting for the first displayable capture"
+        : UnavailableStageCount > 0
+            ? $"{UnavailableStageCount} of {_presentation.Stages.Count} stages unavailable / transient detection arrives with #1005"
+            : "Transient detection arrives with #1005; no event is claimed for this capture";
+
+    private string LiveIndicatorLabel => _presentation?.ImageFreshness switch
+    {
+        CameraAgentPresentationImageFreshness.Current => $"Image age {FormatDuration(FactCapture?.AgeSeconds ?? 0)}",
+        CameraAgentPresentationImageFreshness.Delayed => "Next image delayed",
+        CameraAgentPresentationImageFreshness.Stale => "Image stale",
+        CameraAgentPresentationImageFreshness.Historical => "Historical image",
+        _ => "No image"
+    };
+
+    private string SystemIconClass => _presentation?.System.State switch
+    {
+        CameraAgentPresentationSystemState.Capturing => "success",
+        CameraAgentPresentationSystemState.Standby or CameraAgentPresentationSystemState.Paused => "warning",
+        CameraAgentPresentationSystemState.Unavailable => "failure",
+        _ => "pending"
+    };
+
+    private string FreshnessChipClass => _presentation?.ImageFreshness switch
+    {
+        CameraAgentPresentationImageFreshness.Current => "success",
+        CameraAgentPresentationImageFreshness.Delayed or CameraAgentPresentationImageFreshness.Historical => "warning",
+        CameraAgentPresentationImageFreshness.Stale => "failure",
+        _ => "pending"
+    };
+
+    private string ProcessingStripLabel => _presentation is null
+        ? "Loading"
+        : $"{_presentation.Stages.Count(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available)} of {_presentation.Stages.Count} stages";
+
+    private string IncludedFramesLabel(CameraAgentCombinedLineage lineage) =>
+        _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId && !product.SourcesTruncated
+            ? $"{product.Sources.Count} of {product.Product.SourceCount} frames"
+            : $"{lineage.SourceCount} recorded";
+
+    private string LineageDisclosure(CameraAgentCombinedLineage lineage)
+    {
+        var recipe = _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId
+            ? product.Product.Recipe?.Name
+            : lineage.RecipeName;
+        var sources = lineage.SourceCount == 1 ? "1 source frame" : $"{lineage.SourceCount} source frames";
+        var named = recipe is null ? string.Empty : $", recipe {recipe}";
+        return $"this unregistered causal arithmetic mean of {sources}{named} has no geometric registration; it is not a registered stack.";
+    }
+
+    private string TotalIntegrationLabel(CameraAgentCombinedLineage lineage) =>
+        _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId
+            ? FormattableString.Invariant($"{product.Product.TotalIntegration.TotalSeconds:0.###} seconds")
+            : "Unavailable";
+
     private static string LayerLabel(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "Star annotations",
+        "scene-annotation" or "star-annotations" => "Catalog stars",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
-        "scene-image-circle" or "image-circle" => "Image circle",
-        "scene-constellations" or "constellations" => "Constellations",
-        "environment" or "corner-annotations" => "Corner annotations",
+        "scene-image-circle" or "image-circle" => "Image geometry",
+        "scene-constellations" or "constellations" => "Constellation lines",
+        "environment" or "corner-annotations" => "Frame facts",
+        "cloud-mask" => "Measured cloud mask",
+        "cloud-labels" => "Measured cloud assessment",
         _ => OperationsPage.SplitWords(kind)
     };
 
@@ -599,14 +714,29 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 slot.Stage == stage && slot.Availability == CameraAgentPresentationSlotAvailability.Available) == true)
         {
             _selectedStage = stage;
-            _viewerOpen = false;
             _bindGeneration++;
             _layerInteractive = false;
             if (stage == CameraAgentPresentationStage.Annotated && _layers is not null) _bindLayers = true;
         }
     }
 
-    private void OpenViewer() => _viewerOpen = DisplaySlot is not null && !ShowLayeredHero;
+    // Full screen is the prototype's native figure.requestFullscreen(): the exact selected base and SVG layers
+    // scale together and nothing is re-fetched or re-stretched.
+    private async Task OpenFullScreenAsync()
+    {
+        if (DisplaySlot is null || _disposeStarted != 0) return;
+        try
+        {
+            var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (Volatile.Read(ref _disposeStarted) != 0) return;
+            _layerModule = module;
+            await module.InvokeVoidAsync("requestFullScreen", _figure);
+        }
+        catch (Exception exception) when (exception is JSException or JSDisconnectedException or OperationCanceledException)
+        {
+            // The browser refused full screen; the inline figure remains the same image.
+        }
+    }
 
     private CameraAgentPresentationSlot? SelectedSlot => _presentation?.Stages.SingleOrDefault(slot =>
         slot.Stage == _selectedStage && slot.Availability == CameraAgentPresentationSlotAvailability.Available);
@@ -617,8 +747,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string DetailUrl => FactCapture is { } capture
         ? $"/gallery/{capture.CaptureId:D}"
         : "/gallery";
-
-    private string ViewerTitle => DisplaySlot is null ? "Large sky image" : $"{DisplaySlot.Label} sky image";
 
     private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
         ? $"{slot.Label} sky capture from {capture.ExposureStartedUtc.ToLocalTime():g}"
@@ -633,15 +761,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _ => "No image"
     };
 
-    private string FreshnessClass => _presentation?.ImageFreshness switch
-    {
-        CameraAgentPresentationImageFreshness.Current => "hvo-chip--success",
-        CameraAgentPresentationImageFreshness.Delayed or CameraAgentPresentationImageFreshness.Historical =>
-            "hvo-chip--warning",
-        CameraAgentPresentationImageFreshness.Stale => "hvo-chip--danger",
-        _ => "hvo-chip--neutral"
-    };
-
     private string SystemLabel => _presentation?.System.State switch
     {
         CameraAgentPresentationSystemState.Capturing => "Capturing",
@@ -649,33 +768,6 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         CameraAgentPresentationSystemState.Paused => "Paused",
         CameraAgentPresentationSystemState.Unavailable => "Camera unavailable",
         _ => "Starting"
-    };
-
-    private string SystemClass => _presentation?.System.State switch
-    {
-        CameraAgentPresentationSystemState.Capturing => "hvo-chip--success",
-        CameraAgentPresentationSystemState.Standby or CameraAgentPresentationSystemState.Paused =>
-            "hvo-chip--warning",
-        CameraAgentPresentationSystemState.Unavailable => "hvo-chip--danger",
-        _ => "hvo-chip--neutral"
-    };
-
-    private string SummaryEyebrow => _presentation?.ImageFreshness switch
-    {
-        CameraAgentPresentationImageFreshness.Delayed => "Next image delayed",
-        CameraAgentPresentationImageFreshness.Stale => "Last image is stale",
-        CameraAgentPresentationImageFreshness.Historical => "Last valid retained image",
-        _ when _presentation?.System.State == CameraAgentPresentationSystemState.Standby => "Scheduled standby",
-        _ => "Durable current view"
-    };
-
-    private string SummaryHeading => _presentation?.ImageFreshness switch
-    {
-        CameraAgentPresentationImageFreshness.Empty => "No sky image yet",
-        CameraAgentPresentationImageFreshness.Delayed => "Last valid sky",
-        CameraAgentPresentationImageFreshness.Stale => "Last retained sky",
-        CameraAgentPresentationImageFreshness.Historical => "Historical sky",
-        _ => "Latest sky"
     };
 
     private string SummaryMessage => _presentation is null

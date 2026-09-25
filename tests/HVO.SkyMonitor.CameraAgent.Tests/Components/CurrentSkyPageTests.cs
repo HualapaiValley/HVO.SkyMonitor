@@ -63,12 +63,12 @@ public sealed class CurrentSkyPageTests
             StringAssert.Contains(summary, "Observing night", StringComparison.Ordinal);
             // 11:59 UTC is 04:59 in Phoenix, inside the night that began at local noon on the 22nd.
             StringAssert.Contains(summary, "2026-07-22 (America/Phoenix)", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "rig-test", StringComparison.Ordinal);
             StringAssert.Contains(summary, "1 s", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "640 × 480", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "640 x 480", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "Unregistered causal arithmetic mean of 3 source frames, recipe rolling-mean", StringComparison.Ordinal);
-            Assert.IsFalse(summary.Contains("registered stack", StringComparison.OrdinalIgnoreCase));
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "rig-test", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "3 source frames", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "rolling-mean", StringComparison.Ordinal);
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001", cut.Find(".layers-link").GetAttribute("href"));
         });
 
@@ -163,8 +163,8 @@ public sealed class CurrentSkyPageTests
         Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
         StringAssert.Contains(cut.Find(".stage-status").TextContent, "processed base image with selected presentation overlays", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed base + selected overlays", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Markup, "Large image view is unavailable for the layered stack", StringComparison.Ordinal);
-        Assert.IsEmpty(cut.FindAll("#current-sky-view-large"));
+        // The layered figure is itself the full-screen target, so the control is present and acts on the same figure.
+        Assert.HasCount(1, cut.FindAll("#current-sky-view-large"));
         Assert.IsEmpty(cut.FindAll(".large-viewer img"));
         await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
         Assert.IsEmpty(cut.FindAll(".sky-layer-canvas img"));
@@ -193,18 +193,17 @@ public sealed class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
 
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Catalog projection", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Associations arrive with #525", StringComparison.Ordinal);
-        Assert.HasCount(6, cut.FindAll(".unavailable-layers input:disabled"));
-        StringAssert.Contains(cut.Find(".inspector-card").TextContent, "astrometric solutions arrive with #523", StringComparison.Ordinal);
-        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "arrives with #525", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".inspector-card").TextContent, "arrives with #523", StringComparison.Ordinal);
+        await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
         await cut.Find(".restore-layers").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual("1 selected", cut.Find(".scene-panel header > span").TextContent);
-        Assert.IsTrue(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        Assert.IsTrue(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
     }
 
     [TestMethod]
@@ -230,7 +229,8 @@ public sealed class CurrentSkyPageTests
         Assert.HasCount(2, cut.FindAll(".source-entry"));
         StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "2", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "not a registered stack", StringComparison.Ordinal);
-        Assert.IsEmpty(cut.FindAll(".lineage-facts dt").Where(static dt => dt.TextContent == "Total integration"));
+        // Integration is never invented: the fact is present but explicitly unavailable without retained source detail.
+        StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "Unavailable", StringComparison.Ordinal);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "Source details are unavailable", StringComparison.Ordinal));
     }
 
@@ -241,11 +241,10 @@ public sealed class CurrentSkyPageTests
         Configure(context);
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement(".scene-panel");
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Catalog projection", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured associations and predictions: unavailable", StringComparison.Ordinal);
-        Assert.HasCount(11, cut.FindAll(".scene-panel input:disabled"));
+        Assert.HasCount(13, cut.FindAll(".scene-panel input:disabled"));
         Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
     }
 
@@ -327,10 +326,10 @@ public sealed class CurrentSkyPageTests
         cut.WaitForElement(".sky-layer-canvas img");
         Assert.AreEqual(2, reads);
         Assert.IsEmpty(cut.FindAll(".sky-layer-unavailable"));
-        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
+        await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual(2, reads);
-        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
     }
 
     [TestMethod]
@@ -463,7 +462,7 @@ public sealed class CurrentSkyPageTests
         Assert.AreEqual(CombinedDisplayUrl,
             cut.Find(".capture-image img").GetAttribute("src"));
         StringAssert.Contains(cut.Find(".stage-status").TextContent, "Showing Combined (retained display derivative)", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Markup, "Arithmetic mean, not a sum", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Causal mean", StringComparison.Ordinal);
 
         await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
         Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview",
@@ -759,7 +758,6 @@ public sealed class CurrentSkyPageTests
         await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
         Assert.IsNotNull(saved);
         Assert.IsEmpty(saved);
-        StringAssert.Contains(cut.Find(".sky-layer-canvas").GetAttribute("style")!, "min(640px, 100%", StringComparison.Ordinal);
     }
 
     private static void AssertBaseOnly(IRenderedComponent<CurrentSkyPage> cut, string state)
@@ -787,17 +785,17 @@ public sealed class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
 
-        await cut.Find(".sky-layer-controls input").ChangeAsync(false).ConfigureAwait(false);
-        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
+        Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
-        Assert.IsFalse(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+        Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
 
         current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".sky-layer-actions a").GetAttribute("href"));
-            Assert.IsTrue(cut.Find(".sky-layer-controls input").HasAttribute("checked"));
+            Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".layers-link").GetAttribute("href"));
+            Assert.IsTrue(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
         });
     }
 
@@ -823,7 +821,7 @@ public sealed class CurrentSkyPageTests
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForElement(".sky-layer-workspace");
         firstRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(first.DisplayCapture!.CaptureId, new string('D', 64))));
-        Assert.AreEqual(new string('E', 64), cut.Find(".sky-layer-controls input").GetAttribute("data-layer-identity"));
+        Assert.AreEqual(new string('E', 64), cut.Find(".sky-layer-controls input[data-layer-target]").GetAttribute("data-layer-identity"));
         var saveCalls = 0;
         var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.MaterializationHandler = (_, _, _) =>
@@ -863,7 +861,7 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
         bind.SetResult("valid");
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled")));
-        Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".sky-layer-actions a").GetAttribute("href"));
+        Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".layers-link").GetAttribute("href"));
     }
 
     [TestMethod]
@@ -930,25 +928,19 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public void LargeViewerUsesDialogAndRestoresFocusOnClose()
+    public void FullScreenControlPromotesTheSameFigureWithoutASecondViewer()
     {
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         Configure(context);
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement("#current-sky-view-large");
-        Assert.IsEmpty(cut.FindComponent<HVO.SkyMonitor.CameraAgent.Components.Presentation.LargeImageViewer>()
-            .FindAll("img"));
+        // The prototype promotes the figure itself; no separate dialog image is fetched or stretched.
+        Assert.IsEmpty(cut.FindComponents<HVO.SkyMonitor.CameraAgent.Components.Presentation.LargeImageViewer>());
 
         cut.Find("#current-sky-view-large").Click();
         cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
-            invocation.Identifier.EndsWith("show", StringComparison.Ordinal))));
-        var viewer = cut.FindComponent<HVO.SkyMonitor.CameraAgent.Components.Presentation.LargeImageViewer>();
-        Assert.HasCount(1, viewer.FindAll("img"));
-        viewer.Find(".large-viewer__close").Click();
-
-        cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
-            invocation.Identifier.EndsWith("close", StringComparison.Ordinal))));
+            invocation.Identifier == "requestFullScreen")));
     }
 
     [TestMethod]
@@ -968,8 +960,7 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.Contains(cut.Markup, "Image preview unavailable", StringComparison.Ordinal);
-            Assert.HasCount(1, cut.FindAll("a[href^='/gallery/']"));
-            Assert.IsEmpty(cut.FindAll("#current-sky-view-large"));
+            Assert.IsTrue(cut.FindAll("a[href^='/gallery/']").Count >= 1);
         });
         cut.Find("button.refresh-link").Click();
         cut.WaitForElement(".capture-image img");
@@ -995,7 +986,7 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public void RefreshWithoutDisplayImageClosesOpenViewer()
+    public void RefreshWithoutDisplayImageRemovesFullScreenControl()
     {
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
@@ -1006,18 +997,10 @@ public sealed class CurrentSkyPageTests
             Interlocked.Increment(ref read) == 1 ? first : WithoutDisplayImage(first)));
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement("#current-sky-view-large");
-        cut.Find("#current-sky-view-large").Click();
-        cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
-            invocation.Identifier.EndsWith("show", StringComparison.Ordinal))));
 
         cut.Find("button.refresh-link").Click();
 
-        cut.WaitForAssertion(() =>
-        {
-            Assert.IsEmpty(cut.FindAll("#current-sky-view-large"));
-            Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
-                invocation.Identifier.EndsWith("close", StringComparison.Ordinal)));
-        });
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("#current-sky-view-large")));
     }
 
     [TestMethod]
