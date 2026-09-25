@@ -55,4 +55,9 @@
 .status-icon.failure { background: var(--red); }
 .status-icon.failure::after { color: white; content: "\00d7"; }
 .status-icon.pending { border: 2px solid var(--muted); }
+.status-icon.skipped { border: 2px solid var(--muted); }
+.status-icon.skipped::after { width: .5rem; height: 1px; background: var(--muted); content: ""; }
+.status-icon.running { border: 2px solid var(--blue); border-top-color: transparent; animation: archive-spin 1s linear infinite; }
+@keyframes archive-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .status-icon.running { animation: none; } }
 :is(a, button):focus-visible { outline: 3px solid rgba(88, 166, 255, .65); outline-offset: 2px; }

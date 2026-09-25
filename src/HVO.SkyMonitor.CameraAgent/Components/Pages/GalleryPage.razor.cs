@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -33,7 +34,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentCapturePresentationProjector CapturePresentation { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
-    [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
     [Parameter, SupplyParameterFromQuery(Name = "from")] public string? From { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
@@ -73,7 +73,7 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             }
             return _page.Items.Where(capture =>
                 FormattableString.Invariant($"#{capture.CaptureSequence}").Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                ProductLabelFor(capture).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                ArchiveCardFacts.ProductLabel(capture, CardPresentation(capture)).Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 capture.RawState.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
         }
     }
@@ -81,18 +81,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private bool SearchIsActive => _draftSearch.Trim().Length > 0;
 
     private int ArtifactCount => VisibleItems.Sum(static capture => capture.Artifacts.Count);
-
-    // No event linkage is projected onto captures yet; the count is reported as not linked rather than as zero events.
-    private string EventCountLabel => "not linked";
-
-    private static string ProductLabelFor(CameraAgentGalleryCapture capture)
-    {
-        var combined = capture.Artifacts.Any(static artifact => artifact.Role == FrameArtifactRole.Combined);
-        var calibrated = capture.Artifacts.Any(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
-        if (combined) return "Unregistered live mean";
-        if (calibrated) return "Calibrated single frame";
-        return "Raw evidence only";
-    }
 
     private async Task LoadAsync()
     {
@@ -201,6 +189,16 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private Task ApplyFiltersAsync()
     {
+        // The primary product/outcome selects and the advanced role/status selects address the same query fields.
+        // Clear the advanced value when the primary one is set so no visible control is silently ignored.
+        if (_draftProduct != "all")
+        {
+            _draftRole = null;
+        }
+        if (_draftOutcome != "all")
+        {
+            _draftStatus = null;
+        }
         var values = new Dictionary<string, object?>
         {
             ["from"] = EmptyToNull(_draftFrom),

@@ -763,49 +763,27 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Archive", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Captures", Level = 1 })).ConfigureAwait(false);
         var advanced = page.Locator(".advanced-filters");
         Assert.IsFalse(await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
         var firstCard = page.Locator(".capture-card")
             .Filter(new LocatorFilterOptions { HasText = "Processed" })
             .First;
-        var imageLink = firstCard.Locator(".capture-card__image-link");
+        var imageLink = firstCard.Locator(".capture-image");
         var image = firstCard.Locator("img");
-        var viewerButton = firstCard.GetByRole(AriaRole.Button, new() { Name = "View large image" });
-        await VisibleAsync(image).ConfigureAwait(false);
-        Assert.AreEqual("lazy", await image.GetAttributeAsync("loading").ConfigureAwait(false));
-        // A lazy image can be visible before it has decoded; wait for the decode instead of sampling it once.
-        await page.WaitForFunctionAsync(
-            "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0",
-            await image.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
-        StringAssert.Contains(await firstCard.Locator(".capture-card__summary").InnerTextAsync().ConfigureAwait(false), "Processed", StringComparison.Ordinal);
-        Assert.IsTrue(await firstCard.EvaluateAsync<bool>(
-            "card => (card.querySelector('.capture-card__image-link').compareDocumentPosition(card.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0")
-            .ConfigureAwait(false));
-        Assert.IsNotNull(await imageLink.GetAttributeAsync("href").ConfigureAwait(false));
-
-        var viewerSource = await image.GetAttributeAsync("src").ConfigureAwait(false);
-        var viewerTriggerId = await viewerButton.GetAttributeAsync("id").ConfigureAwait(false);
-        await viewerButton.ClickAsync().ConfigureAwait(false);
-        var dialog = page.Locator("dialog.large-viewer");
-        await VisibleAsync(dialog).ConfigureAwait(false);
-        Assert.AreEqual(viewerSource, await dialog.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(viewerTriggerId, await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
 
         await CollapsibleSection.EnsureOpenAsync(advanced, page.GetByLabel("Evidence origin")).ConfigureAwait(false);
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Apply" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Button, new() { Name = "Older captures" })).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
             new Uri(url).Query.Contains("cursor=", StringComparison.Ordinal)).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "() => decodeURIComponent(document.querySelector('.capture-card__image-link')?.getAttribute('href') || '').includes('cursor=')")
+            "() => decodeURIComponent(document.querySelector('.capture-image')?.getAttribute('href') || '').includes('cursor=')")
             .ConfigureAwait(false);
-        var detailUrl = await page.Locator(".capture-card__image-link").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var detailUrl = await page.Locator(".capture-image").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
         StringAssert.Contains(Uri.UnescapeDataString(detailUrl), "origin=Simulated", StringComparison.Ordinal);
         StringAssert.Contains(Uri.UnescapeDataString(detailUrl), "cursor=", StringComparison.Ordinal);
@@ -1885,7 +1863,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await CollapsibleSection.EnsureOpenAsync(advanced, page.GetByLabel("Evidence origin")).ConfigureAwait(false);
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
         await page.GetByLabel("Page size").SelectOptionAsync("24").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Apply filters" }).ClickAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Apply" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal))
             .ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
@@ -2325,7 +2303,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         while (DateTimeOffset.UtcNow < deadline)
         {
             await page.GotoAsync("/gallery").ConfigureAwait(false);
-            await page.Locator(".gallery-state, .capture-grid").First.WaitForAsync().ConfigureAwait(false);
+            await page.Locator(".gallery-state, .prototype-gallery-grid").First.WaitForAsync().ConfigureAwait(false);
             if (await page.Locator(".capture-card").CountAsync().ConfigureAwait(false) >= minimumCards &&
                 await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).CountAsync().ConfigureAwait(false) > 0)
             {

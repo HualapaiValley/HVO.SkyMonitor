@@ -11,8 +11,8 @@
 @* Structure follows docs/prototypes/pipeline-operations/gallery.html element for element. Counts are of the
    loaded bounded page and are labelled as such; they are never presented as archive totals. Filters bind to
    supported bounded queries; search filters only the loaded page and says so. *@
-<div class="gallery-page site-main archive-main">
-    <header class="site-heading gallery-title archive-heading">
+<div class="gallery-page">
+    <header class="gallery-title">
         <div>
             <p class="eyebrow">Archive / bounded local history</p>
             <h1>Captures</h1>
@@ -20,8 +20,8 @@
         </div>
         <div class="gallery-heading-facts">
             <span aria-live="polite" aria-atomic="true"><strong>@VisibleItems.Count</strong> on this page</span>
-            <span><strong>@ArtifactCount</strong> artifacts</span>
-            <span><strong>@EventCountLabel</strong> events</span>
+            <span><strong>@ArtifactCount</strong> artifacts on this page</span>
+            <span title="Event linkage is not projected onto captures yet"><strong>Not linked</strong> events</span>
         </div>
     </header>
 
@@ -39,7 +39,7 @@
             <span>Search captures</span>
             <span class="input-shell">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m13 13 4 4"></path></svg>
-                <input id="gallerySearch" type="search" placeholder="Sequence, product, or status (this page)" value="@_draftSearch" @oninput="SetDraftSearch" />
+                <input id="gallerySearch" type="search" placeholder="Sequence, product, or raw state (this page)" value="@_draftSearch" @oninput="SetDraftSearch" />
             </span>
         </label>
         <label><span>From UTC</span><input id="galleryFrom" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></label>
