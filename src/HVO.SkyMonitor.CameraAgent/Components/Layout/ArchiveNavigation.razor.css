@@ -1,8 +1,6 @@
-.archive-navigation { width: min(100%, 105rem); margin: 0 auto; padding: 0 clamp(.75rem, 2.6vw, 2.4rem); }
-.archive-navigation--captures { width: min(100%, 105rem); padding-top: clamp(1rem, 2.6vw, 2.4rem); }
+.archive-navigation { width: min(100%, 105rem); margin: 0 auto; padding: clamp(1rem, 2.6vw, 2.4rem) clamp(.75rem, 2.6vw, 2.4rem) 0; }
 .archive-subnav { display: flex; gap: 1.2rem; min-height: 3.2rem; align-items: flex-end; border-bottom: 1px solid var(--hvo-border-muted); }
 .archive-subnav a { position: relative; display: grid; min-height: 3.2rem; place-items: center; padding: 0 .15rem; color: var(--hvo-muted); font-size: .68rem; font-weight: 700; text-decoration: none; }
 .archive-subnav a:hover, .archive-subnav a[aria-current="page"] { color: var(--hvo-body-color); }
 .archive-subnav a[aria-current="page"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--hvo-accent); content: ""; }
-@media (max-width: 650px) { .archive-navigation:not(.archive-navigation--captures) { padding-inline: .65rem; } }
-@media (max-width: 620px) { .archive-navigation--captures { padding: 1rem .65rem 0; } }
+@media (max-width: 650px) { .archive-navigation { padding: 1rem .65rem 0; } }

@@ -83,22 +83,27 @@
                                 <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
                             }
                             <span class="calendar-day__details"><small>@CellSummary(cell)@(missingThumbnail ? " / preview unavailable" : string.Empty)</small>
-                                @if (day is { CandidateCount: > 0 })
+                                @if (hasSession)
                                 {
-                                    <span class="calendar-products"><i class="event" aria-label="@(day.CandidateCount) local candidate@(day.CandidateCount == 1 ? "" : "s")">!</i></span>
+                                    <span class="calendar-products" aria-hidden="true">
+                                        <i class="unavailable" title="Time-lapse availability not projected">T</i>
+                                        <i class="unavailable" title="Star-trail availability not projected">S</i>
+                                        <i class="unavailable" title="Keogram availability not projected">K</i>
+                                        <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                    </span>
                                 }
                             </span>
                         </a>
                     </li>
                 }
             </ol>
-            <div class="calendar-legend">
-                <span><i class="calendar-legend__session"></i>Retained captures</span>
-                <span><i class="calendar-legend__event"></i>Local detection candidate</span>
-                <span>Coverage and nightly products unavailable</span>
-                <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
-            </div>
         </section>
+        <div class="calendar-legend" aria-label="Calendar key">
+            <span><i class="calendar-legend__session" aria-hidden="true"></i>Retained captures</span>
+            <span><i class="calendar-legend__event" aria-hidden="true"></i>Local detection candidate</span>
+            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Coverage and nightly products unavailable</span>
+            <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
+        </div>
 
         <section class="calendar-summary" aria-label="Month summary">
             <article><p class="eyebrow">Nights with captures</p><strong>@ObservedNights</strong><small>@(DateTime.DaysInMonth(MonthStart.Year, MonthStart.Month) - ObservedNights) without retained captures</small></article>

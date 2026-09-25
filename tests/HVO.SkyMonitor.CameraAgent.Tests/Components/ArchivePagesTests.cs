@@ -69,6 +69,8 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("/archive/day/2026-07-21", observedNight.QuerySelector("a")!.GetAttribute("href"));
             Assert.AreEqual($"/api/v1/operations/gallery/{representative:D}/thumbnail", observedNight.QuerySelector("img.calendar-thumb")!.GetAttribute("src"));
             Assert.IsNotNull(observedNight.QuerySelector(".calendar-products i.event"));
+            Assert.HasCount(3, observedNight.QuerySelectorAll(".calendar-products i.unavailable"));
+            Assert.AreEqual("true", observedNight.QuerySelector(".calendar-products")!.GetAttribute("aria-hidden"));
             var empty = cells[24];
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--empty"));
             StringAssert.Contains(empty.TextContent, "No retained captures", StringComparison.Ordinal);
@@ -83,6 +85,8 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(summary, "Expected schedule not projected", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
             StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
+            Assert.IsNotNull(cut.Find(".calendar-legend__unavailable"));
+            Assert.IsFalse(cut.Find(".calendar-legend").ParentElement!.ClassList.Contains("observing-calendar"));
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
         var nav = cut.FindAll(".month-nav a").Select(link => link.GetAttribute("href")!).ToArray();
