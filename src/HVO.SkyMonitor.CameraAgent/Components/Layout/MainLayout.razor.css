@@ -40,12 +40,21 @@
     padding-top: 0;
     padding-inline: clamp(.75rem, 2.6vw, 2.4rem);
 }
-.content-container ::deep :is(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .operations-page, .system-page, .quarantine-page, .schedule-console, .calibration-console) {
+.content-container:has(.execution-page, .transient-page, .transient-detail) {
+    padding-top: clamp(1rem, 2.6vw, 2.4rem);
+}
+.content-container ::deep :is(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout) {
     box-sizing: border-box;
     width: 100%;
     max-width: none;
     margin-inline: 0;
     padding-inline: 0;
+}
+.content-container ::deep :is(.operations-page, .system-page, .quarantine-page, .schedule-console, .calibration-console) {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    margin-inline: 0;
 }
 
 #blazor-error-ui {
