@@ -40,72 +40,9 @@
                 <span class="capture-navigation__control capture-navigation__control--disabled" aria-disabled="true">Next capture <i class="bi bi-arrow-right" aria-hidden="true"></i></span>
             }
         </nav>
-        <header class="detail-heading"><div><p class="eyebrow">Sequence @_capture.CaptureSequence / @EvidenceLabel(_capture.EvidenceOrigin)</p><h1>Capture detail</h1><p><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></p>@if (_liveExecutionId is { } liveRun) { <a href="/operations/pipeline/executions/@liveRun">View pipeline run</a> }</div><span>@OperationsPage.SplitWords(_capture.RawState)</span></header>
-        <section class="detail-hero">
-            <div class="detail-image-column">
-                <CaptureImage Source="@SelectedSlot?.PreviewUrl"
-                              Alt="@ImageAlt"
-                              CssClass="detail-capture-image"
-                              EmptyTitle="This capture cannot be displayed"
-                              EmptyMessage="Safe capture facts and authorized technical downloads remain available."
-                              FailureMessage="The retained preview could not be loaded. Capture facts and authorized technical downloads remain available.">
-                    <button id="capture-detail-view-large" type="button" class="btn btn-overlay btn-sm capture-image__button" @onclick="OpenViewer">
-                        <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i> View large image
-                    </button>
-                </CaptureImage>
-                @if (_capturePresentation is not null)
-                {
-                    <ImageStageSelector Stages="@_capturePresentation.Stages" SelectedStage="@_selectedStage" SelectedStageChanged="SelectStageAsync" />
-                }
-                @if (SelectedSlot is { } selectedSlot)
-                {
-                    <p class="selected-artifact">Showing <strong>@selectedSlot.Label</strong> from the @OperationsPage.SplitWords(selectedSlot.ArtifactRole?.ToString() ?? "unknown") artifact@(!string.IsNullOrWhiteSpace(selectedSlot.Variant) ? $" / {selectedSlot.Variant}" : string.Empty).</p>
-                }
-            </div>
-            <aside class="capture-summary" aria-label="Capture summary">
-                <p class="eyebrow"><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></p>
-                <h2>@CaptureSummary</h2>
-                <dl>
-                    <div><dt>Image stage</dt><dd>@SelectedStageLabel</dd></div>
-                    <div><dt>Exposure</dt><dd>@ExposureSummary</dd></div>
-                    <div><dt>Gain</dt><dd>@GainSummary</dd></div>
-                    <div><dt>Sensor</dt><dd>@SensorSummary</dd></div>
-                    <div><dt>Conditions</dt><dd>@ConditionsSummary</dd></div>
-                    <div><dt>Origin</dt><dd>@EvidenceLabel(_capture.EvidenceOrigin)</dd></div>
-                </dl>
-            </aside>
-        </section>
+        <CurrentSkyPage @key="_capture.CaptureId" ArchivedView="@_view" />
 
-        <details class="layered-workspace">
-            <summary>Presentation layers and stack saving</summary>
-            @if (_presentation is not null)
-            {
-                <div class="layered-presentation" @ref="_presentationRoot" data-presentation-identity="@_presentation.PresentationIdentitySha256">
-                    <p>Immutable base with one grouped same-host SVG; toggles run locally without changing the selected image stage.</p>
-                    <div class="layered-canvas">
-                        <img src="@PreviewUrl(_presentation.BaseArtifactId)" alt="Capture @_capture.CaptureSequence layered base image" />
-                        <div class="layered-overlay" aria-hidden="true">@PresentationSvg</div>
-                    </div>
-                    <fieldset class="layer-controls">
-                        <legend>Presentation layers</legend>
-                        @foreach (var layer in _presentation.Layers)
-                        {
-                            <label><input type="checkbox" checked="@layer.EnabledByDefault" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span>@LayerLabel(layer.Kind)</span><small>z @layer.ZOrder / @layer.StyleVersion</small></label>
-                        }
-                        <div class="layer-save"><button type="button" class="btn btn-primary" disabled="@_isSaving" @onclick="SaveSelectedStackAsync">@(_isSaving ? "Saving stack..." : "Save selected stack")</button><small>Creates one immutable flattened derivative without rerunning analysis.</small></div>
-                    </fieldset>
-                    @if (_saveMessage is not null) { <p class="layer-save-status" role="status">@_saveMessage</p> }
-                    @if (_saveError is not null) { <p class="layer-save-status layer-save-status--error" role="alert">@_saveError</p> }
-                    <dl class="layer-provenance"><div><dt>Manifest</dt><dd><code>@_presentation.ManifestIdentitySha256</code></dd></div><div><dt>Presentation</dt><dd><code>@_presentation.PresentationIdentitySha256</code></dd></div><div><dt>Registration</dt><dd>@_capture.CanonicalSceneAvailability</dd></div></dl>
-                </div>
-            }
-            else
-            {
-                <p class="unavailable-state">@(_presentationMessage ?? "Structured layers were not retained for this capture. Historical flattened artifacts remain available as labeled image stages.")</p>
-            }
-        </details>
-
-        <details class="technical-evidence">
+        <details id="technical-evidence" class="technical-evidence">
         <summary>Technical evidence and downloads</summary>
         <section class="fact-section replay-entry" aria-labelledby="replay-entry-heading">
             <header><p class="eyebrow">Retained evidence replay</p><h2 id="replay-entry-heading">Replay this capture</h2></header>
@@ -233,6 +170,5 @@
         </section>
         </details>
         <p class="back-action"><a class="btn btn-outline-light" href="@BackUrl">Back to gallery results</a></p>
-        <LargeImageViewer @bind-Open="_viewerOpen" Source="@SelectedSlot?.PreviewUrl" Title="@ViewerTitle" Alt="@ImageAlt" TriggerId="capture-detail-view-large" />
     }
 </div>

@@ -988,7 +988,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
             new ViewportSize { Width = 844, Height = 390 }
         })
         {
+            await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
+            await trigger.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
+                .ConfigureAwait(false);
             await VisibleAsync(figure).ConfigureAwait(false);
             Assert.IsTrue(await figure.EvaluateAsync<bool>("element => document.fullscreenElement === element")
                 .ConfigureAwait(false));

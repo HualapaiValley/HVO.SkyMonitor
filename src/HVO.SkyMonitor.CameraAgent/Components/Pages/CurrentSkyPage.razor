@@ -6,23 +6,37 @@
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Current sky</PageTitle>
+<PageTitle>@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
 
 @* Structure and class names follow docs/prototypes/pipeline-operations/dashboard.html element for element so the
    scoped stylesheet carries the prototype's cameraagent-pages.css rules unchanged. Features without a backend stay
    in the DOM as disabled controls that name the issue delivering them; fixture values are never rendered. *@
-<div class="current-sky-page site-main">
+<div class="current-sky-page site-main @(IsArchived ? "historical-sky" : "")">
     <header class="site-heading current-sky-heading">
         <div>
-            <p class="eyebrow">Authenticated local observatory</p>
-            <h1 id="current-sky-heading" tabindex="-1">Current sky</h1>
-            <p>The latest durable presentation from this CameraAgent, with its source capture and processing state kept explicit.</p>
+            <p class="eyebrow">@(IsArchived ? "Archive / retained capture" : "Authenticated local observatory")</p>
+            <h1 id="current-sky-heading" tabindex="-1">@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</h1>
+            @if (IsArchived)
+            {
+                <p><time datetime="@ArchivedView!.Capture.ExposureStartedUtc.ToString("O")">@ArchivedView.Capture.ExposureStartedUtc.ToString("yyyy-MM-dd HH:mm:ss.fff") UTC</time>. This view stays on the selected capture as new images arrive.</p>
+            }
+            else
+            {
+                <p>The latest durable presentation from this CameraAgent, with its source capture and processing state kept explicit.</p>
+            }
         </div>
         <div class="site-heading-actions">
-            <span class="live-indicator @(_presentation?.ImageFreshness == CameraAgentPresentationImageFreshness.Current ? "" : "history")"><i></i>@LiveIndicatorLabel</span>
+            @if (IsArchived)
+            {
+                <a class="button secondary" href="/">Return to current sky</a>
+            }
+            else
+            {
+                <span class="live-indicator @(_presentation?.ImageFreshness == CameraAgentPresentationImageFreshness.Current ? "" : "history")"><i></i>@LiveIndicatorLabel</span>
+            }
             <button type="button" class="button secondary refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7"></path></svg>
-                Refresh image
+                @(IsArchived ? "Retry image layers" : "Refresh image")
             </button>
         </div>
     </header>
@@ -39,11 +53,18 @@
         </div>
     }
 
-    <section class="dashboard-status" aria-label="CameraAgent status" aria-live="polite">
+    <section class="dashboard-status" aria-label="@(IsArchived ? "Historical capture status" : "CameraAgent status")" aria-live="polite">
         <div class="dashboard-status__state"><span class="status-icon @SystemIconClass" aria-hidden="true"></span><span><strong>@SystemLabel</strong><small>@(_presentation?.System.Message ?? "Loading CameraAgent state.")</small></span></div>
         <dl>
-            <div><dt>Current capture</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
-            <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
+            <div><dt>@(IsArchived ? "Selected capture" : "Current capture")</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
+            @if (IsArchived)
+            {
+                <div><dt>Captured UTC</dt><dd>@ArchivedView!.Capture.ExposureStartedUtc.ToString("HH:mm:ss")</dd></div>
+            }
+            else
+            {
+                <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
+            }
             <div><dt>LogicHost</dt><dd class="fact-unavailable">Not reported here</dd></div>
             <div><dt>Storage</dt><dd class="fact-unavailable">Not reported here</dd></div>
         </dl>
@@ -90,8 +111,8 @@
                                       Source="@DisplaySlot?.PreviewUrl"
                                       RetryObservedUtc="@_presentation?.ObservedUtc"
                                       Alt="@ImageAlt"
-                                      EmptyTitle="No sky image is available yet"
-                                      EmptyMessage="CameraAgent will keep this view ready for the first durable displayable capture." />
+                                      EmptyTitle="@(IsArchived ? "This capture cannot be displayed" : "No sky image is available yet")"
+                                      EmptyMessage="@(IsArchived ? "Retained facts and authorized technical downloads remain available. No other capture is substituted." : "CameraAgent will keep this view ready for the first durable displayable capture.")" />
                     }
                 </div>
                 <figcaption>
@@ -102,7 +123,7 @@
                     <div class="figure-actions">
                         @if (FactCapture is not null)
                         {
-                            <a class="inline-action" href="@DetailUrl">Open capture details</a>
+                            <a class="inline-action" href="@DetailUrl">@(IsArchived ? "Technical evidence and downloads" : "Open capture details")</a>
                         }
                         @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
                         {
@@ -148,12 +169,12 @@
                         {
                             var sourceId = lineage.SourceArtifactIds[index];
                             var source = _combinedProduct?.Sources.FirstOrDefault(item => item.ArtifactId == sourceId);
-                            var endpoint = index == lineage.SourceArtifactIds.Count - 1;
-                            var previewable = source is { Role: HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated or HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw, CaptureId: not null };
-                            <div class="source-entry @(endpoint ? "reference" : "")">
+                            var endpoint = source?.CaptureId == _facts.CaptureId;
+                            var previewable = source is { Role: HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated or HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw, CaptureId: not null } && !_failedSourcePreviews.Contains(sourceId);
+                            <div class="source-entry @(endpoint ? "reference" : "")" title="Source artifact @sourceId">
                                 @if (previewable)
                                 {
-                                    <a href="/gallery/@source!.CaptureId"><img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="@(endpoint ? "Window endpoint capture" : "Capture") @(source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D"))" /></a>
+                                    <a href="/gallery/@source!.CaptureId"><img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="@(endpoint ? "Window endpoint capture" : "Capture") @(source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D"))" @onerror="() => _failedSourcePreviews.Add(sourceId)" /></a>
                                 }
                                 else { <span class="unavailable source-placeholder"><b>Preview unavailable</b></span> }
                                 <span>@(endpoint ? "Endpoint N" : $"N-{lineage.SourceArtifactIds.Count - 1 - index}")</span><small title="Artifact @sourceId">@(source?.CaptureSequence is { } sequence ? $"#{sequence}" : $"Source {index + 1}")</small>
@@ -168,7 +189,7 @@
                     </dl>
                     @if (lineage.SourceCount > 8 || _combinedProduct?.SourcesTruncated == true) { <p>Source display is bounded to the first eight recorded IDs.</p> }
                     @if (_lineageMessage is not null) { <p role="status">@_lineageMessage</p> }
-                    <p class="design-disclosure lineage-note"><strong>Current baseline:</strong> @LineageDisclosure(lineage) Registered stacking remains a separate design target.</p>
+                    <p class="design-disclosure lineage-note"><strong>@(IsArchived ? "Retained method:" : "Current baseline:")</strong> @LineageDisclosure(lineage) Registered stacking remains a separate design target.</p>
                 </section>
             }
             @if (LayerMessage is { } layerMessage && _presentation?.DisplayCapture is not null)
@@ -271,8 +292,8 @@
         </aside>
     </section>
 
-    <section class="operations-strip" aria-label="Current CameraAgent operations">
-        <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@SystemLabel</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"Latest capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
+    <section class="operations-strip" aria-label="@(IsArchived ? "Historical capture evidence" : "Current CameraAgent operations")">
+        <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@(IsArchived ? ArchivedView!.Capture.RawState : SystemLabel)</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"{(IsArchived ? "Selected" : "Latest")} capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
         <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
         <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Not reported here</strong><span>Events lists retained candidates</span></div></article>
         <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Not reported here</strong><span>LogicHost state is not surfaced on this page</span></div></article>

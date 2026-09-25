@@ -18,6 +18,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentCurrentSkyFacts? _facts;
     private CameraAgentProductDetail? _combinedProduct;
     private string? _lineageMessage;
+    private readonly HashSet<Guid> _failedSourcePreviews = [];
     private Guid? _lineageArtifactId;
     private CameraAgentLayeredPresentation? _layers;
     private CancellationTokenSource? _layerCancellation;
@@ -79,6 +80,38 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+    [Parameter] public CameraAgentCaptureDetailView? ArchivedView { get; set; }
+
+    private bool IsArchived => ArchivedView is not null;
+    private CameraAgentCaptureDetailView? _appliedArchive;
+
+    protected override void OnParametersSet()
+    {
+        if (ArchivedView is not { } archive || ReferenceEquals(archive, _appliedArchive)) return;
+        _appliedArchive = archive;
+        var capture = archive.Capture;
+        var sameCapture = _runCaptureId == capture.CaptureId;
+        _runCaptureId = capture.CaptureId;
+        var display = new CameraAgentPresentationCapture(capture.CaptureId, capture.CaptureSequence,
+            capture.ExposureStartedUtc, 0, capture.EvidenceOrigin);
+        _presentation = new CameraAgentCurrentImagePresentation(capture.DurableIngressUtc,
+            CameraAgentPresentationImageFreshness.Historical,
+            new(CameraAgentPresentationSystemState.Standby, "Retained capture evidence, not current camera health.", capture.DurableIngressUtc),
+            display, display, false, archive.Presentation.SelectedStage, archive.Presentation.Stages, false, false);
+        _facts = archive.Facts?.CaptureId == capture.CaptureId ? archive.Facts : null;
+        _initialLoading = false;
+        _selectedStage = ResolveSelection(_presentation, sameCapture ? _selectedStage : null);
+        _liveExecutionId = null;
+        _combinedProduct = null;
+        _lineageArtifactId = _facts?.CombinedLineage?.ArtifactId;
+        _lineageMessage = null;
+        _failedSourcePreviews.Clear();
+        ResetLayers(capture.CaptureId, _lifetime!.Token);
+        TryLoadLayers(capture.CaptureId);
+        if (_lineageArtifactId is { } artifactId)
+            _ = LoadLineageAsync(artifactId, capture.CaptureId, _lifetime.Token);
+        _ = LoadLiveRunLinkAsync(capture.CaptureId, _lifetime.Token);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -124,6 +157,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     protected override async Task OnInitializedAsync()
     {
         _lifetime = new CancellationTokenSource();
+        if (IsArchived) return;
         await RequestRefreshAsync(_lifetime.Token);
         _timer = new PeriodicTimer(RefreshInterval, TimeProvider);
         _pollTask = PollAsync(_lifetime.Token);
@@ -145,7 +179,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private async Task RequestRefreshAsync(CancellationToken cancellationToken)
     {
-        if (_accessDenied || _disposeStarted != 0) return;
+        if (IsArchived || _accessDenied || _disposeStarted != 0) return;
         Interlocked.Exchange(ref _refreshRequested, 1);
         await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -560,7 +594,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     {
         CameraAgentPresentationStage.Calibrated => "Single frame",
         CameraAgentPresentationStage.Raw => "Primary evidence",
-        _ => "Current baseline"
+        _ => IsArchived ? "Archived presentation" : "Current baseline"
     };
 
     private string ProductBadgeClass => _selectedStage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw ? "source" : "current";
@@ -709,9 +743,23 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
-            if (run.IsSuccess && _runCaptureId == captureId)
+            if (run.Kind == OperatorUiResultKind.Unauthorized && _runCaptureId == captureId && _disposeStarted == 0)
             {
-                await InvokeAsync(() => { _liveExecutionId = run.Value?.ExecutionId; StateHasChanged(); }).ConfigureAwait(false);
+                await InvokeAsync(() =>
+                {
+                    if (_runCaptureId != captureId || _disposeStarted != 0) return;
+                    _accessDenied = true;
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                });
+            }
+            else if (run.IsSuccess && _runCaptureId == captureId && _disposeStarted == 0)
+            {
+                await InvokeAsync(() =>
+                {
+                    if (_runCaptureId != captureId || _disposeStarted != 0 || _accessDenied) return;
+                    _liveExecutionId = run.Value?.ExecutionId;
+                    StateHasChanged();
+                }).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -727,6 +775,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     {
         if (_lifetime is not null)
         {
+            if (IsArchived) TryLoadLayers(_runCaptureId);
             await RequestRefreshAsync(_lifetime.Token);
             await InvokeAsync(() =>
             {
@@ -778,7 +827,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentPresentationCapture? FactCapture =>
         _presentation?.DisplayCapture ?? _presentation?.LatestCapture;
 
-    private string DetailUrl => FactCapture is { } capture
+    private string DetailUrl => IsArchived ? "#technical-evidence" : FactCapture is { } capture
         ? $"/gallery/{capture.CaptureId:D}"
         : "/gallery";
 
@@ -795,7 +844,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _ => "No image"
     };
 
-    private string SystemLabel => _presentation?.System.State switch
+    private string SystemLabel => IsArchived ? "Historical capture" : _presentation?.System.State switch
     {
         CameraAgentPresentationSystemState.Capturing => "Capturing",
         CameraAgentPresentationSystemState.Standby => "Standby",

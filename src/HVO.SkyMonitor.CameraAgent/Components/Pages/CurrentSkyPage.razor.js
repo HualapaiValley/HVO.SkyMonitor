@@ -5,10 +5,18 @@ const bindings = new WeakMap();
 export async function requestFullScreen(figure) {
     if (!figure?.isConnected || !figure.requestFullscreen) return false;
     if (document.fullscreenElement === figure) return true;
+    const trigger = figure.querySelector('.image-tool');
+    const restoreFocus = () => {
+        if (document.fullscreenElement === figure) return;
+        document.removeEventListener('fullscreenchange', restoreFocus);
+        if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
     try {
+        document.addEventListener('fullscreenchange', restoreFocus);
         await figure.requestFullscreen();
         return true;
     } catch {
+        document.removeEventListener('fullscreenchange', restoreFocus);
         return false;
     }
 }
@@ -18,8 +26,11 @@ export async function bindLayerToggles(root, width, height) {
     if (!image || !Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0) return "unavailable";
     if (!image.complete) {
         await new Promise(resolve => {
-            image.addEventListener("load", resolve, { once: true });
-            image.addEventListener("error", resolve, { once: true });
+            const waiting = new AbortController();
+            const finish = () => { clearTimeout(timeout); waiting.abort(); resolve(); };
+            const timeout = setTimeout(finish, 5000);
+            image.addEventListener("load", finish, { once: true, signal: waiting.signal });
+            image.addEventListener("error", finish, { once: true, signal: waiting.signal });
         });
     }
     if (root.querySelector(".sky-layer-canvas > img") !== image || !image.complete || !image.naturalWidth || !image.naturalHeight) return "unavailable";
