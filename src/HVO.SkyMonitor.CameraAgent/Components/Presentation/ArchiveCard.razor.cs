@@ -33,31 +33,28 @@ public static class ArchiveCardFacts
     }
 
     /// <summary>
-    /// The multi-source count the displayed pixels can prove. A display artifact that is itself a Combined mean, or
-    /// that carries more than one source, proves it directly. A derivative that carries exactly one source proves it
-    /// only when that source is a multi-source Combined artifact. Merely existing alongside a Combined artifact is
-    /// never proof, so a single-frame calibrated preview cannot inherit a causal label.
+    /// A presentation can name seven inputs (one image and six layer products), not seven sensor frames. Follow
+    /// only image ancestry: the displayed Combined product or a Preview sourced by it, including through one
+    /// AnnotatedPreview hop. A sibling Combined product is never proof of the displayed pixels' lineage.
     /// </summary>
     public static int ProvenSourceCount(CameraAgentGalleryCapture capture, CameraAgentCapturePresentation presentation)
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(presentation);
         var display = DisplayArtifact(capture, presentation);
-        if (display is { Role: FrameArtifactRole.Combined, SourceArtifactIds.Count: > 0 } combined)
+        for (var depth = 0; depth < 3 && display is not null; depth++)
         {
-            return combined.SourceArtifactIds.Count;
-        }
-        if (display is { SourceArtifactIds.Count: > 1 } multiSource)
-        {
-            return multiSource.SourceArtifactIds.Count;
-        }
-        if (display is { SourceArtifactIds.Count: 1 } derivative)
-        {
-            var source = capture.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == derivative.SourceArtifactIds[0]);
-            if (source is { Role: FrameArtifactRole.Combined, SourceArtifactIds.Count: > 1 } retained)
+            if (display.Role == FrameArtifactRole.Combined)
             {
-                return retained.SourceArtifactIds.Count;
+                return display.SourceArtifactIds.Count;
             }
+            if (display.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview)) break;
+            var imageSources = display.SourceArtifactIds
+                .Select(id => capture.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == id))
+                .Where(static source => source is { Role: FrameArtifactRole.Combined or FrameArtifactRole.Preview or FrameArtifactRole.Calibrated or FrameArtifactRole.Raw })
+                .ToArray();
+            if (imageSources.Length != 1) break;
+            display = imageSources[0];
         }
         return 0;
     }
@@ -136,8 +133,6 @@ public sealed partial class ArchiveCard : ComponentBase
 
     private bool IsCausal => ArchiveCardFacts.IsCausal(Capture, Presentation);
 
-    private string StageLabel => SelectedSlot?.Label ?? "No display stage";
-
     private string ArtifactCountLabel => Capture.ArtifactsTruncated
         ? $"{Capture.Artifacts.Count}+ artifacts"
         : $"{Capture.Artifacts.Count} artifact{(Capture.Artifacts.Count == 1 ? string.Empty : "s")}";
@@ -145,7 +140,7 @@ public sealed partial class ArchiveCard : ComponentBase
     // No event linkage exists in the capture projection yet; an event badge is only shown when one is retained.
     private string? EventLabel => null;
 
-    private string Summary
+    private string? Summary
     {
         get
         {
@@ -163,18 +158,13 @@ public sealed partial class ArchiveCard : ComponentBase
             }
             if (IsCausal)
             {
-                var prefix = SelectedSlot?.Stage == CameraAgentPresentationStage.Combined
-                    ? "Unregistered causal mean"
-                    : "Processed presentation from an unregistered causal mean";
-                return ProvenSourceCount > 0
-                    ? $"{prefix} of {ProvenSourceCount} source frame{(ProvenSourceCount == 1 ? string.Empty : "s")}; not a registered stack."
-                    : $"{prefix}; source lineage was not retained for this capture.";
+                return ProvenSourceCount > 0 ? "Causal mean; no geometric registration." : "Source lineage not retained.";
             }
             if (SelectedSlot is null)
             {
                 return "No displayable derivative is retained for this capture.";
             }
-            return "Processed single-frame presentation retained for this capture.";
+            return null;
         }
     }
 
