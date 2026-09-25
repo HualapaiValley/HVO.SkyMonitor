@@ -278,6 +278,84 @@ public sealed class GalleryPageTests
     }
 
     [TestMethod]
+    public void CombinedArtifactDoesNotMakeASingleFrameDisplayCausal()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        // A multi-source Combined artifact exists, but the displayed Preview is a single frame with no lineage to
+        // it. The card must not inherit a causal label from the mere presence of the Combined artifact.
+        var capture = OperatorUiTestData.Capture() with
+        {
+            Artifacts =
+            [
+                new CameraAgentGalleryArtifact(
+                    Guid.Parse("00000000-0000-0000-0000-000000000401"),
+                    HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, "combined", "stack", OperatorUiTestData.Now,
+                    "application/x-hvo-packed-image", new string('M', 64), 1024, null,
+                    [Guid.Parse("00000000-0000-0000-0000-000000000402"), Guid.Parse("00000000-0000-0000-0000-000000000403")],
+                    "comb-node"),
+                new CameraAgentGalleryArtifact(
+                    Guid.Parse("00000000-0000-0000-0000-000000000404"),
+                    HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview, "preview", null, OperatorUiTestData.Now,
+                    "application/x-hvo-packed-image", new string('N', 64), 1024, null, [], "preview-node",
+                    PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, PreviewReconstructionSupported: true)
+            ]
+        };
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var card = cut.Find(".capture-card");
+            StringAssert.Contains(card.TextContent, "Processed single frame", StringComparison.Ordinal);
+            Assert.IsFalse(card.TextContent.Contains("causal mean", StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    [TestMethod]
+    public void ProvenCausalMeanIsLabelledAndIntegrationIsSummed()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var combined = OperatorUiTestData.Capture() with
+        {
+            Artifacts =
+            [
+                new CameraAgentGalleryArtifact(
+                    Guid.Parse("00000000-0000-0000-0000-000000000501"),
+                    HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, "combined", "stack", OperatorUiTestData.Now,
+                    "application/x-hvo-packed-image", new string('O', 64), 1024, null,
+                    [
+                        Guid.Parse("00000000-0000-0000-0000-000000000502"),
+                        Guid.Parse("00000000-0000-0000-0000-000000000503"),
+                        Guid.Parse("00000000-0000-0000-0000-000000000504")
+                    ],
+                    "comb-node",
+                    PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, PreviewReconstructionSupported: true)
+            ],
+            ProcessingNodes =
+            [
+                new CameraAgentGalleryProcessingNode("comb", true, "Completed", null, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined, null, [])
+            ]
+        };
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([combined], null)));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var card = cut.Find(".capture-card");
+            StringAssert.Contains(card.TextContent, "Unregistered live mean", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "3 frames / endpoint #42", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "not a registered stack", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "Succeeded", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
     public void SearchMatchesTheProductLabelShownOnTheCard()
     {
         using var context = new BunitContext();

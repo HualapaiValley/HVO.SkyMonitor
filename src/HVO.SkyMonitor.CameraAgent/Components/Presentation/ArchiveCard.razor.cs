@@ -32,22 +32,16 @@ public static class ArchiveCardFacts
         return id is { } artifactId ? capture.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == artifactId) : null;
     }
 
-    private static CameraAgentGalleryArtifact? CombinedArtifact(CameraAgentGalleryCapture capture) =>
-        capture.Artifacts.FirstOrDefault(static artifact => artifact.Role == FrameArtifactRole.Combined);
-
-    private static bool IsPresentationStage(CameraAgentPresentationStage? stage) =>
-        stage is CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview;
-
     /// <summary>
-    /// The multi-source count the displayed pixels can prove. A retained Combined artifact is the proof that a
-    /// presentation derives from a causal mean; a display artifact that itself carries more than one source is
-    /// proof on its own. A single-frame calibrated preview proves nothing and never yields a causal label.
+    /// The multi-source count the displayed pixels can prove. A display artifact that is itself a Combined mean, or
+    /// that carries more than one source, proves it directly. A derivative that carries exactly one source proves it
+    /// only when that source is a multi-source Combined artifact. Merely existing alongside a Combined artifact is
+    /// never proof, so a single-frame calibrated preview cannot inherit a causal label.
     /// </summary>
     public static int ProvenSourceCount(CameraAgentGalleryCapture capture, CameraAgentCapturePresentation presentation)
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(presentation);
-        var slot = SelectedSlot(presentation);
         var display = DisplayArtifact(capture, presentation);
         if (display is { Role: FrameArtifactRole.Combined, SourceArtifactIds.Count: > 0 } combined)
         {
@@ -57,10 +51,13 @@ public static class ArchiveCardFacts
         {
             return multiSource.SourceArtifactIds.Count;
         }
-        if ((slot?.Stage == CameraAgentPresentationStage.Combined || IsPresentationStage(slot?.Stage)) &&
-            CombinedArtifact(capture) is { SourceArtifactIds.Count: > 1 } retained)
+        if (display is { SourceArtifactIds.Count: 1 } derivative)
         {
-            return retained.SourceArtifactIds.Count;
+            var source = capture.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == derivative.SourceArtifactIds[0]);
+            if (source is { Role: FrameArtifactRole.Combined, SourceArtifactIds.Count: > 1 } retained)
+            {
+                return retained.SourceArtifactIds.Count;
+            }
         }
         return 0;
     }
@@ -100,7 +97,8 @@ public static class ArchiveCardFacts
             CameraAgentPresentationStage.Raw => "raw",
             CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview =>
                 IsCausal(capture, presentation) ? "causal" : "single",
-            _ => "causal"
+            CameraAgentPresentationStage.Combined => "causal",
+            _ => "single"
         };
     }
 }

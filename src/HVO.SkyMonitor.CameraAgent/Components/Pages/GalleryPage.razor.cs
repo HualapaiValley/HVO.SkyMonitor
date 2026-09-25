@@ -30,6 +30,9 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private bool _compact;
     private long _generation;
     private bool _isLoading;
+    private IReadOnlyList<CameraAgentGalleryCapture>? _visibleCache;
+    private CameraAgentGalleryPage? _visibleCachePage;
+    private string? _visibleCacheSearch;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentCapturePresentationProjector CapturePresentation { get; set; } = default!;
@@ -66,16 +69,33 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             {
                 return [];
             }
-            var query = _draftSearch.Trim();
-            if (query.Length == 0)
+            if (_visibleCache is not null && ReferenceEquals(_visibleCachePage, _page) &&
+                string.Equals(_visibleCacheSearch, _draftSearch, StringComparison.Ordinal))
             {
-                return _page.Items;
+                return _visibleCache;
             }
-            return _page.Items.Where(capture =>
-                FormattableString.Invariant($"#{capture.CaptureSequence}").Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                ArchiveCardFacts.ProductLabel(capture, CardPresentation(capture)).Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                capture.RawState.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
+            _visibleCachePage = _page;
+            _visibleCacheSearch = _draftSearch;
+            _visibleCache = FilterPage();
+            return _visibleCache;
         }
+    }
+
+    private IReadOnlyList<CameraAgentGalleryCapture> FilterPage()
+    {
+        if (_page is null)
+        {
+            return [];
+        }
+        var query = _draftSearch.Trim();
+        if (query.Length == 0)
+        {
+            return _page.Items;
+        }
+        return _page.Items.Where(capture =>
+            FormattableString.Invariant($"#{capture.CaptureSequence}").Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            ArchiveCardFacts.ProductLabel(capture, CardPresentation(capture)).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            capture.RawState.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
     }
 
     private bool SearchIsActive => _draftSearch.Trim().Length > 0;

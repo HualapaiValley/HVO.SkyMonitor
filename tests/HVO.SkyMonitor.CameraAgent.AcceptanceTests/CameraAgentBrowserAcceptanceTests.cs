@@ -769,8 +769,6 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var firstCard = page.Locator(".capture-card")
             .Filter(new LocatorFilterOptions { HasText = "Processed" })
             .First;
-        var imageLink = firstCard.Locator(".capture-image");
-        var image = firstCard.Locator("img");
 
         await CollapsibleSection.EnsureOpenAsync(advanced, page.GetByLabel("Evidence origin")).ConfigureAwait(false);
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
