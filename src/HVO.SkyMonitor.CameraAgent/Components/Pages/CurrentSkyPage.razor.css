@@ -89,14 +89,14 @@
 
 .sky-figure { position: relative; margin: 0; overflow: hidden; background: #000; }
 .sky-figure:fullscreen { display: grid; grid-template-rows: minmax(0, 1fr); background: #000; }
-.sky-figure:fullscreen .sky-image-stage { width: 100%; height: 100%; aspect-ratio: auto; }
+.sky-figure:fullscreen .sky-image-stage { width: 100%; height: 100%; }
 .sky-image-stage { position: relative; width: 100%; overflow: hidden; background: #000; }
 .sky-layer-workspace, .sky-layer-canvas { position: absolute; inset: 0; }
 .sky-layer-canvas > img, .sky-layer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .sky-layer-canvas > img { display: block; object-fit: contain; }
 .sky-layer-overlay { visibility: hidden; pointer-events: none; }
 .sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
-.sky-image-stage ::deep .capture-image { position: relative; min-height: 0; border: 0; border-radius: 0; background: #000; box-shadow: none; }
+.sky-image-stage ::deep .capture-image { position: relative; border: 0; border-radius: 0; background: #000; box-shadow: none; }
 .sky-image-stage ::deep .capture-image img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
 
 /* The renderer's SVG viewBox matches the base image, so the overlay scales with it exactly like the prototype. */

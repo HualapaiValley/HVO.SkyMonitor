@@ -22,6 +22,26 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentLayeredPresentation? _layers;
     private CancellationTokenSource? _layerCancellation;
     private IJSObjectReference? _layerModule;
+    private bool _moduleImportAttempted;
+
+    // Full screen must be requested while the click still holds transient user activation. Importing the interop
+    // module lazily inside the click handler can consume that activation on a cold cache, so the module is warmed
+    // once as soon as a display capture exists. A failed warmup is harmless: the lazy import retries on demand.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort interop warmup; failure only falls back to the lazy import.")]
+    private async Task WarmInteropModuleAsync()
+    {
+        if (_moduleImportAttempted || _layerModule is not null || _disposeStarted != 0 ||
+            _presentation?.DisplayCapture is null) return;
+        _moduleImportAttempted = true;
+        try
+        {
+            _layerModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+        }
+        catch (Exception)
+        {
+            // The lazy import path remains available.
+        }
+    }
     private ElementReference _layerRoot;
     private ElementReference _figure;
     private string? _layerMessage;
@@ -56,6 +76,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        await WarmInteropModuleAsync().ConfigureAwait(false);
         if (!_bindLayers || !ShowLayeredHero) return;
         _bindLayers = false;
         var generation = _layerGeneration;
@@ -444,10 +465,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             : $"{SelectedLayerCount} selected / hidden at this stage";
 
     // Data-driven frame, never the prototype's 1936x1216 fixture: the layered canvas uses the retained payload
-    // dimensions; the plain image lets its own bytes define height.
+    // dimensions, and the plain image reserves its recorded capture dimensions so the stage does not shift on load.
     private string StageAspectStyle => _layers is { } layers && ShowLayeredHero
         ? FormattableString.Invariant($"aspect-ratio: {layers.WidthPixels} / {layers.HeightPixels};")
-        : string.Empty;
+        : _facts is { Width: > 0 } facts && facts.Height is > 0
+            ? FormattableString.Invariant($"aspect-ratio: {facts.Width} / {facts.Height};")
+            : string.Empty;
 
     private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 

@@ -580,7 +580,8 @@ public sealed class CurrentSkyPageTests
         Assert.AreEqual(combined.PreviewUrl!.OriginalString, cut.Find(".capture-image img").GetAttribute("src"));
         Assert.IsEmpty(cut.FindAll(".sky-layer-canvas, .sky-layer-overlay"));
         Assert.IsTrue(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
-        Assert.IsEmpty(context.JSInterop.Invocations);
+        // The interop module is warmed once, but no layer binding may run for a mismatched manifest base.
+        Assert.IsFalse(context.JSInterop.Invocations.Any(static call => call.Identifier == "bindLayerToggles"));
         Assert.IsFalse(cut.Find(".stage-status").TextContent.Contains("with selected presentation overlays", StringComparison.Ordinal));
     }
 
