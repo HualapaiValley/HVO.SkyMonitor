@@ -5187,7 +5187,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await primaryImage.WaitForAsync().ConfigureAwait(false);
         await page.Locator(".current-sky-summary").WaitForAsync().ConfigureAwait(false);
         Assert.IsGreaterThan(0, await page.Locator(".stage-switcher button:not(:disabled)").CountAsync().ConfigureAwait(false));
-        Assert.IsFalse(await page.Locator("#technical-evidence").EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
+        Assert.AreEqual("true", await page.Locator("#evidence-tab-Overview").GetAttributeAsync("aria-selected").ConfigureAwait(false));
         var layered = page.Locator(".sky-layer-workspace");
         if (expectLayeredPresentation)
         {
@@ -5343,17 +5343,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual("contain", await primaryImage.EvaluateAsync<string>("image => getComputedStyle(image).objectFit")
                 .ConfigureAwait(false));
         }
-        var comparisonImages = page.Locator(".comparison-grid img");
-        await CollapsibleSection.EnsureOpenAsync(page.Locator("#technical-evidence"), comparisonImages)
-            .ConfigureAwait(false);
-        Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
-        await page.WaitForFunctionAsync(
-            "() => [...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")
-            .ConfigureAwait(false);
-        Assert.IsTrue(await comparisonImages.EvaluateAllAsync<bool>(
-            "images => images.every(image => image.naturalWidth <= 2048 && image.naturalHeight <= 2048)")
-            .ConfigureAwait(false));
-        var previewUrl = await comparisonImages.First.GetAttributeAsync("src").ConfigureAwait(false);
+        await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
+        var previewLinks = page.Locator("#evidence-panel-Artifacts a[href$='/preview']");
+        await previewLinks.First.WaitForAsync().ConfigureAwait(false);
+        var previewUrl = await previewLinks.First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(previewUrl);
         var previewResponse = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), previewUrl).ToString())
             .ConfigureAwait(false);
@@ -5367,7 +5360,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             await previewResponse.DisposeAsync().ConfigureAwait(false);
         }
-        var downloadUrl = await page.Locator("#technical-evidence a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var downloadUrl = await page.Locator("#evidence-panel-Artifacts a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(downloadUrl);
         var downloadResponse = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), downloadUrl).ToString())
             .ConfigureAwait(false);

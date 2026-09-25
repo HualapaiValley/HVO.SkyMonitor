@@ -84,6 +84,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [Parameter] public CameraAgentCaptureDetailView? ArchivedView { get; set; }
     [Parameter] public RenderFragment? ArchiveNavigation { get; set; }
 
+    /// <summary>Archived-capture evidence rendered in the image column, beside the inspector.</summary>
+    [Parameter] public RenderFragment? Evidence { get; set; }
+
     private bool IsArchived => ArchivedView is not null;
     private CameraAgentCaptureDetailView? _appliedArchive;
 
@@ -853,7 +856,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         catch (Exception exception) when (exception is JSException or OperationCanceledException or ObjectDisposedException)
         {
             if (Volatile.Read(ref _disposeStarted) != 0) return;
-            _technicalEvidenceError = "Could not open evidence automatically. Exit fullscreen with Escape if needed, then open Technical evidence and downloads below the image.";
+            _technicalEvidenceError = "Could not open evidence automatically. Exit fullscreen with Escape if needed, then use Evidence and downloads below the image.";
         }
     }
 

@@ -55,8 +55,12 @@ public sealed class GalleryDetailTests
             cut.Find(".sky-image-stage img").GetAttribute("src"));
         StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "Processed", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".current-sky-summary").TextContent, "1 s", StringComparison.Ordinal);
-        Assert.IsFalse(cut.Find(".technical-evidence").HasAttribute("open"));
+        Assert.AreEqual("true", cut.Find("#evidence-tab-Overview").GetAttribute("aria-selected"));
+        Assert.IsTrue(cut.Find("#evidence-panel-Artifacts").HasAttribute("hidden"));
         Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
+        Assert.IsEmpty(cut.FindAll(".image-heading .eyebrow"));
+        Assert.IsNotNull(cut.Find(".sky-primary > #technical-evidence"));
+        Assert.IsNotNull(cut.Find(".sky-primary > .operations-strip"));
         Assert.HasCount(1, cut.FindComponents<CurrentSkyPage>());
         Assert.IsEmpty(cut.FindAll(".layered-workspace"));
 
@@ -73,7 +77,7 @@ public sealed class GalleryDetailTests
 
         cut.Find(".sky-image-stage img").TriggerEvent("onerror", EventArgs.Empty);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Image preview unavailable", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Markup, "Download content", StringComparison.Ordinal);
+        Assert.IsNotEmpty(cut.FindAll("#technical-evidence a[download]"));
     }
 
     [TestMethod]
@@ -369,46 +373,32 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "preview-node", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Manifest schema", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw retention hold", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Delivery availability", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Delivery statuses", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Dependencies", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Cloud assessment", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Mask SHA-256", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Artifact comparison", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Bounded same-capture view", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Node outcome", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Node ID", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "selected=yes", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "/preview", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "/content", StringComparison.Ordinal);
-            Assert.HasCount(2, cut.FindAll("a[href$='/preview']"));
-            Assert.HasCount(2, cut.FindAll(".comparison-grid img"));
-            Assert.HasCount(2, cut.FindAll(".comparison-selectors select"));
-            Assert.HasCount(2, cut.FindAll("a[href$='/content']"));
-            Assert.IsFalse(cut.Find(".technical-evidence").HasAttribute("open"));
+            StringAssert.Contains(cut.Markup, "Raw frame", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Annotated preview", StringComparison.Ordinal);
+            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
+            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][href$='/content']"));
+            Assert.IsEmpty(cut.FindAll(".comparison-grid"));
+            Assert.HasCount(5, cut.FindAll("[role='tab']"));
             Assert.IsFalse(cut.Markup.Contains("/tmp/", StringComparison.Ordinal));
             Assert.IsFalse(cut.Markup.Contains("optionsJson", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(cut.Markup.Contains("secret", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(cut.Markup.Contains("sensitive processing failure", StringComparison.OrdinalIgnoreCase));
             Assert.IsEmpty(cut.FindAll("main"));
         });
-        var selectors = cut.FindAll(".comparison-selectors select");
-        var originalLeft = selectors[0].GetAttribute("value");
-        selectors[0].Change(selectors[1].GetAttribute("value"));
-        Assert.AreEqual(originalLeft, cut.FindAll(".comparison-selectors select")[0].GetAttribute("value"));
-
-        var unsupportedPreferred = capture.Artifacts[1] with { MediaType = "image/jpeg" };
-        var supportedCalibrated = capture.Artifacts[0] with
-        {
-            ArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000103"),
-            Role = HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated,
-            MediaType = "application/x-hvo-packed-image"
-        };
-        service.DetailHandler = (_, _) => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentGalleryCapture>.Success(capture with
-            {
-                Artifacts = [capture.Artifacts[0], unsupportedPreferred, supportedCalibrated]
-            }));
-        var fallback = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
-        fallback.WaitForAssertion(() => Assert.HasCount(2, fallback.FindAll(".comparison-grid article")));
+        cut.Find("#evidence-tab-Artifacts").Click();
+        Assert.AreEqual("true", cut.Find("#evidence-tab-Artifacts").GetAttribute("aria-selected"));
+        Assert.IsFalse(cut.Find("#evidence-panel-Artifacts").HasAttribute("hidden"));
+        Assert.IsTrue(cut.Find("#evidence-panel-Overview").HasAttribute("hidden"));
+        cut.Find("#evidence-tab-Artifacts").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "End" });
+        Assert.AreEqual("true", cut.Find("#evidence-tab-Replay").GetAttribute("aria-selected"));
+        cut.Find("#evidence-tab-Replay").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "ArrowRight" });
+        Assert.AreEqual("true", cut.Find("#evidence-tab-Overview").GetAttribute("aria-selected"));
     }
 
     [TestMethod]
@@ -481,8 +471,8 @@ public sealed class GalleryDetailTests
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
 
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "This capture cannot be displayed", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Markup, "Download content", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Markup, "Two reconstructable artifacts", StringComparison.Ordinal);
+        Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download]"));
+        Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
     }
 
     [TestMethod]
@@ -662,7 +652,7 @@ public sealed class GalleryDetailTests
         await cut.Find(".figure-actions a").ClickAsync().ConfigureAwait(false);
         StringAssert.Contains(cut.Find(".technical-evidence-error").TextContent, "below the image", StringComparison.Ordinal);
         Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
-        Assert.HasCount(1, cut.FindAll("#technical-evidence > summary"));
+        Assert.HasCount(5, cut.FindAll("#technical-evidence [role='tab']"));
         Assert.IsFalse(cut.Markup.Contains("private browser diagnostic", StringComparison.Ordinal));
     }
 

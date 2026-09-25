@@ -81,6 +81,8 @@
 .fact-unavailable { color: var(--muted); font-weight: 600; }
 
 .sky-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 23rem); gap: 1rem; align-items: start; }
+.sky-primary { display: grid; gap: 1rem; min-width: 0; align-content: start; }
+.sky-primary .operations-strip { grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); margin-top: 0; }
 .sky-viewer-card, .inspector-card, .operations-strip article { border: 1px solid var(--border); border-radius: .55rem; background: rgba(9, 15, 24, .86); box-shadow: 0 14px 35px rgba(0, 0, 0, .16); }
 .sky-viewer-card { min-width: 0; overflow: hidden; }
 .card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border-bottom: 1px solid var(--border); }

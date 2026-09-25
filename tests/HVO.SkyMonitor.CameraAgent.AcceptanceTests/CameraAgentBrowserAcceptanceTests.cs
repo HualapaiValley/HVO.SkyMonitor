@@ -950,21 +950,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         var image = page.Locator(".sky-image-stage img");
         await VisibleAsync(image).ConfigureAwait(false);
-        Assert.IsFalse(await page.Locator("#technical-evidence").EvaluateAsync<bool>("details => details.open")
+        Assert.AreEqual("true", await page.Locator("#evidence-tab-Overview").GetAttributeAsync("aria-selected")
             .ConfigureAwait(false));
         await VisibleAsync(page.Locator(".current-sky-summary")).ConfigureAwait(false);
         var archivedPathAndQuery = new Uri(page.Url).PathAndQuery;
-        foreach (var linkText in new[] { "Technical evidence and downloads", "View immutable raw source" })
+        foreach (var linkText in new[] { "Evidence and downloads", "Open raw source downloads" })
         {
             var evidenceLink = page.GetByRole(AriaRole.Link, new() { Name = linkText, Exact = true });
             Assert.AreEqual(archivedPathAndQuery + "#technical-evidence",
                 await evidenceLink.GetAttributeAsync("href").ConfigureAwait(false));
             await evidenceLink.ClickAsync().ConfigureAwait(false);
-            await page.WaitForFunctionAsync("() => document.querySelector('#technical-evidence')?.open === true")
+            await page.WaitForFunctionAsync("() => document.querySelector('#technical-evidence')?.contains(document.activeElement)")
                 .ConfigureAwait(false);
             Assert.AreEqual(archivedPathAndQuery, new Uri(page.Url).PathAndQuery);
             Assert.AreEqual($"Capture #{capture.CaptureSequence}", await page.Locator("h1").InnerTextAsync().ConfigureAwait(false));
-            await page.Locator("#technical-evidence > summary").ClickAsync().ConfigureAwait(false);
         }
         Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".stage-switcher button:not(:disabled)").CountAsync().ConfigureAwait(false));
         Assert.IsGreaterThan(0, await page.Locator(".stage-switcher button:disabled").CountAsync().ConfigureAwait(false));
@@ -1021,13 +1020,12 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
             .ConfigureAwait(false);
         Assert.AreEqual(selectedSource, await figure.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
-        await page.GetByRole(AriaRole.Link, new() { Name = "Technical evidence and downloads", Exact = true })
+        await page.GetByRole(AriaRole.Link, new() { Name = "Evidence and downloads", Exact = true })
             .ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.querySelector('#technical-evidence')?.open === true && document.activeElement === document.querySelector('#technical-evidence > summary')")
+        await page.WaitForFunctionAsync("() => document.activeElement === document.querySelector('#evidence-tab-Overview')")
             .ConfigureAwait(false);
         Assert.AreEqual(archivedPathAndQuery, new Uri(page.Url).PathAndQuery);
-        await page.Locator("#technical-evidence > summary").ClickAsync().ConfigureAwait(false);
 
         foreach (var viewport in new[]
         {
@@ -1087,12 +1085,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
 
         Assert.AreEqual(2, await page.Locator(".capture-navigation__control[href]").CountAsync().ConfigureAwait(false));
-        await CollapsibleSection.EnsureOpenAsync(
-            page.Locator("#technical-evidence"),
-            page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#technical-evidence").GetByText(capture.CaptureId.ToString("D"), new() { Exact = true }))
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Technical", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#evidence-panel-Technical").GetByText(capture.CaptureId.ToString("D"), new() { Exact = true }))
             .ConfigureAwait(false);
-        Assert.IsGreaterThan(0, await page.Locator("#technical-evidence a[download]").CountAsync().ConfigureAwait(false));
+        await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download]").First).ConfigureAwait(false);
         await page.GotoAsync($"/gallery/{Guid.NewGuid():D}").ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Capture unavailable", new() { Exact = true })).ConfigureAwait(false);
 
@@ -1914,9 +1911,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await detailLink.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
-        await CollapsibleSection.EnsureOpenAsync(
-            page.Locator("#technical-evidence"),
-            page.GetByRole(AriaRole.Heading, new() { Name = "Artifacts", Level = 2 })).ConfigureAwait(false);
+        await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download]").First).ConfigureAwait(false);
 
         var image = page.Locator(".sky-image-stage img");
         await VisibleAsync(image).ConfigureAwait(false);
@@ -1924,21 +1920,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
         Assert.IsTrue(await image.EvaluateAsync<bool>("image => image.getBoundingClientRect().width <= innerWidth && image.getBoundingClientRect().height <= innerHeight")
             .ConfigureAwait(false));
-        var comparisonImages = page.Locator(".comparison-grid img");
-        await VisibleAsync(comparisonImages.First).ConfigureAwait(false);
-        Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
-        await page.WaitForFunctionAsync(
-            "() => [...document.querySelectorAll('.comparison-grid img')].length === 2 && " +
-            "[...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")
-            .ConfigureAwait(false);
-        Assert.IsTrue(await comparisonImages.EvaluateAllAsync<bool>(
-            "images => images.every(image => image.complete && image.naturalWidth > 0)").ConfigureAwait(false));
-        Assert.AreNotEqual(
-            await page.GetByLabel("Left artifact").InputValueAsync().ConfigureAwait(false),
-            await page.GetByLabel("Right artifact").InputValueAsync().ConfigureAwait(false));
 
         var previewUrl = await image.GetAttributeAsync("src").ConfigureAwait(false);
-        var contentUrl = await page.Locator("#technical-evidence a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var contentUrl = await page.Locator("#evidence-panel-Artifacts a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(previewUrl);
         Assert.IsNotNull(contentUrl);
         await AssertCookieProtectedContentAsync(ownerContext, previewUrl, "image/jpeg").ConfigureAwait(false);

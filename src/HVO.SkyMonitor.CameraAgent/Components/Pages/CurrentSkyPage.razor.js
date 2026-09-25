@@ -1,17 +1,16 @@
 const bindings = new WeakMap();
 
 export async function openTechnicalEvidence(root) {
-    const disclosure = root?.closest('.detail-page')?.querySelector('#technical-evidence');
-    if (!disclosure) return;
+    const evidence = root?.closest('.detail-page')?.querySelector('#technical-evidence');
+    if (!evidence) return;
     if (document.fullscreenElement && root.contains(document.fullscreenElement)) {
         await document.exitFullscreen();
-        // Let the fullscreen-exit listener restore its trigger before focusing the disclosure.
+        // Let the fullscreen-exit listener restore its trigger before focusing the evidence tabs.
         await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    if (!root.isConnected || !disclosure.isConnected) return;
-    disclosure.open = true;
-    disclosure.scrollIntoView({ block: 'start' });
-    disclosure.querySelector('summary')?.focus({ preventScroll: true });
+    if (!root.isConnected || !evidence.isConnected) return;
+    evidence.scrollIntoView({ block: 'start' });
+    (evidence.querySelector('.evidence-tabs [aria-pressed="true"]') ?? evidence).focus({ preventScroll: true });
 }
 
 // Mirrors the prototype's figure.requestFullscreen(): the same <figure> (base image, SVG layers, caption) is
