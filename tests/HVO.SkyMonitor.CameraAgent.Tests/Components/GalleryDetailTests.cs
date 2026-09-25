@@ -109,6 +109,7 @@ public sealed class GalleryDetailTests
         Assert.IsEmpty(cut.FindAll(".breadcrumb"));
         Assert.AreEqual("All captures", cut.Find(".capture-navigation__archive").TextContent);
         Assert.AreEqual("current-sky-heading", cut.Find(".capture-navigation").PreviousElementSibling?.QuerySelector("h1")?.Id);
+        Assert.AreEqual("site-heading current-sky-heading", cut.Find(".capture-navigation").ParentElement?.ClassName);
         Assert.AreEqual(GalleryEvidenceOrigin.Simulated, observedQuery?.EvidenceOrigin);
         Assert.IsNull(observedQuery?.PageSize);
         Assert.IsNull(observedQuery?.Cursor);
@@ -122,6 +123,7 @@ public sealed class GalleryDetailTests
         var boundary = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, current.CaptureId));
         boundary.WaitForAssertion(() => Assert.HasCount(1, boundary.FindAll(".capture-navigation__control[href]")));
         Assert.HasCount(1, boundary.FindAll(".capture-navigation__control--disabled"));
+        StringAssert.Contains(boundary.Find(".capture-navigation__control--disabled").TextContent, "Next capture unavailable", StringComparison.Ordinal);
     }
 
     [TestMethod]

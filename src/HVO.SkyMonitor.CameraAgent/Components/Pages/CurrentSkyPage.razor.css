@@ -35,6 +35,7 @@
 .current-sky-page svg, .current-sky-page ::deep .button svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
 .site-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.25rem; }
+.historical-sky .site-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; }
 .site-heading h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: .95; letter-spacing: -.045em; }
 .site-heading > div:first-child > p:last-child { max-width: 48rem; margin: .7rem 0 0; color: var(--muted); font-size: .82rem; }
 .site-heading-actions, .image-heading-actions { display: flex; align-items: center; gap: .55rem; }
@@ -256,6 +257,7 @@
 @media (max-width: 1180px) { .sky-workspace { grid-template-columns: minmax(0, 1fr) 20rem; } }
 @media (max-width: 900px) {
     .site-heading { align-items: flex-start; }
+    .historical-sky .site-heading { grid-template-columns: minmax(0, 1fr); justify-items: start; }
     .dashboard-status { grid-template-columns: 1fr; }
     .dashboard-status dl > div:first-child { border-left: 0; }
     .sky-workspace { grid-template-columns: 1fr; }

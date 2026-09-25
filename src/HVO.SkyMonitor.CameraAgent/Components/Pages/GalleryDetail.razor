@@ -29,7 +29,7 @@
                     }
                     else
                     {
-                        <span class="capture-navigation__control capture-navigation__control--disabled" aria-label="Previous capture unavailable" title="Previous capture unavailable"><i class="bi bi-chevron-left" aria-hidden="true"></i></span>
+                        <span class="capture-navigation__control capture-navigation__control--disabled" title="Previous capture unavailable"><i class="bi bi-chevron-left" aria-hidden="true"></i><span class="visually-hidden">Previous capture unavailable</span></span>
                     }
                     <a class="capture-navigation__archive" href="@BackUrl">All captures</a>
                     @if (_nextCaptureId is { } nextCaptureId)
@@ -38,7 +38,7 @@
                     }
                     else
                     {
-                        <span class="capture-navigation__control capture-navigation__control--disabled" aria-label="Next capture unavailable" title="Next capture unavailable"><i class="bi bi-chevron-right" aria-hidden="true"></i></span>
+                        <span class="capture-navigation__control capture-navigation__control--disabled" title="Next capture unavailable"><i class="bi bi-chevron-right" aria-hidden="true"></i><span class="visually-hidden">Next capture unavailable</span></span>
                     }
                 </nav>
             </ArchiveNavigation>

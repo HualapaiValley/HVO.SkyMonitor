@@ -1,5 +1,5 @@
 .detail-page { box-sizing: border-box; width: min(100%, 112rem); margin: 0 auto; padding: clamp(1rem, 2.6vw, 2.4rem) clamp(.75rem, 2.6vw, 2.4rem) 4rem; overflow-x: clip; }
-.detail-page ::deep .capture-navigation { display: flex; align-items: center; gap: .55rem; margin-bottom: 1rem; padding: .55rem; border: 1px solid var(--hvo-border-muted); border-radius: .5rem; background: var(--hvo-card-bg); }
+.detail-page ::deep .capture-navigation { display: flex; align-items: center; gap: .4rem; }
 .detail-page ::deep .capture-navigation__control, .detail-page ::deep .capture-navigation__archive { display: inline-grid; min-height: 44px; place-items: center; border: 1px solid var(--hvo-border-strong); border-radius: .4rem; color: var(--hvo-body-color); text-decoration: none; }
 .detail-page ::deep .capture-navigation__control { width: 44px; flex: 0 0 44px; }
 .detail-page ::deep .capture-navigation__archive { padding: 0 .85rem; font-size: .75rem; font-weight: 700; }

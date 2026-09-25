@@ -25,6 +25,10 @@
                 <p>The latest durable presentation from this CameraAgent, with its source capture and processing state kept explicit.</p>
             }
         </div>
+        @if (IsArchived && ArchiveNavigation is not null)
+        {
+            @ArchiveNavigation
+        }
         <div class="site-heading-actions">
             @if (IsArchived)
             {
@@ -40,11 +44,6 @@
             </button>
         </div>
     </header>
-
-    @if (IsArchived && ArchiveNavigation is not null)
-    {
-        @ArchiveNavigation
-    }
 
     @if (_errorMessage is not null)
     {
