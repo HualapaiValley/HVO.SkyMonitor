@@ -73,7 +73,7 @@
             </header>
 
             <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
-                <div class="sky-image-stage">
+                <div class="sky-image-stage" style="@StageAspectStyle">
                     @if (ShowLayeredHero)
                     {
                         <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
@@ -231,7 +231,7 @@
             </section>
 
             <section class="inspector-card capture-facts current-sky-summary" aria-labelledby="acquisition-heading" aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
-                <header><div><p class="eyebrow">Reference capture N</p><h2 id="acquisition-heading">Acquisition</h2></div><span class="state-chip @FreshnessChipClass">@FreshnessLabel</span></header>
+                <header><div><p class="eyebrow">Reference capture</p><h2 id="acquisition-heading">Acquisition</h2></div><span class="state-chip @FreshnessChipClass">@FreshnessLabel</span></header>
                 @if (FactCapture is { } capture)
                 {
                     <dl>

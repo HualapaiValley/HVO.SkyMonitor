@@ -90,18 +90,17 @@
 .sky-figure { position: relative; margin: 0; overflow: hidden; background: #000; }
 .sky-figure:fullscreen { display: grid; grid-template-rows: minmax(0, 1fr); background: #000; }
 .sky-figure:fullscreen .sky-image-stage { width: 100%; height: 100%; aspect-ratio: auto; }
-.sky-image-stage { position: relative; width: 100%; aspect-ratio: 1936 / 1216; overflow: hidden; background: #000; }
+.sky-image-stage { position: relative; width: 100%; overflow: hidden; background: #000; }
 .sky-layer-workspace, .sky-layer-canvas { position: absolute; inset: 0; }
 .sky-layer-canvas > img, .sky-layer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 .sky-layer-canvas > img { display: block; object-fit: contain; }
 .sky-layer-overlay { visibility: hidden; pointer-events: none; }
 .sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
-.sky-image-stage ::deep .capture-image { position: absolute; inset: 0; min-height: 0; border: 0; border-radius: 0; background: #000; box-shadow: none; }
-.sky-image-stage ::deep .capture-image img { display: block; width: 100%; height: 100%; max-height: none; object-fit: contain; }
+.sky-image-stage ::deep .capture-image { position: relative; min-height: 0; border: 0; border-radius: 0; background: #000; box-shadow: none; }
+.sky-image-stage ::deep .capture-image img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
 
 /* The renderer's SVG viewBox matches the base image, so the overlay scales with it exactly like the prototype. */
 .scene-overlay, .sky-layer-overlay ::deep svg { display: block; width: 100%; height: 100%; }
-.sky-figure.layers-suppressed :is(.scene-overlay, .scene-semantics) { opacity: 0; }
 
 /* Semantic styling from the prototype's per-layer rules, keyed on the retained layer kind. The renderer emits
    filled glyph paths for text and stroked primitives for geometry; these rules give each kind the prototype's

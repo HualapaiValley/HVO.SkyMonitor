@@ -436,12 +436,18 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private int SelectedLayerCount => _layers?.Layers.Count(layer => _selectedLayers.Contains(layer.IdentitySha256)) ?? 0;
 
-    // The prototype reports retained-but-hidden layers when a stage suppresses them; the count itself stays honest.
+    // Mirrors the prototype's count wording; the number is the operator's current selection, never a retained total.
     private string LayerCountLabel => _layers is null || _presentation?.DisplayCapture?.CaptureId != _layers.CaptureId
         ? "Not retained for this capture"
         : ShowLayeredHero
             ? $"{SelectedLayerCount} selected"
-            : $"{SelectedLayerCount} retained / hidden at this stage";
+            : $"{SelectedLayerCount} selected / hidden at this stage";
+
+    // Data-driven frame, never the prototype's 1936x1216 fixture: the layered canvas uses the retained payload
+    // dimensions; the plain image lets its own bytes define height.
+    private string StageAspectStyle => _layers is { } layers && ShowLayeredHero
+        ? FormattableString.Invariant($"aspect-ratio: {layers.WidthPixels} / {layers.HeightPixels};")
+        : string.Empty;
 
     private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 
@@ -481,7 +487,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     {
         CameraAgentPresentationStage.Annotated or CameraAgentPresentationStage.Preview => "Layers applied",
         CameraAgentPresentationStage.Combined => "Causal mean",
-        CameraAgentPresentationStage.Calibrated => "Reference capture N",
+        CameraAgentPresentationStage.Calibrated => "Reference capture",
         _ => "Immutable source"
     };
 
@@ -524,7 +530,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private string ProductBadgeLabel => _selectedStage switch
     {
-        CameraAgentPresentationStage.Calibrated => "Single frame N",
+        CameraAgentPresentationStage.Calibrated => "Single frame",
         CameraAgentPresentationStage.Raw => "Primary evidence",
         _ => "Current baseline"
     };

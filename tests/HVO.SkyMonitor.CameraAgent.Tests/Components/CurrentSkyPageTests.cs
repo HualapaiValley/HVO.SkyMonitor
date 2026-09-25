@@ -194,11 +194,11 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
 
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "arrives with #525", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".inspector-card").TextContent, "arrives with #523", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "arrives with #523", StringComparison.Ordinal);
         await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
         await cut.Find(".restore-layers").ClickAsync().ConfigureAwait(false);
@@ -230,7 +230,9 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "2", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "not a registered stack", StringComparison.Ordinal);
         // Integration is never invented: the fact is present but explicitly unavailable without retained source detail.
-        StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "Unavailable", StringComparison.Ordinal);
+        var integration = cut.FindAll(".lineage-facts > div")
+            .Single(static div => div.QuerySelector("dt")!.TextContent == "Total integration");
+        Assert.AreEqual("Unavailable", integration.QuerySelector("dd")!.TextContent);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "Source details are unavailable", StringComparison.Ordinal));
     }
 
@@ -960,7 +962,8 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.Contains(cut.Markup, "Image preview unavailable", StringComparison.Ordinal);
-            Assert.IsTrue(cut.FindAll("a[href^='/gallery/']").Count >= 1);
+            Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001",
+                cut.Find(".figure-actions .inline-action").GetAttribute("href"));
         });
         cut.Find("button.refresh-link").Click();
         cut.WaitForElement(".capture-image img");
