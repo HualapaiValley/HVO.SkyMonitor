@@ -23,10 +23,6 @@
 .gallery-page svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .eyebrow { margin: 0 0 .28rem; color: var(--blue); font-size: .65rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
 
-.archive-subnav { display: flex; gap: 1.2rem; min-height: 3.2rem; align-items: flex-end; margin-bottom: clamp(1rem, 2.5vw, 2rem); border-bottom: 1px solid var(--border); }
-.archive-subnav a { position: relative; display: grid; min-height: 3.2rem; place-items: center; padding: 0 .15rem; color: var(--muted); font-size: .68rem; font-weight: 700; text-decoration: none; }
-.archive-subnav a:hover, .archive-subnav a.active { color: var(--text); }
-.archive-subnav a.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--blue); content: ""; }
 
 .gallery-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.2rem; margin-bottom: 1.2rem; }
 .gallery-title h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: .95; letter-spacing: -.045em; }
