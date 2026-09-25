@@ -28,9 +28,8 @@
 .calendar-day--outside .calendar-day__date strong { font-weight: 500; }
 .day-quality { width: .42rem; height: .42rem; border-radius: 50%; background: var(--hvo-success-strong); }
 .day-quality--event { background: var(--hvo-warning-strong); }
-.calendar-thumb { display: block; width: 100%; height: 4.3rem; margin: .4rem 0; border-radius: .28rem; object-fit: cover; opacity: .8; background: #02060a; }
+.calendar-thumb { display: block; width: 100%; height: 4.3rem; margin: .4rem 0; border-radius: .28rem; object-fit: contain; background: #02060a; }
 .calendar-thumb--missing { border: 1px dashed var(--hvo-border-muted); }
-.calendar-day__link:hover .calendar-thumb { opacity: 1; }
 .calendar-day__details { display: block; min-width: 0; margin-top: auto; }
 .calendar-day__details small { display: block; overflow: hidden; color: var(--hvo-muted); font-size: .65rem; text-overflow: ellipsis; white-space: nowrap; }
 .calendar-day--empty .calendar-day__details { margin-top: .35rem; }

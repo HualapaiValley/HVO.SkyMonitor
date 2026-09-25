@@ -53,6 +53,7 @@
                 {
                     var day = cell.Day;
                     var hasSession = day is { CaptureCount: > 0 };
+                    var missingThumbnail = hasSession && (day!.RepresentativeCaptureId is not { } id || _failedThumbnails.Contains(id));
                     <li class="@CellClass(cell)" aria-current="@(cell.IsToday ? "date" : null)">
                         <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell)">
                             <header class="calendar-day__date">
@@ -63,7 +64,7 @@
                                 }
                                 else if (hasSession)
                                 {
-                                    <i class="day-quality" title="Archived session"></i>
+                                    <i class="day-quality" title="Retained captures"></i>
                                 }
                             </header>
                             @if (hasSession && day!.RepresentativeCaptureId is { } representative)
@@ -81,7 +82,7 @@
                             {
                                 <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
                             }
-                            <span class="calendar-day__details"><small>@CellSummary(cell)</small>
+                            <span class="calendar-day__details"><small>@CellSummary(cell)@(missingThumbnail ? " / preview unavailable" : string.Empty)</small>
                                 @if (day is { CandidateCount: > 0 })
                                 {
                                     <span class="calendar-products"><i class="event" aria-label="@(day.CandidateCount) local candidate@(day.CandidateCount == 1 ? "" : "s")">!</i></span>
@@ -100,7 +101,7 @@
         </section>
 
         <section class="calendar-summary" aria-label="Month summary">
-            <article><p class="eyebrow">Observed nights</p><strong>@ObservedNights</strong><small>@(MonthDays.Count - ObservedNights) without retained captures</small></article>
+            <article><p class="eyebrow">Nights with captures</p><strong>@ObservedNights</strong><small>@(DateTime.DaysInMonth(MonthStart.Year, MonthStart.Month) - ObservedNights) without retained captures</small></article>
             <article><p class="eyebrow">Capture coverage</p><strong>Unavailable</strong><small>Expected schedule not projected</small></article>
             <article><p class="eyebrow">Generated products</p><strong>—</strong><small>Nightly products are not yet generated</small></article>
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>

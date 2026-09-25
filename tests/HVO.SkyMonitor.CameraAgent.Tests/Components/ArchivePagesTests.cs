@@ -77,7 +77,8 @@ public sealed class ArchivePagesTests
             // Now is 12:00 UTC on 23 July = 05:00 Phoenix, inside the night that began on the 22nd.
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--today"));
             var summary = cut.Find(".calendar-summary").TextContent;
-            StringAssert.Contains(summary, "Observed nights1", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Nights with captures1", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "30 without retained captures", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Capture coverageUnavailable", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Expected schedule not projected", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
@@ -109,6 +110,7 @@ public sealed class ArchivePagesTests
             var day = cut.Find(".calendar-day:not(.calendar-day--empty)");
             Assert.IsNull(day.QuerySelector("img"));
             Assert.IsNotNull(day.QuerySelector(".calendar-thumb--missing"));
+            StringAssert.Contains(day.TextContent, "preview unavailable", StringComparison.Ordinal);
             Assert.AreEqual("/archive/day/2026-07-21", day.QuerySelector("a")!.GetAttribute("href"));
             StringAssert.Contains(cut.Find(".calendar-day--empty").TextContent, "No retained captures", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Capture coverageUnavailable", StringComparison.Ordinal);
@@ -295,7 +297,7 @@ public sealed class ArchivePagesTests
         {
             StringAssert.Contains(cut.Markup, "Observing nights use UTC days", StringComparison.Ordinal);
             // An empty month reads as zero observed nights, and every cell says so.
-            StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Observed nights0", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Nights with captures0", StringComparison.Ordinal);
             Assert.IsTrue(cut.FindAll(".calendar-day").All(cell => cell.ClassList.Contains("calendar-day--empty")));
             StringAssert.Contains(cut.Find(".calendar-legend").TextContent, "12:00 to 12:00 UTC", StringComparison.Ordinal);
         });
