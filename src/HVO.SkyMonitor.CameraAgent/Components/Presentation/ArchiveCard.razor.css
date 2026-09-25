@@ -21,8 +21,7 @@
 }
 .capture-card:hover { border-color: var(--border-strong); }
 .capture-image { position: relative; display: block; min-height: 13rem; color: var(--text); background: #000; overflow: hidden; text-decoration: none; }
-.capture-image img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; transition: transform .25s; }
-.capture-card:hover .capture-image img { transform: none; }
+.capture-image img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; }
 .capture-image-placeholder { display: grid; min-height: 13rem; place-items: center; align-content: center; gap: .35rem; padding: 1rem; color: var(--muted); text-align: center; background: repeating-linear-gradient(135deg, #070c13 0 8px, #0a111b 8px 16px); }
 .capture-image-placeholder b { color: var(--text); font-size: .72rem; }
 .capture-image-placeholder small { font-size: .58rem; }
