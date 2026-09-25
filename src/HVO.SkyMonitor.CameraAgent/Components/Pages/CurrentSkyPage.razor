@@ -8,14 +8,23 @@
 
 <PageTitle>Current sky</PageTitle>
 
-<div class="current-sky-page">
-    <header class="current-sky-heading">
+@* Structure and class names follow docs/prototypes/pipeline-operations/dashboard.html element for element so the
+   scoped stylesheet carries the prototype's cameraagent-pages.css rules unchanged. Features without a backend stay
+   in the DOM as disabled controls that name the issue delivering them; fixture values are never rendered. *@
+<div class="current-sky-page site-main">
+    <header class="site-heading current-sky-heading">
         <div>
             <p class="eyebrow">Authenticated local observatory</p>
             <h1 id="current-sky-heading" tabindex="-1">Current sky</h1>
-            <p>The latest useful durable image leads. Image age and CameraAgent state are reported independently.</p>
+            <p>The latest durable presentation from this CameraAgent, with its source capture and processing state kept explicit.</p>
         </div>
-        <button type="button" class="btn btn-outline-secondary btn-sm refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">Refresh image</button>
+        <div class="site-heading-actions">
+            <span class="live-indicator @(_presentation?.ImageFreshness == CameraAgentPresentationImageFreshness.Current ? "" : "history")"><i></i>@LiveIndicatorLabel</span>
+            <button type="button" class="button secondary refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7"></path></svg>
+                Refresh image
+            </button>
+        </div>
     </header>
 
     @if (_errorMessage is not null)
@@ -31,67 +40,86 @@
     }
 
     <section class="dashboard-status" aria-label="CameraAgent status" aria-live="polite">
-        <div class="dashboard-status__state"><span class="status-dot @SystemClass" aria-hidden="true"></span><span><strong>@SystemLabel</strong><small>@(_presentation?.System.Message ?? "Loading CameraAgent state.")</small></span></div>
+        <div class="dashboard-status__state"><span class="status-icon @SystemIconClass" aria-hidden="true"></span><span><strong>@SystemLabel</strong><small>@(_presentation?.System.Message ?? "Loading CameraAgent state.")</small></span></div>
         <dl>
             <div><dt>Current capture</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
             <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
-            <div><dt>LogicHost</dt><dd>Not reported here</dd></div>
-            <div><dt>Storage</dt><dd>Not reported here</dd></div>
+            <div><dt>LogicHost</dt><dd class="fact-unavailable">Not reported here</dd></div>
+            <div><dt>Storage</dt><dd class="fact-unavailable">Not reported here</dd></div>
         </dl>
     </section>
 
-    <section class="current-sky-hero" aria-label="Current sky presentation" @ref="_layerRoot">
-        <article class="current-sky-visual">
-            <header class="image-heading">
-                <div><p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence}" : "Latest durable capture")</p><h2>@ImageHeading</h2><p>@(FactCapture is null ? "Waiting for a durable image" : "Source capture and processing state remain explicit")</p></div>
-                @if (_liveExecutionId is { } liveRun)
-                {
-                    <a class="btn btn-outline-secondary btn-sm" href="/operations/pipeline/executions/@liveRun">View pipeline run</a>
-                }
-            </header>
-            @if (ShowLayeredHero)
-            {
-                <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
-                    <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")" style="aspect-ratio: @_layers.WidthPixels / @_layers.HeightPixels; width: min(@(_layers.WidthPixels)px, 100%, calc(70vh * @LayerAspectRatio))">
-                        <img @key="_layerPreviewAttempt" src="@LayerPreviewUrl" alt="@ImageAlt" />
-                        <div class="sky-layer-overlay" aria-hidden="true">@LayerSvg</div>
-                        <div class="sky-layer-actions">
-                            <a class="btn btn-overlay btn-sm image-action" href="@DetailUrl">Open capture details</a>
-                        </div>
-                    </div>
+    <section class="sky-workspace current-sky-hero" aria-label="Current image workspace" @ref="_layerRoot">
+        <article class="sky-viewer-card current-sky-visual">
+            <header class="card-heading image-heading">
+                <div>
+                    <p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence} / sequence {reference.CaptureSequence}" : "Latest durable capture")</p>
+                    <h2>@ImageHeading</h2>
+                    <p>@ImageSubtitle</p>
                 </div>
-            }
-            else
-            {
-            <CaptureImage Loading="@(_initialLoading && _presentation is null)"
-                          Source="@DisplaySlot?.PreviewUrl"
-                          RetryObservedUtc="@_presentation?.ObservedUtc"
-                          Alt="@ImageAlt"
-                          ShowPersistentContent="@(FactCapture is not null)"
-                          EmptyTitle="No sky image is available yet"
-                          EmptyMessage="CameraAgent will keep this view ready for the first durable displayable capture.">
-                <PersistentContent>
+                <div class="image-heading-actions">
                     @if (FactCapture is not null)
                     {
-                        <a class="btn btn-overlay btn-sm image-action" href="@DetailUrl">Open capture details</a>
+                        <span class="product-badge @ProductBadgeClass">@ProductBadgeLabel</span>
                     }
-                </PersistentContent>
-                <ChildContent>
-                @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
-                {
-                    <button id="current-sky-view-large" type="button" class="btn btn-overlay btn-sm image-action" @onclick="OpenViewer">View large image</button>
-                }
-                </ChildContent>
-            </CaptureImage>
-            }
+                    @if (_liveExecutionId is { } liveRun)
+                    {
+                        <a class="button secondary small" href="/operations/pipeline/executions/@liveRun">
+                            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="2"></circle><circle cx="15" cy="5" r="2"></circle><circle cx="15" cy="15" r="2"></circle><path d="m7 9 6-3m-6 5 6 3"></path></svg>
+                            View pipeline run
+                        </a>
+                    }
+                </div>
+            </header>
+
+            <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
+                <div class="sky-image-stage" style="@StageAspectStyle">
+                    @if (ShowLayeredHero)
+                    {
+                        <div class="sky-layer-workspace" aria-label="Current sky layers" @key="_layers!.CaptureId" data-presentation-identity="@_layers!.PresentationIdentitySha256">
+                            <div class="sky-layer-canvas @(_layerInteractive ? "sky-layer-canvas--verified" : "")">
+                                <img @key="_layerPreviewAttempt" src="@LayerPreviewUrl" alt="@ImageAlt" />
+                                <div class="sky-layer-overlay scene-overlay" aria-hidden="true">@LayerSvg</div>
+                            </div>
+                        </div>
+                        <div class="scene-semantics" aria-hidden="true"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
+                    }
+                    else
+                    {
+                        <CaptureImage Loading="@(_initialLoading && _presentation is null)"
+                                      Source="@DisplaySlot?.PreviewUrl"
+                                      RetryObservedUtc="@_presentation?.ObservedUtc"
+                                      Alt="@ImageAlt"
+                                      EmptyTitle="No sky image is available yet"
+                                      EmptyMessage="CameraAgent will keep this view ready for the first durable displayable capture." />
+                    }
+                </div>
+                <figcaption>
+                    <div>
+                        <span class="status-icon @CaptureOutcomeIconClass" aria-hidden="true"></span>
+                        <span><strong>@CaptureOutcomeTitle</strong><small>@CaptureOutcomeSubtitle</small></span>
+                    </div>
+                    <div class="figure-actions">
+                        @if (FactCapture is not null)
+                        {
+                            <a class="inline-action" href="@DetailUrl">Open capture details</a>
+                        }
+                        @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
+                        {
+                            <button id="current-sky-view-large" class="image-tool" type="button" aria-label="Open full screen image" title="Open full screen image" @onclick="OpenFullScreenAsync"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4"></path></svg></button>
+                        }
+                    </div>
+                </figcaption>
+            </figure>
 
             @if (_presentation is not null && _presentation.Stages.Count > 0)
             {
-                <div class="dashboard-stages stage-selector" role="group" aria-label="Image stage" aria-describedby="stage-unavailable">
-                    @foreach (var slot in _presentation.Stages)
+                <div class="stage-switcher dashboard-stages stage-selector" role="group" aria-label="Image stage" aria-describedby="stage-unavailable">
+                    @foreach (var slot in OrderedStages)
                     {
                         var available = slot.Availability == CameraAgentPresentationSlotAvailability.Available;
-                        <button type="button" title="@(available ? $"Show {slot.Label} image" : $"{slot.Label}: {StageUnavailableReason(slot)}")" disabled="@(!available)" aria-pressed="@(available && slot.Stage == _selectedStage ? "true" : "false")" @onclick="() => SelectStage(slot.Stage)"><strong>@(slot.Stage == CameraAgentPresentationStage.Combined ? "Live mean" : slot.Label)</strong><small>@StageCaption(slot.Stage)</small></button>
+                        var active = available && slot.Stage == _selectedStage;
+                        <button type="button" class="@(active ? "active" : "")" title="@(available ? $"Show {slot.Label} image" : $"{slot.Label}: {StageUnavailableReason(slot)}")" disabled="@(!available)" aria-pressed="@(active ? "true" : "false")" @onclick="() => SelectStage(slot.Stage)"><span>@(slot.Stage == CameraAgentPresentationStage.Combined ? "Live mean" : slot.Label)</span><small>@StageCaption(slot.Stage)</small></button>
                     }
                 </div>
                 <p id="stage-unavailable" class="stage-unavailable">@foreach (var slot in _presentation.Stages.Where(static slot => slot.Availability != CameraAgentPresentationSlotAvailability.Available)) { <span>@slot.Label: @StageUnavailableReason(slot)</span> }</p>
@@ -107,41 +135,40 @@
                         }
                     </p>
                 }
-                @if (ShowLayeredHero)
-                {
-                    <p class="stage-status">Large image view is unavailable for the layered stack; use the capture details to inspect retained artifacts.</p>
-                }
             }
             @if (_facts?.CombinedLineage is { } lineage && _presentation?.DisplayCapture?.CaptureId == _facts.CaptureId)
             {
-                <section class="stack-lineage" aria-label="Multi-source image lineage">
-                    <p class="eyebrow">Multi-source image lineage</p><h3>Unregistered live mean ending at capture #@_facts.CaptureSequence</h3>
+                <section class="stack-lineage" aria-labelledby="stack-heading">
+                    <header>
+                        <div><p class="eyebrow">Multi-source image lineage</p><h3 id="stack-heading">Unregistered live mean ending at capture #@_facts.CaptureSequence</h3></div>
+                        <span class="registration-quality">No registration</span>
+                    </header>
                     <div class="source-strip">
                         @for (var index = 0; index < lineage.SourceArtifactIds.Count && index < 8; index++)
                         {
                             var sourceId = lineage.SourceArtifactIds[index];
                             var source = _combinedProduct?.Sources.FirstOrDefault(item => item.ArtifactId == sourceId);
-                            <div class="source-entry">
-                                @if (source is { Role: HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated or HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw } && source.CaptureId is not null)
+                            var endpoint = index == lineage.SourceArtifactIds.Count - 1;
+                            var previewable = source is { Role: HVO.SkyMonitor.AgentCore.FrameArtifactRole.Calibrated or HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw, CaptureId: not null };
+                            <div class="source-entry @(endpoint ? "reference" : "")">
+                                @if (previewable)
                                 {
-                                    <img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="Source artifact @sourceId" />
+                                    <a href="/gallery/@source!.CaptureId"><img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="@(endpoint ? "Window endpoint capture" : "Capture") @(source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D"))" /></a>
                                 }
-                                else { <span class="source-placeholder">Preview unavailable</span> }
-                                <strong>@(source?.CaptureSequence is { } sequence ? $"#{sequence}" : $"Source {index + 1}")</strong><small>Artifact @sourceId</small>
+                                else { <span class="unavailable source-placeholder"><b>Preview unavailable</b></span> }
+                                <span>@(endpoint ? "Endpoint N" : $"N-{lineage.SourceArtifactIds.Count - 1 - index}")</span><small title="Artifact @sourceId">@(source?.CaptureSequence is { } sequence ? $"#{sequence}" : $"Source {index + 1}")</small>
                             </div>
                         }
                     </div>
-                    <dl class="lineage-facts"><div><dt>Recorded sources</dt><dd>@lineage.SourceCount</dd></div>
-                        @if (_combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId)
-                        {
-                            @if (!product.SourcesTruncated) { <div><dt>Included</dt><dd>@product.Sources.Count of @product.Product.SourceCount</dd></div> }
-                            <div><dt>Total integration</dt><dd>@product.Product.TotalIntegration.TotalSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) s</dd></div>
-                        }
-                        <div><dt>Window endpoint</dt><dd>#@_facts.CaptureSequence</dd></div>
+                    <dl class="lineage-facts">
+                        <div><dt>Included</dt><dd>@IncludedFramesLabel(lineage)</dd></div>
+                        <div><dt>Total integration</dt><dd>@TotalIntegrationLabel(lineage)</dd></div>
+                        <div><dt>Observation span</dt><dd class="fact-unavailable">Not recorded</dd></div>
+                        <div><dt>Window endpoint</dt><dd>Capture #@_facts.CaptureSequence</dd></div>
                     </dl>
                     @if (lineage.SourceCount > 8 || _combinedProduct?.SourcesTruncated == true) { <p>Source display is bounded to the first eight recorded IDs.</p> }
                     @if (_lineageMessage is not null) { <p role="status">@_lineageMessage</p> }
-                    <p class="lineage-note">Causal arithmetic mean, not a registered stack. Observation span is not recorded in this view.</p>
+                    <p class="design-disclosure lineage-note"><strong>Current baseline:</strong> @LineageDisclosure(lineage) Registered stacking remains a separate design target.</p>
                 </section>
             }
             @if (LayerMessage is { } layerMessage && _presentation?.DisplayCapture is not null)
@@ -150,115 +177,105 @@
             }
         </article>
 
-        <aside class="current-sky-inspector">
-            <section class="scene-panel" aria-label="Scene evidence">
-                <header><div><p class="eyebrow">Reproducible presentation</p><h2>Scene evidence</h2></div><span>@SelectedLayerCount selected</span></header>
-                <p>Catalog projections, expected sky context and recorded diagnostics are distinct from measured detections.</p>
-                <p class="evidence-legend"><span class="evidence-legend--projected">Projected / expected</span><span class="evidence-legend--recorded">Recorded facts</span><span class="evidence-legend--unavailable">Measured associations and predictions: unavailable</span></p>
-                <div class="sky-layer-controls">
-                    @foreach (var group in new[] { "Catalog projection", "Sky context", "Diagnostics" })
-                    {
-                        <div class="overlay-group" role="group" aria-label="@group layers"><h3>@group</h3>
-                            @foreach (var layer in _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [])
-                            {
-                                <label class="layer-option"><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><i class="layer-swatch @layer.Kind" aria-hidden="true"></i><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>
-                            }
-                            @if (group == "Catalog projection" && !HasLayer("scene-annotation", "star-annotations"))
-                            {
-                                <label class="layer-option"><input type="checkbox" disabled /><i class="layer-swatch stars" aria-hidden="true"></i><span><strong>Catalog stars</strong><small>Projected annotations not retained for this capture</small></span></label>
-                            }
-                            @if (group == "Sky context")
-                            {
-                                @foreach (var contextLayer in new[] { ("Constellation lines", "Projected geometry not retained", "scene-constellations", "constellations"), ("Cardinal directions", "Rig directions not retained", "scene-cardinals", "cardinal-directions"), ("Image circle", "Projected boundary not retained", "scene-image-circle", "image-circle") })
-                                {
-                                    @if (!HasLayer(contextLayer.Item3, contextLayer.Item4))
-                                    {
-                                        <label class="layer-option"><input type="checkbox" disabled /><i class="layer-swatch @contextLayer.Item3" aria-hidden="true"></i><span><strong>@contextLayer.Item1</strong><small>@contextLayer.Item2</small></span></label>
-                                    }
-                                }
-                            }
-                            @if (group == "Diagnostics" && !HasLayer("environment", "corner-annotations"))
-                            {
-                                <label class="layer-option"><input type="checkbox" disabled /><i class="layer-swatch environment" aria-hidden="true"></i><span><strong>Frame annotations</strong><small>Recorded annotation layer not retained</small></span></label>
-                            }
-                        </div>
-                    }
+        <aside class="sky-inspector current-sky-inspector">
+            <section class="inspector-card overlay-controls scene-panel @(ShowLayeredHero ? "" : "evidence-unavailable")" aria-labelledby="overlays-heading">
+                <header><div><p class="eyebrow">Reproducible presentation</p><h2 id="overlays-heading">Scene evidence</h2></div><span>@LayerCountLabel</span></header>
+                <p>Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image.</p>
+                <div class="overlay-list sky-layer-controls">
+                    <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Associated stars</strong><small>source-association / arrives with #526</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>OpenNGC aliases + extents / arrives with #525</small></span></label>
+                    </div>
+                    <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
+                        @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
+                        @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Catalog stars</strong><small>expected / not retained for this capture</small></span></label> }
+                        @if (!HasLayer("scene-constellations", "constellations")) { <label><input type="checkbox" disabled /><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>expected / not retained for this capture</small></span></label> }
+                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Sun &amp; Moon footprints</strong><small>projected physical limb + marker / arrives with #518</small></span></label>
+                        @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }
+                    </div>
+                    <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
+                        @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
+                        @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
+                        <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Meteor tracks</strong><small>measured track layer / arrives with #1005</small></span></label>
+                        @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }
+                        @if (!HasLayer("environment", "corner-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch environment"></span><span><strong>Frame facts</strong><small>source and coordinate provenance / not retained</small></span></label> }
+                    </div>
                 </div>
                 @if (_layers is not null && _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId)
                 {
-                    <button class="restore-layers" type="button" disabled="@(!ShowLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
-                    <div class="sky-layer-save"><button type="button" class="btn btn-primary" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" @onclick="SaveSelectedStackAsync">@(_saving ? "Saving stack..." : "Save selected stack")</button><small>Creates one immutable flattened derivative without rerunning analysis.</small></div>
+                    <div class="overlay-actions">
+                        <button class="text-button restore-layers" type="button" disabled="@(!ShowLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
+                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Creates one immutable flattened derivative without rerunning analysis." @onclick="SaveSelectedStackAsync">@(_saving ? "Saving stack..." : "Save selected stack")</button></div>
+                    </div>
                     @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl">Open saved artifact</a></p> }
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
-                <div class="overlay-group unavailable-layers" role="group" aria-label="Unavailable layers"><h3>Not available without retained evidence</h3>
-                    @foreach (var unavailable in new[] { ("Deep sky", "Associations arrive with #525", "measured"), ("Expected, not detected", "Association diagnostics arrive with #526", "expected"), ("Astrometric residuals", "Solutions arrive with #523", "measured"), ("Cloud assessment", "No selectable cloud layer is retained", "measured"), ("Meteor tracks", "No measured track layer is retained", "measured"), ("Satellite tracks", "Predictions arrive with #529", "predicted") })
-                    {
-                        <label class="layer-option"><input type="checkbox" disabled /><i class="layer-swatch @unavailable.Item3" aria-hidden="true"></i><span><strong>@unavailable.Item1</strong><small>@unavailable.Item2</small></span></label>
-                    }
-                </div>
             </section>
-            <section class="inspector-card"><p class="eyebrow">Measured image solution</p><h2>Astrometry</h2><p>Not available - astrometric solutions arrive with #523. Pixel to sky calculation is disabled.</p></section>
-            <section class="current-sky-summary inspector-card" aria-label="Current sky status and capture facts"
-               aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
-            <div class="status-chips" aria-label="Independent image and system states">
-                <span class="hvo-chip status-chip @FreshnessClass">@FreshnessLabel</span>
-                <span class="hvo-chip status-chip @SystemClass">@SystemLabel</span>
-            </div>
-            <p class="eyebrow">@SummaryEyebrow</p>
-            <h2>@SummaryHeading</h2>
-            <p class="summary-copy">@SummaryMessage</p>
-            @if (FactCapture is { } capture)
-            {
+
+            <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading">
+                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip pending">Not produced</span></header>
                 <dl>
-                    <div><dt>Captured</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToLocalTime().ToString("g")</time></dd></div>
-                    <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
-                    <div><dt>Stage</dt><dd>@(ShowLayeredHero && _layerInteractive ? "Processed base + selected overlays" : ProcessedBaseFallback ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)" : SelectedSlot?.Label ?? "Unavailable")</dd></div>
-                    <div><dt>Display basis</dt><dd>@DisplayBasisLabel</dd></div>
-                    <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
-                    <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
-                    @if (_facts is { } facts)
-                    {
-                        <div><dt>Rig</dt><dd>@(facts.RigId ?? "Unavailable")</dd></div>
-                        <div><dt>Exposure</dt><dd>@FormatExposure(facts.ExposureMilliseconds)</dd></div>
-                        <div><dt>Gain</dt><dd>@(facts.Gain?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
-                        <div><dt>Sensor</dt><dd>@(facts.SensorTemperatureC is { } temperature ? FormattableString.Invariant($"{temperature:0.#} °C") : "Unavailable")</dd></div>
-                        <div><dt>Frame</dt><dd>@(facts.Width is { } width && facts.Height is { } height ? $"{width} × {height}" : "Unavailable")</dd></div>
-                        <div><dt>Cloud</dt><dd>@FormatCloud(facts.Cloud)</dd></div>
-                    }
+                    <div><dt>Solution</dt><dd class="fact-unavailable">arrives with #523</dd></div>
+                    <div><dt>Residual</dt><dd class="fact-unavailable">Unavailable</dd></div>
+                    <div><dt>Inliers</dt><dd class="fact-unavailable">Unavailable</dd></div>
+                    <div><dt>Projection</dt><dd class="fact-unavailable">No measured fit</dd></div>
                 </dl>
-                @if (_facts?.CombinedLineage is { } summaryLineage)
-                {
-                    <p class="lineage" aria-label="Combined stage lineage">
-                        <strong>Combined stage</strong>
-                        @CameraAgentCurrentSkyFactsProjector.CombinedMethodLabel of @summaryLineage.SourceCount source frame@(summaryLineage.SourceCount == 1 ? string.Empty : "s")@(summaryLineage.RecipeName is null ? string.Empty : $", recipe {summaryLineage.RecipeName}").
-                    </p>
-                }
-                @if (_facts?.CombinedLineageUnavailable == true)
-                {
-                    <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p>
-                }
-                @if (_factsUnavailableReason is not null)
-                {
-                    <p class="facts-unavailable" role="status">@_factsUnavailableReason</p>
-                }
-                @if (_presentation?.StructuredLayersAvailable == true)
-                {
-                    <a class="layers-link" href="@DetailUrl">Open retained layer controls</a>
-                }
-            }
-            @if (_presentation?.System.NextTransitionUtc is { } nextTransition)
-            {
-                <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p>
-            }
+                <form class="pixel-sky-calculator" @onsubmit:preventDefault>
+                    <p><strong>Pixel to sky</strong><span>Disabled until an astrometric solution is retained for this capture; it never updates rig calibration.</span></p>
+                    <div><label>X pixel<input type="number" min="0" disabled /></label><label>Y pixel<input type="number" min="0" disabled /></label><button class="button secondary small" type="submit" disabled>Calculate</button></div>
+                </form>
             </section>
-            @if (_facts is { } rigFacts)
-            {
-                <section class="inspector-card"><p class="eyebrow">Reference capture</p><h2>Acquisition</h2><dl><div><dt>Exposure</dt><dd>@FormatExposure(rigFacts.ExposureMilliseconds)</dd></div><div><dt>Gain</dt><dd>@(rigFacts.Gain?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div><div><dt>Sensor temperature</dt><dd>@(rigFacts.SensorTemperatureC is { } temp ? FormattableString.Invariant($"{temp:0.#} C") : "Unavailable")</dd></div><div><dt>Dimensions</dt><dd>@(rigFacts.Width is { } w && rigFacts.Height is { } h ? $"{w} x {h}" : "Unavailable")</dd></div></dl><a href="@DetailUrl">Open capture details</a></section>
-                <section class="inspector-card"><p class="eyebrow">Capture-time facts</p><h2>Rig and location</h2><dl><div><dt>Rig</dt><dd>@(rigFacts.RigId ?? "Unavailable")</dd></div><div><dt>Processing profile</dt><dd>@(rigFacts.ProcessingProfile is { } profile ? $"{profile.Name} / {profile.Version}" : "Unavailable")</dd></div></dl><p>Camera, optics, projection and site are not provided by this capture summary.</p></section>
-            }
+
+            <section class="inspector-card capture-facts current-sky-summary" aria-labelledby="acquisition-heading" aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
+                <header><div><p class="eyebrow">Reference capture</p><h2 id="acquisition-heading">Acquisition</h2></div><span class="state-chip @FreshnessChipClass">@FreshnessLabel</span></header>
+                @if (FactCapture is { } capture)
+                {
+                    <dl>
+                        <div><dt>Exposure</dt><dd>@FormatExposure(_facts?.ExposureMilliseconds)</dd></div>
+                        <div><dt>Gain</dt><dd>@(_facts?.Gain?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
+                        <div><dt>Exposure start</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToString("HH:mm:ss.fff") UTC</time></dd></div>
+                        <div><dt>Sensor temperature</dt><dd>@(_facts?.SensorTemperatureC is { } temperature ? FormattableString.Invariant($"{temperature:0.#} C") : "Unavailable")</dd></div>
+                        <div><dt>Dimensions</dt><dd>@(_facts is { Width: { } width, Height: { } height } ? $"{width} x {height}" : "Unavailable")</dd></div>
+                        <div><dt>Presentation</dt><dd>@StageFactLabel</dd></div>
+                        <div><dt>Display basis</dt><dd>@DisplayBasisLabel</dd></div>
+                        <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
+                        <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
+                        <div><dt>Cloud</dt><dd>@(_facts is { } cloudFacts ? FormatCloud(cloudFacts.Cloud) : "Unavailable")</dd></div>
+                    </dl>
+                    <p class="summary-copy">@SummaryMessage</p>
+                    @if (_facts?.CombinedLineageUnavailable == true) { <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p> }
+                    @if (_factsUnavailableReason is not null) { <p class="facts-unavailable" role="status">@_factsUnavailableReason</p> }
+                    @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p> }
+                    <a class="inline-action layers-link" href="@DetailUrl">View immutable raw source</a>
+                }
+                else
+                {
+                    <p class="summary-copy">@SummaryMessage</p>
+                }
+            </section>
+
+            <section class="inspector-card rig-facts" aria-labelledby="rig-heading">
+                <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>@(_facts?.RigId ?? "Rig unavailable")</span></header>
+                <dl>
+                    <div><dt>Camera</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
+                    <div><dt>Optics</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
+                    <div><dt>Projection</dt><dd class="fact-unavailable">No measured fit</dd></div>
+                    <div><dt>Site</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
+                    <div><dt>Profile</dt><dd>@(_facts?.ProcessingProfile is { } profile ? $"{profile.Name} / {profile.Version}" : "Unavailable")</dd></div>
+                </dl>
+            </section>
         </aside>
+    </section>
+
+    <section class="operations-strip" aria-label="Current CameraAgent operations">
+        <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@SystemLabel</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"Latest capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
+        <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
+        <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Not reported here</strong><span>Events lists retained candidates</span></div></article>
+        <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Not reported here</strong><span>LogicHost state is not surfaced on this page</span></div></article>
     </section>
 
     @if (UnavailableStageCount > 0 && _presentation?.DisplayCapture is not null)
@@ -277,8 +294,9 @@
     }
 </div>
 
-<LargeImageViewer @bind-Open="_viewerOpen"
-                  Source="@DisplaySlot?.PreviewUrl"
-                  Title="@ViewerTitle"
-                  Alt="@ImageAlt"
-                  TriggerId="current-sky-view-large" />
+@code {
+    private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
+    {
+        <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>
+    };
+}
