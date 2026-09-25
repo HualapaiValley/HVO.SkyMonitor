@@ -640,6 +640,28 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task DisclosureInteropFailurePreservesCaptureAndManualEvidence(bool importFails)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var capture = OperatorUiTestData.Capture();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        if (importFails)
+            context.Services.AddSingleton<Microsoft.JSInterop.IJSRuntime>(new FailingImportRuntime());
+        else
+            context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+                .SetupVoid("openTechnicalEvidence", _ => true).SetException(new Microsoft.JSInterop.JSException("private browser diagnostic"));
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        await cut.Find(".figure-actions a").ClickAsync().ConfigureAwait(false);
+        StringAssert.Contains(cut.Find(".technical-evidence-error").TextContent, "below the image", StringComparison.Ordinal);
+        Assert.AreEqual("Capture #42", cut.Find("h1").TextContent);
+        Assert.HasCount(1, cut.FindAll("#technical-evidence > summary"));
+        Assert.IsFalse(cut.Markup.Contains("private browser diagnostic", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task DisposalCancelsPendingCaptureRead()
     {
         using var context = new BunitContext();
@@ -667,5 +689,13 @@ public sealed class GalleryDetailTests
         public override DateTimeOffset GetUtcNow() => OperatorUiTestData.Now;
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
             => throw new AssertFailedException("Historical capture must not start a polling timer.");
+    }
+
+    private sealed class FailingImportRuntime : Microsoft.JSInterop.IJSRuntime
+    {
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args)
+            => ValueTask.FromException<TValue>(new Microsoft.JSInterop.JSException("private browser diagnostic"));
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+            => InvokeAsync<TValue>(identifier, args);
     }
 }

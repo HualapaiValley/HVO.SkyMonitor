@@ -1021,9 +1021,13 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
             .ConfigureAwait(false);
         Assert.AreEqual(selectedSource, await figure.Locator("img").GetAttributeAsync("src").ConfigureAwait(false));
-        await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Link, new() { Name = "Technical evidence and downloads", Exact = true })
+            .ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
-        await WaitForFocusAsync(page, trigger).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#technical-evidence')?.open === true && document.activeElement === document.querySelector('#technical-evidence > summary')")
+            .ConfigureAwait(false);
+        Assert.AreEqual(archivedPathAndQuery, new Uri(page.Url).PathAndQuery);
+        await page.Locator("#technical-evidence > summary").ClickAsync().ConfigureAwait(false);
 
         foreach (var viewport in new[]
         {

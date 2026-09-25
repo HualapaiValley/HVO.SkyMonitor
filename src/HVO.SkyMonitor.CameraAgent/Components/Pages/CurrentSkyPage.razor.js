@@ -1,8 +1,14 @@
 const bindings = new WeakMap();
 
-export function openTechnicalEvidence(root) {
+export async function openTechnicalEvidence(root) {
     const disclosure = root?.closest('.detail-page')?.querySelector('#technical-evidence');
     if (!disclosure) return;
+    if (document.fullscreenElement && root.contains(document.fullscreenElement)) {
+        await document.exitFullscreen();
+        // Let the fullscreen-exit listener restore its trigger before focusing the disclosure.
+        await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    if (!root.isConnected || !disclosure.isConnected) return;
     disclosure.open = true;
     disclosure.scrollIntoView({ block: 'start' });
     disclosure.querySelector('summary')?.focus({ preventScroll: true });

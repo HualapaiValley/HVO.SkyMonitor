@@ -131,6 +131,10 @@
                         }
                     </div>
                 </figcaption>
+                @if (_technicalEvidenceError is not null)
+                {
+                    <p class="technical-evidence-error" role="alert">@_technicalEvidenceError</p>
+                }
             </figure>
 
             @if (_presentation is not null && _presentation.Stages.Count > 0)

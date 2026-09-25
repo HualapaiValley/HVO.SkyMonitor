@@ -69,6 +69,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string? _factsUnavailableReason;
     private CameraAgentPresentationStage? _selectedStage;
     private string? _errorMessage;
+    private string? _technicalEvidenceError;
     private bool _initialLoading = true;
     private bool _refreshing;
     private Guid? _liveExecutionId;
@@ -836,14 +837,23 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private async Task OpenTechnicalEvidenceAsync()
     {
         if (!IsArchived || _disposeStarted != 0) return;
-        var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
-        if (Volatile.Read(ref _disposeStarted) != 0)
+        _technicalEvidenceError = null;
+        try
         {
-            if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
-            return;
+            var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (Volatile.Read(ref _disposeStarted) != 0)
+            {
+                if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
+                return;
+            }
+            _layerModule = module;
+            await module.InvokeVoidAsync("openTechnicalEvidence", _layerRoot);
         }
-        _layerModule = module;
-        await module.InvokeVoidAsync("openTechnicalEvidence", _layerRoot);
+        catch (Exception exception) when (exception is JSException or OperationCanceledException or ObjectDisposedException)
+        {
+            if (Volatile.Read(ref _disposeStarted) != 0) return;
+            _technicalEvidenceError = "Could not open evidence automatically. Exit fullscreen with Escape if needed, then open Technical evidence and downloads below the image.";
+        }
     }
 
     private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
