@@ -311,6 +311,9 @@ public sealed class GalleryPageTests
             var card = cut.Find(".capture-card");
             StringAssert.Contains(card.TextContent, "Processed single frame", StringComparison.Ordinal);
             Assert.IsFalse(card.TextContent.Contains("causal mean", StringComparison.OrdinalIgnoreCase));
+            // The single-frame display keeps the reference-only source and does not sum integration across frames.
+            StringAssert.Contains(card.TextContent, "Reference #42 only", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "Integration1 s", StringComparison.Ordinal);
         });
     }
 
@@ -352,6 +355,8 @@ public sealed class GalleryPageTests
             StringAssert.Contains(card.TextContent, "3 frames / endpoint #42", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "not a registered stack", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "Succeeded", StringComparison.Ordinal);
+            // Integration is summed across the three proven sources (1 s exposure each).
+            StringAssert.Contains(card.TextContent, "Integration3 s", StringComparison.Ordinal);
         });
     }
 
