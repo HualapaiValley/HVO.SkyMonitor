@@ -9,9 +9,10 @@
 <PageTitle>Observing calendar</PageTitle>
 
 <div class="calendar-page">
-    <PageHeader Eyebrow="Archive / observing days" Title="Observing calendar" Lead="Browse retained night sessions, generated products, processing coverage, and detected events. Each observing day runs from local noon to the next local noon.">
+    <header class="calendar-heading">
+        <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions and local detection candidates. Product and schedule coverage are shown only when verified.</p></div>
         <a class="btn btn-outline-light" href="@DayUrl(LatestObservingDay)">Latest observing day</a>
-    </PageHeader>
+    </header>
 
     <nav class="month-nav" aria-label="Calendar month">
         <a class="btn btn-outline-light btn-sm month-nav__step" href="@MonthUrl(-1)" aria-label="Previous month">‹</a>
@@ -52,9 +53,10 @@
                 {
                     var day = cell.Day;
                     var hasSession = day is { CaptureCount: > 0 };
+                    var missingThumbnail = hasSession && (day!.RepresentativeCaptureId is not { } id || _failedThumbnails.Contains(id));
                     <li class="@CellClass(cell)" aria-current="@(cell.IsToday ? "date" : null)">
-                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell)">
-                            <header>
+                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
+                            <header class="calendar-day__date">
                                 <strong><time datetime="@cell.Date.ToString("yyyy-MM-dd")">@CellDayLabel(cell)</time></strong>
                                 @if (day is { CandidateCount: > 0 })
                                 {
@@ -62,36 +64,51 @@
                                 }
                                 else if (hasSession)
                                 {
-                                    <i class="day-quality" title="Archived session"></i>
+                                    <i class="day-quality" title="Retained captures"></i>
                                 }
                             </header>
                             @if (hasSession && day!.RepresentativeCaptureId is { } representative)
                             {
-                                <img class="calendar-thumb" src="@ThumbnailUrl(representative)" alt="" loading="lazy" decoding="async" />
+                                @if (!_failedThumbnails.Contains(representative))
+                                {
+                                    <img class="calendar-thumb" src="@ThumbnailUrl(representative)" alt="" loading="lazy" decoding="async" @onerror="() => MarkThumbnailFailed(representative)" />
+                                }
+                                else
+                                {
+                                    <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
+                                }
                             }
                             else if (hasSession)
                             {
                                 <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
                             }
-                            <small>@CellSummary(cell)</small>
-                            @if (day is { CandidateCount: > 0 })
-                            {
-                                <span class="calendar-products"><i class="event" title="@(day.CandidateCount) local candidate@(day.CandidateCount == 1 ? "" : "s")">!</i></span>
-                            }
+                            <span class="calendar-day__details"><small>@CellSummary(cell)@(missingThumbnail ? " / preview unavailable" : string.Empty)</small>
+                                @if (hasSession)
+                                {
+                                    <span class="calendar-products" aria-hidden="true">
+                                        <i class="unavailable" title="Time-lapse availability not projected">T</i>
+                                        <i class="unavailable" title="Star-trail availability not projected">S</i>
+                                        <i class="unavailable" title="Keogram availability not projected">K</i>
+                                        <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                    </span>
+                                }
+                            </span>
                         </a>
                     </li>
                 }
             </ol>
-            <div class="calendar-legend">
-                <span><i class="calendar-legend__event"></i>Detected candidate</span>
-                <span><i class="calendar-legend__session"></i>Archived session</span>
-                <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
-            </div>
         </section>
+        <div class="calendar-legend" aria-label="Calendar key">
+            <span><i class="calendar-legend__session" aria-hidden="true"></i>Retained captures</span>
+            <span><i class="calendar-legend__event" aria-hidden="true"></i>Local detection candidate</span>
+            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Coverage and nightly products unavailable</span>
+            <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate; muted badges are unavailable, not produced</span>
+            <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
+        </div>
 
         <section class="calendar-summary" aria-label="Month summary">
-            <article><p class="eyebrow">Observed nights</p><strong>@ObservedNights</strong><small>@(MonthDays.Count - ObservedNights) without a session</small></article>
-            <article><p class="eyebrow">Retained captures</p><strong>@TotalCaptures.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>@(ObservedNights == 0 ? "no sessions" : $"{TotalCaptures / ObservedNights:N0} per observed night")</small></article>
+            <article><p class="eyebrow">Nights with captures</p><strong>@ObservedNights</strong><small>@(DateTime.DaysInMonth(MonthStart.Year, MonthStart.Month) - ObservedNights) without retained captures</small></article>
+            <article><p class="eyebrow">Capture coverage</p><strong>Unavailable</strong><small>Expected schedule not projected</small></article>
             <article><p class="eyebrow">Generated products</p><strong>—</strong><small>Nightly products are not yet generated</small></article>
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>
         </section>

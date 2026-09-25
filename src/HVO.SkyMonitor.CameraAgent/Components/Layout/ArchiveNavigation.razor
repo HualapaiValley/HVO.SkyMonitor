@@ -1,6 +1,6 @@
 @if (IsArchive)
 {
-    <div class="@(Matches("/gallery") ? "archive-navigation archive-navigation--captures" : "archive-navigation")">
+    <div class="archive-navigation">
         <nav class="archive-subnav" aria-label="Archive navigation">
             @foreach (var (href, label) in Links)
             {
