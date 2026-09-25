@@ -299,6 +299,47 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         _ => OperationsPage.SplitWords(role.ToString())
     };
 
+    // Formats are declared here so new exports only add an entry; unsupported ones stay visible but disabled.
+    private IEnumerable<DownloadOption> DownloadOptions(CameraAgentGalleryArtifact artifact)
+    {
+        if (artifact.Role is FrameArtifactRole.Metadata)
+        {
+            // Metadata and overlay layers are structured JSON; image formats do not apply.
+            yield return new("original", "JSON file", OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+            yield break;
+        }
+        var jpeg = string.Equals(artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
+        if (!jpeg)
+        {
+            yield return IsProjectedArtifact(artifact.ArtifactId)
+                ? new("jpeg", "JPEG image", "8-bit, adjusted for display",
+                    FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview?download=1"))
+                : new("jpeg", "JPEG image", "Not available for this artifact", null);
+            yield return new("fits", "FITS", "Not yet available", null);
+        }
+        yield return new("original", jpeg ? "JPEG image (original)" : "Original file",
+            OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+    }
+
+    private static string OriginalDescription(string? mediaType) => mediaType?.ToUpperInvariant() switch
+    {
+        "APPLICATION/VND.HVO.PRESENTATION-LAYER-PAYLOAD+JSON" => "Overlay layer geometry (.json)",
+        "APPLICATION/VND.HVO.OVERLAY-MANIFEST+JSON" => "Overlay layer manifest (.json)",
+        "APPLICATION/VND.HVO.PROJECTED-SCENE+JSON" => "Projected sky scene (.json)",
+        "APPLICATION/VND.HVO.PRESENTATION-METADATA-FACTS+JSON" => "Capture facts for overlays (.json)",
+        { } json when json.EndsWith("+JSON", StringComparison.Ordinal) || json == "APPLICATION/JSON" => "Structured metadata (.json)",
+        "IMAGE/JPEG" => "Retained bytes, as produced",
+        "APPLICATION/X-SKYMONITOR-MONO8" => "Exact retained bytes, raw 8-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-MONO16" => "Exact retained bytes, raw 16-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-RGB24" => "Exact retained bytes, raw 24-bit RGB (.bin)",
+        "APPLICATION/X-SKYMONITOR-BAYER-RGGB16" => "Exact retained bytes, raw 16-bit Bayer RGGB (.bin)",
+        "APPLICATION/X-HVO-LINEAR-FRAME" => "Exact retained bytes, SkyMonitor linear frame (.bin)",
+        "APPLICATION/X-HVO-PACKED-IMAGE" => "Exact retained bytes, SkyMonitor packed image (.bin)",
+        _ => "Exact retained bytes"
+    };
+
+    private sealed record DownloadOption(string Format, string Label, string Description, string? Url);
+
     private enum EvidenceTab { Overview, Artifacts, Processing, Technical, Replay }
 
     private CameraAgentGalleryArtifactState? FindArtifactState(Guid artifactId) =>

@@ -5360,7 +5360,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             await previewResponse.DisposeAsync().ConfigureAwait(false);
         }
-        var downloadUrl = await page.Locator("#evidence-panel-Artifacts a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var downloadUrl = await page.Locator("#evidence-panel-Artifacts a[download][data-format='original']").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(downloadUrl);
         var downloadResponse = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), downloadUrl).ToString())
             .ConfigureAwait(false);

@@ -1089,7 +1089,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.Locator("#evidence-panel-Technical").GetByText(capture.CaptureId.ToString("D"), new() { Exact = true }))
             .ConfigureAwait(false);
         await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download]").First).ConfigureAwait(false);
+        await page.Locator("#evidence-panel-Artifacts .download-menu > summary").First.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download][data-format='original']").First).ConfigureAwait(false);
         await page.GotoAsync($"/gallery/{Guid.NewGuid():D}").ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Capture unavailable", new() { Exact = true })).ConfigureAwait(false);
 
@@ -1912,7 +1913,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download]").First).ConfigureAwait(false);
+        await page.Locator("#evidence-panel-Artifacts .download-menu > summary").First.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#evidence-panel-Artifacts a[download][data-format='original']").First).ConfigureAwait(false);
 
         var image = page.Locator(".sky-image-stage img");
         await VisibleAsync(image).ConfigureAwait(false);
@@ -1922,7 +1924,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false));
 
         var previewUrl = await image.GetAttributeAsync("src").ConfigureAwait(false);
-        var contentUrl = await page.Locator("#evidence-panel-Artifacts a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var contentUrl = await page.Locator("#evidence-panel-Artifacts a[download][data-format='original']").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(previewUrl);
         Assert.IsNotNull(contentUrl);
         await AssertCookieProtectedContentAsync(ownerContext, previewUrl, "image/jpeg").ConfigureAwait(false);

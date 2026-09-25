@@ -85,8 +85,25 @@
                                             <span>@OperationsPage.FormatBytes(artifact.ByteLength)</span>
                                             <span>@(artifactState is null ? "State unavailable" : $"{artifactState.RetentionState} / {artifactState.DeliveryAvailability}")</span>
                                             <div class="evidence-row__actions">
-                                                @if (IsProjectedArtifact(artifact.ArtifactId)) { <a href="@GalleryPage.PreviewUrl(artifact.ArtifactId)" aria-label="Open @name preview">Preview</a> }
-                                                <a href="@ContentUrl(artifact.ArtifactId)" download aria-label="Download @name content">Download</a>
+                                                @if (IsProjectedArtifact(artifact.ArtifactId)) { <a href="@GalleryPage.PreviewUrl(artifact.ArtifactId)" target="_blank" rel="noopener" aria-label="Open @name preview">Preview</a> }
+                                                <details class="download-menu" name="artifact-download-menu">
+                                                    <summary aria-label="Download @name">Download <i class="bi bi-chevron-down" aria-hidden="true"></i></summary>
+                                                    <ul aria-label="@name download formats">
+                                                        @foreach (var option in DownloadOptions(artifact))
+                                                        {
+                                                            <li>
+                                                                @if (option.Url is { } url)
+                                                                {
+                                                                    <a href="@url" download data-format="@option.Format"><strong>@option.Label</strong><small>@option.Description</small></a>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="download-menu__unavailable" aria-disabled="true" data-format="@option.Format"><strong>@option.Label</strong><small>@option.Description</small></span>
+                                                                }
+                                                            </li>
+                                                        }
+                                                    </ul>
+                                                </details>
                                             </div>
                                         </div>
                                         <details class="evidence-identifiers">

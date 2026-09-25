@@ -383,6 +383,10 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "Annotated preview", StringComparison.Ordinal);
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][href$='/content']"));
+            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='jpeg'][href$='/preview?download=1']"));
+            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts [data-format='fits'][aria-disabled='true']"));
+            Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[data-format='fits']"));
+            StringAssert.Contains(cut.Markup, "raw 16-bit mono (.bin)", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll(".comparison-grid"));
             Assert.HasCount(5, cut.FindAll("[role='tab']"));
             Assert.IsFalse(cut.Markup.Contains("/tmp/", StringComparison.Ordinal));
@@ -399,6 +403,40 @@ public sealed class GalleryDetailTests
         Assert.AreEqual("true", cut.Find("#evidence-tab-Replay").GetAttribute("aria-selected"));
         cut.Find("#evidence-tab-Replay").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "ArrowRight" });
         Assert.AreEqual("true", cut.Find("#evidence-tab-Overview").GetAttribute("aria-selected"));
+    }
+
+    [TestMethod]
+    public void MetadataArtifactsOfferOnlyJsonDownload()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var baseline = OperatorUiTestData.Capture();
+        var metadata = baseline.Artifacts[0] with
+        {
+            ArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000109"),
+            Role = HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata,
+            Variant = "overlay-manifest-v1",
+            MediaType = "application/vnd.hvo.overlay-manifest+json",
+            PreviewReconstructionSupported = false
+        };
+        var capture = baseline with { Artifacts = [.. baseline.Artifacts, metadata] };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+        cut.WaitForAssertion(() =>
+        {
+            var row = cut.FindAll("#evidence-panel-Artifacts .evidence-rows > li")
+                .Single(item => item.TextContent.Contains("Capture metadata", StringComparison.Ordinal));
+            var options = row.QuerySelectorAll(".download-menu [data-format]");
+            Assert.HasCount(1, options);
+            Assert.AreEqual("original", options[0].GetAttribute("data-format"));
+            StringAssert.Contains(options[0].TextContent, "JSON file", StringComparison.Ordinal);
+            StringAssert.Contains(options[0].TextContent, "Overlay layer manifest (.json)", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]
@@ -472,6 +510,8 @@ public sealed class GalleryDetailTests
 
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "This capture cannot be displayed", StringComparison.Ordinal));
         Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download]"));
+        Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='original']"));
+        Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts [data-format='jpeg'][aria-disabled='true']"));
         Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
     }
 
