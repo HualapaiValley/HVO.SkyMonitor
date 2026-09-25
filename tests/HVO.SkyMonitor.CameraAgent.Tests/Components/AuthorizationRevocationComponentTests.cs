@@ -68,7 +68,7 @@ public sealed class AuthorizationRevocationComponentTests
         service.GalleryHandler = (_, _) => ValueTask.FromResult(
             OperatorUiResult<CameraAgentGalleryPage>.Success(new([OperatorUiTestData.Capture()], null)));
         var cut = context.Render<GalleryPage>();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Sequence 42", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Capture #42", StringComparison.Ordinal));
         service.GalleryHandler = (_, _) => ValueTask.FromResult(Denied<CameraAgentGalleryPage>());
 
         await cut.InvokeAsync(cut.Instance.RefreshAuthorizationAsync);
@@ -77,7 +77,7 @@ public sealed class AuthorizationRevocationComponentTests
         cut.WaitForAssertion(() =>
         {
             AssertAccessDenied(context);
-            Assert.IsFalse(cut.Markup.Contains("Sequence 42", StringComparison.Ordinal));
+            Assert.IsFalse(cut.Markup.Contains("Capture #42", StringComparison.Ordinal));
         });
     }
 

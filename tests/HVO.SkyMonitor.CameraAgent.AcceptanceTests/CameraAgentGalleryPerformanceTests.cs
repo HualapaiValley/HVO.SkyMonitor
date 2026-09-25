@@ -456,12 +456,7 @@ public sealed class CameraAgentGalleryPerformanceTests
     {
         foreach (var page in pages)
         {
-            Assert.AreEqual(PageSize, await page.Locator(".capture-card__image img").CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(0, await page.GetByRole(AriaRole.Button, new()
-            {
-                Name = "Try preview again",
-                Exact = true
-            }).CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(PageSize, await page.Locator(".capture-image img").CountAsync().ConfigureAwait(false));
         }
         ForceCollection();
         using var process = Process.GetCurrentProcess();
@@ -474,10 +469,9 @@ public sealed class CameraAgentGalleryPerformanceTests
             var timer = Stopwatch.StartNew();
             await page.WaitForFunctionAsync("""
                 () => {
-                    document.querySelectorAll('.capture-card__image img')
+                    document.querySelectorAll('.capture-image img')
                         .forEach(image => image.dispatchEvent(new Event('error')));
-                    return [...document.querySelectorAll('.capture-card__actions button')]
-                        .filter(button => button.textContent.includes('Try preview again')).length === 50;
+                    return document.querySelectorAll('.capture-image-placeholder').length === 50;
                 }
                 """).ConfigureAwait(false);
             timer.Stop();

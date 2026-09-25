@@ -1,38 +1,47 @@
 @namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 
+@* Structure follows docs/prototypes/pipeline-operations/cameraagent-pages.js createCaptureCard() and the
+   .capture-card rules in cameraagent-pages.css. Every field is derived from this exact capture; no fixture
+   value, neighbouring image, or latest-frame substitution is rendered. *@
 <article class="capture-card">
-    <a class="capture-card__image-link" href="@DetailUrl" aria-label="@ImageLinkLabel">
-        <div class="capture-card__image">
-            @if (SelectedSlot?.PreviewUrl is { } previewUrl && !PreviewFailed)
+    <a class="capture-image product-@ProductClass" href="@DetailUrl" aria-label="@ImageLinkLabel">
+        @if (SelectedSlot?.PreviewUrl is { } previewUrl && !PreviewFailed)
+        {
+            <img src="@previewUrl.OriginalString" alt="@ImageAlt" loading="lazy" decoding="async" @onerror="MarkPreviewFailed" />
+        }
+        else
+        {
+            <span class="capture-image-placeholder"><b>@(PreviewFailed ? "Image preview unavailable" : UnavailableTitle)</b><small>Capture facts retained</small></span>
+        }
+        <span class="capture-badges">
+            <span>@ProductLabel</span>
+            @if (EventLabel is { } eventLabel)
             {
-                <img src="@previewUrl.OriginalString" alt="@ImageAlt" loading="lazy" decoding="async" @onerror="MarkPreviewFailed" />
-                <span class="stage-badge">@SelectedSlot.Label</span>
+                <span class="event-badge">@eventLabel</span>
             }
-            else
-            {
-                <span class="unsupported-preview"><i class="bi bi-image" aria-hidden="true"></i><strong>@(PreviewFailed ? "Image preview unavailable" : UnavailableTitle)</strong><small>Capture facts retained</small></span>
-            }
-        </div>
+        </span>
+        <span class="capture-image-overlay">
+            <span><strong>Capture #@Capture.CaptureSequence</strong><small>@StageLabel / @ArtifactCountLabel</small></span>
+            <time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTimeUtc UTC</time>
+        </span>
     </a>
-    <div class="capture-card__body">
-        <header>
-            <div><p class="eyebrow">Sequence @Capture.CaptureSequence</p><h2><a href="@DetailUrl"><time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTime</time></a></h2></div>
-            <span class="hvo-chip evidence @EvidenceClass">@EvidenceLabel</span>
-        </header>
-        <p class="capture-card__summary" aria-live="polite" aria-atomic="true"><strong>@SummaryTitle</strong><span aria-hidden="true"> / </span>@Age</p>
-        <div class="capture-card__actions">
-            @if (SelectedSlot?.PreviewUrl is not null && !PreviewFailed)
+    <div class="capture-card-body">
+        <p>@Summary</p>
+        <dl class="capture-card-facts">
+            <div><dt>Source</dt><dd title="@SourceLabel">@SourceLabel</dd></div>
+            <div><dt>Integration</dt><dd>@IntegrationLabel</dd></div>
+            <div><dt>Pipeline</dt><dd><span class="pipeline-state"><span class="status-icon @PipelineOutcome" aria-hidden="true"></span>@PipelineStatus</span></dd></div>
+        </dl>
+        <div class="capture-card-actions">
+            <a href="@DetailUrl">Open image</a>
+            @if (RunUrl is { } runUrl)
             {
-                <button id="@ViewerTriggerId" type="button" class="btn btn-outline-light btn-sm" @onclick="ViewLargeAsync"><i class="bi bi-arrows-fullscreen" aria-hidden="true"></i> View large image</button>
-            }
-            else if (PreviewFailed)
-            {
-                <button type="button" class="btn btn-outline-light btn-sm" @onclick="RetryPreview">Try preview again</button>
+                <a class="run-link" href="@runUrl">View pipeline run</a>
             }
             else
             {
-                <button type="button" class="btn btn-outline-light btn-sm" disabled>View unavailable</button>
+                <span class="run-link run-link--disabled" role="link" aria-disabled="true" tabindex="0" title="@RunUnavailableReason">View pipeline run</span>
             }
         </div>
     </div>
