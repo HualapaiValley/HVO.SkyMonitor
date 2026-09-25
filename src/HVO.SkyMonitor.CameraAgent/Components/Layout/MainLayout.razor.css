@@ -35,7 +35,7 @@
 }
 
 /* Production pages share the Current Sky canvas; page roots own only their vertical spacing. */
-.content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page) {
+.content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page, .transient-page, .transient-detail) {
     width: min(100%, 112rem);
     padding-top: 0;
     padding-inline: clamp(.75rem, 2.6vw, 2.4rem);
@@ -73,10 +73,10 @@
     .content-container {
         padding-top: 1.25rem;
     }
-    .content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page) {
+    .content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page, .transient-page, .transient-detail) {
         padding-top: 0;
     }
 }
 @media (max-width: 650px) {
-    .content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page) { padding-inline: .65rem; }
+    .content-container:has(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .execution-page, .transient-page, .transient-detail) { padding-inline: .65rem; }
 }
