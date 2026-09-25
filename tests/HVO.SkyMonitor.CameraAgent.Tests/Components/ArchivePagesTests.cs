@@ -71,14 +71,15 @@ public sealed class ArchivePagesTests
             Assert.IsNotNull(observedNight.QuerySelector(".calendar-products i.event"));
             var empty = cells[24];
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--empty"));
-            StringAssert.Contains(empty.TextContent, "No archived session", StringComparison.Ordinal);
+            StringAssert.Contains(empty.TextContent, "No retained captures", StringComparison.Ordinal);
             Assert.IsNull(empty.QuerySelector("img"));
             Assert.AreEqual("/archive/day/2026-07-22", empty.QuerySelector("a")!.GetAttribute("href"));
             // Now is 12:00 UTC on 23 July = 05:00 Phoenix, inside the night that began on the 22nd.
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--today"));
             var summary = cut.Find(".calendar-summary").TextContent;
             StringAssert.Contains(summary, "Observed nights1", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "Retained captures12", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Capture coverageUnavailable", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Expected schedule not projected", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
             StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
@@ -87,6 +88,31 @@ public sealed class ArchivePagesTests
         StringAssert.Contains(nav[0], "month=2026-06", StringComparison.Ordinal);
         StringAssert.Contains(nav[1], "month=2026-08", StringComparison.Ordinal);
         StringAssert.Contains(nav[2], "month=2026-07", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Calendar_BrokenRepresentativeFallsBackAndEmptyDaysRemainNavigable()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var night = Phoenix.Resolve(new DateOnly(2026, 7, 21));
+        var representative = Guid.NewGuid();
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(
+            new("America/Phoenix", false, [new(night, 1, 0, night.StartUtc, night.EndUtc, representative)])));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=2026-07");
+        var cut = context.Render<ArchiveCalendarPage>();
+        var image = cut.WaitForElement($"img[src='/api/v1/operations/gallery/{representative:D}/thumbnail']");
+        image.TriggerEvent("onerror", new Microsoft.AspNetCore.Components.Web.ErrorEventArgs());
+
+        cut.WaitForAssertion(() =>
+        {
+            var day = cut.Find(".calendar-day:not(.calendar-day--empty)");
+            Assert.IsNull(day.QuerySelector("img"));
+            Assert.IsNotNull(day.QuerySelector(".calendar-thumb--missing"));
+            Assert.AreEqual("/archive/day/2026-07-21", day.QuerySelector("a")!.GetAttribute("href"));
+            StringAssert.Contains(cut.Find(".calendar-day--empty").TextContent, "No retained captures", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Capture coverageUnavailable", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]

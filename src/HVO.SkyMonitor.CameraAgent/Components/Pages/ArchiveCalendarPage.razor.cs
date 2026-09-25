@@ -16,6 +16,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCalendar? _calendar;
     private string? _errorMessage;
+    private readonly HashSet<Guid> _failedThumbnails = [];
     private bool _isLoading = true;
     private long _generation;
 
@@ -79,9 +80,9 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
 
     private int ObservedNights => MonthDays.Count(static day => day.CaptureCount > 0);
 
-    private long TotalCaptures => MonthDays.Sum(static day => day.CaptureCount);
-
     private long TotalCandidates => MonthDays.Sum(static day => day.CandidateCount);
+
+    private void MarkThumbnailFailed(Guid captureId) => _failedThumbnails.Add(captureId);
 
     private static string CellClass(CalendarCell cell)
     {
@@ -109,12 +110,12 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private static string CellSummary(CalendarCell cell)
         => cell.Day is { CaptureCount: > 0 } day
             ? FormattableString.Invariant($"{day.CaptureCount:N0} capture{(day.CaptureCount == 1 ? "" : "s")}")
-            : "No archived session";
+            : "No retained captures";
 
     private static string CellAriaLabel(CalendarCell cell)
         => cell.Day is { CaptureCount: > 0 } day
             ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates")
-            : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no archived session");
+            : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no retained captures");
 
     internal static string DayUrl(DateOnly date) => FormattableString.Invariant($"/archive/day/{date:yyyy-MM-dd}");
 
