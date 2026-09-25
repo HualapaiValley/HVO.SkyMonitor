@@ -1,6 +1,7 @@
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -90,7 +91,7 @@ public sealed class GalleryPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Find(".capture-image-overlay small").TextContent, "Combined", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".capture-card-heading").TextContent, "Unregistered live mean", StringComparison.Ordinal);
             StringAssert.Contains(cut.FindAll(".capture-card")[1].TextContent, "Capture facts retained", StringComparison.Ordinal);
             StringAssert.Contains(cut.FindAll(".capture-card")[1].TextContent, "No display product", StringComparison.Ordinal);
         });
@@ -318,6 +319,65 @@ public sealed class GalleryPageTests
     }
 
     [TestMethod]
+    public void AnnotatedLayerDependenciesDoNotCountAsSourceFrames()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000601");
+        var previewId = Guid.Parse("00000000-0000-0000-0000-000000000602");
+        var annotatedId = Guid.Parse("00000000-0000-0000-0000-000000000603");
+        var thumbnailId = Guid.Parse("00000000-0000-0000-0000-000000000604");
+        var frameIds = Enumerable.Range(610, 5)
+            .Select(value => Guid.Parse($"00000000-0000-0000-0000-{value:000000000000}"))
+            .ToArray();
+        var layerIds = Enumerable.Range(620, 6)
+            .Select(value => Guid.Parse($"00000000-0000-0000-0000-{value:000000000000}"))
+            .ToArray();
+        var capture = OperatorUiTestData.Capture() with
+        {
+            Artifacts =
+            [
+                new CameraAgentGalleryArtifact(combinedId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined,
+                    "combined", "rolling-mean", OperatorUiTestData.Now, "application/x-hvo-packed-image",
+                    new string('A', 64), 1024, null, frameIds, "combine",
+                    PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, PreviewReconstructionSupported: true),
+                new CameraAgentGalleryArtifact(previewId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview,
+                    "preview", "combined-preview", OperatorUiTestData.Now, "image/jpeg",
+                    new string('B', 64), 1024, null, [combinedId], "preview"),
+                new CameraAgentGalleryArtifact(annotatedId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.AnnotatedPreview,
+                    "annotated", "installer-annotated-preview", OperatorUiTestData.Now, "application/x-hvo-packed-image",
+                    new string('C', 64), 1024, null, [previewId, .. layerIds], "annotate",
+                    PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, PreviewReconstructionSupported: true),
+                new CameraAgentGalleryArtifact(thumbnailId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.AnnotatedPreview,
+                    "thumbnail", "annotated-thumbnail-1024-jpeg", OperatorUiTestData.Now, "image/jpeg",
+                    new string('E', 64), 1024, null, [annotatedId], "thumbnail", EncodedWidth: 640, EncodedHeight: 480),
+                .. layerIds.Select(id => new CameraAgentGalleryArtifact(id, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata,
+                    "layer", "layer", OperatorUiTestData.Now, "application/json", new string('D', 64), 128, null, [], "layer"))
+            ]
+        };
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+
+        var cut = context.Render<GalleryPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var card = cut.Find(".capture-card");
+            StringAssert.Contains(card.QuerySelector(".capture-card-heading")!.TextContent, "Processed presentation", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "5 frames / endpoint #42", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "Integration5 s", StringComparison.Ordinal);
+            Assert.IsFalse(card.TextContent.Contains("7 source frames", StringComparison.Ordinal));
+        });
+        var thumbnailPresentation = new CameraAgentCapturePresentation(CameraAgentPresentationStage.Annotated,
+        [
+            new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed",
+                CameraAgentPresentationSlotAvailability.Available, "Available", thumbnailId,
+                HVO.SkyMonitor.AgentCore.FrameArtifactRole.AnnotatedPreview, "annotated-thumbnail-1024-jpeg", "image/jpeg",
+                new Uri($"/api/v1/operations/artifacts/{thumbnailId:D}/preview", UriKind.Relative))
+        ]);
+        Assert.AreEqual(5, ArchiveCardFacts.ProvenSourceCount(capture, thumbnailPresentation));
+    }
+
+    [TestMethod]
     public void ProvenCausalMeanIsLabelledAndIntegrationIsSummed()
     {
         using var context = new BunitContext();
@@ -353,7 +413,7 @@ public sealed class GalleryPageTests
             var card = cut.Find(".capture-card");
             StringAssert.Contains(card.TextContent, "Unregistered live mean", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "3 frames / endpoint #42", StringComparison.Ordinal);
-            StringAssert.Contains(card.TextContent, "not a registered stack", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "no geometric registration", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "Succeeded", StringComparison.Ordinal);
             // Integration is summed across the three proven sources (1 s exposure each).
             StringAssert.Contains(card.TextContent, "Integration3 s", StringComparison.Ordinal);
@@ -375,8 +435,29 @@ public sealed class GalleryPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.HasCount(1, cut.FindAll(".capture-card"));
-            StringAssert.Contains(cut.Find(".capture-badges").TextContent, "Processed single frame", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".capture-card-heading").TextContent, "Processed single frame", StringComparison.Ordinal);
         });
+    }
+
+    [TestMethod]
+    public void ImageContainsNoHtmlOverlayAndActionsAreConsistentLinks()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([OperatorUiTestData.Capture()], null)));
+        var cut = context.Render<GalleryPage>();
+        cut.WaitForElement(".capture-image img");
+
+        var card = cut.Find(".capture-card");
+        Assert.IsEmpty(card.QuerySelectorAll(".capture-image span, .capture-image button, .capture-image-overlay, .capture-badges"));
+        StringAssert.Contains(card.QuerySelector(".capture-card-heading")!.TextContent, "Capture #42", StringComparison.Ordinal);
+        StringAssert.Contains(card.QuerySelector(".capture-card-heading")!.TextContent, "Processed single frame", StringComparison.Ordinal);
+        Assert.HasCount(1, card.QuerySelectorAll(".capture-card-actions a"));
+        Assert.AreEqual("Open image", card.QuerySelector(".capture-card-actions a")!.TextContent.Trim());
+        var unavailable = card.QuerySelector(".capture-card-actions [aria-disabled='true']");
+        Assert.IsNotNull(unavailable);
+        StringAssert.Contains(unavailable.GetAttribute("aria-label"), "not resolved", StringComparison.Ordinal);
     }
 
     private static TestOperatorUiService Configure(BunitContext context)

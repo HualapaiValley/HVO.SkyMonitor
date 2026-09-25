@@ -14,20 +14,21 @@
         {
             <span class="capture-image-placeholder"><b>@(PreviewFailed ? "Image preview unavailable" : UnavailableTitle)</b><small>Capture facts retained</small></span>
         }
-        <span class="capture-badges">
-            <span>@ProductLabel</span>
-            @if (EventLabel is { } eventLabel)
-            {
-                <span class="event-badge">@eventLabel</span>
-            }
-        </span>
-        <span class="capture-image-overlay">
-            <span><strong>Capture #@Capture.CaptureSequence</strong><small>@StageLabel / @ArtifactCountLabel</small></span>
-            <time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTimeUtc UTC</time>
-        </span>
     </a>
     <div class="capture-card-body">
-        <p>@Summary</p>
+        <header class="capture-card-heading">
+            <div><strong>Capture #@Capture.CaptureSequence</strong><span>@ProductLabel</span></div>
+            <time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTimeUtc UTC</time>
+        </header>
+        <p class="capture-card-meta">@ArtifactCountLabel</p>
+        @if (EventLabel is { } eventLabel)
+        {
+            <p class="capture-card-event">@eventLabel</p>
+        }
+        @if (Summary is { } summary)
+        {
+            <p class="capture-card-summary">@summary</p>
+        }
         <dl class="capture-card-facts">
             <div><dt>Source</dt><dd title="@SourceLabel">@SourceLabel</dd></div>
             <div><dt>Integration</dt><dd>@IntegrationLabel</dd></div>
@@ -41,7 +42,7 @@
             }
             else
             {
-                <span class="run-link run-link--disabled" role="link" aria-disabled="true" tabindex="0" title="@RunUnavailableReason">View pipeline run</span>
+                <span class="run-link run-link--disabled" role="link" aria-disabled="true" tabindex="0" aria-label="@($"View pipeline run unavailable. {RunUnavailableReason}")">View pipeline run unavailable</span>
             }
         </div>
     </div>
