@@ -123,7 +123,7 @@
                     <div class="figure-actions">
                         @if (FactCapture is not null)
                         {
-                            <a class="inline-action" href="@DetailUrl">@(IsArchived ? "Technical evidence and downloads" : "Open capture details")</a>
+                            <a class="inline-action" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">@(IsArchived ? "Technical evidence and downloads" : "Open capture details")</a>
                         }
                         @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
                         {
@@ -271,7 +271,7 @@
                     @if (_facts?.CombinedLineageUnavailable == true) { <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p> }
                     @if (_factsUnavailableReason is not null) { <p class="facts-unavailable" role="status">@_factsUnavailableReason</p> }
                     @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p> }
-                    <a class="inline-action layers-link" href="@DetailUrl">View immutable raw source</a>
+                    <a class="inline-action layers-link" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">View immutable raw source</a>
                 }
                 else
                 {

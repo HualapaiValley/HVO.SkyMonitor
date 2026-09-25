@@ -1,5 +1,13 @@
 const bindings = new WeakMap();
 
+export function openTechnicalEvidence(root) {
+    const disclosure = root?.closest('.detail-page')?.querySelector('#technical-evidence');
+    if (!disclosure) return;
+    disclosure.open = true;
+    disclosure.scrollIntoView({ block: 'start' });
+    disclosure.querySelector('summary')?.focus({ preventScroll: true });
+}
+
 // Mirrors the prototype's figure.requestFullscreen(): the same <figure> (base image, SVG layers, caption) is
 // promoted, so the enlarged view is exactly the inline selection with no second fetch or stretch.
 export async function requestFullScreen(figure) {

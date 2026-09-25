@@ -944,7 +944,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailUrl = await detailLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(detailUrl);
         var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
-        await detailLink.ClickAsync().ConfigureAwait(false);
+        // Pin the resolved capture: a live list rerender must not retarget this nth-card locator.
+        await page.GotoAsync(detailUrl).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         var image = page.Locator(".sky-image-stage img");
@@ -952,8 +953,19 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.IsFalse(await page.Locator("#technical-evidence").EvaluateAsync<bool>("details => details.open")
             .ConfigureAwait(false));
         await VisibleAsync(page.Locator(".current-sky-summary")).ConfigureAwait(false);
-        Assert.AreEqual("#technical-evidence", await page.GetByRole(AriaRole.Link,
-            new() { Name = "Technical evidence and downloads", Exact = true }).GetAttributeAsync("href").ConfigureAwait(false));
+        var archivedPathAndQuery = new Uri(page.Url).PathAndQuery;
+        foreach (var linkText in new[] { "Technical evidence and downloads", "View immutable raw source" })
+        {
+            var evidenceLink = page.GetByRole(AriaRole.Link, new() { Name = linkText, Exact = true });
+            Assert.AreEqual(archivedPathAndQuery + "#technical-evidence",
+                await evidenceLink.GetAttributeAsync("href").ConfigureAwait(false));
+            await evidenceLink.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('#technical-evidence')?.open === true")
+                .ConfigureAwait(false);
+            Assert.AreEqual(archivedPathAndQuery, new Uri(page.Url).PathAndQuery);
+            Assert.AreEqual($"Capture #{capture.CaptureSequence}", await page.Locator("h1").InnerTextAsync().ConfigureAwait(false));
+            await page.Locator("#technical-evidence > summary").ClickAsync().ConfigureAwait(false);
+        }
         Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".stage-switcher button:not(:disabled)").CountAsync().ConfigureAwait(false));
         Assert.IsGreaterThan(0, await page.Locator(".stage-switcher button:disabled").CountAsync().ConfigureAwait(false));
 
@@ -1057,6 +1069,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
             Assert.AreEqual(string.Empty, overflow, $"capture detail overflowed at {viewport.Width}x{viewport.Height}");
             Assert.AreEqual("contain", await image
                 .EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+            Assert.IsTrue(await image.EvaluateAsync<bool>("""
+                image => {
+                    const bounds = image.getBoundingClientRect();
+                    const container = image.closest('.capture-image').getBoundingClientRect();
+                    return bounds.top >= container.top - 1 && bounds.bottom <= container.bottom + 1 &&
+                        bounds.left >= container.left - 1 && bounds.right <= container.right + 1;
+                }
+                """).ConfigureAwait(false), $"The complete raw image must fit at {viewport.Width}x{viewport.Height}.");
             Assert.AreEqual(selectedSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
             await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true }))
                 .ConfigureAwait(false);

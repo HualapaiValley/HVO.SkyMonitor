@@ -827,9 +827,24 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentPresentationCapture? FactCapture =>
         _presentation?.DisplayCapture ?? _presentation?.LatestCapture;
 
-    private string DetailUrl => IsArchived ? "#technical-evidence" : FactCapture is { } capture
+    private string DetailUrl => IsArchived
+        ? $"/gallery/{ArchivedView!.Capture.CaptureId:D}{new Uri(NavigationManager.Uri).Query}#technical-evidence"
+        : FactCapture is { } capture
         ? $"/gallery/{capture.CaptureId:D}"
         : "/gallery";
+
+    private async Task OpenTechnicalEvidenceAsync()
+    {
+        if (!IsArchived || _disposeStarted != 0) return;
+        var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+        if (Volatile.Read(ref _disposeStarted) != 0)
+        {
+            if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
+            return;
+        }
+        _layerModule = module;
+        await module.InvokeVoidAsync("openTechnicalEvidence", _layerRoot);
+    }
 
     private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
         ? $"{slot.Label} sky capture from {capture.ExposureStartedUtc.ToLocalTime():g}"

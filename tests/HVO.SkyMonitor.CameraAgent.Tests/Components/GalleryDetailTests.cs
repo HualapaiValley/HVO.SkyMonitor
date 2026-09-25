@@ -546,6 +546,8 @@ public sealed class GalleryDetailTests
             return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture));
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(QueryHelpers.AddQueryString($"/gallery/{capture.CaptureId:D}", "returnUrl", "/gallery?cursor=retained"));
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
         await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
         var source = cut.Find(".sky-image-stage img").GetAttribute("src");
@@ -557,6 +559,8 @@ public sealed class GalleryDetailTests
         Assert.AreEqual(source, cut.Find(".sky-image-stage img").GetAttribute("src"));
         Assert.AreEqual("true", cut.Find("button[title='Show Raw image']").GetAttribute("aria-pressed"));
         Assert.IsEmpty(cut.FindAll(".live-indicator"));
+        Assert.AreEqual(new Uri(navigation.Uri).PathAndQuery + "#technical-evidence",
+            cut.Find(".figure-actions a").GetAttribute("href"));
     }
 
     [TestMethod]

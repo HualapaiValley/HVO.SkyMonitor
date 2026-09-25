@@ -99,7 +99,7 @@
 .sky-layer-canvas > img { display: block; object-fit: contain; }
 .sky-layer-overlay { visibility: hidden; pointer-events: none; }
 .sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
-.sky-image-stage ::deep .capture-image { position: relative; border: 0; border-radius: 0; background: #000; box-shadow: none; }
+.sky-image-stage ::deep .capture-image { position: relative; max-height: none; border: 0; border-radius: 0; background: #000; box-shadow: none; }
 .sky-image-stage ::deep .capture-image img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
 
 /* The renderer's SVG viewBox matches the base image, so the overlay scales with it exactly like the prototype. */

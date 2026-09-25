@@ -1,6 +1,7 @@
 # Historical Capture Review Candidate
 
-Date: 2026-09-25. Issue #1014. Operator visual acceptance is pending.
+Date: 2026-09-25. Issue #1014. Operator requested continued promotion after the
+preview checkpoint; independent review and final CI govern release.
 
 ## Scope
 
@@ -106,3 +107,20 @@ sources keep their artifact identity and an unavailable placeholder. Page-local
 archive text search cannot be reconstructed by the neighbour query, so adjacent
 links are disabled for that case while Back to archive retains the exact URL.
 No new automatic replay, delivery, or publication operation is performed.
+
+## Review Corrections
+
+PR #1048 initial review found two regressions before promotion. Archived
+disclosure links now retain the selected capture path and query instead of
+resolving a bare fragment against the application's root base URL. Clicking
+either link opens and focuses the existing disclosure without navigating away.
+The shared inline image container no longer inherits the short-landscape height
+cap that cropped its naturally sized image. Browser acceptance now clicks both
+links and verifies route/query identity, disclosure opening, and vertical as
+well as horizontal image containment at desktop, mobile and 844x390 landscape.
+
+The enhanced acceptance test passed; 68 focused current/history/auth component
+tests passed. The first attempted pre-fix browser run encountered an unrelated
+live-list locator race before reaching the new assertions, so it is not recorded
+as a reproducer of either finding. The test now navigates to the already resolved
+capture URL instead of clicking an nth-card locator that can change on rerender.
