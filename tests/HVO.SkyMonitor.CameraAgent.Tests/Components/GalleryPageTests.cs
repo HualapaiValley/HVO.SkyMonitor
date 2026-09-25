@@ -326,6 +326,7 @@ public sealed class GalleryPageTests
         var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000601");
         var previewId = Guid.Parse("00000000-0000-0000-0000-000000000602");
         var annotatedId = Guid.Parse("00000000-0000-0000-0000-000000000603");
+        var thumbnailId = Guid.Parse("00000000-0000-0000-0000-000000000604");
         var frameIds = Enumerable.Range(610, 5)
             .Select(value => Guid.Parse($"00000000-0000-0000-0000-{value:000000000000}"))
             .ToArray();
@@ -347,6 +348,9 @@ public sealed class GalleryPageTests
                     "annotated", "installer-annotated-preview", OperatorUiTestData.Now, "application/x-hvo-packed-image",
                     new string('C', 64), 1024, null, [previewId, .. layerIds], "annotate",
                     PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16, PreviewReconstructionSupported: true),
+                new CameraAgentGalleryArtifact(thumbnailId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.AnnotatedPreview,
+                    "thumbnail", "annotated-thumbnail-1024-jpeg", OperatorUiTestData.Now, "image/jpeg",
+                    new string('E', 64), 1024, null, [annotatedId], "thumbnail", EncodedWidth: 640, EncodedHeight: 480),
                 .. layerIds.Select(id => new CameraAgentGalleryArtifact(id, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata,
                     "layer", "layer", OperatorUiTestData.Now, "application/json", new string('D', 64), 128, null, [], "layer"))
             ]
@@ -363,6 +367,14 @@ public sealed class GalleryPageTests
             StringAssert.Contains(card.TextContent, "Integration5 s", StringComparison.Ordinal);
             Assert.IsFalse(card.TextContent.Contains("7 source frames", StringComparison.Ordinal));
         });
+        var thumbnailPresentation = new CameraAgentCapturePresentation(CameraAgentPresentationStage.Annotated,
+        [
+            new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed",
+                CameraAgentPresentationSlotAvailability.Available, "Available", thumbnailId,
+                HVO.SkyMonitor.AgentCore.FrameArtifactRole.AnnotatedPreview, "annotated-thumbnail-1024-jpeg", "image/jpeg",
+                new Uri($"/api/v1/operations/artifacts/{thumbnailId:D}/preview", UriKind.Relative))
+        ]);
+        Assert.AreEqual(5, ArchiveCardFacts.ProvenSourceCount(capture, thumbnailPresentation));
     }
 
     [TestMethod]

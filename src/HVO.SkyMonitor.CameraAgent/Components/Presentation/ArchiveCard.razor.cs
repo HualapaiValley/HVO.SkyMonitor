@@ -34,15 +34,15 @@ public static class ArchiveCardFacts
 
     /// <summary>
     /// A presentation can name seven inputs (one image and six layer products), not seven sensor frames. Follow
-    /// only image ancestry: the displayed Combined product or a Preview sourced by it, including through one
-    /// AnnotatedPreview hop. A sibling Combined product is never proof of the displayed pixels' lineage.
+    /// only image ancestry: the displayed Combined product or its Preview and AnnotatedPreview derivatives.
+    /// A sibling Combined product is never proof of the displayed pixels' lineage.
     /// </summary>
     public static int ProvenSourceCount(CameraAgentGalleryCapture capture, CameraAgentCapturePresentation presentation)
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(presentation);
         var display = DisplayArtifact(capture, presentation);
-        for (var depth = 0; depth < 3 && display is not null; depth++)
+        for (var depth = 0; depth < 5 && display is not null; depth++)
         {
             if (display.Role == FrameArtifactRole.Combined)
             {
@@ -51,7 +51,7 @@ public static class ArchiveCardFacts
             if (display.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview)) break;
             var imageSources = display.SourceArtifactIds
                 .Select(id => capture.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == id))
-                .Where(static source => source is { Role: FrameArtifactRole.Combined or FrameArtifactRole.Preview or FrameArtifactRole.Calibrated or FrameArtifactRole.Raw })
+                .Where(static source => source is { Role: FrameArtifactRole.Combined or FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview or FrameArtifactRole.Calibrated or FrameArtifactRole.Raw })
                 .ToArray();
             if (imageSources.Length != 1) break;
             display = imageSources[0];
