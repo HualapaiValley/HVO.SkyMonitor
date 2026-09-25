@@ -8,39 +8,86 @@
 
 <PageTitle>Archive</PageTitle>
 
-<div class="gallery-page">
-    <header class="gallery-heading">
-        <div><p class="eyebrow">Bounded local history</p><h1>Archive</h1><p>Browse the sky visually. Capture facts and technical filters remain available when needed.</p></div>
-        <div class="heading-aside">
-            @if (_page is not null)
-            {
-                <span class="hvo-chip hvo-chip--neutral result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
-            }
-            <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
-            <a class="btn btn-outline-light" href="/archive/products">Products</a>
+@* Structure follows docs/prototypes/pipeline-operations/gallery.html element for element. Counts are of the
+   loaded bounded page and are labelled as such; they are never presented as archive totals. Filters bind to
+   supported bounded queries; search filters only the loaded page and says so. *@
+<div class="gallery-page site-main archive-main">
+    <nav class="archive-subnav" aria-label="Archive views">
+        <a class="active" href="/gallery" aria-current="page">Captures</a>
+        <a href="/archive/calendar">Calendar</a>
+        <a href="/archive/products">Products</a>
+    </nav>
+
+    <header class="site-heading gallery-title archive-heading">
+        <div>
+            <p class="eyebrow">Archive / bounded local history</p>
+            <h1>Captures</h1>
+            <p>One result per acquisition. Every thumbnail identifies whether it displays the reference frame or a multi-source derivative.</p>
+        </div>
+        <div class="gallery-heading-facts">
+            <span aria-live="polite" aria-atomic="true"><strong>@VisibleItems.Count</strong> on this page</span>
+            <span><strong>@ArtifactCount</strong> artifacts</span>
+            <span><strong>@EventCountLabel</strong> events</span>
         </div>
     </header>
 
-    <form class="archive-browse" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault aria-label="Archive browsing controls">
-        <div class="common-browse">
-            <div><label for="gallery-from">From (UTC)</label><input id="gallery-from" class="form-control" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></div>
-            <div><label for="gallery-to">To (UTC)</label><input id="gallery-to" class="form-control" type="datetime-local" step="1" value="@_draftTo" @onchange="SetDraftTo" /></div>
-            <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply filters</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
+    <section class="gallery-explainer" aria-label="Archive capture image semantics">
+        <span class="explainer-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Z"></path><path d="m7 16 3-4 3 3 2-2 2 3"></path></svg></span>
+        <div><strong>Each card is one capture and one pipeline run.</strong><p>The thumbnail can be a processed single frame, a causal stack ending at that capture, or a centered derivative targeting it. Source lineage stays visible.</p></div>
+        @if (VisibleItems.Count > 0)
+        {
+            <a href="@DetailUrl(VisibleItems[0].CaptureId)">Open newest capture</a>
+        }
+    </section>
+
+    <form class="gallery-toolbar" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault aria-label="Archive capture filters">
+        <label class="gallery-search">
+            <span>Search captures</span>
+            <span class="input-shell">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m13 13 4 4"></path></svg>
+                <input id="gallerySearch" type="search" placeholder="Sequence, product, or status (this page)" value="@_draftSearch" @oninput="SetDraftSearch" />
+            </span>
+        </label>
+        <label><span>From UTC</span><input id="galleryFrom" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></label>
+        <label><span>To UTC</span><input id="galleryTo" type="datetime-local" step="1" value="@_draftTo" @onchange="SetDraftTo" /></label>
+        <label><span>Outcome</span>
+            <select id="galleryOutcome" value="@_draftOutcome" @onchange="SetDraftOutcome">
+                <option value="all">All outcomes</option>
+                <option value="Completed">Succeeded</option>
+                <option value="Skipped">Attention</option>
+                <option value="TerminalFailure">Failed</option>
+                <option value="Running">In progress</option>
+            </select>
+        </label>
+        <label><span>Image product</span>
+            <select id="galleryProduct" value="@_draftProduct" @onchange="SetDraftProduct">
+                <option value="all">All products</option>
+                <option value="registered" disabled>Registered stack / design target</option>
+                <option value="Combined">Unregistered live mean</option>
+                <option value="Calibrated">Single frame</option>
+                <option value="Raw">Raw only</option>
+            </select>
+        </label>
+        <div class="view-switcher" role="group" aria-label="Archive capture layout">
+            <button id="gridView" class="@(_compact ? "" : "active")" type="button" aria-label="Grid view" aria-pressed="@(_compact ? "false" : "true")" title="Grid view" @onclick="() => SetCompact(false)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="5" height="5"></rect><rect x="12" y="3" width="5" height="5"></rect><rect x="3" y="12" width="5" height="5"></rect><rect x="12" y="12" width="5" height="5"></rect></svg></button>
+            <button id="compactView" class="@(_compact ? "active" : "")" type="button" aria-label="Compact view" aria-pressed="@(_compact ? "true" : "false")" title="Compact view" @onclick="() => SetCompact(true)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10"></path><circle cx="3.5" cy="5" r=".7"></circle><circle cx="3.5" cy="10" r=".7"></circle><circle cx="3.5" cy="15" r=".7"></circle></svg></button>
         </div>
-        <details class="advanced-filters" open="@HasAdvancedFilters">
-            <summary>Advanced filters</summary>
-            <div class="advanced-filters__grid">
-                <div><label for="gallery-origin">Evidence origin</label><select id="gallery-origin" class="form-select" @bind="_draftOrigin"><option value="">Any origin</option><option value="Simulated">Simulated</option><option value="DeveloperFixture">Developer fixture</option><option value="Unknown">Unknown</option></select></div>
-                <div><label for="gallery-role">Artifact role</label><select id="gallery-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>()) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
-                <div><label for="gallery-recipe">Recipe name</label><input id="gallery-recipe" class="form-control" maxlength="128" @bind="_draftRecipe" /></div>
-                <div><label for="gallery-status">Processing status</label><input id="gallery-status" class="form-control" maxlength="64" @bind="_draftStatus" /></div>
-                <div><label for="gallery-raw">Raw state</label><input id="gallery-raw" class="form-control" maxlength="64" @bind="_draftRawState" /></div>
-                <div><label for="gallery-min-sequence">Minimum sequence</label><input id="gallery-min-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMinimumSequence" /></div>
-                <div><label for="gallery-max-sequence">Maximum sequence</label><input id="gallery-max-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMaximumSequence" /></div>
-                <div><label for="gallery-size">Page size</label><select id="gallery-size" class="form-select" @bind="_draftPageSize"><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></div>
-            </div>
-        </details>
+        <div class="toolbar-actions"><button type="submit" class="button secondary small">Apply</button><button type="button" class="button secondary small" @onclick="ClearFilters">Clear</button></div>
     </form>
+
+    <details class="advanced-filters" open="@HasAdvancedFilters">
+        <summary>Advanced filters</summary>
+        <div class="advanced-filters__grid">
+            <div><label for="gallery-origin">Evidence origin</label><select id="gallery-origin" @bind="_draftOrigin"><option value="">Any origin</option><option value="Simulated">Simulated</option><option value="DeveloperFixture">Developer fixture</option><option value="Unknown">Unknown</option></select></div>
+            <div><label for="gallery-role">Artifact role</label><select id="gallery-role" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>()) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
+            <div><label for="gallery-recipe">Recipe name</label><input id="gallery-recipe" maxlength="128" @bind="_draftRecipe" /></div>
+            <div><label for="gallery-status">Processing status</label><select id="gallery-status" @bind="_draftStatus"><option value="">Any status</option><option value="Pending">Pending</option><option value="Running">Running</option><option value="Completed">Completed</option><option value="Skipped">Skipped</option><option value="RetryableFailure">Retryable failure</option><option value="TerminalFailure">Terminal failure</option></select></div>
+            <div><label for="gallery-raw">Raw state</label><input id="gallery-raw" maxlength="64" @bind="_draftRawState" /></div>
+            <div><label for="gallery-min-sequence">Minimum sequence</label><input id="gallery-min-sequence" type="number" min="1" step="1" @bind="_draftMinimumSequence" /></div>
+            <div><label for="gallery-max-sequence">Maximum sequence</label><input id="gallery-max-sequence" type="number" min="1" step="1" @bind="_draftMaximumSequence" /></div>
+            <div><label for="gallery-size">Page size</label><select id="gallery-size" @bind="_draftPageSize"><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></div>
+        </div>
+    </details>
 
     @if (_isLoading)
     {
@@ -48,39 +95,33 @@
     }
     else if (_errorMessage is not null)
     {
-        <section class="gallery-state gallery-state--error" role="alert"><div><strong>Gallery unavailable</strong><p>@_errorMessage</p></div><button type="button" class="btn btn-outline-light btn-sm" @onclick="ReloadAsync">Try again</button></section>
+        <section class="gallery-state gallery-state--error" role="alert"><div><strong>Gallery unavailable</strong><p>@_errorMessage</p></div><button type="button" class="button secondary small" @onclick="ReloadAsync">Try again</button></section>
     }
-    else if (_page is null || _page.Items.Count == 0)
+    else if (VisibleItems.Count == 0)
     {
-        <section class="gallery-state" role="status"><div><strong>No captures match these filters</strong><p>Change or clear the URL-backed filters to inspect another bounded page.</p></div></section>
+        <section id="galleryEmpty" class="gallery-empty" role="status"><strong>No captures match these filters</strong><p>Change the search or product selection to restore results.@(SearchIsActive ? " Search filters the loaded page only." : string.Empty)</p></section>
     }
     else
     {
-        @if (_page.Items.Count == 100 || _page.NextCursor is not null)
+        @if (_page!.Items.Count == 100 || _page.NextCursor is not null)
         {
             <p class="large-state" role="status">This is a bounded page. Additional capture history remains unloaded.</p>
         }
-        <section class="capture-grid" aria-label="Capture results">
-            @foreach (var capture in _page.Items)
+        <section id="galleryGrid" class="prototype-gallery-grid @(_compact ? "compact" : "")" aria-label="Capture results">
+            @foreach (var capture in VisibleItems)
             {
                 <ArchiveCard Capture="@capture"
                              Presentation="@CardPresentation(capture)"
-                             DetailUrl="@DetailUrl(capture.CaptureId)"
-                             Age="@FormatAge(capture.ExposureStartedUtc)"
-                             ViewLargeRequested="OpenViewer" />
+                             DetailUrl="@DetailUrl(capture.CaptureId)" />
             }
         </section>
-        <nav class="cursor-nav" aria-label="Gallery pages">
-            @if (!string.IsNullOrWhiteSpace(Cursor))
-            {
-                <button type="button" class="btn btn-outline-light" @onclick="ShowNewest">Newest page</button>
-            }
-            @if (_page.NextCursor is not null)
-            {
-                <button type="button" class="btn btn-primary" @onclick="ShowNext">Older captures</button>
-            }
-        </nav>
     }
-</div>
 
-<LargeImageViewer @bind-Open="_viewerOpen" Source="@_viewerSource" Title="@_viewerTitle" Alt="@_viewerAlt" TriggerId="@_viewerTriggerId" />
+    <footer class="gallery-pagination">
+        <span>@(_page is null ? "No bounded page loaded" : $"Showing {VisibleItems.Count} of {_page.Items.Count} loaded capture{(_page.Items.Count == 1 ? string.Empty : "s")}")</span>
+        <div>
+            <button class="button secondary small" type="button" disabled="@(string.IsNullOrWhiteSpace(Cursor))" @onclick="ShowNewest">Newer</button>
+            <button class="button secondary small" type="button" disabled="@(_page?.NextCursor is null)" @onclick="ShowNext">Older captures</button>
+        </div>
+    </footer>
+</div>
