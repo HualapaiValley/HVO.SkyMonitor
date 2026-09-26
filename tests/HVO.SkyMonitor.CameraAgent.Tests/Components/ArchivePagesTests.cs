@@ -193,7 +193,7 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(facts, "1% of 10h 00m", StringComparison.Ordinal);
             StringAssert.Contains(facts, "under 90 % of the scheduled window", StringComparison.Ordinal);
             StringAssert.Contains(facts, "overrides and manual pause are not reflected", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-22 03:10:00 UTC", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-21 20:10:00 (America/Phoenix)", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Retained captures3", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Cloud qualityNot assessed for this day", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Total integration1m 00s", StringComparison.Ordinal);

@@ -128,10 +128,23 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         var schedule => FormattableString.Invariant($"{Math.Min(100, 100 * schedule.CoveredDuration.TotalSeconds / schedule.ExpectedDuration.TotalSeconds):0}% of {FormatDuration(schedule.ExpectedDuration)}")
     };
 
-    private static string RepresentativeCaption(CameraAgentObservingDayView view)
+    private string RepresentativeCaption(CameraAgentObservingDayView view)
         => view.Day.RepresentativeExposureUtc is { } exposure
-            ? FormattableString.Invariant($"Newest capture with a published preview, {exposure:yyyy-MM-dd HH:mm:ss} UTC")
+            ? $"Newest capture with a published preview, {LocalDateTime(exposure)} ({TimeZoneId})"
             : "Newest capture with a published preview";
+
+    private string LocalDateTime(DateTimeOffset utc)
+    {
+        try
+        {
+            return TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, TimeZoneId)
+                .ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            return utc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+        }
+    }
 
     internal static string FormatDuration(TimeSpan value) => value switch
     {
