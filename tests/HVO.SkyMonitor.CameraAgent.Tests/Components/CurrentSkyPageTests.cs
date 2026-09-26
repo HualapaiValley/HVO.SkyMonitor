@@ -153,11 +153,15 @@ public sealed class CurrentSkyPageTests
         };
         var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
         module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module.SetupVoid("downloadUrl", _ => true).SetVoidResult();
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForElement(".sky-layer-canvas img");
 
         StringAssert.Contains(cut.Find(".current-sky-hero .sky-layer-canvas img").GetAttribute("src"), "/preview", StringComparison.Ordinal);
         Assert.HasCount(1, cut.FindAll(".current-sky-hero .sky-layer-overlay svg"));
+        Assert.HasCount(1, cut.FindAll(".sky-figure figcaption .scene-semantics"));
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage .scene-semantics"));
+        Assert.AreEqual("MeasuredExpectedPredicted", cut.Find(".scene-semantics").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".capture-image img"));
         Assert.HasCount(1, cut.FindAll(".sky-layer-controls input[data-layer-target='hvo-layer-0']"));
         Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
@@ -169,6 +173,7 @@ public sealed class CurrentSkyPageTests
         await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
         Assert.IsEmpty(cut.FindAll(".sky-layer-canvas img"));
         Assert.IsEmpty(cut.FindAll(".sky-layer-overlay svg"));
+        Assert.IsEmpty(cut.FindAll(".scene-semantics"));
         Assert.HasCount(1, cut.FindAll(".capture-image img"));
         Assert.HasCount(1, cut.FindAll("#current-sky-view-large"));
         await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
@@ -177,7 +182,15 @@ public sealed class CurrentSkyPageTests
         await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
         CollectionAssert.AreEqual(new[] { identity }, submitted?.ToArray());
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "new immutable artifact", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Find(".sky-layer-result a").GetAttribute("href"), "/content", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "JPEG download started", StringComparison.Ordinal);
+        var savedUrl = cut.Find(".sky-layer-result a").GetAttribute("href");
+        StringAssert.EndsWith(savedUrl, "/preview?download=1", StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find(".sky-layer-result a").HasAttribute("download"));
+        StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "2048 pixels", StringComparison.Ordinal);
+        var originalLink = cut.FindAll(".sky-layer-result a")[1];
+        StringAssert.EndsWith(originalLink.GetAttribute("href"), "/content", StringComparison.Ordinal);
+        StringAssert.Contains(originalLink.TextContent, "full-resolution", StringComparison.Ordinal);
+        Assert.AreEqual(savedUrl, module.Invocations["downloadUrl"].Single().Arguments[0]);
     }
 
     [TestMethod]

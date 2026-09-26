@@ -25,6 +25,10 @@
                 <p>The latest durable presentation from this CameraAgent, with its source capture and processing state kept explicit.</p>
             }
         </div>
+        @if (IsArchived && ArchiveNavigation is not null)
+        {
+            @ArchiveNavigation
+        }
         <div class="site-heading-actions">
             @if (IsArchived)
             {
@@ -71,10 +75,14 @@
     </section>
 
     <section class="sky-workspace current-sky-hero" aria-label="Current image workspace" @ref="_layerRoot">
+        <div class="sky-primary">
         <article class="sky-viewer-card current-sky-visual">
             <header class="card-heading image-heading">
                 <div>
-                    <p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence} / sequence {reference.CaptureSequence}" : "Latest durable capture")</p>
+                    @if (!IsArchived)
+                    {
+                        <p class="eyebrow">@(FactCapture is { } reference ? $"Capture #{reference.CaptureSequence} / sequence {reference.CaptureSequence}" : "Latest durable capture")</p>
+                    }
                     <h2>@ImageHeading</h2>
                     <p>@ImageSubtitle</p>
                 </div>
@@ -103,7 +111,6 @@
                                 <div class="sky-layer-overlay scene-overlay" aria-hidden="true">@LayerSvg</div>
                             </div>
                         </div>
-                        <div class="scene-semantics" aria-hidden="true"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
                     }
                     else
                     {
@@ -120,10 +127,14 @@
                         <span class="status-icon @CaptureOutcomeIconClass" aria-hidden="true"></span>
                         <span><strong>@CaptureOutcomeTitle</strong><small>@CaptureOutcomeSubtitle</small></span>
                     </div>
+                    @if (ShowLayeredHero)
+                    {
+                        <div class="scene-semantics" aria-label="Layer evidence types"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
+                    }
                     <div class="figure-actions">
                         @if (FactCapture is not null)
                         {
-                            <a class="inline-action" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">@(IsArchived ? "Technical evidence and downloads" : "Open capture details")</a>
+                            <a class="inline-action" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">@(IsArchived ? "Evidence and downloads" : "Open capture details")</a>
                         }
                         @if (_presentation?.DisplayCapture is not null && DisplaySlot is not null)
                         {
@@ -201,6 +212,12 @@
                 <p class="sky-layer-unavailable" role="status">@layerMessage</p>
             }
         </article>
+        @if (IsArchived)
+        {
+            @OperationsStrip
+            @Evidence
+        }
+        </div>
 
         <aside class="sky-inspector current-sky-inspector">
             <section class="inspector-card overlay-controls scene-panel @(ShowLayeredHero ? "" : "evidence-unavailable")" aria-labelledby="overlays-heading">
@@ -233,9 +250,9 @@
                 {
                     <div class="overlay-actions">
                         <button class="text-button restore-layers" type="button" disabled="@(!ShowLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
-                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Creates one immutable flattened derivative without rerunning analysis." @onclick="SaveSelectedStackAsync">@(_saving ? "Saving stack..." : "Save selected stack")</button></div>
+                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Saves the base image with selected overlays as an immutable artifact, then downloads a display JPEG (at most 2048 pixels per side). Analysis is not rerun." @onclick="SaveSelectedStackAsync">@(_saving ? "Preparing image..." : "Download selected stack (display JPEG)")</button></div>
                     </div>
-                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl">Open saved artifact</a></p> }
+                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl" download>Download JPEG again</a> <a href="@SavedOriginalUrl" download>Download original full-resolution stack</a></p> }
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }
@@ -271,11 +288,11 @@
                         <div><dt>Observing night</dt><dd>@ObservingNightLabel</dd></div>
                         <div><dt>Cloud</dt><dd>@(_facts is { } cloudFacts ? FormatCloud(cloudFacts.Cloud) : "Unavailable")</dd></div>
                     </dl>
-                    <p class="summary-copy">@SummaryMessage</p>
+                    @if (!IsArchived) { <p class="summary-copy">@SummaryMessage</p> }
                     @if (_facts?.CombinedLineageUnavailable == true) { <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p> }
                     @if (_factsUnavailableReason is not null) { <p class="facts-unavailable" role="status">@_factsUnavailableReason</p> }
                     @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p> }
-                    <a class="inline-action layers-link" href="@DetailUrl" @onclick="OpenTechnicalEvidenceAsync" @onclick:preventDefault="IsArchived">View immutable raw source</a>
+                    @if (!IsArchived) { <a class="inline-action layers-link" href="@DetailUrl">View immutable raw source</a> }
                 }
                 else
                 {
@@ -296,12 +313,10 @@
         </aside>
     </section>
 
-    <section class="operations-strip" aria-label="@(IsArchived ? "Historical capture evidence" : "Current CameraAgent operations")">
-        <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@(IsArchived ? ArchivedView!.Capture.RawState : SystemLabel)</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"{(IsArchived ? "Selected" : "Latest")} capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
-        <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
-        <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Not reported here</strong><span>Events lists retained candidates</span></div></article>
-        <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Not reported here</strong><span>LogicHost state is not surfaced on this page</span></div></article>
-    </section>
+    @if (!IsArchived)
+    {
+        @OperationsStrip
+    }
 
     @if (UnavailableStageCount > 0 && _presentation?.DisplayCapture is not null)
     {
@@ -320,6 +335,16 @@
 </div>
 
 @code {
+    private RenderFragment OperationsStrip => __builder =>
+    {
+        <section class="operations-strip" aria-label="@(IsArchived ? "Historical capture evidence" : "Current CameraAgent operations")">
+            <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@(IsArchived ? ArchivedView!.Capture.RawState : SystemLabel)</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"{(IsArchived ? "Selected" : "Latest")} capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
+            <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
+            <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Not reported here</strong><span>Events lists retained candidates</span></div></article>
+            <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Not reported here</strong><span>LogicHost state is not surfaced on this page</span></div></article>
+        </section>
+    };
+
     private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
     {
         <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive)" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind)</small></span></label>

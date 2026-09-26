@@ -1061,17 +1061,24 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         };
     }
 
-    private static string CreateFileName(Guid artifactId, string mediaType)
+    // Internal formats keep .bin but name their encoding so a download is self-describing.
+    private static readonly Dictionary<string, string> FileNameSuffixes = new(StringComparer.OrdinalIgnoreCase)
     {
-        var extension = string.Equals(mediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)
-            ? ".jpg"
-            : string.Equals(mediaType, "image/png", StringComparison.OrdinalIgnoreCase)
-                ? ".png"
-                : string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
-                    ? ".json"
-                    : ".bin";
-        return string.Concat(artifactId.ToString("D"), extension);
-    }
+        ["image/jpeg"] = ".jpg",
+        ["image/png"] = ".png",
+        ["application/json"] = ".json",
+        ["application/x-skymonitor-mono8"] = "-raw-mono8.bin",
+        ["application/x-skymonitor-mono16"] = "-raw-mono16.bin",
+        ["application/x-skymonitor-rgb24"] = "-raw-rgb24.bin",
+        ["application/x-skymonitor-bayer-rggb16"] = "-raw-bayer-rggb16.bin",
+        ["application/x-hvo-linear-frame"] = "-linear-frame.bin",
+        ["application/x-hvo-packed-image"] = "-packed-image.bin"
+    };
+
+    // Structured metadata uses vendor JSON types such as application/vnd.hvo.overlay-manifest+json.
+    private static string CreateFileName(Guid artifactId, string mediaType) =>
+        string.Concat(artifactId.ToString("D"), FileNameSuffixes.GetValueOrDefault(mediaType,
+            mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase) ? ".json" : ".bin"));
 
     private bool TryGetCachedLocked(PreviewCacheKey key, out CameraAgentArtifactPreviewResult result)
     {

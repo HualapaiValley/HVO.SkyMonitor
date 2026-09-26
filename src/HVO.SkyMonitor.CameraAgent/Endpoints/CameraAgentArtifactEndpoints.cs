@@ -184,7 +184,10 @@ internal static class CameraAgentArtifactEndpoints
             context.Response.StatusCode = StatusCodes.Status200OK;
             context.Response.ContentType = "image/jpeg";
             context.Response.ContentLength = preview.Content.Length;
-            context.Response.Headers.ContentDisposition = $"inline; filename=\"{artifactId:D}.jpg\"";
+            // ?download=1 serves the same display JPEG as an attachment for the evidence download menu.
+            var disposition = context.Request.Query.TryGetValue("download", out var download) &&
+                download is ["1"] ? "attachment" : "inline";
+            context.Response.Headers.ContentDisposition = $"{disposition}; filename=\"{artifactId:D}-display.jpg\"";
             if (HttpMethods.IsGet(context.Request.Method))
             {
                 await context.Response.Body.WriteAsync(preview.Content, cancellationToken).ConfigureAwait(false);

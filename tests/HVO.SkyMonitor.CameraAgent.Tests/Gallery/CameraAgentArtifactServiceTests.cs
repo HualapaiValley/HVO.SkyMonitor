@@ -34,6 +34,10 @@ public sealed partial class CameraAgentArtifactServiceTests
             CollectionAssert.AreEqual(raw.Payload, await ReadAllAsync(rawContent).ConfigureAwait(false));
             Assert.AreEqual(raw.ChecksumSha256, rawContent.ChecksumSha256);
             Assert.AreEqual(FrameArtifactRole.Raw, rawContent.Role);
+            // Downloads name their encoding instead of a bare .bin (#1014).
+            StringAssert.StartsWith(rawContent.FileName, raw.ArtifactId.ToString("D"), StringComparison.Ordinal);
+            Assert.IsFalse(rawContent.FileName.EndsWith($"{raw.ArtifactId:D}.bin", StringComparison.Ordinal),
+                $"Raw download name must describe its encoding: {rawContent.FileName} ({rawContent.MediaType})");
         }
         var previewResult = await fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewResult.Status);

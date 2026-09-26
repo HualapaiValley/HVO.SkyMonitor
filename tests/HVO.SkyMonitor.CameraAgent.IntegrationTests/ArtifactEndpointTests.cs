@@ -193,6 +193,13 @@ public sealed class ArtifactEndpointTests
         Assert.AreEqual(HttpStatusCode.OK, previewHead.StatusCode);
         Assert.AreEqual(service.Preview.LongLength, previewHead.Content.Headers.ContentLength);
         Assert.IsEmpty(await previewHead.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        Assert.AreEqual("inline", preview.Content.Headers.ContentDisposition?.DispositionType);
+
+        using var previewDownload = await client.GetAsync(new Uri(
+            $"/api/v1/operations/artifacts/{service.ArtifactId:D}/preview?download=1", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, previewDownload.StatusCode);
+        Assert.AreEqual("attachment", previewDownload.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.AreEqual($"{service.ArtifactId:D}-display.jpg", previewDownload.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
 
         using var missing = await client.GetAsync(new Uri(
             $"/api/v1/operations/artifacts/{StubArtifactService.MissingId:D}/content", UriKind.Relative)).ConfigureAwait(false);

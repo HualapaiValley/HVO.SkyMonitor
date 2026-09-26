@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -18,11 +19,12 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private string? _errorMessage;
     private long _generation;
     private bool _isLoading;
-    private string? _comparisonLeftArtifactId;
-    private string? _comparisonRightArtifactId;
+    private EvidenceTab _evidenceTab;
+    private Guid? _openDownloadMenu;
+    private readonly Dictionary<Guid, ElementReference> _downloadMenuButtons = [];
     private Guid? _previousCaptureId;
     private Guid? _nextCaptureId;
-    private CameraAgentPresentationStage? _selectedStage;
+    private readonly Dictionary<EvidenceTab, ElementReference> _evidenceTabButtons = [];
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -66,7 +68,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         _capture = null;
         _previousCaptureId = null;
         _nextCaptureId = null;
-        _selectedStage = null;
+        _evidenceTab = EvidenceTab.Overview;
+        _openDownloadMenu = null;
+        _downloadMenuButtons.Clear();
         var captureId = CaptureId;
         try
         {
@@ -86,8 +90,6 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                 _view = result.Value;
                 _capture = result.Value.Capture;
                 _capturePresentation = result.Value.Presentation;
-                _selectedStage = result.Value.Presentation.SelectedStage;
-                InitializeComparison();
                 await LoadCaptureNavigationAsync(captureId, generation, cancellation.Token);
             }
             else
@@ -110,9 +112,6 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private static string ContentUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content");
 
-    private CameraAgentPresentationSlot? SelectedSlot => _capturePresentation?.Stages
-        .SingleOrDefault(slot => slot.Stage == _selectedStage &&
-            slot.Availability == CameraAgentPresentationSlotAvailability.Available);
 
 
     private string CaptureUrl(Guid captureId) => QueryHelpers.AddQueryString(
@@ -252,73 +251,123 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         return true;
     }
 
-    private IReadOnlyList<CameraAgentGalleryArtifact> ComparisonArtifacts =>
-        _capturePresentation?.Stages
-            .Where(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.ArtifactId is not null)
-            .Select(slot => _capture?.Artifacts.SingleOrDefault(artifact => artifact.ArtifactId == slot.ArtifactId))
-            .OfType<CameraAgentGalleryArtifact>()
-            .ToArray() ?? [];
-
     private bool IsProjectedArtifact(Guid artifactId) => _capturePresentation?.Stages.Any(slot =>
         slot.ArtifactId == artifactId && slot.Availability == CameraAgentPresentationSlotAvailability.Available) == true;
 
-    private CameraAgentGalleryArtifact? ComparisonLeft => FindComparisonArtifact(_comparisonLeftArtifactId);
+    private static readonly EvidenceTab[] EvidenceTabs = Enum.GetValues<EvidenceTab>();
 
-    private CameraAgentGalleryArtifact? ComparisonRight => FindComparisonArtifact(_comparisonRightArtifactId);
-
-    private void InitializeComparison()
+    private static string EvidenceTabLabel(EvidenceTab tab) => tab switch
     {
-        var candidates = ComparisonArtifacts;
-        if (candidates.Count < 2)
-        {
-            _comparisonLeftArtifactId = null;
-            _comparisonRightArtifactId = null;
-            return;
-        }
-        var preferredArtifactId = SelectedSlot?.ArtifactId;
-        var preferred = candidates.FirstOrDefault(artifact => artifact.ArtifactId == preferredArtifactId) ?? candidates[^1];
-        _comparisonRightArtifactId = preferred.ArtifactId.ToString("D");
-        _comparisonLeftArtifactId = candidates.First(artifact => artifact.ArtifactId != preferred.ArtifactId)
-            .ArtifactId.ToString("D");
-    }
+        EvidenceTab.Technical => "Technical",
+        _ => tab.ToString()
+    };
 
-    private CameraAgentGalleryArtifact? FindComparisonArtifact(string? value)
-        => Guid.TryParse(value, out var artifactId)
-            ? ComparisonArtifacts.SingleOrDefault(artifact => artifact.ArtifactId == artifactId)
-            : null;
-
-    private void SelectComparisonLeft(ChangeEventArgs args) => SelectComparison(args.Value?.ToString(), left: true);
-
-    private void SelectComparisonRight(ChangeEventArgs args) => SelectComparison(args.Value?.ToString(), left: false);
-
-    private void SelectComparison(string? value, bool left)
+    // WAI-ARIA tabs pattern: arrow keys, Home and End select and focus a sibling tab.
+    private async Task MoveEvidenceTabAsync(KeyboardEventArgs args, EvidenceTab current)
     {
-        var selected = FindComparisonArtifact(value);
-        if (selected is null || string.Equals(
-                value,
-                left ? _comparisonRightArtifactId : _comparisonLeftArtifactId,
-                StringComparison.Ordinal))
+        var index = Array.IndexOf(EvidenceTabs, current);
+        EvidenceTab? next = args.Key switch
         {
-            return;
-        }
-        if (left)
+            "ArrowRight" => EvidenceTabs[(index + 1) % EvidenceTabs.Length],
+            "ArrowLeft" => EvidenceTabs[(index + EvidenceTabs.Length - 1) % EvidenceTabs.Length],
+            "Home" => EvidenceTabs[0],
+            "End" => EvidenceTabs[^1],
+            _ => null
+        };
+        if (next is not { } selected) return;
+        SelectEvidenceTab(selected);
+        if (_evidenceTabButtons.TryGetValue(selected, out var button))
         {
-            _comparisonLeftArtifactId = value;
-        }
-        else
-        {
-            _comparisonRightArtifactId = value;
+            try { await button.FocusAsync(); }
+            catch (Exception exception) when (exception is Microsoft.JSInterop.JSException or InvalidOperationException) { }
         }
     }
 
-    private CameraAgentGalleryProcessingNodeDetail? FindArtifactNode(CameraAgentGalleryArtifact artifact)
-        => artifact.ProcessingNodeId is null ? null : FindNodeDetail(artifact.ProcessingNodeId);
+    private int CompletedNodeCount => _capture?.ProcessingNodes.Count(static node =>
+        string.Equals(node.Status, "Completed", StringComparison.OrdinalIgnoreCase)) ?? 0;
 
-    private CameraAgentGalleryProcessingNode? FindArtifactNodeSummary(CameraAgentGalleryArtifact artifact)
-        => artifact.ProcessingNodeId is null
-            ? null
-            : _capture?.ProcessingNodes.SingleOrDefault(node => string.Equals(
-                node.NodeId, artifact.ProcessingNodeId, StringComparison.Ordinal));
+    private string CloudSummary => _capture?.Detail?.CloudAssessment is not { } cloud
+        ? "Unavailable"
+        : cloud.CoverageMillionths is null
+            ? OperationsPage.SplitWords(cloud.Status ?? cloud.Availability)
+            : $"{FormatPercent(cloud.CoverageMillionths)} coverage ({cloud.Quality ?? "quality unavailable"})";
+
+    private static string ArtifactLabel(FrameArtifactRole role) => role switch
+    {
+        FrameArtifactRole.Raw => "Raw frame",
+        FrameArtifactRole.Calibrated => "Calibrated frame",
+        FrameArtifactRole.Combined => "Live mean",
+        FrameArtifactRole.Preview => "Processed preview",
+        FrameArtifactRole.AnnotatedPreview => "Annotated preview",
+        FrameArtifactRole.Metadata => "Capture metadata",
+        _ => OperationsPage.SplitWords(role.ToString())
+    };
+
+    private void SelectEvidenceTab(EvidenceTab tab)
+    {
+        _evidenceTab = tab;
+        _openDownloadMenu = null;
+    }
+
+    private void ToggleDownloadMenu(Guid artifactId) =>
+        _openDownloadMenu = _openDownloadMenu == artifactId ? null : artifactId;
+
+    // Choosing a format closes the menu; the browser still follows the download link.
+    private void CloseDownloadMenu() => _openDownloadMenu = null;
+
+    private async Task CloseDownloadMenuOnEscapeAsync(KeyboardEventArgs args, Guid artifactId)
+    {
+        if (args.Key != "Escape" || _openDownloadMenu != artifactId) return;
+        _openDownloadMenu = null;
+        if (_downloadMenuButtons.TryGetValue(artifactId, out var button))
+        {
+            try { await button.FocusAsync(); }
+            catch (Exception exception) when (exception is Microsoft.JSInterop.JSException or InvalidOperationException) { }
+        }
+    }
+
+    // Formats are declared here so new exports only add an entry; unsupported ones stay visible but disabled.
+    private IEnumerable<DownloadOption> DownloadOptions(CameraAgentGalleryArtifact artifact)
+    {
+        if (artifact.Role is FrameArtifactRole.Metadata)
+        {
+            // Metadata and overlay layers are structured JSON; image formats do not apply.
+            yield return new("original", "JSON file", OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+            yield break;
+        }
+        var jpeg = string.Equals(artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
+        if (!jpeg)
+        {
+            yield return IsProjectedArtifact(artifact.ArtifactId)
+                ? new("jpeg", "JPEG image", "8-bit, adjusted for display",
+                    FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview?download=1"))
+                : new("jpeg", "JPEG image", "Not available for this artifact", null);
+            yield return new("fits", "FITS", "Not yet available", null);
+        }
+        yield return new("original", jpeg ? "JPEG image (original)" : "Original file",
+            OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+    }
+
+    private static string OriginalDescription(string? mediaType) => mediaType?.ToUpperInvariant() switch
+    {
+        "APPLICATION/VND.HVO.PRESENTATION-LAYER-PAYLOAD+JSON" => "Overlay layer geometry (.json)",
+        "APPLICATION/VND.HVO.OVERLAY-MANIFEST+JSON" => "Overlay layer manifest (.json)",
+        "APPLICATION/VND.HVO.PROJECTED-SCENE+JSON" => "Projected sky scene (.json)",
+        "APPLICATION/VND.HVO.PRESENTATION-METADATA-FACTS+JSON" => "Capture facts for overlays (.json)",
+        { } json when json.EndsWith("+JSON", StringComparison.Ordinal) || json == "APPLICATION/JSON" => "Structured metadata (.json)",
+        "IMAGE/JPEG" => "Retained bytes, as produced",
+        "APPLICATION/X-SKYMONITOR-MONO8" => "Exact retained bytes, raw 8-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-MONO16" => "Exact retained bytes, raw 16-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-RGB24" => "Exact retained bytes, raw 24-bit RGB (.bin)",
+        "APPLICATION/X-SKYMONITOR-BAYER-RGGB16" => "Exact retained bytes, raw 16-bit Bayer RGGB (.bin)",
+        "APPLICATION/X-HVO-LINEAR-FRAME" => "Exact retained bytes, SkyMonitor linear frame (.bin)",
+        "APPLICATION/X-HVO-PACKED-IMAGE" => "Exact retained bytes, SkyMonitor packed image (.bin)",
+        _ => "Exact retained bytes"
+    };
+
+    private sealed record DownloadOption(string Format, string Label, string Description, string? Url);
+
+    private enum EvidenceTab { Overview, Artifacts, Processing, Technical, Replay }
 
     private CameraAgentGalleryArtifactState? FindArtifactState(Guid artifactId) =>
         _capture?.Detail?.ArtifactStates.SingleOrDefault(state => state.ArtifactId == artifactId);
@@ -356,36 +405,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             ? "Unavailable for legacy processing record"
             : "Unavailable: execution profile not verified");
 
-    private static string FormatArtifactDuration(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? "Not applicable (acquisition)"
-            : detail is null
-                ? "Unavailable"
-                : FormatNodeDuration(detail);
-
-    private static string FormatComparisonOutcome(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? "Not applicable (acquisition)"
-            : detail?.Outcome is null
-                ? "Unavailable"
-                : OperationsPage.SplitWords(detail.Outcome);
-
     private static string InputEvidence(CameraAgentGalleryProcessingNodeInput input)
         => FormattableString.Invariant(
             $"#{input.Ordinal} {input.Kind}; name={input.Name ?? "Unavailable"}; artifact={input.ArtifactId?.ToString() ?? "Unavailable"}; role={input.Role?.ToString() ?? "Unavailable"}; variant={input.Variant ?? "Unavailable"}; recipe={input.RecipeIdentitySha256 ?? "Unavailable"}; schema={input.SchemaVersion ?? "Unavailable"}; identity={input.IdentitySha256 ?? "Unavailable"}; selected={(input.Selected ? "yes" : "no")}");
-
-    private string FormatArtifactProfile(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? _capture?.Detail?.ProcessingProfile?.Sha256 ?? "Unavailable"
-            : detail is null
-                ? "Unavailable"
-                : FormatNodeProfile(detail);
 
     private static string FormatPercent(int? millionths) => millionths is null
         ? "Unavailable"

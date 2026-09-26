@@ -55,6 +55,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string? _saveMessage;
     private string? _saveError;
     private string? _savedArtifactUrl;
+    private string? _savedOriginalUrl;
     private HashSet<string> _selectedLayers = new(StringComparer.Ordinal);
     private bool _layerInteractive;
     private bool _layerImageFailed;
@@ -82,6 +83,10 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter] public CameraAgentCaptureDetailView? ArchivedView { get; set; }
+    [Parameter] public RenderFragment? ArchiveNavigation { get; set; }
+
+    /// <summary>Archived-capture evidence rendered in the image column, beside the inspector.</summary>
+    [Parameter] public RenderFragment? Evidence { get; set; }
 
     private bool IsArchived => ArchivedView is not null;
     private CameraAgentCaptureDetailView? _appliedArchive;
@@ -332,6 +337,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _saveMessage = null;
         _saveError = null;
         _savedArtifactUrl = null;
+        _savedOriginalUrl = null;
         _selectedLayers = new(StringComparer.Ordinal);
         _layerInteractive = false;
         _layerImageFailed = false;
@@ -473,6 +479,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     };
 
     private string? SavedArtifactUrl => _savedArtifactUrl;
+    private string? SavedOriginalUrl => _savedOriginalUrl;
 
     private void LayerImageFailed(string message)
     {
@@ -693,6 +700,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _saveError = null;
         _saveMessage = null;
         _savedArtifactUrl = null;
+        _savedOriginalUrl = null;
         try
         {
             var selected = _layers.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
@@ -707,8 +715,13 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             }
             else if (result.IsSuccess && result.Value is { } receipt)
             {
-                _saveMessage = receipt.Replayed ? "This exact flattened stack was already saved." : "Flattened stack saved as a new immutable artifact.";
-                _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/content";
+                // The saved stack is full-resolution packed pixels; preview JPEG may be scaled to 2048px.
+                _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/preview?download=1";
+                _savedOriginalUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/content";
+                var downloaded = await TryStartDownloadAsync(_savedArtifactUrl);
+                if (!IsCurrentLayer(generation, captureId, cancellation)) return;
+                _saveMessage = (receipt.Replayed ? "This exact stack was already saved" : "Stack saved as a new immutable artifact") +
+                    (downloaded ? "; display JPEG download started (up to 2048 pixels per side)." : ".");
             }
             else
                 _saveError = result.Message ?? "The presentation stack could not be saved.";
@@ -729,6 +742,27 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         finally
         {
             if (IsCurrentLayer(generation, captureId, cancellation)) _saving = false;
+        }
+    }
+
+    private async Task<bool> TryStartDownloadAsync(string url)
+    {
+        try
+        {
+            var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
+            if (Volatile.Read(ref _disposeStarted) != 0)
+            {
+                if (!ReferenceEquals(module, _layerModule)) await module.DisposeAsync();
+                return false;
+            }
+            _layerModule = module;
+            await module.InvokeVoidAsync("downloadUrl", url);
+            return true;
+        }
+        catch (Exception exception) when (exception is JSException or OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+        {
+            // The manual link below remains available.
+            return false;
         }
     }
 
@@ -852,7 +886,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         catch (Exception exception) when (exception is JSException or OperationCanceledException or ObjectDisposedException)
         {
             if (Volatile.Read(ref _disposeStarted) != 0) return;
-            _technicalEvidenceError = "Could not open evidence automatically. Exit fullscreen with Escape if needed, then open Technical evidence and downloads below the image.";
+            _technicalEvidenceError = "Could not open evidence automatically. Exit fullscreen with Escape if needed, then use Evidence and downloads below the image.";
         }
     }
 
