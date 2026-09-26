@@ -193,21 +193,89 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(facts, "1% of 10h 00m", StringComparison.Ordinal);
             StringAssert.Contains(facts, "under 90 % of the scheduled window", StringComparison.Ordinal);
             StringAssert.Contains(facts, "overrides and manual pause are not reflected", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-22 03:10:00 UTC", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-hero__caption").TextContent, "Newest capture with a published preview, 2026-07-21 20:10:00 (America/Phoenix)", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Retained captures3", StringComparison.Ordinal);
-            StringAssert.Contains(facts, "Current cloudNot assessed", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "Cloud qualityNot assessed for this day", StringComparison.Ordinal);
             StringAssert.Contains(facts, "Total integration1m 00s", StringComparison.Ordinal);
             Assert.HasCount(1, cut.FindAll(".timeline-bar--schedule"));
             // Three captures five minutes apart with one-minute bins do not merge.
             Assert.HasCount(3, cut.FindAll(".timeline-bar--captures"));
             Assert.HasCount(1, cut.FindAll(".timeline-marker"));
+            Assert.AreEqual("Candidate recorded 21:00", cut.Find(".timeline-marker").GetAttribute("title"));
+            Assert.HasCount(7, cut.FindAll(".timeline-hours span"));
+            StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "21 Jul", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "22 Jul", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".timeline-key").TextContent, "Cloud/usable intervals: unavailable", StringComparison.Ordinal);
             var slots = cut.FindAll(".product-slot");
             Assert.HasCount(3, slots);
             Assert.IsTrue(slots.All(slot => slot.TextContent.Contains("Not yet produced", StringComparison.Ordinal)));
             StringAssert.Contains(cut.Find(".day-events").TextContent, "Extracted", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-events").TextContent, "not confirmed meteors", StringComparison.Ordinal);
             Assert.AreEqual("/archive/day/2026-07-20", cut.FindAll(".day-title__step")[0].GetAttribute("href"));
             Assert.AreEqual("/archive/day/2026-07-22", cut.FindAll(".day-title__step")[1].GetAttribute("href"));
             Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", cut.Find(".day-actions a").GetAttribute("href"));
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_InProgressDoesNotClaimCompleteOrPartialCoverage()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2030, 7, 21));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc.AddHours(9)));
+        var exposure = day.StartUtc.AddHours(8);
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 1, 0, exposure, exposure), [exposure], TimeSpan.FromSeconds(20),
+                new CameraAgentObservingDayScheduleView([(day.StartUtc, day.EndUtc)], day.Duration, TimeSpan.FromMinutes(1), false),
+                [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2030-07-21"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("In progress", cut.Find(".day-facts__state .hvo-chip").TextContent);
+            StringAssert.Contains(cut.Find(".day-facts__state").TextContent, "This observing day has not ended", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".day-facts").TextContent, "0% of 24h 00m", StringComparison.Ordinal);
+        });
+
+        using var futureContext = new BunitContext();
+        Configure(futureContext);
+        futureContext.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc.AddTicks(-1)));
+        futureContext.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 1, 0, exposure, exposure), [exposure], TimeSpan.FromSeconds(20),
+                null, [], false, [], null, null, null)))
+        });
+        var upcoming = futureContext.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2030-07-21"));
+        upcoming.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Upcoming day", upcoming.Find(".day-facts__state .hvo-chip").TextContent);
+            StringAssert.Contains(upcoming.Find(".day-facts__state").TextContent, "may reflect clock skew", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_CurrentDayWithoutCapturesIsInProgress()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2030, 7, 21));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2030-07-21"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("In progress", cut.Find(".day-facts__state .hvo-chip").TextContent);
+            StringAssert.Contains(cut.Find(".day-facts__state").TextContent, "no captures have been retained yet", StringComparison.Ordinal);
         });
     }
 
@@ -217,6 +285,7 @@ public sealed class ArchivePagesTests
         using var context = new BunitContext();
         Configure(context);
         var day = Phoenix.Resolve(new DateOnly(2026, 7, 22));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.EndUtc));
         context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
         {
             Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
