@@ -24,18 +24,19 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private long? _draftMinimumSequence;
     private long? _draftMaximumSequence;
     private int _draftPageSize = 24;
+    private string _draftSearch = string.Empty;
+    private string _draftOutcome = "all";
+    private string _draftProduct = "all";
+    private bool _compact;
     private long _generation;
     private bool _isLoading;
-    private bool _viewerOpen;
-    private Uri? _viewerSource;
-    private string _viewerTitle = "Archived sky capture";
-    private string _viewerAlt = "Archived sky capture";
-    private string? _viewerTriggerId;
+    private IReadOnlyList<CameraAgentGalleryCapture>? _visibleCache;
+    private CameraAgentGalleryPage? _visibleCachePage;
+    private string? _visibleCacheSearch;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentCapturePresentationProjector CapturePresentation { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
-    [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
     [Parameter, SupplyParameterFromQuery(Name = "from")] public string? From { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
@@ -48,6 +49,10 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     [Parameter, SupplyParameterFromQuery(Name = "maxSequence")] public long? MaximumSequence { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "pageSize")] public int? PageSize { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "cursor")] public string? Cursor { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "q")] public string? Search { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "outcome")] public string? Outcome { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "product")] public string? Product { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "view")] public string? View { get; set; }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -55,12 +60,51 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         await LoadAsync();
     }
 
+    // Search filters only the loaded bounded page; it never implies a server-side text query exists.
+    internal IReadOnlyList<CameraAgentGalleryCapture> VisibleItems
+    {
+        get
+        {
+            if (_page is null)
+            {
+                return [];
+            }
+            if (_visibleCache is not null && ReferenceEquals(_visibleCachePage, _page) &&
+                string.Equals(_visibleCacheSearch, _draftSearch, StringComparison.Ordinal))
+            {
+                return _visibleCache;
+            }
+            _visibleCachePage = _page;
+            _visibleCacheSearch = _draftSearch;
+            _visibleCache = FilterPage();
+            return _visibleCache;
+        }
+    }
+
+    private IReadOnlyList<CameraAgentGalleryCapture> FilterPage()
+    {
+        if (_page is null)
+        {
+            return [];
+        }
+        var query = _draftSearch.Trim();
+        if (query.Length == 0)
+        {
+            return _page.Items;
+        }
+        return _page.Items.Where(capture =>
+            FormattableString.Invariant($"#{capture.CaptureSequence}").Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            ArchiveCardFacts.ProductLabel(capture, CardPresentation(capture)).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            capture.RawState.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
+    }
+
+    private bool SearchIsActive => _draftSearch.Trim().Length > 0;
+
+    private int ArtifactCount => VisibleItems.Sum(static capture => capture.Artifacts.Count);
+
     private async Task LoadAsync()
     {
         var generation = Interlocked.Increment(ref _generation);
-        _viewerOpen = false;
-        _viewerSource = null;
-        _viewerTriggerId = null;
         var cancellation = new CancellationTokenSource();
         var prior = Interlocked.Exchange(ref _loadCancellation, cancellation);
         if (prior is not null)
@@ -118,12 +162,18 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     {
         query = null;
         validationMessage = null;
+        var effectiveRole = MapProductRole(Product) ?? (TryEnum(Role, out FrameArtifactRole? role) ? role : null);
+        var effectiveStatus = !string.IsNullOrWhiteSpace(Outcome) && !string.Equals(Outcome, "all", StringComparison.OrdinalIgnoreCase)
+            ? Outcome
+            : Status;
         if (!TryDate(From, out var from) || !TryDate(To, out var to) ||
             !TryEnum(Origin, out GalleryEvidenceOrigin? origin) ||
-            !TryEnum(Role, out FrameArtifactRole? role) ||
+            !TryEnum(Role, out FrameArtifactRole? _) ||
             MinimumSequence is < 1 || MaximumSequence is < 1 ||
             MinimumSequence > MaximumSequence ||
-            PageSize is < 1 or > 100)
+            PageSize is < 1 or > 100 ||
+            !IsSupportedOutcome(Outcome) ||
+            !IsSupportedProduct(Product))
         {
             validationMessage = "One or more gallery filters are invalid.";
             return false;
@@ -137,14 +187,38 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             MaximumSequence,
             RawState: RawState,
             EvidenceOrigin: origin,
-            ProcessingRole: role,
+            ProcessingRole: effectiveRole,
             Recipe: Recipe,
-            ProcessingStatus: Status);
+            ProcessingStatus: effectiveStatus);
         return true;
     }
 
+    private static FrameArtifactRole? MapProductRole(string? product) => product switch
+    {
+        "Combined" => FrameArtifactRole.Combined,
+        "Calibrated" => FrameArtifactRole.Calibrated,
+        "Raw" => FrameArtifactRole.Raw,
+        _ => null
+    };
+
+    private static bool IsSupportedProduct(string? product) =>
+        string.IsNullOrWhiteSpace(product) || product is "all" or "Combined" or "Calibrated" or "Raw";
+
+    private static bool IsSupportedOutcome(string? outcome) =>
+        string.IsNullOrWhiteSpace(outcome) || outcome is "all" or "Completed" or "Skipped" or "TerminalFailure" or "Running";
+
     private Task ApplyFiltersAsync()
     {
+        // The primary product/outcome selects and the advanced role/status selects address the same query fields.
+        // Clear the advanced value when the primary one is set so no visible control is silently ignored.
+        if (_draftProduct != "all")
+        {
+            _draftRole = null;
+        }
+        if (_draftOutcome != "all")
+        {
+            _draftStatus = null;
+        }
         var values = new Dictionary<string, object?>
         {
             ["from"] = EmptyToNull(_draftFrom),
@@ -157,6 +231,10 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             ["minSequence"] = _draftMinimumSequence,
             ["maxSequence"] = _draftMaximumSequence,
             ["pageSize"] = _draftPageSize == 24 ? null : _draftPageSize,
+            ["q"] = EmptyToNull(_draftSearch),
+            ["outcome"] = _draftOutcome == "all" ? null : _draftOutcome,
+            ["product"] = _draftProduct == "all" ? null : _draftProduct,
+            ["view"] = _compact ? "compact" : null,
             ["cursor"] = null
         };
         NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters("/gallery", values));
@@ -164,6 +242,13 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     }
 
     private void ClearFilters() => NavigationManager.NavigateTo("/gallery");
+
+    private void SetCompact(bool compact)
+    {
+        _compact = compact;
+        var values = new Dictionary<string, object?> { ["view"] = compact ? "compact" : null };
+        NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters(NavigationManager.Uri, values));
+    }
 
     private void ShowNewest() => NavigateToCursor(null);
 
@@ -190,15 +275,17 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         _draftMinimumSequence = MinimumSequence;
         _draftMaximumSequence = MaximumSequence;
         _draftPageSize = PageSize is >= 1 and <= 100 ? PageSize.Value : 24;
+        _draftSearch = Search ?? string.Empty;
+        _draftOutcome = IsSupportedOutcome(Outcome) && !string.IsNullOrWhiteSpace(Outcome) ? Outcome! : "all";
+        _draftProduct = IsSupportedProduct(Product) && !string.IsNullOrWhiteSpace(Product) ? Product! : "all";
+        _compact = string.Equals(View, "compact", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void SetDraftFrom(ChangeEventArgs args) => _draftFrom = Convert.ToString(
-        args.Value,
-        CultureInfo.InvariantCulture);
-
-    private void SetDraftTo(ChangeEventArgs args) => _draftTo = Convert.ToString(
-        args.Value,
-        CultureInfo.InvariantCulture);
+    private void SetDraftFrom(ChangeEventArgs args) => _draftFrom = Convert.ToString(args.Value, CultureInfo.InvariantCulture);
+    private void SetDraftTo(ChangeEventArgs args) => _draftTo = Convert.ToString(args.Value, CultureInfo.InvariantCulture);
+    private void SetDraftSearch(ChangeEventArgs args) => _draftSearch = Convert.ToString(args.Value, CultureInfo.InvariantCulture) ?? string.Empty;
+    private void SetDraftOutcome(ChangeEventArgs args) => _draftOutcome = Convert.ToString(args.Value, CultureInfo.InvariantCulture) ?? "all";
+    private void SetDraftProduct(ChangeEventArgs args) => _draftProduct = Convert.ToString(args.Value, CultureInfo.InvariantCulture) ?? "all";
 
     private CameraAgentCapturePresentation CardPresentation(CameraAgentGalleryCapture capture) =>
         CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(CapturePresentation.Project(capture));
@@ -216,15 +303,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         MaximumSequence is not null ||
         PageSize is not null and not 24;
 
-    private void OpenViewer(ArchiveLargeImageRequest request)
-    {
-        _viewerSource = request.Source;
-        _viewerTitle = request.Title;
-        _viewerAlt = request.Alt;
-        _viewerTriggerId = request.TriggerId;
-        _viewerOpen = true;
-    }
-
     private Uri DetailUrl(Guid captureId)
     {
         var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
@@ -238,28 +316,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             FormattableString.Invariant($"/gallery/{captureId:D}"),
             "returnUrl",
             returnUrl), UriKind.Relative);
-    }
-
-    private string FormatAge(DateTimeOffset capturedUtc)
-    {
-        var age = TimeProvider.GetUtcNow() - capturedUtc;
-        if (age < TimeSpan.Zero)
-        {
-            age = TimeSpan.Zero;
-        }
-        if (age.TotalMinutes < 1)
-        {
-            return FormattableString.Invariant($"{Math.Max(0, (int)age.TotalSeconds)} sec old");
-        }
-        if (age.TotalHours < 1)
-        {
-            return FormattableString.Invariant($"{(int)age.TotalMinutes} min old");
-        }
-        if (age.TotalDays < 1)
-        {
-            return FormattableString.Invariant($"{(int)age.TotalHours} hr old");
-        }
-        return FormattableString.Invariant($"{(int)age.TotalDays} day{(age.TotalDays >= 2 ? "s" : string.Empty)} old");
     }
 
     internal static string FormatCaptureTime(DateTimeOffset value) =>

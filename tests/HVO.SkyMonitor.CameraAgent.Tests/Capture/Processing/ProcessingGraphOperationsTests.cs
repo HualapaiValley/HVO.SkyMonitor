@@ -1957,6 +1957,10 @@ public sealed class ProcessingGraphOperationsTests
             var staged = await operations.ReadExecutionDetailAsync(
                 lease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(staged);
+            Assert.AreEqual("$raw", staged.Nodes.Single().Dependencies.Single().ProducerId);
+            Assert.AreEqual(lease.Context.Execution.ExecutionId,
+                await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false));
+            Assert.IsNull(await operations.ReadLiveExecutionIdAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false));
             var artifactId = staged.Nodes.Single().Outputs.Single().ArtifactId;
 
             await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>

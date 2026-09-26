@@ -59,6 +59,7 @@ public sealed class OperatorRouteTests
     {
         using var context = new BunitContext();
         context.AddAuthorization().SetAuthorized("owner");
+        context.JSInterop.SetupModule("./Components/Layout/ResponsiveNavigation.razor.js").Mode = JSRuntimeMode.Loose;
 
         var cut = context.Render<MainLayoutNavigation>();
 
@@ -66,7 +67,7 @@ public sealed class OperatorRouteTests
         CollectionAssert.AreEqual(
             new[]
             {
-                ("Current sky", "/"), ("Archive", "/gallery"), ("Operations", "/operations")
+                ("Current Sky", "/"), ("Archive", "/gallery"), ("Events", "/transients"), ("Operations", "/operations")
             },
             links);
         Assert.IsFalse(cut.Markup.Contains("Configuration", StringComparison.Ordinal));
@@ -78,12 +79,13 @@ public sealed class OperatorRouteTests
     {
         using var context = new BunitContext();
         context.AddAuthorization().SetAuthorized("owner");
+        context.JSInterop.SetupModule("./Components/Layout/ResponsiveNavigation.razor.js").Mode = JSRuntimeMode.Loose;
         var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
         var cut = context.Render<MainLayoutNavigation>();
 
         foreach (var (path, label) in new[]
         {
-            ("/", "Current sky"),
+            ("/", "Current Sky"),
             ("/gallery", "Archive"),
             ("/gallery/capture-id", "Archive"),
             ("/archive/calendar", "Archive"),
@@ -94,8 +96,9 @@ public sealed class OperatorRouteTests
             ("/calibration", "Operations"),
             ("/system", "Operations"),
             ("/environmental", "Operations"),
-            ("/transients", "Archive"),
-            ("/transients/candidate-id", "Archive"),
+            ("/transients", "Events"),
+            ("/transients/candidate-id", "Events"),
+            ("/transients?from=2026-09-23", "Events"),
             ("/devices", "Operations"),
             ("/operations/pipeline", "Operations"),
             ("/operations/automations", "Operations"),
@@ -135,7 +138,6 @@ public sealed class OperatorRouteTests
             (typeof(DataStoragePage), ["/operations/data"]),
             (typeof(SkyMapPage), ["/operations/sky-map"]),
             (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
-            (typeof(ProcessingExecutionDetailPage), ["/operations/pipeline/executions/{ExecutionId:guid}"]),
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),
             (typeof(ProcessingGraphEditorPage), ["/operations/pipeline/graphs/new"]),
@@ -150,6 +152,13 @@ public sealed class OperatorRouteTests
                 type.GetCustomAttributes<RouteAttribute>().Select(static route => route.Template).ToArray(),
                 type.FullName);
         }
+        // A pipeline run owns its prototype-style rail and uses the shared site shell without
+        // stacking the generic Operations sidebar on top of that rail.
+        var runPage = typeof(ProcessingExecutionDetailPage);
+        Assert.AreEqual(typeof(MainLayout), runPage.GetCustomAttribute<LayoutAttribute>()?.LayoutType);
+        Assert.AreEqual(
+            "/operations/pipeline/executions/{ExecutionId:guid}",
+            runPage.GetCustomAttributes<RouteAttribute>().Single().Template);
         foreach (var type in new[] { typeof(CurrentSkyPage), typeof(GalleryPage), typeof(TransientPage), typeof(ArchiveCalendarPage) })
         {
             Assert.IsNull(type.GetCustomAttribute<LayoutAttribute>(), type.FullName);

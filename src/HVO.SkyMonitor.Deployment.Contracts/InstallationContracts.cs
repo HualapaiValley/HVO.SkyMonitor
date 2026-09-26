@@ -96,7 +96,8 @@ public enum LifecycleOperationPhase
     CandidateVerified,
     Committed,
     Restoring,
-    Completed
+    Completed,
+    Restored
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -211,7 +212,9 @@ public sealed record LifecycleOperationState(
     LifecycleContinuityBoundary? PreMutationContinuity = null,
     LifecycleContinuityBoundary? PostMutationContinuity = null,
     [property: JsonPropertyName("originalOwnerBootstrapState")]
-    string? ExpectedOwnerBootstrapState = null);
+    string? ExpectedOwnerBootstrapState = null,
+    Guid? RestoreResumeCommandId = null,
+    LifecycleResumeReceipt? RestoreResumeReceipt = null);
 
 public sealed record LifecycleContinuityBoundary(
     string CaptureState,
@@ -225,7 +228,8 @@ public sealed record LifecycleContinuityBoundary(
     long ProcessingLeased,
     long OutboxPending,
     long OutboxLeased,
-    DateTimeOffset RecordedUtc);
+    DateTimeOffset RecordedUtc,
+    bool CaptureInitialized = true);
 
 public sealed record BackupFileIdentity(
     string RelativePath,

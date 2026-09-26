@@ -350,6 +350,30 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         }
     }
 
+    /// <summary>
+    /// Expands the active schedule over local calendar days starting at <paramref name="firstLocalDate"/>,
+    /// for callers that need the expected windows of a past or future night (the observing-day page,
+    /// #988). The active revision is what would have admitted captures on that night only if it was
+    /// active then; the caller states that caveat. Returns null before the runtime initializes.
+    /// </summary>
+    public CaptureSchedulePreview? ExpandActive(DateOnly firstLocalDate, int dayCount)
+    {
+        if (dayCount is < 1 or > 31)
+        {
+            throw new ArgumentOutOfRangeException(nameof(dayCount));
+        }
+        var current = Snapshot;
+        if (current is null)
+        {
+            return null;
+        }
+        var now = _timeProvider.GetUtcNow().ToUniversalTime();
+        var observer = current.Configuration.ResolveObservatory(now);
+        var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
+        return CaptureScheduleIntervalExpander.Expand(
+            current.Revision.Profile.Schedule, firstLocalDate, dayCount, timeZone, observer, _solarEvents);
+    }
+
     public CaptureSchedulePreview Preview(LocalCaptureProfileDefinition profile, int dayCount)
     {
         ArgumentNullException.ThrowIfNull(profile);

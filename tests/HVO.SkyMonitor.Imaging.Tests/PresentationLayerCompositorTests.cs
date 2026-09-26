@@ -51,7 +51,6 @@ public sealed class PresentationLayerCompositorTests
         Assert.AreEqual((byte)144, result[(4 * 16 + 6) * 3]);
         Assert.AreEqual((byte)96, result[(7 * 16 + 3) * 3]);
         Assert.AreEqual((byte)160, result[(7 * 16 + 3) * 3 + 1]);
-        Assert.AreEqual((byte)255, result[(0 * 16 + 1) * 3]);
         Assert.AreEqual((byte)255, result[(1 * 16 + 8) * 3]);
         Assert.AreEqual((byte)64, result[(1 * 16 + 8) * 3 + 1]);
     }
@@ -63,6 +62,54 @@ public sealed class PresentationLayerCompositorTests
         cancellation.Cancel();
         Assert.ThrowsExactly<OperationCanceledException>(() => PresentationLayerCompositor.Composite(
             Layout(), new byte[16 * 12 * 3], [], cancellation.Token));
+    }
+
+    [TestMethod]
+    public async Task CompositeCancelsDuringDenseScale16TextHalo()
+    {
+        const int width = 4096;
+        const int height = 128;
+        var layout = new ImageLayout(width, height, CameraPixelFormat.Rgb24, width * 3);
+        var text = Payload(width, height, text: Enumerable.Repeat(
+            new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default,
+                Enumerable.Repeat(new string('W', 64), 8).ToArray(), 16, 0, 0, new(255, 255, 255)), 64).ToArray());
+        using var cancellation = new CancellationTokenSource();
+        var render = Task.Run(() => PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(text, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellation.Token));
+        await Task.Delay(50).ConfigureAwait(false);
+        Assert.IsFalse(render.IsCompleted, "Dense text should still be rendering when cancellation is requested.");
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await render.ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void ScalableTextRendersAtFullFrameSizeWithoutChangingSmallBitmapText()
+    {
+        const int width = 800;
+        const int height = 600;
+        var layout = new ImageLayout(width, height, CameraPixelFormat.Rgb24, width * 3);
+        var large = Payload(width, height, text: [new(PresentationTextAnchor.Point, new(30, 30), ["NORTH"],
+            8, 0, 0, new(255, 255, 255))]);
+        var small = Payload(width, height, text: [new(PresentationTextAnchor.Point, new(30, 30), ["NORTH"],
+            1, 0, 0, new(255, 255, 255))]);
+        var source = new byte[layout.RequiredByteLength];
+        var rendered = PresentationLayerCompositor.Composite(layout, source,
+            [new(large, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var repeat = PresentationLayerCompositor.Composite(layout, source,
+            [new(large, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var smallRendered = PresentationLayerCompositor.Composite(layout, source,
+            [new(small, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+
+        CollectionAssert.AreEqual(rendered, repeat);
+        var largeExtent = Enumerable.Range(0, width * height)
+            .Where(index => rendered[index * 3] != 0).Max(index => index % width);
+        var smallExtent = Enumerable.Range(0, width * height)
+            .Where(index => smallRendered[index * 3] != 0).Max(index => index % width);
+        Assert.IsGreaterThan(smallExtent + 20, largeExtent);
+        CollectionAssert.AreEqual(new byte[layout.RequiredByteLength], source);
+        Assert.IsTrue(Enumerable.Range(30, 60).SelectMany(y => Enumerable.Range(30, 200)
+            .Select(x => rendered[(y * width + x) * 3])).Any(value => value > 0));
     }
 
     [TestMethod]
@@ -146,7 +193,25 @@ public sealed class PresentationLayerCompositorTests
             new(cloudLabels, true, PresentationRasterBlendMode.Lighten, 1_000_000)
         ]);
 
-        CollectionAssert.AreEqual(legacy, actual);
+        Assert.AreEqual(legacy.Length, actual.Length);
+        CollectionAssert.AreNotEqual(legacy, actual, "Layered text uses the embedded scalable font; legacy annotation remains unchanged.");
+    }
+
+    [TestMethod]
+    public void UnicodePresentationTextRendersWithoutSystemFontFallback()
+    {
+        var payload = Payload(800, 600, text: [new(PresentationTextAnchor.TopLeft, default,
+            ["Bételgeuse"], 3, 10, 0, new(255, 255, 255))]);
+        var layout = new ImageLayout(800, 600, CameraPixelFormat.Rgb24, 2400);
+        var pixels = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var ascii = Payload(800, 600, text: [new(PresentationTextAnchor.TopLeft, default,
+            ["Betelgeuse"], 3, 10, 0, new(255, 255, 255))]);
+        var asciiPixels = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(ascii, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.IsTrue(pixels.Any(value => value > 0));
+        CollectionAssert.AreNotEqual(asciiPixels, pixels);
+        Assert.AreEqual(64, PresentationFont.FontSha256.Length);
     }
 
     private static ImageLayout Layout() => new(16, 12, CameraPixelFormat.Rgb24, 48);

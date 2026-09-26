@@ -173,6 +173,21 @@ hvo-skymonitor cameraagent upgrade \
   --no-download
 ```
 
+The generated CameraAgent rig and pipeline are immutable instance configuration.
+The installer-virtualsky-v3 profile changes only the generated **new-install**
+20-second ASI174 combined-preview display stretch (white percentile 0.9997,
+asinh strength 8 instead of 0.9999 and 4); raw and combined Mono16 samples are
+unchanged. Upgrading the image on an existing v2 instance does **not** replace
+its rig or pipeline and therefore does not apply the new stretch to its captures.
+The scene-layer producer version changes independently: new processing with the
+new image draws star names at 14 source pixels on a 1936x1216 frame while
+retaining the same cardinal/corner text geometry, even on an existing instance;
+retained layers and previews are immutable and do not change retroactively.
+To adopt both installer defaults, provision a new isolated instance through a
+clean install and migrate operational state only under the supported lifecycle;
+do not edit an installed profile in place or treat an image upgrade as a clean
+install. These are display choices, not a physical visibility model.
+
 `cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).
@@ -563,14 +578,16 @@ compatibility promise:
 io.hvo.skymonitor.state-compatibility=cameraagent-state-v2
 io.hvo.skymonitor.minimum-compatible-revision=70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f
 io.hvo.skymonitor.identity-migration=20260827053715_InitialIdentity
-io.hvo.skymonitor.raw-ingress-schema=12
+io.hvo.skymonitor.raw-ingress-schema=13
 io.hvo.skymonitor.catalog-manifest-version=2
 ```
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
 raw-ingress schema 11. The current image requires manifest version 2, migration
-`20260827053715_InitialIdentity`, and schema 12, and there is no supported automatic migration between them.
+`20260827053715_InitialIdentity`, and schema 13. There is no supported automatic migration from
+schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
+stop, or Compose mutation, and runtime startup also refuses it without changing its contents.
 Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
 state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
 already installed image stays inspectable; it is never accepted as an upgrade candidate declaration.
@@ -749,6 +766,85 @@ the exact command with `--resume`. A failed candidate restores the exact prior
 Compose, image, and identity records before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
+
+### Restore Only After an Interrupted Upgrade
+
+Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
+startup. **Do not use it merely to restore service after a failed backup.** For
+an operator-image upgrade whose exact original runtime is already healthy, the
+bounded recovery-only form is:
+
+```bash
+hvo-skymonitor cameraagent upgrade \
+  --instance-id <original-instance-uuid> \
+  --image-ref <original-request-candidate-reference> \
+  <same-original-request-options> \
+  --resume --restore-only --operation-id <interrupted-operation-uuid>
+```
+
+Retain the original image reference, archive checksum, `--no-download`, and
+compatibility acknowledgement exactly as supplied to that upgrade. The command
+checks the original request hash and operation UUID; it does not acquire or
+inspect the candidate image. This first recovery slice supports operator-image
+upgrades only, not signed-release selectors, rollback, or catalog operations.
+
+The original manifest/result and operation snapshots must agree exactly, including
+the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
+hash, rendered original Compose hash, daemon identity, root ownership/inode checks,
+container image/user/mount/port/security checks, protected schema-1 bound application
+identity, original image schema boundaries and candidate request/platform correlation,
+protected installation identity/owner verification, and both retained tokens remain
+required. Admission must match the recorded paused version and capture sequence.
+Changed state, candidate-running, absent/unhealthy original runtime, foreign admission,
+expired/rejected credentials, and committed or partially committed candidates fail
+closed. No backup archive, including a leftover partial archive, authorizes recovery.
+
+This form never pauses capture, stops/recreates/restarts a container, writes Compose,
+changes identity, or resets state. An approved Docker runtime memory override remains
+untouched; it is not a change to the authenticated Compose file. It does not provide a
+cold-start or candidate-to-old-image restoration procedure.
+
+Before resuming admission the journal retains a command UUID. Retries reuse that
+UUID and the original pause version, so a lost acknowledgement cannot create a new
+command or override a later operator pause. The authenticated executed receipt is
+validated separately from current admission: if a lost acknowledgement was followed
+by an operator pause, replay proves the earlier Running result while leaving that
+newer pause intact, including after restart. This settles recovery instead of leaving
+an interrupted operation permanently blocking further lifecycle work. Normal success reports
+`restored-previous-healthy-admission-resumed`; the original upgrade remains terminal
+`Failed` / `Restored`, with `mutationStarted=false` and the original failure retained.
+Older interrupted journals lacking a failure detail explicitly record that it was
+not retained, rather than inventing a cause. Superseded success reports
+`restored-previous-healthy-resume-superseded-current-admission-preserved`; the journal
+retains the executed resume receipt separately from the current post-recovery boundary.
+Both are validated on read, including nonnegative counters, initialization, versions,
+capture sequence and receipt timing. The identical complete invariant is checked
+before terminal publication against one captured post-resume boundary. Inconsistent
+timestamps (including a future receipt or a backward clock) leave the operation
+`Restoring` with its mutation flag and command UUID retained for a later valid replay;
+they never publish terminal success. Repeating a successful restore-only request
+verifies the current result without another resume command. It never reports the
+upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
+
+Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
+open for size-aware backup deadlines, capacity, progress, cancellation/partial cleanup,
+and resource-qualified cold startup. Do not manually edit the lifecycle journal or
+reduce an approved memory override to work around those remaining limits.
+
+The protected installation-verification GET used by both the pre-mutation owner
+state read and full installation identity verification has one finite **120-second
+request deadline**, including response-body receipt. Each call makes one request;
+this is not an unlimited retry or a change to the separate health/startup, login,
+or drain limits. An elapsed request deadline reports
+`CameraAgent installation verification request timed out.` without transport
+details or credentials. Caller cancellation remains cancellation, not a timeout.
+Before mutation, a timeout follows the existing refusal policy without pause,
+stop, backup, or image replacement; caller cancellation leaves an unmutated
+operation resumable. Do not manually repair the journal or reset the instance.
+Issue [#1041](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041) records
+an old-image response of about 35 seconds, beyond the former 15-second client
+limit; this CLI compatibility allowance does not fix or attribute the endpoint's
+underlying repeated work.
 
 Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture

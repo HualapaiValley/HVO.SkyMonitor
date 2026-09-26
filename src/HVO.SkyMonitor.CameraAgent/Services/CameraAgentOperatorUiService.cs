@@ -189,9 +189,10 @@ internal sealed record CameraAgentTransientPolicyStatus(
     int MaximumAdjacentStartIntervalSeconds,
     int StarMaximumResults);
 
-internal sealed record CameraAgentCaptureDetailView(
+public sealed record CameraAgentCaptureDetailView(
     CameraAgentGalleryCapture Capture,
-    CameraAgentCapturePresentation Presentation);
+    CameraAgentCapturePresentation Presentation,
+    CameraAgentCurrentSkyFacts? Facts = null);
 
 // Current Sky reads the presentation and the durable facts of the displayed
 // capture together; facts may be unavailable while the image still shows.
@@ -285,7 +286,6 @@ internal sealed class CameraAgentOperatorUiService(
     ICameraAgentGallery gallery,
     ICameraAgentArchive archive,
     IObservingDayCalendarProvider observingDays,
-    ICameraAgentCapturePresentationProjector capturePresentation,
     ICameraAgentCurrentImagePresentationService currentImagePresentation,
     ICameraAgentLayeredPresentationService layeredPresentations,
     ICameraAgentPresentationMaterializer presentationMaterializer,
@@ -639,13 +639,31 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
-            return capture is null
-                ? OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
+            if (capture is null || capture.CaptureId != captureId)
+            {
+                return OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
                     OperatorUiResultKind.NotFound,
-                    "The requested capture was not found.")
-                : OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
-                    capture,
-                    ProjectCaptureDetailPresentation(capturePresentation.Project(capture))));
+                    "The requested capture was not found.");
+            }
+
+            var presentation = ProjectCaptureDetailPresentation(
+                await currentImagePresentation.ProjectCaptureAsync(capture, cancellationToken).ConfigureAwait(false));
+            var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+            var combinedArtifactId = combined.Availability == CameraAgentPresentationSlotAvailability.Available
+                ? combined.ArtifactId
+                : null;
+            var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
+            if (combinedArtifactId is null)
+            {
+                // The facts projector's default selects the newest Combined artifact; an exact view must not
+                // describe that unrelated artifact when no Combined preview survived validation.
+                facts = facts with
+                {
+                    CombinedLineage = null,
+                    CombinedLineageUnavailable = combined.Availability != CameraAgentPresentationSlotAvailability.Missing
+                };
+            }
+            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -882,7 +900,7 @@ internal sealed class CameraAgentOperatorUiService(
             return result.Status == CameraAgentLayeredPresentationStatus.Found && result.Presentation is { } presentation
                 ? OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)
                 : OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
-                    result.Status == CameraAgentLayeredPresentationStatus.Unavailable
+                    result.Status == CameraAgentLayeredPresentationStatus.NotRetained
                         ? OperatorUiResultKind.NotFound
                         : OperatorUiResultKind.Unavailable,
                     result.Reason ?? "Structured layers are unavailable for this capture.");

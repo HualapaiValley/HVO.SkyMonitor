@@ -1,0 +1,293 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.CameraAgent.Components.Pages
+@using HVO.SkyMonitor.CameraAgent.Common.Transients
+@using Microsoft.AspNetCore.Components.Web
+
+@{
+    var hasProcessingNodes = Nodes.Count > 0;
+}
+@if (!hasProcessingNodes)
+{
+    <p class="run-diagram__empty">No processing nodes were recorded; the independent transient track is shown below.</p>
+}
+<div class="run-diagram__toolbar">
+        <span>@Nodes.Count recorded stages / @Nodes.Sum(static node => node.Outputs.Count) outputs</span>
+        <div role="group" aria-label="Graph zoom">
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomOut" aria-label="Zoom out">−</button>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="FitGraph" aria-label="Fit graph">Fit</button>
+            <output class="run-diagram__zoom" aria-label="Graph zoom mode">@(_fit ? "Fit (min 85%)" : $"{ZoomPercent}%")</output>
+            <button type="button" class="btn btn-outline-light btn-sm" @onclick="ZoomIn" aria-label="Zoom in">+</button>
+        </div>
+    </div>
+    <div class="run-diagram__scroll">
+        <svg class="run-diagram" style="@GraphSizeStyle" viewBox="0 0 @Width @Height" role="group" aria-labelledby="@TitleId @DescriptionId">
+            <title id="@TitleId">Execution dependency graph</title>
+            <desc id="@DescriptionId">@GraphDescription</desc>
+            @foreach (var band in _bands)
+            {
+                <g class="run-diagram__band"><rect x="@band.X" y="0" width="@band.Width" height="@Height" /><text x="@(band.X + 12)" y="18">@band.Label</text></g>
+            }
+            <g class="run-diagram__source"><rect x="@Margin" y="@(HeaderHeight + NodeHeight / 2 - 20)" width="@SourceWidth" height="40" rx="8" /><text x="@(Margin + 10)" y="@(HeaderHeight + NodeHeight / 2 + 5)">Raw capture</text></g>
+            @foreach (var edge in _edges)
+            {
+                <path class="@EdgeClass(edge)" d="@edge.Path" />
+            }
+            @foreach (var item in _layout)
+            {
+                var node = item.Node;
+                <g class="@NodeClass(node)" role="button" tabindex="0" aria-pressed="@((SelectedNodeId == node.NodeId).ToString().ToLowerInvariant())" aria-label="@node.NodeId: @node.Status, @(node.Required ? "required" : "optional"), @node.Outputs.Count output@(node.Outputs.Count == 1 ? "" : "s"). Activate for details." @onclick="() => NodeSelected.InvokeAsync(node.NodeId)" @onkeydown="args => HandleKey(args, node.NodeId)">
+                    <rect x="@item.X" y="@item.Y" width="@NodeWidth" height="@NodeHeight" rx="8" />
+                    <text class="run-diagram__status" x="@(item.X + 10)" y="@(item.Y + 19)">@(StatusGlyph(node.Status))</text>
+                    <text x="@(item.X + 27)" y="@(item.Y + 19)">@(DisplayName(node.NodeId))</text>
+                    <text class="run-diagram__meta" x="@(item.X + 10)" y="@(item.Y + 37)">@node.Status / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } start && node.CompletedUtc is { } end ? end - start : null)</text>
+                    <path class="run-diagram__divider" d="M@(item.X + 8),@(item.Y + 48) H@(item.X + NodeWidth - 8)" />
+                    <text class="run-diagram__meta" x="@(item.X + 10)" y="@(item.Y + 65)">@node.Outputs.Count artifact@(node.Outputs.Count == 1 ? "" : "s")</text>
+                    <text class="run-diagram__meta" x="@(item.X + NodeWidth - 10)" y="@(item.Y + 65)" text-anchor="end">@(node.Required ? "REQUIRED" : "OPTIONAL")</text>
+                </g>
+            }
+            <g class="run-diagram__boundary"><rect x="@PublicationX" y="@(HeaderHeight + NodeHeight / 2 - 20)" width="@SourceWidth" height="40" rx="8" /><text x="@(PublicationX + 10)" y="@(HeaderHeight + NodeHeight / 2 + 5)">Published @Nodes.Sum(static node => node.Outputs.Count(static output => output.Published))</text></g>
+            <text class="run-diagram__unavailable" x="@(LogicHostX + 12)" y="@(HeaderHeight + NodeHeight / 2)">No per-run receipt</text>
+            @if (!HasCloudProduct)
+            {
+                <g class="run-diagram__cloud-placeholder" role="note" aria-label="Cloud assessment: not produced; no cloud product recorded">
+                    <rect x="0" y="@CloudTop" width="@Width" height="42" />
+                    <text x="@Margin" y="@(CloudTop + 26)">Cloud assessment · Not produced / no cloud product recorded</text>
+                </g>
+            }
+            <g class="run-diagram__transient">
+                <rect x="0" y="@TransientTop" width="@Width" height="@(Height - TransientTop)" />
+                <text class="run-diagram__transient-title" x="@Margin" y="@(TransientTop + 23)">Fireball / transient track / independent durable lane</text>
+                @if (!TransientEnabled || TransientUnavailable || TransientEvents.Count == 0)
+                {
+                    <g class="run-diagram__transient-empty" role="note" aria-label="Meteor detection: @TransientEmptyLabel"><text x="@Margin" y="@(TransientTop + 55)">Meteor detection · @TransientEmptyLabel</text></g>
+                }
+                else
+                {
+                    @foreach (var lane in TransientLanes)
+                    {
+                        <g class="run-diagram__transient-label"><text x="@Margin" y="@(lane.Y + 16)">@(LaneLabel(lane.CandidateId))</text></g>
+                        @for (var i = 0; i < lane.Events.Count; i++)
+                        {
+                            var stage = lane.Events[i];
+                            var x = EdgeX + (lane.CandidateId is null ? i : CaptureLaneCount + i) * (NodeWidth + ColumnGap);
+                            @if (i > 0 && IsRecordedPredecessor(lane.Events[i - 1], stage))
+                            {
+                                <path class="run-diagram__transient-edge" d="M@(x - ColumnGap),@(lane.Y + 49) H@x" />
+                            }
+                            @if (i == 0 && lane.CandidateId is not null && CausalSuccess is not null && stage.StageKey == "candidate-allocated")
+                            {
+                                <path class="run-diagram__transient-edge" d="M@(EdgeX + (CaptureLaneCount - 1) * (NodeWidth + ColumnGap) + NodeWidth),@(CaptureLaneY + 53) C@(x - 28),@(CaptureLaneY + 53) @(x - 28),@(lane.Y + 53) @x,@(lane.Y + 53)" />
+                            }
+                            <g class="@(StageSucceeded(stage) ? "run-diagram__transient-node" : "run-diagram__transient-node run-diagram__transient-node--attention")" role="group" aria-label="@stage.StageKey: @stage.State, @stage.RecordedUtc.ToString("u")">
+                                <rect x="@x" y="@(lane.Y + 27)" width="@NodeWidth" height="52" rx="7" />
+                                <text x="@(x + 9)" y="@(lane.Y + 48)">@TransientName(stage.StageKey)</text>
+                                <text class="run-diagram__meta" x="@(x + 9)" y="@(lane.Y + 67)">@stage.State / @stage.RecordedUtc.ToString("HH:mm:ss") UTC</text>
+                            </g>
+                        }
+                    }
+                }
+            </g>
+        </svg>
+    </div>
+<div class="run-diagram__legend"><span>━ Required dependency</span><span>┄ Optional dependency</span><span>Click or press Enter on a stage for details</span></div>
+
+@code {
+    private const int NodeWidth = 168;
+    private const int NodeHeight = 76;
+    private const int ColumnGap = 48;
+    private const int RowGap = 12;
+    private const int Margin = 16;
+    private const int HeaderHeight = 32;
+    private const int SourceWidth = 132;
+    private static int _instances;
+    private readonly int _instance = Interlocked.Increment(ref _instances);
+    private List<PlacedNode> _layout = [];
+    private List<GraphEdge> _edges = [];
+    private List<GraphBand> _bands = [];
+    private const double MinimumReadableScale = 0.85;
+    private double Zoom { get; set; } = MinimumReadableScale;
+    private bool _fit = true;
+    private int ZoomPercent => (int)Math.Round(Zoom * 100);
+    private bool HasCloudProduct => Nodes.Any(static node => node.OutputContracts.Any(contract =>
+        contract.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Metadata &&
+        string.Equals(contract.Recipe?.Name, HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.CloudAssessment, StringComparison.Ordinal) &&
+        node.Outputs.Any(output => output.Role == contract.Role &&
+            string.Equals(output.Variant, contract.Variant, StringComparison.Ordinal))));
+
+    [Parameter, EditorRequired] public IReadOnlyList<CameraAgentProcessingNodeView> Nodes { get; set; } = [];
+    [Parameter] public string? SelectedNodeId { get; set; }
+    [Parameter] public EventCallback<string> NodeSelected { get; set; }
+    [Parameter] public IReadOnlyList<TransientStageEvent> TransientEvents { get; set; } = [];
+    [Parameter] public bool TransientEnabled { get; set; }
+    [Parameter] public bool TransientUnavailable { get; set; }
+
+    private string TitleId => $"execution-graph-title-{_instance}";
+    private string DescriptionId => $"execution-graph-description-{_instance}";
+    private string GraphDescription => string.Join(" ", Nodes.Select(node =>
+        $"{node.NodeId}: {node.Status}; {(node.Dependencies.Count == 0 ? "no dependencies" : "depends on " + string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId)))}.")) +
+        (TransientEnabled ? TransientUnavailable ? " Transient evidence unavailable." : TransientEvents.Count == 0
+            ? " No transient stage events recorded." : " Transient milestones: " + string.Join(" ", TransientLanes.Select(lane =>
+                $"{LaneLabel(lane.CandidateId)}: {string.Join(", ", lane.Events.Select(stage => $"{TransientName(stage.StageKey)} {stage.State}"))}."))
+            : " Local transient detector disabled.");
+    private int Width => Math.Max(LogicHostX + SourceWidth + Margin,
+        EdgeX + (CaptureLaneCount + (TransientLanes.Count == 0 ? 0 : TransientLanes.Where(static lane => lane.CandidateId is not null).Select(static lane => lane.Events.Count).DefaultIfEmpty().Max())) * (NodeWidth + ColumnGap) + Margin);
+    private int EdgeX => Margin + SourceWidth + ColumnGap;
+    private int PublicationX => _layout.Count == 0 ? EdgeX : _layout.Max(static item => item.X) + NodeWidth + ColumnGap;
+    private int LogicHostX => PublicationX + SourceWidth + ColumnGap;
+    // Fit keeps node labels legible; a wider graph scrolls rather than shrinking
+    // the native-coordinate text to an unreadable fraction of its size.
+    private string GraphSizeStyle => _fit
+        ? $"width: max(100%, {Width * MinimumReadableScale}px); height: auto;"
+        : $"width: {Width * Zoom}px; height: {Height * Zoom}px;";
+
+    private void FitGraph() { _fit = true; Zoom = MinimumReadableScale; }
+    private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
+    private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
+    private int CloudTop => (_layout.Count == 0 ? HeaderHeight + NodeHeight : _layout.Max(static item => item.Y) + NodeHeight) + 18;
+    private int TransientTop => CloudTop + (HasCloudProduct ? 0 : 42) + 8;
+    private int Height => TransientTop + (TransientLanes.Count == 0 ? 86 : 65 + TransientLanes.Count * 86);
+    private int CaptureLaneY => TransientTop + 40;
+    private int CaptureLaneCount => TransientLanes.FirstOrDefault(static lane => lane.CandidateId is null)?.Events.Count ?? 0;
+    private TransientStageEvent? CausalSuccess => TransientEvents.FirstOrDefault(static stage =>
+        stage.CandidateId is null && stage.StageKey == "causal-scan" && stage.State == "succeeded");
+    private IReadOnlyList<TransientLane> TransientLanes => TransientEvents
+        .GroupBy(static stage => stage.CandidateId)
+        .OrderBy(static group => group.Key.HasValue)
+        .ThenBy(static group => group.Min(static stage => stage.SlotOrdinal ?? int.MaxValue))
+        .ThenBy(static group => group.Key)
+        .Select((group, index) => new TransientLane(group.Key, TransientTop + 34 + index * 86,
+            group.OrderBy(static stage => StageRank(stage.StageKey)).ThenBy(static stage => stage.RecordedUtc).ToArray()))
+        .ToArray();
+
+    private static int StageRank(string stageKey) => stageKey switch
+    {
+        "frame-staged" => 0,
+        "causal-scan" => 1,
+        "candidate-allocated" => 2,
+        "candidate-persisted" => 3,
+        "event-finalized" or "relay-pending" => 4,
+        "central-acknowledged" => 5,
+        _ => 6
+    };
+
+    private static string TransientName(string stage) => stage switch
+    {
+        "frame-staged" => "Durable frame window",
+        "causal-scan" => "Causal candidate scan",
+        "candidate-allocated" => "Candidate allocated",
+        "candidate-persisted" => "Persist candidate",
+        "event-finalized" => "Retain event evidence",
+        "relay-pending" => "Relay queued",
+        "central-acknowledged" => "Acknowledged",
+        _ => stage
+    };
+
+    private static bool StageSucceeded(TransientStageEvent stage) => stage.State is not "not-succeeded" and not "quarantined";
+
+    private static bool IsRecordedPredecessor(TransientStageEvent previous, TransientStageEvent current)
+        => (previous.StageKey, current.StageKey) switch
+        {
+            ("frame-staged", "causal-scan") => true,
+            ("candidate-allocated", "candidate-persisted") => true,
+            ("candidate-persisted", "event-finalized") => true,
+            ("candidate-persisted", "relay-pending") => true,
+            ("relay-pending", "central-acknowledged") => true,
+            _ => false
+        } && StageSucceeded(previous);
+
+    private string TransientEmptyLabel => !TransientEnabled ? "Local detector disabled"
+        : TransientUnavailable ? "Evidence unavailable" : "No stage events recorded";
+
+    private static string LaneLabel(Guid? candidateId) => candidateId is { } id
+        ? $"Candidate {id:D}" : "Capture";
+
+    protected override void OnParametersSet()
+    {
+        var byId = Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
+        int Rank(string id, int depth)
+        {
+            if (ranks.TryGetValue(id, out var known)) return known;
+            if (depth > Nodes.Count || !byId.TryGetValue(id, out var node)) return 0;
+            var rank = 0;
+            foreach (var dependency in node.Dependencies)
+            {
+                if (byId.ContainsKey(dependency.ProducerId)) rank = Math.Max(rank, Rank(dependency.ProducerId, depth + 1) + 1);
+            }
+            return ranks[id] = rank;
+        }
+        foreach (var node in Nodes) Rank(node.NodeId, 0);
+        var columns = new Dictionary<int, int>();
+        _layout = [];
+        foreach (var node in Nodes)
+        {
+            var rank = ranks[node.NodeId];
+            var row = columns.GetValueOrDefault(rank);
+            columns[rank] = row + 1;
+            _layout.Add(new PlacedNode(node, EdgeX + rank * (NodeWidth + ColumnGap), HeaderHeight + row * (NodeHeight + RowGap)));
+        }
+        _bands =
+        [
+            new GraphBand(0, EdgeX, "Camera and acquisition"),
+            new GraphBand(EdgeX, PublicationX - EdgeX, "CameraAgent edge processing"),
+            new GraphBand(PublicationX, LogicHostX - PublicationX, "Durable publication"),
+            new GraphBand(LogicHostX, SourceWidth + Margin, "LogicHost / unavailable")
+        ];
+        var positions = _layout.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
+        _edges = [];
+        foreach (var target in _layout)
+        {
+            if (target.Node.Dependencies.Any(static dependency => dependency.ProducerId == "$raw"))
+            {
+                var y = target.Y + NodeHeight / 2;
+                _edges.Add(new GraphEdge($"M{Margin + SourceWidth},{HeaderHeight + NodeHeight / 2} C{EdgeX - 25},{HeaderHeight + NodeHeight / 2} {EdgeX - 25},{y} {target.X},{y}", true, target.Node.NodeId == SelectedNodeId));
+            }
+            foreach (var dependency in target.Node.Dependencies)
+            {
+                if (!positions.TryGetValue(dependency.ProducerId, out var source)) continue;
+                var x1 = source.X + NodeWidth;
+                var y1 = source.Y + NodeHeight / 2;
+                var x2 = target.X;
+                var y2 = target.Y + NodeHeight / 2;
+                var middle = (x1 + x2) / 2;
+                _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required, target.Node.NodeId == SelectedNodeId || source.Node.NodeId == SelectedNodeId));
+            }
+        }
+        foreach (var source in _layout.Where(static item => item.Node.Outputs.Any(static output => output.Published)))
+        {
+            var x1 = source.X + NodeWidth;
+            var y1 = source.Y + NodeHeight / 2;
+            var x2 = PublicationX;
+            var y2 = HeaderHeight + NodeHeight / 2;
+            var middle = (x1 + x2) / 2;
+            _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", true, source.Node.NodeId == SelectedNodeId));
+        }
+    }
+
+    private string NodeClass(CameraAgentProcessingNodeView node) =>
+        $"run-diagram__node run-diagram__node--{node.Status.ToLowerInvariant()}{(SelectedNodeId == node.NodeId ? " run-diagram__node--selected" : "")}";
+
+    private static string EdgeClass(GraphEdge edge) =>
+        $"run-diagram__edge{(edge.Required ? "" : " run-diagram__edge--optional")}{(edge.Highlighted ? " run-diagram__edge--highlighted" : "")}";
+
+    private static string StatusGlyph(string status) => status switch
+    {
+        "Completed" => "✓",
+        "Running" => "●",
+        "RetryableFailure" or "TerminalFailure" => "!",
+        "Skipped" => "○",
+        _ => "·"
+    };
+
+    private static string DisplayName(string nodeId) => nodeId.Length <= 19 ? nodeId : string.Concat(nodeId.AsSpan(0, 16), "...");
+
+    private async Task HandleKey(KeyboardEventArgs args, string id)
+    {
+        if (args.Key is "Enter" or " ") await NodeSelected.InvokeAsync(id);
+    }
+
+    private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int X, int Y);
+    private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
+    private sealed record GraphBand(int X, int Width, string Label);
+    private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);
+}

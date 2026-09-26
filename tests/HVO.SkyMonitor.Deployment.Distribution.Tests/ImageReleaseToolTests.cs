@@ -73,7 +73,7 @@ public sealed class ImageReleaseToolTests
         Assert.AreEqual(IndexDigest, image.ManifestDigest);
         Assert.AreEqual("cameraagent-state-v2", image.Compatibility.StateContract);
         Assert.AreEqual(MinimumRevision, image.Compatibility.MinimumCompatibleRevision);
-        Assert.AreEqual(12, image.Compatibility.RawIngressSchema);
+        Assert.AreEqual(13, image.Compatibility.RawIngressSchema);
         Assert.AreEqual(2, image.Compatibility.CatalogManifestVersion);
         Assert.AreEqual("local-replay-runner-v1", image.Compatibility.ReplayRunnerContract);
         CollectionAssert.AreEqual(

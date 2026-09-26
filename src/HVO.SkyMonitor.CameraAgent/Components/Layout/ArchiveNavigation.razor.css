@@ -1,0 +1,6 @@
+.archive-navigation { box-sizing: border-box; width: min(100%, 112rem); margin: 0 auto clamp(1rem, 2.5vw, 2rem); padding: 0 clamp(.75rem, 2.6vw, 2.4rem); }
+.archive-subnav { display: flex; gap: 1.2rem; min-height: 3.2rem; align-items: flex-end; overflow-x: auto; border-bottom: 1px solid var(--hvo-border-muted); }
+.archive-subnav a { position: relative; display: grid; min-height: 3.2rem; flex: 0 0 auto; place-items: center; padding: 0 .15rem; color: var(--hvo-muted); font-size: .68rem; font-weight: 700; text-decoration: none; }
+.archive-subnav a:hover, .archive-subnav a[aria-current="page"] { color: var(--hvo-body-color); }
+.archive-subnav a[aria-current="page"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--hvo-accent); content: ""; }
+@media (max-width: 650px) { .archive-navigation { margin-bottom: 1rem; padding-inline: .65rem; } }

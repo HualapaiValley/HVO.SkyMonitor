@@ -1056,6 +1056,56 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
+    public async Task GetCalendarAsync_NamesTheNewestDisplayableCaptureOfEachNight()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        // Observing day 2026-09-03 in Phoenix: three captures; the newest has no preview, the
+        // middle one has a quarantined preview, the oldest has a published preview.
+        var oldest = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 1, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var middle = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 3, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        await fixture.AddProcessingOutputAsync(oldest, "Preview", DurableProcessingNodeStatus.Completed, encodedWidth: 2, encodedHeight: 2).ConfigureAwait(false);
+        var quarantined = await fixture.AddProcessingOutputAsync(middle, "Preview", DurableProcessingNodeStatus.Completed, encodedWidth: 2, encodedHeight: 2).ConfigureAwait(false);
+        await fixture.SetOutputAvailabilityAsync(quarantined.Artifact.ArtifactId, "Quarantined").ConfigureAwait(false);
+        var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
+
+        var calendar = await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 3), new DateOnly(2026, 9, 4)), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(3, calendar.Days[0].CaptureCount);
+        Assert.AreEqual(oldest.Descriptor.Capture.CaptureId, calendar.Days[0].RepresentativeCaptureId);
+        Assert.AreEqual(oldest.Descriptor.Timing.ExposureStartedUtc, calendar.Days[0].RepresentativeExposureUtc);
+        Assert.AreEqual(0, calendar.Days[1].CaptureCount);
+        Assert.IsNull(calendar.Days[1].RepresentativeCaptureId);
+    }
+
+    [TestMethod]
+    public async Task GetObservingDayAsync_ReturnsTheNightInExposureOrderWithItsIntegration()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var later = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 3, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var earlier = await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 1, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        // Next observing day; must not appear.
+        await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 19, 30, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
+        var archive = fixture.OpenArchive(ObservingDayCalendar.Create("America/Phoenix"));
+
+        var day = await archive.GetObservingDayAsync(new DateOnly(2026, 9, 3), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(day);
+        Assert.AreEqual(2, day.Day.CaptureCount);
+        CollectionAssert.AreEqual(
+            new[] { earlier.Descriptor.Timing.ExposureStartedUtc, later.Descriptor.Timing.ExposureStartedUtc },
+            day.ExposureInstantsUtc.ToArray());
+        // The fixture manifest records a one-second effective exposure per capture.
+        Assert.AreEqual(TimeSpan.FromSeconds(2), day.TotalIntegration);
+        var empty = await archive.GetObservingDayAsync(new DateOnly(2026, 9, 5), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(empty);
+        Assert.AreEqual(0, empty.Day.CaptureCount);
+        Assert.IsEmpty(empty.ExposureInstantsUtc);
+        Assert.AreEqual(TimeSpan.Zero, empty.TotalIntegration);
+    }
+
+    [TestMethod]
     public async Task GetCalendarAsync_AppliesFiltersWithinEachDayAndBoundsTheRange()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);

@@ -44,6 +44,12 @@ internal static class CameraAgentGalleryEndpoints
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status404NotFound);
+        gallery.MapGet("/{captureId:guid}/thumbnail", RedirectToThumbnailAsync)
+            .WithName("GetCameraAgentGalleryThumbnail")
+            .Produces(StatusCodes.Status302Found)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden)
+            .Produces(StatusCodes.Status404NotFound);
         gallery.MapGet("/{captureId:guid}", GetCaptureAsync)
             .WithName("GetCameraAgentGalleryCapture")
             .Produces<CameraAgentGalleryCapture>()
@@ -182,6 +188,39 @@ internal static class CameraAgentGalleryEndpoints
     {
         var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
         return capture is null ? Results.NotFound() : Results.Ok(capture);
+    }
+
+    /// <summary>
+    /// Resolves a capture's best displayable preview through the presentation projector and
+    /// redirects to that artifact's preview, so a page that knows only capture ids (the calendar
+    /// grid, #988) can show one image per capture without projecting on the client. The
+    /// redirect target is the existing authorized artifact preview route.
+    /// </summary>
+    private static async Task<IResult> RedirectToThumbnailAsync(
+        Guid captureId,
+        HttpContext context,
+        ICameraAgentGallery gallery,
+        ICameraAgentCapturePresentationProjector projector,
+        CancellationToken cancellationToken)
+    {
+        var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
+        if (capture is null)
+        {
+            return Results.NotFound();
+        }
+        var presentation = projector.Project(capture);
+        var slot = presentation.SelectedStage is { } selected
+            ? presentation.Stages.FirstOrDefault(item => item.Stage == selected && item.PreviewUrl is not null)
+            : null;
+        slot ??= presentation.Stages.FirstOrDefault(static item => item.PreviewUrl is not null);
+        if (slot?.PreviewUrl is not { } url)
+        {
+            return Results.NotFound();
+        }
+        // The chosen artifact is stable for a capture once published; the redirect may be held
+        // privately for a while so a calendar of thumbnails does not re-project every cell.
+        context.Response.Headers.CacheControl = "private, max-age=300";
+        return Results.Redirect(url.OriginalString);
     }
 
     private static async Task WritePresentationAsync(

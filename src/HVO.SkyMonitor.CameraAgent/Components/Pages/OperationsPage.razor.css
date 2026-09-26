@@ -5,13 +5,11 @@
 .operations-heading > div > p:last-child { max-width: 48rem; color: var(--hvo-muted); margin: .75rem 0 0; }
 .eyebrow { margin: 0 0 .35rem; color: var(--hvo-info-fg); font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .heading-status { display: grid; justify-items: end; gap: .4rem; color: var(--hvo-muted); font-size: .78rem; }
-.refresh-link { min-height: 44px; padding: .25rem .45rem; border: 0; color: var(--hvo-info-fg); background: transparent; text-decoration: underline; text-underline-offset: .2rem; }
-.state-chip, .freshness { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
-.state-chip--current, .freshness--fresh { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
-.state-chip--stale, .freshness--stale, .state-chip--loading { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
-.state-chip--pressure { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
-.state-chip--disconnected, .state-chip--error { color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
-.freshness--unknown { color: var(--hvo-muted); background: var(--hvo-nav-badge-bg); }
+.refresh-link { flex: 0 0 auto; }
+.state-chip--current { border-color: rgba(52, 211, 153, .4); color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
+.state-chip--stale, .state-chip--loading { border-color: rgba(250, 204, 21, .4); color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.state-chip--pressure { border-color: rgba(250, 204, 21, .4); color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.state-chip--disconnected, .state-chip--error { border-color: rgba(248, 113, 113, .4); color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
 .state-banner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 0 1rem; padding: .9rem 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface-elevated); }
 .state-banner--warning { border-color: var(--hvo-warning-strong); background: var(--hvo-warning-bg); }
 .state-banner--error { border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }

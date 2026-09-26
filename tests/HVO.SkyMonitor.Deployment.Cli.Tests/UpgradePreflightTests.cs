@@ -18,7 +18,7 @@ public sealed class UpgradePreflightTests
     private static readonly uint RuntimeGid = NativeLinux.getgid();
 
     private static readonly CameraAgentStateRequirements CurrentRequirements = new(
-        CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 12, 2);
+        CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, 2);
 
     private static readonly string[] ExpectedLegacyFindingCodes =
     [
@@ -62,7 +62,7 @@ public sealed class UpgradePreflightTests
         Assert.AreEqual(CurrentIdentityMigration, identity.Expected);
         var rawIngress = report.Findings.Single(static finding => finding.Code == "raw-ingress-schema");
         Assert.AreEqual("11", rawIngress.Observed);
-        Assert.AreEqual("12", rawIngress.Expected);
+        Assert.AreEqual("13", rawIngress.Expected);
         var mode = report.Findings.Single(static finding => finding.Code == "bind-source-mode");
         Assert.AreEqual("0755", mode.Observed);
         Assert.AreEqual("0700", mode.Expected);
@@ -83,7 +83,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         var report = Evaluate(fixture);
@@ -106,6 +106,65 @@ public sealed class UpgradePreflightTests
 
         Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
         Assert.AreEqual(0, report.Findings.Count);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_Schema12IsRejectedBeforeUpgradeAndExact13IsAccepted()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.CreateBindSources();
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        var legacy = Evaluate(fixture);
+        Assert.IsFalse(legacy.Compatible);
+        var finding = legacy.Findings.Single(static value => value.Blocking);
+        Assert.AreEqual("raw-ingress-schema", finding.Code);
+        Assert.AreEqual("12", finding.Observed);
+        Assert.AreEqual("13", finding.Expected);
+        Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(
+            CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)));
+        var otherForward = Evaluate(fixture, CurrentRequirements with { RawIngressSchema = 14 });
+        Assert.IsFalse(otherForward.Compatible);
+        Assert.AreEqual("raw-ingress-schema", otherForward.Findings.Single(static finding => finding.Blocking).Code);
+        var oldImage = CurrentRequirements with { RawIngressSchema = 12 };
+        fixture.SetRawIngressVersion(13);
+        Assert.IsTrue(Evaluate(fixture).Compatible);
+        var rollback = Evaluate(fixture, oldImage, CameraAgentStateContractPolicy.AllowLegacy);
+        Assert.IsFalse(rollback.Compatible);
+        Assert.AreEqual("raw-ingress-schema", rollback.Findings.Single(static finding => finding.Blocking).Code);
+        fixture.SetRawIngressVersion(11);
+        Assert.IsFalse(Evaluate(fixture).Compatible);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task EnsureCompatibleAsync_Schema12BlocksDeploymentWithoutChangingTheJournal()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+        var candidate = new ImageInstallationIdentity(
+            "registry", $"cameraagent@sha256:{new string('b', 64)}",
+            $"sha256:{new string('c', 64)}", "amd64", null,
+            UpgradeCompatibility: CameraAgentStateContract.Current,
+            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            IdentityMigration: CurrentIdentityMigration,
+            RawIngressSchema: "13",
+            CatalogManifestVersion: "2");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentStatePreflight.EnsureCompatibleAsync(
+                fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.Current,
+                RuntimeUid, RuntimeGid, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+                persist: true, renderToStandardError: false, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "raw-ingress-schema", StringComparison.Ordinal);
+        Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(
+            CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)));
     }
 
     [TestMethod]
@@ -176,7 +235,7 @@ public sealed class UpgradePreflightTests
             UpgradeCompatibility: CameraAgentStateContract.Current,
             MinimumCompatibleRevision: MinimumCompatibleRevision,
             IdentityMigration: CurrentIdentityMigration,
-            RawIngressSchema: "12",
+            RawIngressSchema: "13",
             CatalogManifestVersion: "2");
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
@@ -209,14 +268,14 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
         var candidate = new ImageInstallationIdentity(
             "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
             UpgradeCompatibility: CameraAgentStateContract.Current,
             MinimumCompatibleRevision: MinimumCompatibleRevision,
             IdentityMigration: CurrentIdentityMigration,
-            RawIngressSchema: "12",
+            RawIngressSchema: "13",
             CatalogManifestVersion: "2");
 
         var report = await CameraAgentStatePreflight.EnsureCompatibleAsync(
@@ -261,7 +320,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: false);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         // The runtime materializes the file on its first connection and creates the history table only during
@@ -279,7 +338,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: true);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         var report = Evaluate(fixture);
@@ -297,10 +356,10 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
         var partial = new CameraAgentStateRequirements(
-            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 12, null);
+            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, null);
 
         var report = Evaluate(fixture, partial);
 
@@ -687,6 +746,17 @@ public sealed class UpgradePreflightTests
             command.CommandText =
                 (createTable ? "CREATE TABLE raw_capture (id INTEGER PRIMARY KEY);" : string.Empty) +
                 $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
+#pragma warning restore CA2100
+            command.ExecuteNonQuery();
+        }
+
+        public void SetRawIngressVersion(int schemaVersion)
+        {
+            using var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot)}");
+            connection.Open();
+            using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // Fixed test schema versions cannot be parameterized in PRAGMA.
+            command.CommandText = $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
 #pragma warning restore CA2100
             command.ExecuteNonQuery();
         }

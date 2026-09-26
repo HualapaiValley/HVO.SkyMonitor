@@ -1,33 +1,303 @@
-.current-sky-page { box-sizing: border-box; width: min(100%, 96rem); margin: 0 auto; padding: clamp(.8rem, 2.5vw, 2rem); color: var(--hvo-body-color); overflow-x: clip; }
-.current-sky-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-.current-sky-heading h1 { margin: 0; font-family: Georgia, Cambria, "Times New Roman", serif; font-size: clamp(2.3rem, 5vw, 4.8rem); font-weight: 500; line-height: .92; letter-spacing: -.045em; }
-.current-sky-heading > div > p:last-child { max-width: 50rem; margin: .75rem 0 0; color: var(--hvo-muted); }
-.eyebrow { margin: 0 0 .35rem; color: var(--hvo-info-fg); font-size: .7rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
-.refresh-link { min-height: 44px; flex: 0 0 auto; padding: .35rem .5rem; border: 0; color: var(--hvo-info-fg); background: transparent; text-decoration: underline; text-underline-offset: .2rem; }
-.current-sky-hero { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .65fr); gap: 1rem; align-items: start; }
-.current-sky-visual { min-width: 0; }
-.image-action { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: .55rem .8rem; border: 1px solid var(--hvo-border-stronger); border-radius: .55rem; color: var(--hvo-body-color); background: #14283a; text-decoration: none; }
-.stage-status { min-height: 1.5rem; margin: .45rem 0 0; color: var(--hvo-muted); font-size: .78rem; }
-.current-sky-summary { min-width: 0; padding: 1rem; border: 1px solid var(--hvo-border-muted); border-radius: 1rem; background: linear-gradient(160deg, rgba(18, 42, 62, .72), var(--hvo-card-bg)); box-shadow: var(--hvo-panel-shadow); }
-.current-sky-summary h2 { margin: .2rem 0 .5rem; font-family: Georgia, Cambria, "Times New Roman", serif; font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 500; }
-.summary-copy, .next-transition, .facts-unavailable { color: var(--hvo-muted); }
-.lineage { margin: .9rem 0 0; padding: .6rem .75rem; border-left: 3px solid var(--hvo-info-strong); color: var(--hvo-muted); background: var(--hvo-info-bg); font-size: .85rem; }
-.lineage strong { display: block; margin-bottom: .2rem; color: var(--hvo-body-color); }
-.layers-link { display: inline-flex; align-items: center; min-height: 44px; margin-top: .5rem; color: var(--hvo-info-fg); text-decoration: underline; text-underline-offset: .2rem; }
-.status-chips { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1.25rem; }
-.status-chip { display: inline-flex; align-items: center; min-height: 1.8rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .66rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-.status-chip--current { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
-.status-chip--warning { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
-.status-chip--danger { color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }
-.status-chip--neutral { color: var(--hvo-muted-strong); background: var(--hvo-nav-badge-bg); }
-.current-sky-summary dl { display: grid; gap: 0; margin: 1rem 0 0; }
-.current-sky-summary dl > div { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(0, 1.5fr); gap: .75rem; padding: .6rem 0; border-top: 1px solid var(--hvo-border-muted); }
-.current-sky-summary dt { color: var(--hvo-muted-weak); font-size: .66rem; letter-spacing: .09em; text-transform: uppercase; }
-.current-sky-summary dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
-.state-notice { display: flex; align-items: baseline; gap: .65rem; margin: .9rem 0 0; padding: .8rem 1rem; border: 1px solid var(--hvo-border-muted); border-radius: .75rem; color: var(--hvo-muted); background: var(--hvo-surface-elevated); }
-.state-notice strong { flex: 0 0 auto; color: var(--hvo-body-color); }
-.state-notice--error { margin: 0 0 1rem; border-color: var(--hvo-danger-strong); background: var(--hvo-danger-bg); }
-:is(button, a):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
-@media (max-width: 760px) { .current-sky-page { padding-inline: .75rem; } .current-sky-heading { display: grid; } .current-sky-hero { grid-template-columns: minmax(0, 1fr); } .state-notice { align-items: flex-start; flex-direction: column; gap: .25rem; } }
-@media (max-height: 500px) and (orientation: landscape) { .current-sky-page { padding: .6rem 1rem; } .current-sky-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .current-sky-hero { grid-template-columns: minmax(0, 1.35fr) minmax(15rem, .65fr); gap: .65rem; } .current-sky-summary { max-height: calc(100dvh - 5rem); overflow-y: auto; } .status-chips { margin-bottom: .6rem; } }
-@media (pointer: coarse) { .image-action, .refresh-link { min-height: 44px; } }
+/* Ported from docs/prototypes/pipeline-operations/cameraagent-pages.css (dashboard rules) and the dashboard
+   parts of styles.css. Selectors and values are the prototype's; the only changes are the token aliases below,
+   scoping, and the SVG rules that key on the renderer's data-layer-kind instead of prototype element ids. */
+.current-sky-page {
+    --bg: var(--hvo-body-bg);
+    --surface: var(--hvo-surface);
+    --surface-raised: var(--hvo-surface-elevated);
+    --surface-soft: #0a111b;
+    --surface-hover: var(--hvo-surface-hover);
+    --border: var(--hvo-border-muted);
+    --border-strong: var(--hvo-border-strong);
+    --text: var(--hvo-body-color);
+    --muted: var(--hvo-muted);
+    --muted-strong: var(--hvo-muted-strong);
+    --blue: #58a6ff;
+    --blue-strong: #2f81f7;
+    --blue-soft: rgba(47, 129, 247, .16);
+    --green: #3fb950;
+    --green-soft: rgba(63, 185, 80, .15);
+    --amber: #d29922;
+    --amber-soft: rgba(210, 153, 34, .16);
+    --red: #f85149;
+    --red-soft: rgba(248, 81, 73, .15);
+    --purple: #bc8cff;
+    --cyan: #39c5cf;
+    box-sizing: border-box;
+    width: min(100%, 112rem);
+    margin: 0 auto;
+    padding: clamp(1rem, 2.6vw, 2.4rem) clamp(.75rem, 2.6vw, 2.4rem) 4rem;
+    color: var(--text);
+    overflow-x: clip;
+}
+.current-sky-page *, .current-sky-page ::deep * { box-sizing: border-box; }
+.current-sky-page.historical-sky { padding: 0; }
+.current-sky-page svg, .current-sky-page ::deep .button svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+.site-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.25rem; }
+.historical-sky .site-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; }
+.historical-sky .site-heading-actions { justify-self: end; }
+.site-heading h1 { margin: 0; font-size: clamp(2rem, 4vw, 3.5rem); line-height: .95; letter-spacing: -.045em; }
+.site-heading > div:first-child > p:last-child { max-width: 48rem; margin: .7rem 0 0; color: var(--muted); font-size: .82rem; }
+.site-heading-actions, .image-heading-actions { display: flex; align-items: center; gap: .55rem; }
+.eyebrow { margin: 0 0 .28rem; color: var(--blue); font-size: .65rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+
+.live-indicator { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted-strong); font: 650 .68rem ui-monospace, monospace; }
+.live-indicator i { width: .48rem; height: .48rem; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); animation: soft-pulse 2s ease-out infinite; }
+.live-indicator.history i { background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); animation: none; }
+
+.button, .current-sky-page ::deep .button { display: inline-flex; min-height: 2.45rem; align-items: center; justify-content: center; gap: .45rem; padding: .5rem .85rem; border: 1px solid var(--border-strong); border-radius: .45rem; font-size: .75rem; font-weight: 700; cursor: pointer; text-decoration: none; }
+.button svg { width: .95rem; height: .95rem; }
+.button.secondary { color: var(--text); background: var(--surface-raised); }
+.button.secondary:hover { background: var(--surface-hover); }
+.button.small { min-height: 2.1rem; padding: .4rem .65rem; font-size: .68rem; }
+.button:disabled { opacity: .55; cursor: not-allowed; }
+
+.status-icon { position: relative; display: inline-grid; flex: 0 0 auto; width: 1.05rem; height: 1.05rem; place-items: center; border-radius: 50%; }
+.status-icon::after { color: #07110a; font-weight: 900; line-height: 1; content: ""; }
+.status-icon.success { background: var(--green); }
+.status-icon.success::after { content: "\2713"; }
+.status-icon.warning { background: var(--amber); }
+.status-icon.warning::after { color: #1d1504; content: "!"; }
+.status-icon.failure { background: var(--red); }
+.status-icon.failure::after { color: white; content: "\00d7"; }
+.status-icon.pending { border: 2px solid var(--muted); }
+
+.state-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .28rem .55rem; border: 1px solid; border-radius: 999px; font-size: .61rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
+.state-chip.success { border-color: rgba(63, 185, 80, .4); color: #8fe49c; background: var(--green-soft); }
+.state-chip.warning { border-color: rgba(210, 153, 34, .45); color: #e6bd62; background: var(--amber-soft); }
+.state-chip.failure { border-color: rgba(248, 81, 73, .45); color: #ff9b95; background: var(--red-soft); }
+.state-chip.pending { border-color: var(--border); color: var(--muted-strong); background: var(--surface); }
+
+.dashboard-status { display: grid; grid-template-columns: minmax(15rem, 1.4fr) minmax(38rem, 2fr); gap: 1rem; align-items: center; min-height: 4.9rem; margin-bottom: 1rem; padding: .8rem 1rem; border: 1px solid var(--border); border-radius: .55rem; background: rgba(13, 20, 32, .74); }
+.dashboard-status > div { display: flex; align-items: center; gap: .65rem; }
+.dashboard-status strong, .dashboard-status small { display: block; }
+.dashboard-status strong { font-size: .76rem; }
+.dashboard-status small { margin-top: .18rem; color: var(--muted); font-size: .62rem; }
+.dashboard-status dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+.dashboard-status dl > div { padding: .1rem .8rem; border-left: 1px solid var(--border); }
+.dashboard-status dt, .lineage-facts dt, .capture-facts dt, .rig-facts dt { color: var(--muted); font-size: .58rem; letter-spacing: .04em; text-transform: uppercase; }
+.dashboard-status dd, .lineage-facts dd, .capture-facts dd, .rig-facts dd { margin: .25rem 0 0; font-size: .72rem; font-weight: 700; }
+.fact-unavailable { color: var(--muted); font-weight: 600; }
+
+.sky-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 23rem); gap: 1rem; align-items: start; }
+.sky-primary { display: grid; gap: 1rem; min-width: 0; align-content: start; }
+.sky-primary .operations-strip { grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); margin-top: 0; }
+.sky-viewer-card, .inspector-card, .operations-strip article { border: 1px solid var(--border); border-radius: .55rem; background: rgba(9, 15, 24, .86); box-shadow: 0 14px 35px rgba(0, 0, 0, .16); }
+.sky-viewer-card { min-width: 0; overflow: hidden; }
+.card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border-bottom: 1px solid var(--border); }
+.card-heading h2, .inspector-card h2 { margin: 0; font-size: .95rem; }
+.card-heading > div:first-child > p:last-child { margin: .3rem 0 0; color: var(--muted); font-size: .66rem; }
+.product-badge { padding: .26rem .5rem; border: 1px solid rgba(188, 140, 255, .38); border-radius: 999px; color: #d2b8f4; background: rgba(188, 140, 255, .1); font-size: .58rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.product-badge.current { border-color: rgba(63, 185, 80, .4); color: #9ae6a4; background: var(--green-soft); }
+.product-badge.source { border-color: rgba(57, 197, 207, .4); color: #95e6eb; background: rgba(57, 197, 207, .1); }
+
+.sky-figure { position: relative; margin: 0; overflow: hidden; background: #000; }
+.sky-figure:fullscreen { display: grid; grid-template-rows: minmax(0, 1fr) auto; background: #000; }
+.sky-figure:fullscreen .sky-image-stage { width: 100%; height: 100%; }
+.technical-evidence-error { margin: 0; padding: .65rem .8rem; color: var(--hvo-danger-fg); background: var(--hvo-surface); }
+.sky-figure:fullscreen ::deep .capture-image { width: 100%; height: 100%; min-height: 0; max-height: none; }
+.sky-figure:fullscreen ::deep .capture-image img { width: 100%; height: 100%; min-height: 0; object-fit: contain; }
+.sky-image-stage { position: relative; width: 100%; overflow: hidden; background: #000; }
+.sky-layer-workspace, .sky-layer-canvas { position: absolute; inset: 0; }
+.sky-layer-canvas > img, .sky-layer-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sky-layer-canvas > img { display: block; object-fit: contain; }
+.sky-layer-overlay { visibility: hidden; pointer-events: none; }
+.sky-layer-canvas--verified > .sky-layer-overlay { visibility: visible; }
+.sky-image-stage ::deep .capture-image { position: relative; max-height: none; border: 0; border-radius: 0; background: #000; box-shadow: none; }
+.sky-image-stage ::deep .capture-image img { display: block; width: 100%; height: auto; max-height: none; object-fit: contain; }
+
+/* The renderer's SVG viewBox matches the base image, so the overlay scales with it exactly like the prototype. */
+.scene-overlay, .sky-layer-overlay ::deep svg { display: block; width: 100%; height: 100%; }
+
+/* Semantic styling from the prototype's per-layer rules, keyed on the retained layer kind. The renderer emits
+   filled glyph paths for text and stroked primitives for geometry; these rules give each kind the prototype's
+   color, dash and weight without altering pixel-coordinate registration. */
+.sky-layer-overlay ::deep g[data-layer-kind="scene-image-circle"] :is(ellipse, circle, line) { stroke: rgba(116, 209, 255, .45); stroke-width: 2; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-image-circle"] line { stroke: rgba(116, 209, 255, .12); stroke-width: 1; stroke-dasharray: 4 12; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-constellations"] line { stroke: rgba(188, 140, 255, .78); stroke-width: 3; stroke-dasharray: 10 8; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-constellations"] path { fill: #cfb4f5; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-cardinals"] path { fill: #c3ecff; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-cardinals"] rect { fill: rgba(2, 8, 14, .84); stroke: rgba(116, 209, 255, .38); }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-annotation"] :is(circle, ellipse) { stroke: #d2b8f4; stroke-width: 1.5; }
+.sky-layer-overlay ::deep g[data-layer-kind="scene-annotation"] path { fill: #d8eafa; }
+.sky-layer-overlay ::deep g[data-layer-kind="environment"] path { fill: #d8e5f6; }
+.sky-layer-overlay ::deep g[data-layer-kind="cloud-mask"] path { stroke: rgba(65, 189, 211, .55); }
+.sky-layer-overlay ::deep g[data-layer-kind="cloud-labels"] path { fill: #a4eff2; }
+.sky-layer-overlay ::deep path[stroke="#000000"] { stroke: rgba(3, 8, 14, .95); }
+
+.scene-semantics { display: flex; flex-wrap: wrap; justify-content: center; gap: .35rem; }
+.scene-semantics span { padding: .22rem .38rem; border: 1px solid currentColor; border-radius: 999px; background: rgba(5, 10, 17, .82); font: 700 .5rem ui-monospace, monospace; text-transform: uppercase; }
+.scene-semantics .measured { color: #78dbff; }
+.scene-semantics .expected { color: #d2b8f4; }
+.scene-semantics .predicted { color: #ffc078; }
+
+.sky-figure figcaption { position: relative; z-index: 4; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 1rem; padding: .65rem .8rem; border-top: 1px solid var(--border); background: linear-gradient(90deg, rgba(7, 12, 20, .96), rgba(7, 12, 20, .72)); }
+.sky-figure figcaption > div:first-child { display: flex; align-items: center; gap: .55rem; }
+.sky-figure figcaption .figure-actions { display: flex; align-items: center; justify-content: flex-end; gap: .55rem; grid-column: 3; }
+.sky-figure figcaption .scene-semantics { grid-column: 2; }
+.sky-figure figcaption strong, .sky-figure figcaption small { display: block; }
+.sky-figure figcaption strong { font-size: .68rem; }
+.sky-figure figcaption small { margin-top: .12rem; color: var(--muted); font-size: .57rem; }
+.figure-actions .inline-action { margin-top: 0; }
+.image-tool { display: grid; width: 2rem; height: 2rem; place-items: center; padding: 0; border: 1px solid var(--border-strong); border-radius: .4rem; color: var(--muted-strong); background: var(--surface); cursor: pointer; }
+.image-tool svg { width: 1.1rem; height: 1.1rem; }
+.image-tool:hover { color: var(--text); background: var(--surface-hover); }
+
+.stage-switcher { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: #080d15; }
+.stage-switcher button { position: relative; display: grid; gap: .16rem; min-width: 0; padding: .65rem .75rem; border: 0; border-right: 1px solid var(--border); color: var(--muted); background: transparent; cursor: pointer; text-align: left; }
+.stage-switcher button:last-child { border-right: 0; }
+.stage-switcher button:hover { color: var(--text); background: var(--surface-hover); }
+.stage-switcher button:disabled { color: var(--muted); opacity: .38; cursor: not-allowed; }
+.stage-switcher button:disabled:hover { background: transparent; }
+.stage-switcher button.active { color: var(--text); background: var(--blue-soft); }
+.stage-switcher button.active::after { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: var(--blue); content: ""; }
+.stage-switcher span { font-size: .7rem; font-weight: 750; }
+.stage-switcher small { color: var(--muted); font-size: .57rem; }
+.stage-unavailable, .stage-status, .stage-display-policy { padding-inline: 1rem; color: var(--muted); }
+.stage-unavailable { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: .45rem 0 0; font-size: .6rem; }
+.stage-unavailable:empty { display: none; }
+.stage-status { margin: .45rem 0 0; font-size: .64rem; }
+.stage-display-policy { margin: .3rem 0 .6rem; font-size: .58rem; overflow-wrap: anywhere; }
+.stage-display-policy strong { color: var(--text); }
+.stage-display-policy a { margin-left: .4rem; }
+
+.stack-lineage { padding: 1rem; border-top: 1px solid var(--border); }
+.stack-lineage > header, .inspector-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.stack-lineage h3 { margin: 0; font-size: .88rem; }
+.registration-quality { padding: .28rem .48rem; border: 1px solid rgba(63, 185, 80, .35); border-radius: 999px; color: #9ae6a4; background: var(--green-soft); font: 700 .58rem ui-monospace, monospace; white-space: nowrap; }
+.source-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin-top: .8rem; }
+.source-strip > .source-entry { position: relative; min-width: 0; min-height: 3.5rem; border: 1px solid var(--border); border-radius: .4rem; color: var(--text); background: #05080d; overflow: hidden; }
+.source-strip > .reference { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(88, 166, 255, .13); }
+.source-strip a { display: block; }
+.source-strip img { display: block; width: 100%; aspect-ratio: 16 / 7; object-fit: cover; opacity: .68; }
+.source-strip .reference img { opacity: 1; }
+.source-strip .unavailable { display: grid; min-height: 3.5rem; place-items: center; background: repeating-linear-gradient(135deg, #070c13 0 8px, #0a111b 8px 16px); }
+.source-strip .unavailable b { max-width: 5rem; color: var(--muted); font-size: .5rem; font-weight: 600; text-align: center; }
+.source-strip .source-entry > span:not(.unavailable), .source-strip small { position: absolute; bottom: .3rem; padding: .1rem .24rem; border-radius: .2rem; background: rgba(4, 8, 14, .82); font-size: .53rem; }
+.source-strip .source-entry > span:not(.unavailable) { left: .3rem; color: var(--blue); font-weight: 750; }
+.source-strip small { right: .3rem; color: var(--muted-strong); }
+.lineage-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: .8rem 0 0; border: 1px solid var(--border); border-radius: .35rem; }
+.lineage-facts > div { padding: .55rem .65rem; border-right: 1px solid var(--border); }
+.lineage-facts > div:last-child { border-right: 0; }
+.design-disclosure { margin: .7rem 0 0; padding: .55rem .65rem; border-left: 2px solid var(--purple); color: var(--muted); background: rgba(188, 140, 255, .06); font-size: .62rem; line-height: 1.45; }
+.design-disclosure strong { color: #d2b8f4; }
+.stack-lineage > p:not(.design-disclosure) { margin: .6rem 0 0; color: var(--muted); font-size: .62rem; }
+
+.sky-inspector { display: grid; gap: 1rem; min-width: 0; }
+.inspector-card { min-width: 0; padding: .9rem; }
+.inspector-card > header > span { color: var(--muted); font-size: .62rem; }
+.overlay-controls > p { margin: .55rem 0 .8rem; color: var(--muted); font-size: .65rem; line-height: 1.45; }
+.overlay-list { display: grid; gap: .55rem; }
+.overlay-group { display: grid; gap: .18rem; }
+.overlay-group > p { display: flex; align-items: baseline; justify-content: space-between; gap: .45rem; margin: 0; padding: 0 .15rem .25rem; border-bottom: 1px solid var(--border); }
+.overlay-group > p strong { color: var(--muted-strong); font-size: .57rem; letter-spacing: .08em; text-transform: uppercase; }
+.overlay-group > p span { color: var(--muted); font-size: .51rem; text-align: right; }
+.overlay-list label { display: grid; grid-template-columns: auto auto 1fr; gap: .55rem; align-items: center; padding: .52rem; border: 1px solid transparent; border-radius: .38rem; cursor: pointer; }
+.overlay-list label:hover { border-color: var(--border); background: var(--surface-hover); }
+.overlay-list label:has(input:disabled) { opacity: .48; cursor: not-allowed; }
+.overlay-list label:has(input:disabled):hover { border-color: transparent; background: transparent; }
+.overlay-list input { margin: 0; accent-color: var(--blue-strong); }
+.overlay-controls.evidence-unavailable .overlay-list { opacity: .48; }
+.overlay-controls.evidence-unavailable .overlay-list label { cursor: not-allowed; }
+.overlay-list strong, .overlay-list small { display: block; }
+.overlay-list strong { font-size: .68rem; }
+.overlay-list small { margin-top: .12rem; color: var(--muted); font: .54rem ui-monospace, monospace; }
+.layer-swatch { width: .6rem; height: .6rem; border-radius: 2px; background: var(--blue); }
+.layer-swatch.deep-sky { border: 1px solid var(--cyan); border-radius: 50%; background: transparent; }
+.layer-swatch.constellations, .layer-swatch.scene-constellations { background: var(--purple); }
+.layer-swatch.bodies { border: 1px dashed var(--purple); border-radius: 50%; background: transparent; }
+.layer-swatch.cardinals, .layer-swatch.scene-cardinals, .layer-swatch.cardinal-directions { background: #c3ecff; }
+.layer-swatch.boundary, .layer-swatch.scene-image-circle, .layer-swatch.image-circle { border: 1px solid var(--blue); border-radius: 50%; background: transparent; }
+.layer-swatch.scene-annotation, .layer-swatch.star-annotations { border: 1px dashed #d2b8f4; background: transparent; }
+.layer-swatch.cloud, .layer-swatch.cloud-mask, .layer-swatch.cloud-labels { background: var(--cyan); }
+.layer-swatch.environment, .layer-swatch.corner-annotations { background: var(--amber); }
+.layer-swatch.expected { border: 1px dashed var(--amber); background: transparent; }
+.layer-swatch.residuals { background: #f1c96f; }
+.layer-swatch.satellites { background: #ff9f43; }
+.layer-swatch.meteor { border: 1px solid #ff9f43; background: transparent; }
+.overlay-actions { display: flex; flex-wrap: wrap; gap: 0 1.2rem; }
+.sky-layer-save { margin-left: auto; text-align: right; }
+.text-button, .inline-action { display: inline-flex; min-height: 2.2rem; align-items: center; margin-top: .65rem; padding: .35rem 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: .63rem; font-weight: 700; text-decoration: none; }
+.text-button:disabled { color: var(--muted); opacity: .45; cursor: not-allowed; }
+.scene-unavailable, .sky-layer-result { margin: .65rem 0 0; color: var(--muted); font-size: .62rem; }
+.sky-layer-result--error { color: #ff9b95; }
+.sky-layer-unavailable { margin: .75rem 1rem; color: var(--muted); font-size: .64rem; }
+
+.capture-facts dl, .rig-facts dl, .astrometry-card > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: .7rem 0 0; }
+.capture-facts dl > div, .rig-facts dl > div, .astrometry-card > dl > div { min-width: 0; padding: .55rem 0; border-top: 1px solid var(--border); }
+.capture-facts dl > div:nth-child(odd), .rig-facts dl > div:nth-child(odd), .astrometry-card > dl > div:nth-child(odd) { padding-right: .5rem; }
+.capture-facts dd, .rig-facts dd { overflow-wrap: anywhere; }
+.rig-facts dl > div:last-child { grid-column: 1 / -1; }
+.astrometry-card dt { color: var(--muted); font-size: .52rem; text-transform: uppercase; }
+.astrometry-card dd { margin: .2rem 0 0; font-size: .62rem; font-weight: 700; }
+.pixel-sky-calculator { margin-top: .65rem; padding-top: .65rem; border-top: 1px solid var(--border); }
+.pixel-sky-calculator > p { margin: 0 0 .55rem; }
+.pixel-sky-calculator > p strong, .pixel-sky-calculator > p span { display: block; }
+.pixel-sky-calculator > p strong { font-size: .63rem; }
+.pixel-sky-calculator > p span { margin-top: .15rem; color: var(--muted); font-size: .52rem; line-height: 1.4; }
+.pixel-sky-calculator > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: .4rem; align-items: end; }
+.pixel-sky-calculator label { display: grid; gap: .2rem; color: var(--muted); font-size: .5rem; }
+.pixel-sky-calculator input { width: 100%; min-height: 2rem; padding: .35rem .45rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text); background: var(--surface); }
+.pixel-sky-calculator input:disabled { opacity: .5; }
+.summary-copy, .next-transition, .facts-unavailable { margin: .7rem 0 0; color: var(--muted); font-size: .62rem; line-height: 1.45; }
+
+.operations-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .7rem; margin-top: 1rem; }
+.operations-strip article { display: flex; align-items: center; gap: .7rem; padding: .75rem; }
+.metric-icon { display: grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; border-radius: .45rem; color: var(--blue); background: var(--blue-soft); }
+.metric-icon.processing { color: var(--purple); background: rgba(188, 140, 255, .1); }
+.metric-icon.transient { color: var(--amber); background: var(--amber-soft); }
+.metric-icon.delivery { color: var(--cyan); background: rgba(57, 197, 207, .1); }
+.operations-strip small, .operations-strip strong, .operations-strip article div > span { display: block; }
+.operations-strip small { color: var(--muted); font-size: .55rem; letter-spacing: .05em; text-transform: uppercase; }
+.operations-strip strong { margin-top: .15rem; font-size: .72rem; }
+.operations-strip article div > span { margin-top: .14rem; color: var(--muted); font-size: .58rem; }
+
+.state-notice { display: flex; align-items: baseline; gap: .65rem; margin: 1rem 0 0; padding: .8rem 1rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--muted); background: var(--surface-soft); font-size: .68rem; }
+.state-notice strong { flex: 0 0 auto; color: var(--text); }
+.state-notice--error { margin: 0 0 1rem; border-color: var(--red); background: var(--red-soft); }
+:is(button, a, input):focus-visible { outline: 3px solid rgba(88, 166, 255, .65); outline-offset: 2px; }
+
+@keyframes soft-pulse { 0% { box-shadow: 0 0 0 0 rgba(63, 185, 80, .38); } 70% { box-shadow: 0 0 0 7px rgba(63, 185, 80, 0); } 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); } }
+
+@media (max-width: 1180px) {
+    .sky-workspace { grid-template-columns: minmax(0, 1fr) 20rem; }
+    .sky-figure figcaption { grid-template-columns: minmax(0, 1fr) auto; }
+    .sky-figure figcaption .scene-semantics { grid-column: 1 / -1; grid-row: 2; }
+    .sky-figure figcaption .figure-actions { grid-column: 2; grid-row: 1; }
+}
+@media (max-width: 900px) {
+    .site-heading { align-items: flex-start; }
+    .historical-sky .site-heading { grid-template-columns: minmax(0, 1fr); justify-items: start; }
+    .historical-sky .site-heading-actions { justify-self: stretch; }
+    .dashboard-status { grid-template-columns: 1fr; }
+    .dashboard-status dl > div:first-child { border-left: 0; }
+    .sky-workspace { grid-template-columns: 1fr; }
+    .sky-inspector { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .overlay-controls { grid-row: span 2; }
+    .operations-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 780px) { .site-heading { display: grid; } .site-heading-actions { justify-content: space-between; } }
+@media (max-width: 620px) {
+    .current-sky-page { padding: 1rem .65rem 3rem; }
+    .site-heading-actions { align-items: stretch; flex-direction: column; }
+    .site-heading-actions .button { width: 100%; }
+    .dashboard-status dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dashboard-status dl > div { border-top: 1px solid var(--border); border-left: 0; padding: .5rem; }
+    .image-heading { display: grid; }
+    .image-heading-actions { justify-content: space-between; }
+    .scene-semantics span { font-size: .42rem; }
+    .stage-switcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stage-switcher button:nth-child(2) { border-right: 0; }
+    .stage-switcher button:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+    .source-strip { grid-template-columns: repeat(5, 7.5rem); overflow-x: auto; padding: 2px; }
+    .lineage-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lineage-facts > div { border-top: 1px solid var(--border); }
+    .lineage-facts > div:nth-child(2) { border-right: 0; }
+    .sky-inspector { grid-template-columns: 1fr; }
+    .overlay-controls { grid-row: auto; }
+    .operations-strip { grid-template-columns: 1fr; }
+    .pixel-sky-calculator > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pixel-sky-calculator .button { grid-column: 1 / -1; }
+    .state-notice { align-items: flex-start; flex-direction: column; gap: .25rem; }
+}

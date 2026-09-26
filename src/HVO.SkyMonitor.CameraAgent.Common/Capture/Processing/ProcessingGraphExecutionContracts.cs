@@ -148,7 +148,12 @@ public sealed record ProcessingGraphExecutionNodeState(
     DateTimeOffset? CompletedUtc,
     IReadOnlyList<ProcessingGraphExecutionInputState> Inputs,
     IReadOnlyList<ProcessingGraphNodeAttemptState> Attempts,
-    IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs);
+    IReadOnlyList<ProcessingGraphExecutionOutputState> Outputs)
+{
+    /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
+    public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
+    public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
+}
 
 /// <summary>One terminal execution key and the immutable ordering value the evidence exporter sweeps by.</summary>
 internal sealed record ProcessingGraphTerminalExecution(
@@ -304,6 +309,9 @@ public interface IProcessingGraphOperations
     ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
         Guid executionId,
         CancellationToken cancellationToken);
+
+    /// <summary>Finds the one live execution for a capture through the durable unique capture index.</summary>
+    ValueTask<Guid?> ReadLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken);
 
     /// <summary>
     /// Reads the immutable pipeline definition stored with a graph revision, or null when no

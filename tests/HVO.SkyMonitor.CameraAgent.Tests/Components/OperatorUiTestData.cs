@@ -130,14 +130,18 @@ internal static class OperatorUiTestData
             [
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", rawArtifactId, FrameArtifactRole.Raw, null, "image/jpeg",
-                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview", UriKind.Relative)),
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview", UriKind.Relative),
+                    rawArtifactId, CameraAgentPresentationDisplayBasis.OwnArtifact,
+                    "On-demand per-image percentile normalization (test policy).", DisplayOperation: CameraAgentPreviewOperation.PerImageStretch),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing,
                     "NotProduced"),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing,
                     "NotProduced"),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", annotatedArtifactId, FrameArtifactRole.AnnotatedPreview, "display", "image/jpeg",
-                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative))
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative),
+                    annotatedArtifactId, DisplayPolicy: "Retained encoded bytes shown as produced; no display stretch applied here.",
+                    DisplayOperation: CameraAgentPreviewOperation.EncodedPassthrough)
             ];
         return new CameraAgentCurrentImagePresentation(
             Now,
@@ -224,6 +228,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(CancellationToken cancellationToken) => CurrentImageHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(Guid captureId, CancellationToken cancellationToken) => DetailHandler(captureId, cancellationToken);
+    internal Func<CameraAgentGalleryCapture, CameraAgentCapturePresentation>? DetailPresentationHandler { get; set; }
     public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(Guid captureId, CancellationToken cancellationToken)
     {
         var result = await DetailHandler(captureId, cancellationToken).ConfigureAwait(false);
@@ -234,10 +239,16 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
                 result.Message ?? "The capture detail is unavailable.");
         }
         var capture = result.Value;
-        return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
-            capture,
-            CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(Project(capture))));
+        var presentation = CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(DetailPresentationHandler?.Invoke(capture) ?? Project(capture));
+        var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var combinedId = combined.Availability == CameraAgentPresentationSlotAvailability.Available ? combined.ArtifactId : null;
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.Create("UTC"), combinedId);
+        if (combinedId is null) facts = facts with { CombinedLineage = null };
+        return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
     }
+
+    public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture)
+        => Project(capture);
 
     public CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture)
     {

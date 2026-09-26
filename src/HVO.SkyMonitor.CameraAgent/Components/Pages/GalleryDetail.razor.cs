@@ -1,13 +1,12 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.WebUtilities;
-using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -16,28 +15,19 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCapture? _capture;
     private CameraAgentCapturePresentation? _capturePresentation;
-    private CameraAgentLayeredPresentation? _presentation;
-    private IJSObjectReference? _module;
-    private ElementReference _presentationRoot;
+    private CameraAgentCaptureDetailView? _view;
     private string? _errorMessage;
-    private string? _presentationMessage;
-    private string? _saveError;
-    private string? _saveMessage;
     private long _generation;
-    private long _saveGeneration;
     private bool _isLoading;
-    private bool _bindPresentation;
-    private bool _isSaving;
-    private bool _viewerOpen;
-    private string? _comparisonLeftArtifactId;
-    private string? _comparisonRightArtifactId;
+    private EvidenceTab _evidenceTab;
+    private Guid? _openDownloadMenu;
+    private readonly Dictionary<Guid, ElementReference> _downloadMenuButtons = [];
     private Guid? _previousCaptureId;
     private Guid? _nextCaptureId;
-    private CameraAgentPresentationStage? _selectedStage;
+    private readonly Dictionary<EvidenceTab, ElementReference> _evidenceTabButtons = [];
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
-    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter] public Guid CaptureId { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "returnUrl")]
     [SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "The raw query value is validated as an application-local return URL before use.")]
@@ -57,20 +47,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     /// <summary>Archive-to-replay entry point; the submit page resolves and freezes the exact inputs.</summary>
     private string ReplayUrl => $"/operations/pipeline/replays/new?captureId={CaptureId:D}";
-
     protected override Task OnParametersSetAsync() => LoadAsync();
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (!_bindPresentation)
-        {
-            return;
-        }
-        _bindPresentation = false;
-        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./Components/Pages/GalleryDetail.razor.js");
-        await _module.InvokeVoidAsync("bindLayerToggles", _presentationRoot);
-    }
 
     internal Task RefreshAuthorizationAsync() => LoadAsync();
 
@@ -86,21 +63,18 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         }
         _isLoading = true;
         _errorMessage = null;
-        _presentation = null;
+        _view = null;
         _capturePresentation = null;
-        _presentationMessage = null;
         _capture = null;
         _previousCaptureId = null;
         _nextCaptureId = null;
-        _selectedStage = null;
-        _viewerOpen = false;
-        Interlocked.Increment(ref _saveGeneration);
-        _isSaving = false;
-        _saveError = null;
-        _saveMessage = null;
+        _evidenceTab = EvidenceTab.Overview;
+        _openDownloadMenu = null;
+        _downloadMenuButtons.Clear();
+        var captureId = CaptureId;
         try
         {
-            var result = await OperatorService.GetCaptureDetailViewAsync(CaptureId, cancellation.Token);
+            var result = await OperatorService.GetCaptureDetailViewAsync(captureId, cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -111,33 +85,12 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                 _errorMessage = null;
                 NavigationManager.NavigateTo("/Account/AccessDenied");
             }
-            else if (result.IsSuccess && result.Value is not null)
+            else if (result.IsSuccess && result.Value is not null && result.Value.Capture.CaptureId == captureId)
             {
+                _view = result.Value;
                 _capture = result.Value.Capture;
                 _capturePresentation = result.Value.Presentation;
-                _selectedStage = result.Value.Presentation.SelectedStage;
-                InitializeComparison();
-                await LoadCaptureNavigationAsync(cancellation.Token);
-                var presentation = await OperatorService.GetLayeredPresentationAsync(CaptureId, cancellation.Token);
-                if (generation != Volatile.Read(ref _generation))
-                {
-                    return;
-                }
-                if (presentation.Kind == OperatorUiResultKind.Unauthorized)
-                {
-                    _capture = null;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
-                }
-                else if (presentation.IsSuccess && presentation.Value is not null)
-                {
-                    _presentation = presentation.Value;
-                    _bindPresentation = true;
-                }
-                else
-                {
-                    _presentationMessage = presentation.Message ??
-                        "Structured layers were not retained for this capture.";
-                }
+                await LoadCaptureNavigationAsync(captureId, generation, cancellation.Token);
             }
             else
             {
@@ -159,77 +112,14 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private static string ContentUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content");
 
-    private MarkupString PresentationSvg => new(
-        _presentation is null ? string.Empty : Encoding.UTF8.GetString(_presentation.Svg.Span));
 
-    private static string PreviewUrl(Guid artifactId) =>
-        FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview");
-
-    private static string LayerLabel(string kind) => kind switch
-    {
-        "scene-annotation" or "star-annotations" => "Star annotations",
-        "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
-        "scene-image-circle" or "image-circle" => "Image circle",
-        "scene-constellations" or "constellations" => "Constellations",
-        "environment" or "corner-annotations" => "Corner annotations",
-        _ => OperationsPage.SplitWords(kind)
-    };
-
-    private CameraAgentPresentationSlot? SelectedSlot => _capturePresentation?.Stages
-        .SingleOrDefault(slot => slot.Stage == _selectedStage &&
-            slot.Availability == CameraAgentPresentationSlotAvailability.Available);
-
-    private string SelectedStageLabel => SelectedSlot?.Label ?? "Image unavailable";
-
-    private string ViewerTitle => _capture is null
-        ? "Capture image"
-        : $"{SelectedStageLabel} sky / {GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)}";
-
-    private string ImageAlt => _capture is null
-        ? "Retained sky capture"
-        : $"Capture {_capture.CaptureSequence} {SelectedStageLabel} image";
-
-    private string CaptureSummary => _capture?.Detail?.Controls is { } controls
-        ? FormattableString.Invariant($"{controls.EffectiveExposureMilliseconds / 1000d:0.###}-second sky capture")
-        : "Retained sky capture";
-
-    private string ExposureSummary => _capture?.Detail?.Controls is { } controls
-        ? FormattableString.Invariant($"{controls.EffectiveExposureMilliseconds / 1000d:0.###} sec")
-        : "Unavailable";
-
-    private string GainSummary => _capture?.Detail?.Controls is { } controls
-        ? controls.EffectiveGain.ToString("0.###", CultureInfo.InvariantCulture)
-        : "Unavailable";
-
-    private string SensorSummary => _capture?.Detail?.Controls?.EffectiveTemperatureC is { } temperature
-        ? FormattableString.Invariant($"{temperature:0.0} C")
-        : "Unavailable";
-
-    private string ConditionsSummary => _capture?.Detail?.CloudAssessment is { } cloud &&
-        string.Equals(cloud.Availability, "Available", StringComparison.OrdinalIgnoreCase)
-            ? cloud.CoverageMillionths is { } coverage
-                ? FormattableString.Invariant($"{OperationsPage.SplitWords(cloud.Quality ?? cloud.Status ?? "Available")} / {coverage / 10_000d:0.#}% cloud")
-                : OperationsPage.SplitWords(cloud.Quality ?? cloud.Status ?? "Available")
-            : "Unavailable";
-
-    private Task SelectStageAsync(CameraAgentPresentationStage stage)
-    {
-        var slot = _capturePresentation?.Stages.SingleOrDefault(candidate => candidate.Stage == stage);
-        if (slot?.Availability == CameraAgentPresentationSlotAvailability.Available)
-        {
-            _selectedStage = stage;
-        }
-        return Task.CompletedTask;
-    }
-
-    private void OpenViewer() => _viewerOpen = SelectedSlot is not null;
 
     private string CaptureUrl(Guid captureId) => QueryHelpers.AddQueryString(
         FormattableString.Invariant($"/gallery/{captureId:D}"),
         "returnUrl",
         BackUrl);
 
-    private async Task LoadCaptureNavigationAsync(CancellationToken cancellationToken)
+    private async Task LoadCaptureNavigationAsync(Guid captureId, long generation, CancellationToken cancellationToken)
     {
         if (!TryBuildArchiveQuery(BackUrl, out var query))
         {
@@ -238,13 +128,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         // Neighbours follow the originating archive filters through bounded
         // keyset reads rather than re-scanning a loaded page.
         var result = await OperatorService.GetGalleryNeighboursAsync(
-            CaptureId, query with { Cursor = null, PageSize = null }, cancellationToken);
+            captureId, query with { Cursor = null, PageSize = null }, cancellationToken);
+        if (generation != Volatile.Read(ref _generation) || CaptureId != captureId) return;
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
+            _capture = null;
+            _view = null;
             NavigationManager.NavigateTo("/Account/AccessDenied");
             return;
         }
-        if (!result.IsSuccess || result.Value is null)
+        if (!result.IsSuccess || result.Value is null || result.Value.CaptureId != captureId)
         {
             return;
         }
@@ -258,7 +151,14 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         var parsed = QueryHelpers.ParseQuery(new Uri(new Uri("https://cameraagent.invalid"), returnUrl).Query);
         var fromText = GetQueryValue(parsed, "from");
         var toText = GetQueryValue(parsed, "to");
+        // Archive search is page-local. Neighbours cannot truthfully reproduce it with a server keyset query.
+        if (GetQueryValue(parsed, "q") is not null) return false;
+        var product = GetQueryValue(parsed, "product");
+        var outcome = GetQueryValue(parsed, "outcome");
+        if (product is not (null or "all" or "Combined" or "Calibrated" or "Raw") ||
+            outcome is not (null or "all" or "Completed" or "Skipped" or "TerminalFailure" or "Running")) return false;
         if (!TryDate(fromText, out var from) || !TryDate(toText, out var to) ||
+            from > to ||
             !TryEnum(GetQueryValue(parsed, "origin"), out GalleryEvidenceOrigin? origin) ||
             !TryEnum(GetQueryValue(parsed, "role"), out FrameArtifactRole? role) ||
             !TryLong(GetQueryValue(parsed, "minSequence"), out var minimumSequence) ||
@@ -278,9 +178,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             maximumSequence,
             RawState: GetQueryValue(parsed, "rawState"),
             EvidenceOrigin: origin,
-            ProcessingRole: role,
+            ProcessingRole: product is null or "all" ? role : Enum.Parse<FrameArtifactRole>(product),
             Recipe: GetQueryValue(parsed, "recipe"),
-            ProcessingStatus: GetQueryValue(parsed, "status"));
+            ProcessingStatus: outcome is null or "all" ? GetQueryValue(parsed, "status") : outcome);
         return true;
     }
 
@@ -351,143 +251,123 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         return true;
     }
 
-    private async Task SaveSelectedStackAsync()
-    {
-        if (_presentation is null || _isSaving)
-        {
-            return;
-        }
-        var loadGeneration = Volatile.Read(ref _generation);
-        var saveGeneration = Interlocked.Increment(ref _saveGeneration);
-        var captureId = CaptureId;
-        var cancellation = _loadCancellation;
-        if (cancellation is null)
-        {
-            return;
-        }
-        _isSaving = true;
-        _saveError = null;
-        _saveMessage = null;
-        try
-        {
-            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-                "import", "./Components/Pages/GalleryDetail.razor.js");
-            var selected = await _module.InvokeAsync<string[]>("selectedLayerIdentities", _presentationRoot) ?? [];
-            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
-            {
-                return;
-            }
-            var result = await OperatorService.SaveLayeredPresentationAsync(
-                captureId, selected, cancellation.Token);
-            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
-            {
-                return;
-            }
-            if (result.Kind == OperatorUiResultKind.Unauthorized)
-            {
-                NavigationManager.NavigateTo("/Account/AccessDenied");
-            }
-            else if (result.IsSuccess && result.Value is { } receipt)
-            {
-                _saveMessage = receipt.Replayed
-                    ? "This exact flattened stack was already saved."
-                    : "Flattened stack saved as a new immutable artifact.";
-            }
-            else
-            {
-                _saveError = result.Message ?? "The presentation stack could not be saved.";
-            }
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            if (saveGeneration == Volatile.Read(ref _saveGeneration))
-            {
-                _isSaving = false;
-            }
-        }
-    }
-
-    private bool IsCurrentSave(
-        long loadGeneration,
-        long saveGeneration,
-        Guid captureId,
-        CancellationTokenSource cancellation)
-        => loadGeneration == Volatile.Read(ref _generation) &&
-           saveGeneration == Volatile.Read(ref _saveGeneration) &&
-           captureId == CaptureId &&
-           ReferenceEquals(cancellation, _loadCancellation) &&
-           !cancellation.IsCancellationRequested;
-
-    private IReadOnlyList<CameraAgentGalleryArtifact> ComparisonArtifacts =>
-        _capturePresentation?.Stages
-            .Where(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.ArtifactId is not null)
-            .Select(slot => _capture?.Artifacts.SingleOrDefault(artifact => artifact.ArtifactId == slot.ArtifactId))
-            .OfType<CameraAgentGalleryArtifact>()
-            .ToArray() ?? [];
-
     private bool IsProjectedArtifact(Guid artifactId) => _capturePresentation?.Stages.Any(slot =>
         slot.ArtifactId == artifactId && slot.Availability == CameraAgentPresentationSlotAvailability.Available) == true;
 
-    private CameraAgentGalleryArtifact? ComparisonLeft => FindComparisonArtifact(_comparisonLeftArtifactId);
+    private static readonly EvidenceTab[] EvidenceTabs = Enum.GetValues<EvidenceTab>();
 
-    private CameraAgentGalleryArtifact? ComparisonRight => FindComparisonArtifact(_comparisonRightArtifactId);
-
-    private void InitializeComparison()
+    private static string EvidenceTabLabel(EvidenceTab tab) => tab switch
     {
-        var candidates = ComparisonArtifacts;
-        if (candidates.Count < 2)
-        {
-            _comparisonLeftArtifactId = null;
-            _comparisonRightArtifactId = null;
-            return;
-        }
-        var preferredArtifactId = SelectedSlot?.ArtifactId;
-        var preferred = candidates.FirstOrDefault(artifact => artifact.ArtifactId == preferredArtifactId) ?? candidates[^1];
-        _comparisonRightArtifactId = preferred.ArtifactId.ToString("D");
-        _comparisonLeftArtifactId = candidates.First(artifact => artifact.ArtifactId != preferred.ArtifactId)
-            .ArtifactId.ToString("D");
-    }
+        EvidenceTab.Technical => "Technical",
+        _ => tab.ToString()
+    };
 
-    private CameraAgentGalleryArtifact? FindComparisonArtifact(string? value)
-        => Guid.TryParse(value, out var artifactId)
-            ? ComparisonArtifacts.SingleOrDefault(artifact => artifact.ArtifactId == artifactId)
-            : null;
-
-    private void SelectComparisonLeft(ChangeEventArgs args) => SelectComparison(args.Value?.ToString(), left: true);
-
-    private void SelectComparisonRight(ChangeEventArgs args) => SelectComparison(args.Value?.ToString(), left: false);
-
-    private void SelectComparison(string? value, bool left)
+    // WAI-ARIA tabs pattern: arrow keys, Home and End select and focus a sibling tab.
+    private async Task MoveEvidenceTabAsync(KeyboardEventArgs args, EvidenceTab current)
     {
-        var selected = FindComparisonArtifact(value);
-        if (selected is null || string.Equals(
-                value,
-                left ? _comparisonRightArtifactId : _comparisonLeftArtifactId,
-                StringComparison.Ordinal))
+        var index = Array.IndexOf(EvidenceTabs, current);
+        EvidenceTab? next = args.Key switch
         {
-            return;
-        }
-        if (left)
+            "ArrowRight" => EvidenceTabs[(index + 1) % EvidenceTabs.Length],
+            "ArrowLeft" => EvidenceTabs[(index + EvidenceTabs.Length - 1) % EvidenceTabs.Length],
+            "Home" => EvidenceTabs[0],
+            "End" => EvidenceTabs[^1],
+            _ => null
+        };
+        if (next is not { } selected) return;
+        SelectEvidenceTab(selected);
+        if (_evidenceTabButtons.TryGetValue(selected, out var button))
         {
-            _comparisonLeftArtifactId = value;
-        }
-        else
-        {
-            _comparisonRightArtifactId = value;
+            try { await button.FocusAsync(); }
+            catch (Exception exception) when (exception is Microsoft.JSInterop.JSException or InvalidOperationException) { }
         }
     }
 
-    private CameraAgentGalleryProcessingNodeDetail? FindArtifactNode(CameraAgentGalleryArtifact artifact)
-        => artifact.ProcessingNodeId is null ? null : FindNodeDetail(artifact.ProcessingNodeId);
+    private int CompletedNodeCount => _capture?.ProcessingNodes.Count(static node =>
+        string.Equals(node.Status, "Completed", StringComparison.OrdinalIgnoreCase)) ?? 0;
 
-    private CameraAgentGalleryProcessingNode? FindArtifactNodeSummary(CameraAgentGalleryArtifact artifact)
-        => artifact.ProcessingNodeId is null
-            ? null
-            : _capture?.ProcessingNodes.SingleOrDefault(node => string.Equals(
-                node.NodeId, artifact.ProcessingNodeId, StringComparison.Ordinal));
+    private string CloudSummary => _capture?.Detail?.CloudAssessment is not { } cloud
+        ? "Unavailable"
+        : cloud.CoverageMillionths is null
+            ? OperationsPage.SplitWords(cloud.Status ?? cloud.Availability)
+            : $"{FormatPercent(cloud.CoverageMillionths)} coverage ({cloud.Quality ?? "quality unavailable"})";
+
+    private static string ArtifactLabel(FrameArtifactRole role) => role switch
+    {
+        FrameArtifactRole.Raw => "Raw frame",
+        FrameArtifactRole.Calibrated => "Calibrated frame",
+        FrameArtifactRole.Combined => "Live mean",
+        FrameArtifactRole.Preview => "Processed preview",
+        FrameArtifactRole.AnnotatedPreview => "Annotated preview",
+        FrameArtifactRole.Metadata => "Capture metadata",
+        _ => OperationsPage.SplitWords(role.ToString())
+    };
+
+    private void SelectEvidenceTab(EvidenceTab tab)
+    {
+        _evidenceTab = tab;
+        _openDownloadMenu = null;
+    }
+
+    private void ToggleDownloadMenu(Guid artifactId) =>
+        _openDownloadMenu = _openDownloadMenu == artifactId ? null : artifactId;
+
+    // Choosing a format closes the menu; the browser still follows the download link.
+    private void CloseDownloadMenu() => _openDownloadMenu = null;
+
+    private async Task CloseDownloadMenuOnEscapeAsync(KeyboardEventArgs args, Guid artifactId)
+    {
+        if (args.Key != "Escape" || _openDownloadMenu != artifactId) return;
+        _openDownloadMenu = null;
+        if (_downloadMenuButtons.TryGetValue(artifactId, out var button))
+        {
+            try { await button.FocusAsync(); }
+            catch (Exception exception) when (exception is Microsoft.JSInterop.JSException or InvalidOperationException) { }
+        }
+    }
+
+    // Formats are declared here so new exports only add an entry; unsupported ones stay visible but disabled.
+    private IEnumerable<DownloadOption> DownloadOptions(CameraAgentGalleryArtifact artifact)
+    {
+        if (artifact.Role is FrameArtifactRole.Metadata)
+        {
+            // Metadata and overlay layers are structured JSON; image formats do not apply.
+            yield return new("original", "JSON file", OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+            yield break;
+        }
+        var jpeg = string.Equals(artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
+        if (!jpeg)
+        {
+            yield return IsProjectedArtifact(artifact.ArtifactId)
+                ? new("jpeg", "JPEG image", "8-bit, adjusted for display",
+                    FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview?download=1"))
+                : new("jpeg", "JPEG image", "Not available for this artifact", null);
+            yield return new("fits", "FITS", "Not yet available", null);
+        }
+        yield return new("original", jpeg ? "JPEG image (original)" : "Original file",
+            OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+    }
+
+    private static string OriginalDescription(string? mediaType) => mediaType?.ToUpperInvariant() switch
+    {
+        "APPLICATION/VND.HVO.PRESENTATION-LAYER-PAYLOAD+JSON" => "Overlay layer geometry (.json)",
+        "APPLICATION/VND.HVO.OVERLAY-MANIFEST+JSON" => "Overlay layer manifest (.json)",
+        "APPLICATION/VND.HVO.PROJECTED-SCENE+JSON" => "Projected sky scene (.json)",
+        "APPLICATION/VND.HVO.PRESENTATION-METADATA-FACTS+JSON" => "Capture facts for overlays (.json)",
+        { } json when json.EndsWith("+JSON", StringComparison.Ordinal) || json == "APPLICATION/JSON" => "Structured metadata (.json)",
+        "IMAGE/JPEG" => "Retained bytes, as produced",
+        "APPLICATION/X-SKYMONITOR-MONO8" => "Exact retained bytes, raw 8-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-MONO16" => "Exact retained bytes, raw 16-bit mono (.bin)",
+        "APPLICATION/X-SKYMONITOR-RGB24" => "Exact retained bytes, raw 24-bit RGB (.bin)",
+        "APPLICATION/X-SKYMONITOR-BAYER-RGGB16" => "Exact retained bytes, raw 16-bit Bayer RGGB (.bin)",
+        "APPLICATION/X-HVO-LINEAR-FRAME" => "Exact retained bytes, SkyMonitor linear frame (.bin)",
+        "APPLICATION/X-HVO-PACKED-IMAGE" => "Exact retained bytes, SkyMonitor packed image (.bin)",
+        _ => "Exact retained bytes"
+    };
+
+    private sealed record DownloadOption(string Format, string Label, string Description, string? Url);
+
+    private enum EvidenceTab { Overview, Artifacts, Processing, Technical, Replay }
 
     private CameraAgentGalleryArtifactState? FindArtifactState(Guid artifactId) =>
         _capture?.Detail?.ArtifactStates.SingleOrDefault(state => state.ArtifactId == artifactId);
@@ -525,36 +405,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             ? "Unavailable for legacy processing record"
             : "Unavailable: execution profile not verified");
 
-    private static string FormatArtifactDuration(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? "Not applicable (acquisition)"
-            : detail is null
-                ? "Unavailable"
-                : FormatNodeDuration(detail);
-
-    private static string FormatComparisonOutcome(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? "Not applicable (acquisition)"
-            : detail?.Outcome is null
-                ? "Unavailable"
-                : OperationsPage.SplitWords(detail.Outcome);
-
     private static string InputEvidence(CameraAgentGalleryProcessingNodeInput input)
         => FormattableString.Invariant(
             $"#{input.Ordinal} {input.Kind}; name={input.Name ?? "Unavailable"}; artifact={input.ArtifactId?.ToString() ?? "Unavailable"}; role={input.Role?.ToString() ?? "Unavailable"}; variant={input.Variant ?? "Unavailable"}; recipe={input.RecipeIdentitySha256 ?? "Unavailable"}; schema={input.SchemaVersion ?? "Unavailable"}; identity={input.IdentitySha256 ?? "Unavailable"}; selected={(input.Selected ? "yes" : "no")}");
-
-    private string FormatArtifactProfile(
-        CameraAgentGalleryArtifact artifact,
-        CameraAgentGalleryProcessingNodeDetail? detail)
-        => artifact.ProcessingNodeId is null
-            ? _capture?.Detail?.ProcessingProfile?.Sha256 ?? "Unavailable"
-            : detail is null
-                ? "Unavailable"
-                : FormatNodeProfile(detail);
 
     private static string FormatPercent(int? millionths) => millionths is null
         ? "Unavailable"
@@ -570,22 +423,11 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Interlocked.Increment(ref _generation);
-        Interlocked.Increment(ref _saveGeneration);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
         if (cancellation is not null)
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
             cancellation.Dispose();
-        }
-        if (_module is not null)
-        {
-            try
-            {
-                await _module.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (JSDisconnectedException)
-            {
-            }
         }
     }
 }

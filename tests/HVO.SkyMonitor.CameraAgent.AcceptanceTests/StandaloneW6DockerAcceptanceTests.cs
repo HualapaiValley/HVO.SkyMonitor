@@ -5181,23 +5181,53 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(1, await page.Locator("main").CountAsync().ConfigureAwait(false));
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = $"Capture #{capture.CaptureSequence}", Level = 1, Exact = true })
             .WaitForAsync().ConfigureAwait(false);
-        var primaryImage = page.Locator(".detail-capture-image img");
+        var primaryImage = page.Locator(".sky-image-stage img");
         await primaryImage.WaitForAsync().ConfigureAwait(false);
-        Assert.IsGreaterThan(0, await page.Locator(".stage-selector__button:not(:disabled)").CountAsync().ConfigureAwait(false));
-        var layered = page.Locator(".layered-presentation");
+        await page.Locator(".current-sky-summary").WaitForAsync().ConfigureAwait(false);
+        Assert.IsGreaterThan(0, await page.Locator(".stage-switcher button:not(:disabled)").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual("true", await page.Locator("#evidence-tab-Overview").GetAttributeAsync("aria-selected").ConfigureAwait(false));
+        var layered = page.Locator(".sky-layer-workspace");
         if (expectLayeredPresentation)
         {
-            await CollapsibleSection.EnsureOpenAsync(page.Locator(".layered-workspace"), layered)
-                .ConfigureAwait(false);
-            Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
-            var layerToggles = layered.Locator(".layer-controls input[type='checkbox']");
+            await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(1, await layered.Locator(".sky-layer-canvas > img").CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(1, await layered.Locator(".sky-layer-overlay svg").CountAsync().ConfigureAwait(false));
+            var presentationResponse = await page.Context.APIRequest.GetAsync(
+                $"/api/v1/operations/gallery/{capture.CaptureId:D}/presentation").ConfigureAwait(false);
+            JsonElement presentation;
+            try
+            {
+                Assert.IsTrue(presentationResponse.Ok);
+                presentation = JsonSerializer.Deserialize<JsonElement>(await presentationResponse.TextAsync().ConfigureAwait(false));
+            }
+            finally
+            {
+                await presentationResponse.DisposeAsync().ConfigureAwait(false);
+            }
+            Assert.AreEqual(capture.CaptureId, presentation.GetProperty("captureId").GetGuid());
+            var baseArtifactId = presentation.GetProperty("baseArtifactId").GetGuid();
+            Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == baseArtifactId));
+            Assert.AreEqual(presentation.GetProperty("presentationIdentitySha256").GetString(),
+                await layered.GetAttributeAsync("data-presentation-identity").ConfigureAwait(false));
+            var layeredSource = await primaryImage.GetAttributeAsync("src").ConfigureAwait(false);
+            Assert.IsNotNull(layeredSource);
+            Assert.AreEqual($"/api/v1/operations/artifacts/{baseArtifactId:D}/preview",
+                new Uri(new Uri(page.Url), layeredSource).AbsolutePath);
+            Assert.AreEqual(presentation.GetProperty("widthPixels").GetInt32(),
+                await primaryImage.EvaluateAsync<int>("image => image.naturalWidth").ConfigureAwait(false));
+            Assert.AreEqual(presentation.GetProperty("heightPixels").GetInt32(),
+                await primaryImage.EvaluateAsync<int>("image => image.naturalHeight").ConfigureAwait(false));
+            var layerToggles = page.Locator(".sky-layer-controls input[data-layer-target]");
             Assert.IsGreaterThan(0, await layerToggles.CountAsync().ConfigureAwait(false));
-            var enabledToggles = layered.Locator(".layer-controls input[type='checkbox']:checked");
-            Assert.IsGreaterThan(0, await enabledToggles.CountAsync().ConfigureAwait(false));
-            var firstToggle = enabledToggles.First;
+            var defaultLayers = presentation.GetProperty("layers").EnumerateArray()
+                .Where(layer => layer.GetProperty("enabledByDefault").GetBoolean())
+                .Select(layer => layer.GetProperty("identitySha256").GetString()!).ToArray();
+            Assert.IsNotEmpty(defaultLayers);
+            CollectionAssert.AreEquivalent(defaultLayers, await layerToggles.EvaluateAllAsync<string[]>(
+                "inputs => inputs.filter(input => input.checked).map(input => input.dataset.layerIdentity)").ConfigureAwait(false));
+            var firstToggle = page.Locator($".sky-layer-controls input[data-layer-identity='{defaultLayers[0]}']");
             var target = await firstToggle.GetAttributeAsync("data-layer-target").ConfigureAwait(false);
             Assert.IsNotNull(target);
             var resourceCount = await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length")
@@ -5208,23 +5238,128 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 target).ConfigureAwait(false);
             Assert.AreEqual(resourceCount,
                 await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length").ConfigureAwait(false));
+
+            var trigger = page.Locator("#current-sky-view-large");
+            await trigger.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('figure.sky-figure')")
+                .ConfigureAwait(false);
+            Assert.AreEqual(layeredSource, await primaryImage.GetAttributeAsync("src").ConfigureAwait(false));
+            Assert.IsTrue(await layered.EvaluateAsync<bool>("element => document.fullscreenElement.contains(element)")
+                .ConfigureAwait(false));
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                "target => getComputedStyle(document.getElementById(target)).display === 'none'", target).ConfigureAwait(false));
+            await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.fullscreenElement === null && document.activeElement?.id === 'current-sky-view-large'")
+                .ConfigureAwait(false);
+
+            var rawArtifact = capture.Artifacts.Single(artifact => artifact.Role == FrameArtifactRole.Raw);
+            var rawPreviewPath = $"/api/v1/operations/artifacts/{rawArtifact.ArtifactId:D}/preview";
+            await page.Locator(".stage-switcher button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("""
+                path => {
+                    const image = document.querySelector('.sky-image-stage img');
+                    return document.querySelector('.stage-switcher button[title="Show Raw image"]')?.getAttribute('aria-pressed') === 'true' &&
+                        image?.complete && image.naturalWidth > 0 && new URL(image.src).pathname === path;
+                }
+                """, rawPreviewPath).ConfigureAwait(false);
+            Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
+            Assert.IsFalse(await firstToggle.IsCheckedAsync().ConfigureAwait(false));
+            Assert.IsTrue(await firstToggle.IsDisabledAsync().ConfigureAwait(false));
+            Assert.IsTrue(await page.Locator(".sky-layer-save button").IsDisabledAsync().ConfigureAwait(false));
+            Assert.IsTrue(await page.Locator(".restore-layers").IsDisabledAsync().ConfigureAwait(false));
+            Assert.IsNotNull(capture.Detail?.Layout);
+            Assert.AreEqual(capture.Detail.Layout.Width, await primaryImage.EvaluateAsync<int>("image => image.naturalWidth").ConfigureAwait(false));
+            Assert.AreEqual(capture.Detail.Layout.Height, await primaryImage.EvaluateAsync<int>("image => image.naturalHeight").ConfigureAwait(false));
+            Assert.AreEqual("contain", await primaryImage.EvaluateAsync<string>("image => getComputedStyle(image).objectFit")
+                .ConfigureAwait(false));
+            await page.Locator(".stage-switcher button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+            await page.Locator(".sky-layer-canvas--verified").WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(layeredSource, await primaryImage.GetAttributeAsync("src").ConfigureAwait(false));
+            Assert.IsFalse(await firstToggle.IsCheckedAsync().ConfigureAwait(false));
+            await page.WaitForFunctionAsync(
+                "target => getComputedStyle(document.getElementById(target)).display === 'none'", target).ConfigureAwait(false);
+
+            await page.Locator(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
+            var savedLink = page.Locator(".sky-layer-result[role='status'] a");
+            await savedLink.WaitForAsync().ConfigureAwait(false);
+            var savedUrl = await savedLink.GetAttributeAsync("href").ConfigureAwait(false);
+            Assert.IsNotNull(savedUrl);
+            StringAssert.EndsWith(savedUrl, "/preview?download=1", StringComparison.Ordinal);
+            var savedArtifactId = Guid.Parse(new Uri(new Uri(page.Url), savedUrl).Segments[^2].TrimEnd('/'));
+            var captureResponse = await page.Context.APIRequest.GetAsync($"/api/v1/operations/gallery/{capture.CaptureId:D}")
+                .ConfigureAwait(false);
+            CameraAgentGalleryCapture? savedCapture;
+            try
+            {
+                Assert.IsTrue(captureResponse.Ok);
+                savedCapture = JsonSerializer.Deserialize<CameraAgentGalleryCapture>(
+                    await captureResponse.TextAsync().ConfigureAwait(false), EvidenceJson);
+            }
+            finally
+            {
+                await captureResponse.DisposeAsync().ConfigureAwait(false);
+            }
+            Assert.IsNotNull(savedCapture);
+            Assert.AreEqual(capture.CaptureId, savedCapture.CaptureId);
+            var savedArtifact = savedCapture.Artifacts.Single(artifact => artifact.ArtifactId == savedArtifactId);
+            Assert.IsTrue(savedArtifact.SourceArtifactIds.Contains(baseArtifactId));
+            var savedResponse = await page.Context.APIRequest.GetAsync(
+                $"/api/v1/operations/artifacts/{savedArtifactId:D}/content").ConfigureAwait(false);
+            try
+            {
+                Assert.IsTrue(savedResponse.Ok);
+                var savedBytes = await savedResponse.BodyAsync().ConfigureAwait(false);
+                Assert.IsNotEmpty(savedBytes);
+                Assert.AreEqual(savedArtifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(savedBytes)));
+            }
+            finally
+            {
+                await savedResponse.DisposeAsync().ConfigureAwait(false);
+            }
+            var savedJpeg = await page.Context.APIRequest.GetAsync(savedUrl).ConfigureAwait(false);
+            try
+            {
+                Assert.IsTrue(savedJpeg.Ok);
+                Assert.AreEqual("image/jpeg", savedJpeg.Headers["content-type"]);
+                StringAssert.StartsWith(savedJpeg.Headers["content-disposition"], "attachment", StringComparison.Ordinal);
+            }
+            finally
+            {
+                await savedJpeg.DisposeAsync().ConfigureAwait(false);
+            }
+            Assert.AreEqual(layeredSource, await primaryImage.GetAttributeAsync("src").ConfigureAwait(false));
+            Assert.AreEqual($"/gallery/{capture.CaptureId:D}", new Uri(page.Url).AbsolutePath);
+            await page.Locator(".restore-layers").ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("""
+                expected => {
+                    const selected = [...document.querySelectorAll('.sky-layer-controls input[data-layer-target]:checked')]
+                        .map(input => input.dataset.layerIdentity);
+                    return selected.length === expected.length && expected.every(identity => selected.includes(identity));
+                }
+                """, defaultLayers).ConfigureAwait(false);
+            await page.WaitForFunctionAsync(
+                "target => getComputedStyle(document.getElementById(target)).display !== 'none'", target).ConfigureAwait(false);
         }
         else
         {
             Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await primaryImage.CountAsync().ConfigureAwait(false));
+            await page.WaitForFunctionAsync("() => { const image = document.querySelector('.sky-image-stage img'); return image?.complete && image.naturalWidth > 0; }")
+                .ConfigureAwait(false);
+            var source = await primaryImage.GetAttributeAsync("src").ConfigureAwait(false);
+            Assert.IsNotNull(source);
+            var artifactId = Guid.Parse(new Uri(new Uri(page.Url), source).Segments[^2].TrimEnd('/'));
+            Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == artifactId));
+            Assert.IsNotNull(capture.Detail?.Layout);
+            Assert.AreEqual(capture.Detail.Layout.Width, await primaryImage.EvaluateAsync<int>("image => image.naturalWidth").ConfigureAwait(false));
+            Assert.AreEqual(capture.Detail.Layout.Height, await primaryImage.EvaluateAsync<int>("image => image.naturalHeight").ConfigureAwait(false));
+            Assert.AreEqual("contain", await primaryImage.EvaluateAsync<string>("image => getComputedStyle(image).objectFit")
+                .ConfigureAwait(false));
         }
-        var comparisonImages = page.Locator(".comparison-grid img");
-        await CollapsibleSection.EnsureOpenAsync(page.Locator(".technical-evidence"), comparisonImages)
-            .ConfigureAwait(false);
-        Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
-        await page.WaitForFunctionAsync(
-            "() => [...document.querySelectorAll('.comparison-grid img')].every(image => image.complete && image.naturalWidth > 0)")
-            .ConfigureAwait(false);
-        Assert.IsTrue(await comparisonImages.EvaluateAllAsync<bool>(
-            "images => images.every(image => image.naturalWidth <= 2048 && image.naturalHeight <= 2048)")
-            .ConfigureAwait(false));
-        var previewUrl = await comparisonImages.First.GetAttributeAsync("src").ConfigureAwait(false);
+        await page.Locator("#evidence-tab-Artifacts").ClickAsync().ConfigureAwait(false);
+        var previewLinks = page.Locator("#evidence-panel-Artifacts a[href$='/preview']");
+        await previewLinks.First.WaitForAsync().ConfigureAwait(false);
+        var previewUrl = await previewLinks.First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(previewUrl);
         var previewResponse = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), previewUrl).ToString())
             .ConfigureAwait(false);
@@ -5238,7 +5373,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             await previewResponse.DisposeAsync().ConfigureAwait(false);
         }
-        var downloadUrl = await page.Locator("a[download]").First.GetAttributeAsync("href").ConfigureAwait(false);
+        var downloadUrl = await page.Locator("#evidence-panel-Artifacts a[download][data-format='original']").First.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(downloadUrl);
         var downloadResponse = await page.Context.APIRequest.GetAsync(new Uri(new Uri(page.Url), downloadUrl).ToString())
             .ConfigureAwait(false);

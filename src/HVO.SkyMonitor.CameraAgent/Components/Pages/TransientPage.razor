@@ -26,7 +26,7 @@
     }
     else if (_errorMessage is not null)
     {
-        <section class="page-state page-state--error" role="alert"><div><strong>Transient evidence unavailable</strong><p>@_errorMessage</p></div><button class="btn btn-outline-light" @onclick="LoadAsync">Try again</button></section>
+        <section class="page-state page-state--error" role="alert"><div><strong>Transient evidence unavailable</strong><p>@_errorMessage</p></div><button class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button></section>
     }
     else if (_page is null || _page.Items.Count == 0)
     {

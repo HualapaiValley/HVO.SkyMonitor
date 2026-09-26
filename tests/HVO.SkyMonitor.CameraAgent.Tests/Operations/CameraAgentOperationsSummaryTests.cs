@@ -158,6 +158,67 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.IsFalse(json.Contains("pixelData", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// A standalone install has central integration and transient detection switched off. Those
+    /// sections have no observation and never will, so they must read "disabled" rather than
+    /// "unknown"/"stale", the configuration snapshot is a startup fact ("static"), and an
+    /// observed section still derives fresh/stale from its observation time. #984.
+    /// </summary>
+    [TestMethod]
+    public async Task GetAsyncMarksSwitchedOffSubsystemsDisabledRatherThanUnknown()
+    {
+        var timeProvider = TimeProvider.System;
+        var root = Path.Combine(Path.GetTempPath(), "private-operations-root-disabled");
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = root,
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Off }
+        });
+        var rawIngress = new RawIngressState(timeProvider);
+        rawIngress.Set(RawIngressAvailability.Accepting, "accepting", 0, 0, 0, 0, null);
+        var transientWorker = new TransientWorkerState(timeProvider);
+        transientWorker.Set(TransientWorkerAvailability.Disabled, "mode-disabled", 0, 0);
+        var configuration = new CameraAgentConfigurationAccessor();
+        using var moduleOptions = JsonDocument.Parse("""{}""");
+        configuration.SetConfiguration(CreateConfiguration(moduleOptions.RootElement.Clone()));
+        using var captureTelemetry = new CaptureControlTelemetry();
+        using var coordinator = new CaptureAdmissionCoordinator(
+            new NullIngress(), options, timeProvider, captureTelemetry);
+        var provider = new CameraAgentOperationsSummaryProvider(
+            timeProvider,
+            coordinator,
+            rawIngress,
+            new RecordingLaneSnapshotRefresher(),
+            new CaptureLaneState(timeProvider, options),
+            new CaptureProcessingState(),
+            new ArtifactOutboxState(),
+            new StoragePressureState(),
+            new FleetRuntimeState(timeProvider),
+            new FleetHeartbeatState(),
+            new EnvironmentalObservationDeliveryState(),
+            new ExecutionEvidenceExportState(),
+            transientWorker,
+            new CaptureTelemetrySink(),
+            configuration,
+            new CameraAgentStorageResolver(configuration, options),
+            options);
+
+        var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperationsFreshness.Disabled, summary.ArtifactOutbox.Freshness);
+        Assert.AreEqual(OperationsFreshness.Disabled, summary.Heartbeat.Freshness);
+        Assert.AreEqual(OperationsFreshness.Disabled, summary.EnvironmentalDelivery.Freshness);
+        Assert.AreEqual(OperationsFreshness.Disabled, summary.ExecutionEvidenceExport.Freshness);
+        Assert.AreEqual(OperationsFreshness.Disabled, summary.TransientWorker.Freshness);
+        Assert.AreEqual(OperationsFreshness.Static, summary.Configuration.Freshness);
+        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
+        // The observation time survives: the deployment drain bounds the transient section by it.
+        Assert.IsNotNull(summary.TransientWorker.ObservedUtc);
+        // An observed section is unaffected by the switch.
+        Assert.AreEqual(OperationsFreshness.Fresh, summary.RawIngress.Freshness);
+    }
+
     private static CameraModuleConfig CreateConfiguration(JsonElement moduleOptions)
         => new(
             new ObservatoryLocation(20, -155, 1000, "Pacific/Honolulu"),

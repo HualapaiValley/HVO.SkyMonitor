@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -10,6 +11,8 @@ internal interface ICameraAgentLifecycleClient
     Task<LifecycleContinuity> PauseAndDrainAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken);
     Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
+    Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken);
+    Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
 }
 
 internal sealed record LifecycleContinuity(
@@ -95,14 +98,43 @@ internal sealed class CameraAgentLifecycleClient(
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task PostCommandAsync(
+    public async Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        try
+        {
+            return await ReadStateAsync(client, _budgets.ReadTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is BudgetExceededException or TransientReadException)
+        {
+            throw new InstallerException("CameraAgent did not provide an authenticated recovery boundary within its budget.", exception);
+        }
+    }
+
+    public async Task<LifecycleResumeReceipt> ResumeRecoveryAsync(
+        Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        return (await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+            cancellationToken, commandId, expectedVersion).ConfigureAwait(false))!;
+    }
+
+    private async Task<LifecycleResumeReceipt?> PostCommandAsync(
         HttpClient client,
         string action,
         Guid operationId,
         DateTimeOffset deadline,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? retainedCommandId = null,
+        long? expectedVersion = null)
     {
-        var commandId = Guid.NewGuid();
+        var commandId = retainedCommandId ?? Guid.NewGuid();
+        var payload = new Dictionary<string, object>
+        {
+            ["operationId"] = commandId,
+            ["reason"] = $"transactional lifecycle operation {operationId:D} {action}"
+        };
+        if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;
         try
         {
             while (true)
@@ -116,16 +148,27 @@ internal sealed class CameraAgentLifecycleClient(
                     remaining,
                     token => client.PostAsJsonAsync(
                         new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
-                        new
-                        {
-                            operationId = commandId,
-                            reason = $"transactional lifecycle operation {operationId:D} {action}"
-                        },
+                        payload,
                         token),
                     cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
-                    return;
+                    if (retainedCommandId is null) return null;
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+                    var root = document.RootElement;
+                    var state = root.GetProperty("state");
+                    // The shipped endpoint uses the numeric CaptureAdmissionState enum (Running=1).
+                    // Accept its named representation too when a host configures string enum serialization.
+                    if (!(state.ValueKind == JsonValueKind.Number && state.GetInt32() == 1 ||
+                          state.ValueKind == JsonValueKind.String && state.GetString() == "Running"))
+                        throw new InstallerException("CameraAgent recovery receipt does not prove a successful resume.");
+                    var receipt = new LifecycleResumeReceipt("Running", root.GetProperty("version").GetInt64(),
+                        root.GetProperty("changed").GetBoolean(), root.GetProperty("replayed").GetBoolean(),
+                        root.GetProperty("requestedUtc").GetDateTimeOffset(), root.GetProperty("completedUtc").GetDateTimeOffset());
+                    if (!receipt.Changed || receipt.Version != checked(expectedVersion!.Value + 1) ||
+                        receipt.RequestedUtc == default || receipt.CompletedUtc < receipt.RequestedUtc)
+                        throw new InstallerException("CameraAgent recovery receipt does not match the retained pause version.");
+                    return receipt;
                 }
                 if (!IsTransientCommandStatus(response.StatusCode))
                 {
@@ -147,6 +190,10 @@ internal sealed class CameraAgentLifecycleClient(
         {
             throw new InstallerException(
                 $"CameraAgent did not accept the lifecycle {action} command: {Redaction.SafeDiagnostic(exception.Message)}", exception);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
+        {
+            throw new InstallerException("CameraAgent returned an invalid recovery command receipt.");
         }
     }
 
@@ -289,6 +336,7 @@ internal sealed class CameraAgentLifecycleClient(
             disposeHandler: handler is null)
         {
             BaseAddress = baseAddress,
+            MaxResponseContentBufferSize = 1024 * 1024,
             Timeout = Timeout.InfiniteTimeSpan
         };
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);

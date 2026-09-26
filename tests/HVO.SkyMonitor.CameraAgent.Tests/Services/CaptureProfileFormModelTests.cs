@@ -165,6 +165,60 @@ public sealed class CaptureProfileFormModelTests
         Assert.AreEqual("1", model.WeeklyWindows[^1].End.DayOffset);
     }
 
+    [TestMethod]
+    public void GroupedDays_RoundTripPreservesOrderAndDistinctSameDayWindows()
+    {
+        var basis = RichProfile();
+        var original = basis.Schedule.WeeklyWindows[0];
+        basis = basis with
+        {
+            Schedule = basis.Schedule with
+            {
+                WeeklyWindows =
+        [
+            original,
+            original with { Id = "friday-night", Day = DayOfWeek.Friday },
+            original with { Id = "friday-dawn", Day = DayOfWeek.Friday, Start = original.End },
+            original with { Id = "saturday-night", Day = DayOfWeek.Saturday }
+        ]
+            }
+        };
+
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        Assert.HasCount(3, model.WeeklyWindows);
+        Assert.IsTrue(model.WeeklyWindows[0].Days.SetEquals([DayOfWeek.Thursday, DayOfWeek.Friday]));
+        Assert.IsTrue(model.TryApply(basis, out var applied, out var errors), string.Join(" ", errors));
+        CollectionAssert.AreEqual(basis.Schedule.WeeklyWindows.ToArray(), applied.Schedule.WeeklyWindows.ToArray());
+    }
+
+    [TestMethod]
+    public void Days_AddSplitAndEmptySelection_KeepCanonicalIdsAndRejectDuplicates()
+    {
+        var basis = RichProfile();
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        var row = model.WeeklyWindows[0];
+        model.SetWeeklyWindowDay(row, DayOfWeek.Friday, true);
+        model.SetWeeklyWindowDay(row, DayOfWeek.Friday, false);
+        model.SetWeeklyWindowDay(row, DayOfWeek.Friday, true);
+        var assignedId = row.DayIds[DayOfWeek.Friday];
+        model.SplitWeeklyWindow(row, DayOfWeek.Friday);
+        Assert.AreEqual(assignedId, model.WeeklyWindows[1].Id);
+        Assert.IsTrue(model.TryApply(basis, out var expanded, out var errors), string.Join(" ", errors));
+        Assert.AreEqual("weekly-night", expanded.Schedule.WeeklyWindows[0].Id);
+        Assert.AreNotEqual("weekly-night", expanded.Schedule.WeeklyWindows[1].Id);
+        Assert.AreEqual(DayOfWeek.Friday, expanded.Schedule.WeeklyWindows[1].Day);
+
+        Assert.HasCount(2, model.WeeklyWindows);
+        Assert.AreEqual(expanded.Schedule.WeeklyWindows[1].Id, model.WeeklyWindows[1].Id);
+        model.WeeklyWindows[1].DayIds[DayOfWeek.Friday] = "weekly-night";
+        Assert.IsFalse(model.TryApply(basis, out _, out errors));
+        CollectionAssert.Contains(errors.ToArray(), "Weekly window identifiers must be unique.");
+
+        model.WeeklyWindows[1].Days.Clear();
+        Assert.IsFalse(model.TryApply(basis, out _, out errors));
+        Assert.IsTrue(errors.Any(static error => error.Contains("needs at least one day", StringComparison.Ordinal)));
+    }
+
     private static LocalCaptureProfileDefinition RichProfile()
     {
         var baseline = SchedulePageTests.Profile();
