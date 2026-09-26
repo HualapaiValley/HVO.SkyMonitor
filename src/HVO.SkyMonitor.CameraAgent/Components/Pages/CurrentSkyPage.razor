@@ -111,7 +111,6 @@
                                 <div class="sky-layer-overlay scene-overlay" aria-hidden="true">@LayerSvg</div>
                             </div>
                         </div>
-                        <div class="scene-semantics" aria-hidden="true"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
                     }
                     else
                     {
@@ -128,6 +127,10 @@
                         <span class="status-icon @CaptureOutcomeIconClass" aria-hidden="true"></span>
                         <span><strong>@CaptureOutcomeTitle</strong><small>@CaptureOutcomeSubtitle</small></span>
                     </div>
+                    @if (ShowLayeredHero)
+                    {
+                        <div class="scene-semantics" aria-label="Layer evidence types"><span class="measured">Measured</span><span class="expected">Expected</span><span class="predicted">Predicted</span></div>
+                    }
                     <div class="figure-actions">
                         @if (FactCapture is not null)
                         {

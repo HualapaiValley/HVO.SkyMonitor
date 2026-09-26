@@ -287,6 +287,8 @@ public sealed class GalleryDetailTests
         module.SetupVoid("downloadUrl", _ => true).SetVoidResult();
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
         cut.WaitForElement(".sky-layer-canvas--verified");
+        Assert.HasCount(1, cut.FindAll(".sky-figure figcaption .scene-semantics"));
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage .scene-semantics"));
 
         await cut.Find(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
 

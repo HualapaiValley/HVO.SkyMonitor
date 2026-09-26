@@ -159,6 +159,9 @@ public sealed class CurrentSkyPageTests
 
         StringAssert.Contains(cut.Find(".current-sky-hero .sky-layer-canvas img").GetAttribute("src"), "/preview", StringComparison.Ordinal);
         Assert.HasCount(1, cut.FindAll(".current-sky-hero .sky-layer-overlay svg"));
+        Assert.HasCount(1, cut.FindAll(".sky-figure figcaption .scene-semantics"));
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage .scene-semantics"));
+        Assert.AreEqual("MeasuredExpectedPredicted", cut.Find(".scene-semantics").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".capture-image img"));
         Assert.HasCount(1, cut.FindAll(".sky-layer-controls input[data-layer-target='hvo-layer-0']"));
         Assert.AreEqual("true", cut.Find("button[title='Show Processed image']").GetAttribute("aria-pressed"));
@@ -170,6 +173,7 @@ public sealed class CurrentSkyPageTests
         await cut.Find("button[title='Show Raw image']").ClickAsync().ConfigureAwait(false);
         Assert.IsEmpty(cut.FindAll(".sky-layer-canvas img"));
         Assert.IsEmpty(cut.FindAll(".sky-layer-overlay svg"));
+        Assert.IsEmpty(cut.FindAll(".scene-semantics"));
         Assert.HasCount(1, cut.FindAll(".capture-image img"));
         Assert.HasCount(1, cut.FindAll("#current-sky-view-large"));
         await cut.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
