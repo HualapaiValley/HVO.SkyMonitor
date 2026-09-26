@@ -34,6 +34,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     [Inject] internal ICameraAgentObservingDayUiService DayService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal TimeProvider Clock { get; set; } = default!;
     [Parameter] public string DateText { get; set; } = string.Empty;
 
     private DateOnly Date { get; set; }
@@ -84,35 +85,37 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         ? Math.Min(1, schedule.CoveredDuration.TotalSeconds / schedule.ExpectedDuration.TotalSeconds)
         : null;
 
-    private static string StateLabel(CameraAgentObservingDayView view) => view.Day.CaptureCount switch
+    private string StateLabel(CameraAgentObservingDayView view) => view.Day.Day switch
     {
-        0 => "No archived session",
-        _ when view.Day.Day.EndUtc > DateTimeOffset.UtcNow => "In progress",
+        var day when day.Contains(Clock.GetUtcNow()) => "In progress",
+        var day when day.StartUtc > Clock.GetUtcNow() => "Upcoming day",
+        _ when view.Day.CaptureCount == 0 => "No archived session",
         _ when CoverageFraction(view) is { } fraction && fraction >= CompleteCoverageFraction => "Complete",
         _ when CoverageFraction(view) is > 0 => "Partial",
         _ when CoverageFraction(view) is 0 => "Outside window",
         _ => "Archived session"
     };
 
-    private static string StateChipClass(CameraAgentObservingDayView view) => StateLabel(view) switch
+    private string StateChipClass(CameraAgentObservingDayView view) => StateLabel(view) switch
     {
         "Complete" => "hvo-chip--success",
         "In progress" => "hvo-chip--info",
         "Partial" => "hvo-chip--warning",
-        "Outside window" or "Archived session" => "hvo-chip--info",
+        "Outside window" or "Archived session" or "Upcoming day" => "hvo-chip--info",
         _ => "hvo-chip--neutral"
     };
 
-    private string StateDetail(CameraAgentObservingDayView view) => view.Day.CaptureCount == 0
-        ? "Nothing was retained inside this observing day."
-        : StateLabel(view) switch
-        {
-            "In progress" => $"Captures retained from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)} so far. This observing day has not ended.",
-            "Outside window" => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}, none inside the scheduled window.",
-            "Complete" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; complete means at least {CompleteCoverageFraction:P0} of the scheduled window."),
-            "Partial" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; under {CompleteCoverageFraction:P0} of the scheduled window."),
-            _ => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}"
-        };
+    private string StateDetail(CameraAgentObservingDayView view) => StateLabel(view) switch
+    {
+        "In progress" when view.Day.CaptureCount == 0 => "This observing day is open; no captures have been retained yet.",
+        "In progress" => $"Captures retained from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)} so far. This observing day has not ended.",
+        "Upcoming day" => "This observing day has not started; retained captures, if any, may reflect clock skew.",
+        "No archived session" => "Nothing was retained inside this observing day.",
+        "Outside window" => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}, none inside the scheduled window.",
+        "Complete" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; complete means at least {CompleteCoverageFraction:P0} of the scheduled window."),
+        "Partial" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; under {CompleteCoverageFraction:P0} of the scheduled window."),
+        _ => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}"
+    };
 
     private string ScheduledWindow(CameraAgentObservingDayView view) => view.Schedule switch
     {

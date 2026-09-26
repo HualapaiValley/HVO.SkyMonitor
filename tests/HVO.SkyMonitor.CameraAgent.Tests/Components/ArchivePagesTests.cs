@@ -223,6 +223,7 @@ public sealed class ArchivePagesTests
         using var context = new BunitContext();
         Configure(context);
         var day = Phoenix.Resolve(new DateOnly(2030, 7, 21));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc.AddHours(9)));
         var exposure = day.StartUtc.AddHours(8);
         context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
         {
@@ -239,6 +240,43 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(cut.Find(".day-facts__state").TextContent, "This observing day has not ended", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".day-facts").TextContent, "0% of 24h 00m", StringComparison.Ordinal);
         });
+
+        using var futureContext = new BunitContext();
+        Configure(futureContext);
+        futureContext.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc.AddTicks(-1)));
+        futureContext.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 1, 0, exposure, exposure), [exposure], TimeSpan.FromSeconds(20),
+                null, [], false, [], null, null, null)))
+        });
+        var upcoming = futureContext.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2030-07-21"));
+        upcoming.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Upcoming day", upcoming.Find(".day-facts__state .hvo-chip").TextContent);
+            StringAssert.Contains(upcoming.Find(".day-facts__state").TextContent, "may reflect clock skew", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_CurrentDayWithoutCapturesIsInProgress()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var day = Phoenix.Resolve(new DateOnly(2030, 7, 21));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.StartUtc));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2030-07-21"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("In progress", cut.Find(".day-facts__state .hvo-chip").TextContent);
+            StringAssert.Contains(cut.Find(".day-facts__state").TextContent, "no captures have been retained yet", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]
@@ -247,6 +285,7 @@ public sealed class ArchivePagesTests
         using var context = new BunitContext();
         Configure(context);
         var day = Phoenix.Resolve(new DateOnly(2026, 7, 22));
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(day.EndUtc));
         context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
         {
             Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
