@@ -22,11 +22,11 @@
     {
         <header class="day-heading">
             <div>
-                <p class="eyebrow">Observing day / @DateText</p>
+                <p class="eyebrow">Archive / observing day</p>
                 <div class="day-title">
-                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(-1)" aria-label="Previous observing day">‹</a>
+                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(-1)" aria-label="Previous observing day"><i class="bi bi-chevron-left" aria-hidden="true"></i></a>
                     <h1 id="day-heading" tabindex="-1">@DayTitle</h1>
-                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(1)" aria-label="Next observing day">›</a>
+                    <a class="btn btn-outline-light btn-sm day-title__step" href="@DayUrl(1)" aria-label="Next observing day"><i class="bi bi-chevron-right" aria-hidden="true"></i></a>
                 </div>
                 <p class="day-lead">@DayLead</p>
             </div>
@@ -78,9 +78,9 @@
                         <div><dt>Scheduled window</dt><dd>@ScheduledWindow(view)</dd></div>
                         <div><dt>Capture coverage</dt><dd>@Coverage(view)</dd></div>
                         <div><dt>Retained captures</dt><dd>@view.Day.CaptureCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
-                        <div><dt>Current cloud</dt><dd>Not assessed</dd></div>
+                        <div><dt>Cloud quality</dt><dd>Not assessed for this day</dd></div>
                         <div><dt>Total integration</dt><dd>@FormatDuration(view.TotalIntegration)</dd></div>
-                        <div><dt>Detected candidates</dt><dd>@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
+                        <div><dt>Local candidates</dt><dd>@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</dd></div>
                     </dl>
                     @if (view.Schedule is not null)
                     {
@@ -90,9 +90,10 @@
             </section>
 
             <section class="night-timeline" aria-label="Night timeline">
-                <header><div><h2>Night timeline</h2><p>Schedule, captures and events share one local time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
+                <header><div><p class="eyebrow">Noon to noon</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
                 <div class="timeline-tracks" style="--night-hours: @NightHours(view).ToString(System.Globalization.CultureInfo.InvariantCulture)">
-                    <div class="timeline-track" aria-label="Scheduled windows">
+                    <span class="timeline-track-label">Schedule</span>
+                    <div class="timeline-track" aria-label="Scheduled windows from the active schedule definition">
                         @if (view.Schedule is { OpenWindows.Count: > 0 } schedule)
                         {
                             @foreach (var window in schedule.OpenWindows)
@@ -102,19 +103,21 @@
                         }
                         else
                         {
-                            <span class="timeline-track__empty">No schedule window</span>
+                            <span class="timeline-track__empty">@(view.Schedule is null ? "Schedule unavailable" : "No schedule window")</span>
                         }
                     </div>
-                    <div class="timeline-track" aria-label="Retained captures">
+                    <span class="timeline-track-label">Captures</span>
+                    <div class="timeline-track" aria-label="Retained capture exposure starts in @CoverageBinMinutes-minute bins">
                         @foreach (var segment in CaptureSegments(view))
                         {
                             <span class="timeline-bar timeline-bar--captures" style="@BarStyle(view, segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
                         }
                     </div>
-                    <div class="timeline-track timeline-track--markers" aria-label="Detected candidates">
+                    <span class="timeline-track-label">Candidates</span>
+                    <div class="timeline-track timeline-track--markers" aria-label="Local candidate record times, not verified observation times">
                         @foreach (var candidate in view.Candidates)
                         {
-                            <a class="timeline-marker" style="@MarkerStyle(view, candidate.CreatedUtc)" href="/transients/@candidate.CandidateId.ToString("D")" title="Candidate @LocalTime(candidate.CreatedUtc)"><span>Candidate</span></a>
+                            <a class="timeline-marker" style="@MarkerStyle(view, candidate.CreatedUtc)" href="/transients/@candidate.CandidateId.ToString("D")" title="Candidate recorded @LocalTime(candidate.CreatedUtc)"><span>Candidate recorded @LocalTime(candidate.CreatedUtc)</span></a>
                         }
                     </div>
                     <div class="timeline-hours" aria-hidden="true">
@@ -124,11 +127,12 @@
                         }
                     </div>
                 </div>
-                <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Scheduled</span><span><i class="timeline-key__captures"></i>Captures (@CoverageBinMinutes-minute bins)</span><span><i class="timeline-key__event"></i>Candidate</span></div>
+                <div class="timeline-key"><span><i class="timeline-key__schedule"></i>Active schedule definition</span><span><i class="timeline-key__captures"></i>Exposure starts (@CoverageBinMinutes-minute bins)</span><span><i class="timeline-key__event"></i>Candidate record time</span><span class="timeline-key__unavailable">Cloud/usable intervals: unavailable</span></div>
+                @if (view.Schedule?.ActiveRevisionCaveat == true) { <p class="night-timeline__note">The active schedule was created after this day. Its windows are not a historical admission record.</p> }
             </section>
 
             <section class="daily-products" aria-label="Generated products">
-                <header><div><p class="eyebrow">Daily derivatives</p><h2>Generated products</h2></div><a href="/archive/products">View all products</a></header>
+                <header><div><p class="eyebrow">Daily derivatives</p><h2>Generated products</h2><p>Timelapse, star trail and keogram generation is not yet available. No capture image is substituted for a product.</p></div><a href="/archive/products">Browse retained outputs</a></header>
                 <div class="product-slots">
                     @foreach (var slot in ProductSlots)
                     {
@@ -144,7 +148,7 @@
 
             <div class="day-columns">
                 <section class="day-events" aria-label="Detected candidates">
-                    <header><h2>Detected candidates</h2><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Candidates.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
+                    <header><div><h2>Local candidates</h2><p>Detection records, not confirmed meteors or reviewed events.</p></div><span class="hvo-chip @(view.Candidates.Count > 0 ? "hvo-chip--warning" : "hvo-chip--neutral")">@view.Day.CandidateCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</span></header>
                     @if (view.Candidates.Count == 0)
                     {
                         <p class="day-events__empty">No local candidates were recorded on this observing day.</p>
@@ -164,10 +168,10 @@
                     }
                 </section>
                 <section class="day-automations" aria-label="Scheduled automations">
-                    <header><h2>Scheduled automations</h2><a href="/operations/automations">Automation schedule</a></header>
+                    <header><div><h2>Scheduled automations</h2><p>Runs recorded for this observing day; history is bounded.</p></div><a href="/operations/automations">Automation schedule</a></header>
                     @if (view.AutomationRuns.Count == 0)
                     {
-                        <p class="day-events__empty">No automation runs were scheduled inside this observing day@(view.AutomationRuns.Count == 0 ? " (the run history is bounded to recent runs)" : "").</p>
+                        <p class="day-events__empty">No runs appear in the recent history for this observing day. Older runs may be outside the retained history.</p>
                     }
                     else
                     {

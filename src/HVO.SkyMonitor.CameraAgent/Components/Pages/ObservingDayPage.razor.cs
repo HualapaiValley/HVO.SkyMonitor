@@ -87,6 +87,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private static string StateLabel(CameraAgentObservingDayView view) => view.Day.CaptureCount switch
     {
         0 => "No archived session",
+        _ when view.Day.Day.EndUtc > DateTimeOffset.UtcNow => "In progress",
         _ when CoverageFraction(view) is { } fraction && fraction >= CompleteCoverageFraction => "Complete",
         _ when CoverageFraction(view) is > 0 => "Partial",
         _ when CoverageFraction(view) is 0 => "Outside window",
@@ -96,6 +97,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private static string StateChipClass(CameraAgentObservingDayView view) => StateLabel(view) switch
     {
         "Complete" => "hvo-chip--success",
+        "In progress" => "hvo-chip--info",
         "Partial" => "hvo-chip--warning",
         "Outside window" or "Archived session" => "hvo-chip--info",
         _ => "hvo-chip--neutral"
@@ -105,6 +107,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         ? "Nothing was retained inside this observing day."
         : StateLabel(view) switch
         {
+            "In progress" => $"Captures retained from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)} so far. This observing day has not ended.",
             "Outside window" => $"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}, none inside the scheduled window.",
             "Complete" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; complete means at least {CompleteCoverageFraction:P0} of the scheduled window."),
             "Partial" => FormattableString.Invariant($"Captures from {LocalTime(view.Day.FirstExposureUtc!.Value)} to {LocalTime(view.Day.LastExposureUtc!.Value)}; under {CompleteCoverageFraction:P0} of the scheduled window."),
@@ -139,7 +142,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     };
 
     private string TimelineRange(CameraAgentObservingDayView view)
-        => $"{LocalTime(view.Day.Day.StartUtc)} – {LocalTime(view.Day.Day.EndUtc)} {(view.Day.Day.TimeZoneFallback ? "UTC" : "local")}";
+        => $"{LocalTime(view.Day.Day.StartUtc)} {view.Day.Day.Date:dd MMM} – {LocalTime(view.Day.Day.EndUtc)} {view.Day.Day.Date.AddDays(1):dd MMM} ({TimeZoneId})";
 
     private static double NightHours(CameraAgentObservingDayView view) => (view.Day.Day.EndUtc - view.Day.Day.StartUtc).TotalHours;
 
@@ -188,9 +191,10 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         var ticks = new List<HourTick>();
         var start = view.Day.Day.StartUtc;
         var end = view.Day.Day.EndUtc;
-        // One label every two hours keeps the axis legible at typical widths.
-        for (var utc = start; utc <= end; utc = utc.AddHours(2))
+        // Six evenly spaced ticks fit a phone and follow real elapsed time across DST days.
+        for (var index = 0; index <= 6; index++)
         {
+            var utc = start + TimeSpan.FromTicks((end - start).Ticks * index / 6);
             ticks.Add(new HourTick(Percent(view, utc), LocalTime(utc)));
         }
         return ticks;
