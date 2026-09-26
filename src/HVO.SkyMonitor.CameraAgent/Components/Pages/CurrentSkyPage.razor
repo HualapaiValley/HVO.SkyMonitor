@@ -250,9 +250,9 @@
                 {
                     <div class="overlay-actions">
                         <button class="text-button restore-layers" type="button" disabled="@(!ShowLayeredHero || !_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
-                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Saves the base image with the selected overlays as one immutable artifact and downloads it as a JPEG. Analysis is not rerun." @onclick="SaveSelectedStackAsync">@(_saving ? "Preparing image..." : "Download selected stack")</button></div>
+                        <div class="sky-layer-save"><button type="button" class="text-button" disabled="@(_saving || !ShowLayeredHero || !_layerInteractive)" title="Saves the base image with selected overlays as an immutable artifact, then downloads a display JPEG (at most 2048 pixels per side). Analysis is not rerun." @onclick="SaveSelectedStackAsync">@(_saving ? "Preparing image..." : "Download selected stack (display JPEG)")</button></div>
                     </div>
-                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl" download>Download JPEG again</a></p> }
+                    @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl" download>Download JPEG again</a> <a href="@SavedOriginalUrl" download>Download original full-resolution stack</a></p> }
                     @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
                 }
                 else { <p class="scene-unavailable">Selectable scene layers are unavailable for this image.</p> }

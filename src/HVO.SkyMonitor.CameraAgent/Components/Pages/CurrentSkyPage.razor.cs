@@ -55,6 +55,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string? _saveMessage;
     private string? _saveError;
     private string? _savedArtifactUrl;
+    private string? _savedOriginalUrl;
     private HashSet<string> _selectedLayers = new(StringComparer.Ordinal);
     private bool _layerInteractive;
     private bool _layerImageFailed;
@@ -336,6 +337,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _saveMessage = null;
         _saveError = null;
         _savedArtifactUrl = null;
+        _savedOriginalUrl = null;
         _selectedLayers = new(StringComparer.Ordinal);
         _layerInteractive = false;
         _layerImageFailed = false;
@@ -477,6 +479,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     };
 
     private string? SavedArtifactUrl => _savedArtifactUrl;
+    private string? SavedOriginalUrl => _savedOriginalUrl;
 
     private void LayerImageFailed(string message)
     {
@@ -697,6 +700,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _saveError = null;
         _saveMessage = null;
         _savedArtifactUrl = null;
+        _savedOriginalUrl = null;
         try
         {
             var selected = _layers.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
@@ -711,12 +715,13 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             }
             else if (result.IsSuccess && result.Value is { } receipt)
             {
-                // The saved stack is a packed image; its display JPEG is the flattened composite as shown.
+                // The saved stack is full-resolution packed pixels; preview JPEG may be scaled to 2048px.
                 _savedArtifactUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/preview?download=1";
+                _savedOriginalUrl = $"/api/v1/operations/artifacts/{receipt.ArtifactId:D}/content";
                 var downloaded = await TryStartDownloadAsync(_savedArtifactUrl);
                 if (!IsCurrentLayer(generation, captureId, cancellation)) return;
                 _saveMessage = (receipt.Replayed ? "This exact stack was already saved" : "Stack saved as a new immutable artifact") +
-                    (downloaded ? "; JPEG download started." : ".");
+                    (downloaded ? "; display JPEG download started (up to 2048 pixels per side)." : ".");
             }
             else
                 _saveError = result.Message ?? "The presentation stack could not be saved.";

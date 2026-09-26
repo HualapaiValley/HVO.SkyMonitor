@@ -186,6 +186,10 @@ public sealed class CurrentSkyPageTests
         var savedUrl = cut.Find(".sky-layer-result a").GetAttribute("href");
         StringAssert.EndsWith(savedUrl, "/preview?download=1", StringComparison.Ordinal);
         Assert.IsTrue(cut.Find(".sky-layer-result a").HasAttribute("download"));
+        StringAssert.Contains(cut.Find(".sky-layer-result").TextContent, "2048 pixels", StringComparison.Ordinal);
+        var originalLink = cut.FindAll(".sky-layer-result a")[1];
+        StringAssert.EndsWith(originalLink.GetAttribute("href"), "/content", StringComparison.Ordinal);
+        StringAssert.Contains(originalLink.TextContent, "full-resolution", StringComparison.Ordinal);
         Assert.AreEqual(savedUrl, module.Invocations["downloadUrl"].Single().Arguments[0]);
     }
 

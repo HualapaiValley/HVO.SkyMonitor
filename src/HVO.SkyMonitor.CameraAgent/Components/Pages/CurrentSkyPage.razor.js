@@ -10,7 +10,7 @@ export async function openTechnicalEvidence(root) {
     }
     if (!root.isConnected || !evidence.isConnected) return;
     evidence.scrollIntoView({ block: 'start' });
-    (evidence.querySelector('.evidence-tabs [aria-pressed="true"]') ?? evidence).focus({ preventScroll: true });
+    (evidence.querySelector('.evidence-tabs [aria-selected="true"]') ?? evidence).focus({ preventScroll: true });
 }
 
 // Starts a same-origin attachment download without leaving the page.
