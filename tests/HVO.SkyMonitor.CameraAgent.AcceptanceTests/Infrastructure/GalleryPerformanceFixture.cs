@@ -42,7 +42,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
 
     internal IReadOnlyList<PreviewSeed> PreviewSeeds { get; private set; } = [];
 
-    internal static async Task<GalleryPerformanceFixture> CreateAsync(int captureCount)
+    internal static async Task<GalleryPerformanceFixture> CreateAsync(int captureCount, bool sceneBearingOutputs = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-performance-{captureCount}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -64,7 +64,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var fixture = new GalleryPerformanceFixture(root, options, processingStore);
-            fixture.PreviewSeeds = await fixture.SeedAsync(captureCount).ConfigureAwait(false);
+            fixture.PreviewSeeds = await fixture.SeedAsync(captureCount, sceneBearingOutputs).ConfigureAwait(false);
             return fixture;
         }
         catch
@@ -106,13 +106,47 @@ internal sealed class GalleryPerformanceFixture : IDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1849:Call async methods when in an async method", Justification = "Synchronous prepared-command execution inside one local SQLite transaction is intentional efficient setup outside the measured workload.")]
-    private async Task<IReadOnlyList<PreviewSeed>> SeedAsync(int captureCount)
+    private async Task<IReadOnlyList<PreviewSeed>> SeedAsync(int captureCount, bool sceneBearingOutputs)
     {
         var previewSeeds = new List<PreviewSeed>(3);
         using var connection = new SqliteConnection($"Data Source={DatabasePath};Pooling=False");
         await connection.OpenAsync().ConfigureAwait(false);
         using var transaction = connection.BeginTransaction();
         using var command = CreateSeedCommand(connection, transaction);
+        command.Parameters["$scene_bearing"].Value = sceneBearingOutputs ? 1 : 0;
+        using var extra = connection.CreateCommand();
+        extra.Transaction = transaction;
+        extra.CommandText = """
+            INSERT INTO processing_nodes(capture_id, node_id, required, dependencies_json, recipe_name,
+                output_role, output_variant, plan_sha256, status, attempt, completed_unix_ms)
+            VALUES ($capture, $node, 1, '[]', 'gallery-preview', 'Preview', $variant,
+                'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'Completed', 1, $time);
+            INSERT INTO processing_outputs(output_identity_sha256, capture_id, agent_id, node_id,
+                artifact_id, role, variant, payload_relative_path, sidecar_relative_path,
+                descriptor_json, recipe_identity_sha256, algorithms_json, compatibility_json,
+                total_integration_ticks, capture_sequence, committed_unix_ms)
+            VALUES ($identity, $capture, 'issue-106-gallery', $node, $artifact, 'Preview', $variant,
+                $path, $sidecar, $descriptor, $recipe, $algorithms, $compatibility, 0, $sequence, $time);
+            INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+            VALUES ($identity, 0, $raw_artifact);
+            """;
+        foreach (var name in new[] { "$capture", "$node", "$variant", "$time", "$identity", "$artifact",
+                     "$path", "$sidecar", "$descriptor", "$recipe", "$algorithms", "$compatibility", "$sequence",
+                     "$raw_artifact" })
+        {
+            extra.Parameters.Add(new SqliteParameter(name, DBNull.Value));
+        }
+        extra.Parameters["$recipe"].Value = PreviewRecipeIdentity;
+        extra.Parameters["$algorithms"].Value = JsonSerializer.SerializeToUtf8Bytes(Algorithms, WebJson);
+        extra.Parameters["$compatibility"].Value = JsonSerializer.SerializeToUtf8Bytes(Compatibility, WebJson);
+        extra.Prepare();
+        var largeScene = sceneBearingOutputs ? CreateScene(0) with
+        {
+            Objects = Enumerable.Range(0, 2000).Select(index => new ProjectedObjectProvenance(
+                $"HIP-{index:D6}", $"Catalog Object {index:D6}", index * .75, index * .4, index * .001)).ToArray(),
+            Segments = Enumerable.Range(0, 190).Select(index => new ProjectedSegmentProvenance(
+                "ORI", $"HIP-{index:D6}", $"HIP-{index + 1:D6}", index, index, index + 1, index + 1)).ToArray()
+        } : null;
         for (var index = 1; index <= captureCount; index++)
         {
             var captureId = CreateGuid(index, 1);
@@ -147,7 +181,8 @@ internal sealed class GalleryPerformanceFixture : IDisposable
                 RawRecipe,
                 rawPayload,
                 $"raw/{rawArtifactId:N}.bin",
-                origin == GalleryEvidenceOrigin.Simulated ? CreateScene(index) : null);
+                largeScene is null ? (origin == GalleryEvidenceOrigin.Simulated ? CreateScene(index) : null)
+                    : largeScene with { SceneId = $"scene-{index}" });
             var rawEvidence = CaptureContractJson.Serialize(rawManifest);
 
             var previewPayload = CreatePayload(index, 73);
@@ -169,7 +204,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
                 PreviewRecipe,
                 previewPayload,
                 $"derived/{previewArtifactId:N}.bin",
-                null);
+                largeScene is null ? null : largeScene with { SceneId = $"scene-{index}" });
             var previewEvidence = CaptureContractJson.Serialize(previewManifest);
             var status = (index % 11) switch
             {
@@ -199,6 +234,32 @@ internal sealed class GalleryPerformanceFixture : IDisposable
             Set(command, "$preview_sidecar", $"derived/{previewArtifactId:N}.json");
             Set(command, "$preview_evidence", previewEvidence);
             command.ExecuteNonQuery();
+
+            if (sceneBearingOutputs)
+            {
+                for (var ordinal = 1; ordinal <= 3; ordinal++)
+                {
+                    var variant = $"gallery-{ordinal}";
+                    var identity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, variant,
+                        PreviewRecipeIdentity, [rawArtifactId]);
+                    var artifact = ProcessingIdentity.CreateArtifactId(identity);
+                    var manifest = CreateManifest(captureId, artifact, index, started, "preview",
+                        FrameArtifactRole.Preview, variant, [rawArtifactId], PreviewRecipe, previewPayload,
+                        $"derived/{artifact:N}.bin", largeScene! with { SceneId = $"scene-{index}" });
+                    Set(extra, "$capture", captureId.ToString("N"));
+                    Set(extra, "$raw_artifact", rawArtifactId.ToString("N"));
+                    Set(extra, "$node", variant);
+                    Set(extra, "$variant", variant);
+                    Set(extra, "$time", started.AddMilliseconds(4).ToUnixTimeMilliseconds());
+                    Set(extra, "$identity", identity);
+                    Set(extra, "$artifact", artifact.ToString("N"));
+                    Set(extra, "$path", manifest.RelativeArtifactPath);
+                    Set(extra, "$sidecar", $"derived/{artifact:N}.json");
+                    Set(extra, "$descriptor", CaptureContractJson.Serialize(manifest));
+                    Set(extra, "$sequence", index);
+                    extra.ExecuteNonQuery();
+                }
+            }
 
             if (previewSeeds.Count < previewSeeds.Capacity)
             {
@@ -243,13 +304,15 @@ internal sealed class GalleryPerformanceFixture : IDisposable
             VALUES($output_identity, $capture, 'issue-106-gallery', 'preview', $preview_artifact,
                 'Preview', 'gallery', $preview_path, $preview_sidecar, $preview_evidence,
                 $preview_recipe_identity, $algorithms, $compatibility, 0, $sequence, $durable_ms);
+            INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+            SELECT $output_identity, 0, $raw_artifact WHERE $scene_bearing = 1;
             """;
         foreach (var name in new[]
         {
             "$capture", "$raw_artifact", "$sequence", "$descriptor_sha", "$manifest_sha",
             "$raw_checksum", "$raw_path", "$raw_sidecar", "$raw_evidence", "$exposure_ms",
             "$durable_ms", "$raw_state", "$origin", "$status", "$reason", "$output_identity",
-            "$preview_artifact", "$preview_path", "$preview_sidecar", "$preview_evidence"
+            "$preview_artifact", "$preview_path", "$preview_sidecar", "$preview_evidence", "$scene_bearing"
         })
         {
             command.Parameters.Add(new SqliteParameter(name, DBNull.Value));
