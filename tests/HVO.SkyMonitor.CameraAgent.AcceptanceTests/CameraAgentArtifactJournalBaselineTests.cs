@@ -107,6 +107,20 @@ public sealed class CameraAgentArtifactJournalBaselineTests
             Assert.AreEqual(sourceHash, Digest(reopened));
         }
         var verifyMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        using (var tampered = new SqliteConnection($"Data Source={restorePath};Pooling=False"))
+        {
+            tampered.Open();
+            using var transaction = tampered.BeginTransaction();
+            using var change = tampered.CreateCommand();
+            change.Transaction = transaction;
+            change.CommandText = """
+                UPDATE processing_output_sources SET source_ordinal=1
+                WHERE output_identity_sha256=(SELECT output_identity_sha256 FROM processing_output_sources LIMIT 1);
+                """;
+            Assert.AreEqual(1, change.ExecuteNonQuery());
+            Assert.AreNotEqual(sourceHash, Digest(tampered));
+            transaction.Rollback();
+        }
         process.Refresh();
         var rssAfterRestore = process.WorkingSet64;
         using (var sources = writer.CreateCommand())
@@ -142,22 +156,25 @@ public sealed class CameraAgentArtifactJournalBaselineTests
                 }
                 else
                 {
-                    var sequence = (index * 7919 % count) + 1;
+                    var sequence = index * 7919 % (count - 50);
                     command.Parameters["$sequence"].Value = sequence;
                     var from = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
-                        .AddSeconds(sequence * (62d * 24 * 3600 / count));
-                    command.Parameters["$from"].Value = from.ToUnixTimeMilliseconds();
+                        .AddSeconds((sequence + 1) * (62d * 24 * 3600 / count));
+                    command.Parameters["$from"].Value = from.AddMinutes(-1).ToUnixTimeMilliseconds();
                     command.Parameters["$to"].Value = from.AddHours(12).ToUnixTimeMilliseconds();
                 }
                 started = Stopwatch.GetTimestamp();
                 using var reader = command.ExecuteReader();
-                var found = false;
+                var rows = 0;
                 while (reader.Read())
                 {
                     _ = reader.GetValue(0);
-                    found = true;
+                    rows++;
                 }
-                Assert.IsTrue(found, $"{name} query returned no rows");
+                if (name == "time")
+                    Assert.IsGreaterThan(0, rows, "The time window must include a capture.");
+                else
+                    Assert.AreEqual(name == "page" ? 50 : 1, rows, $"{name} query returned an unexpected row count");
                 samples[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             }
             Array.Sort(samples);
@@ -220,7 +237,7 @@ public sealed class CameraAgentArtifactJournalBaselineTests
         {
             "SELECT manifest_json FROM raw_captures ORDER BY capture_sequence",
             "SELECT descriptor_json FROM processing_outputs ORDER BY capture_sequence, node_id",
-            "SELECT output_identity_sha256, source_artifact_id FROM processing_output_sources ORDER BY output_identity_sha256, source_ordinal"
+            "SELECT output_identity_sha256, source_ordinal, source_artifact_id FROM processing_output_sources ORDER BY output_identity_sha256, source_ordinal"
         })
         {
             using var command = connection.CreateCommand();
@@ -228,17 +245,24 @@ public sealed class CameraAgentArtifactJournalBaselineTests
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                if (reader.GetFieldType(0) == typeof(byte[]))
+                for (var column = 0; column < reader.FieldCount; column++)
                 {
-                    using var stream = reader.GetStream(0);
-                    int read;
-                    while ((read = stream.Read(buffer)) != 0)
-                        hash.AppendData(buffer.AsSpan(0, read));
+                    if (reader.GetFieldType(column) == typeof(byte[]))
+                    {
+                        using var stream = reader.GetStream(column);
+                        hash.AppendData(BitConverter.GetBytes(stream.Length));
+                        int read;
+                        while ((read = stream.Read(buffer)) != 0)
+                            hash.AppendData(buffer.AsSpan(0, read));
+                    }
+                    else
+                    {
+                        var value = System.Text.Encoding.UTF8.GetBytes(Convert.ToString(reader.GetValue(column),
+                            System.Globalization.CultureInfo.InvariantCulture)!);
+                        hash.AppendData(BitConverter.GetBytes(value.Length));
+                        hash.AppendData(value);
+                    }
                 }
-                else
-                    hash.AppendData(System.Text.Encoding.UTF8.GetBytes(reader.GetString(0)));
-                if (reader.FieldCount > 1)
-                    hash.AppendData(System.Text.Encoding.UTF8.GetBytes(reader.GetString(1)));
             }
         }
         return Convert.ToHexString(hash.GetHashAndReset());
