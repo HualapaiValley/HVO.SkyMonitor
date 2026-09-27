@@ -47,7 +47,8 @@ backups of the same populated source, each with a new destination, took
 max 1.067). These are correlated warm-cache backup trials, not five
 independent fixture builds or host restarts. The 10K and 12K rows are one
 trial each. At 12K, process working set was 195,710,976 B before backup,
-199,233,536 B after backup and 2,031,407,104 B after full verification;
+199,233,536 B after backup and 2,031,407,104 B after full verification
+**and a second digest for the tamper-detection assertion**;
 31,124,348,928 B of extra snapshot and restore files coexisted at the
 copy-completion point. This verification is not bounded-memory recovery.
 
@@ -62,7 +63,8 @@ all raw and output descriptors and source lineage; it must not be called pure
 copy throughput. File copy excludes directory sync and is not a qualified
 installer restore. Measured process working set was 190,332,928 B before the
 backup, 193,236,992 B just after the backup, and 1,793,900,544 B after
-reopening and fully digesting the restore. This process-wide sample includes
+reopening and fully digesting the restore **and running an additional digest
+of an intentionally altered source ordinal**. This process-wide sample includes
 the fixture and SQLite cache; it is **not** the CameraAgent cold-start peak or
 a bounded-memory restore result. At restore-copy completion, source main/WAL
 plus two 12,968,484,864 B files coexist: at least 25,936,969,728 B of extra
