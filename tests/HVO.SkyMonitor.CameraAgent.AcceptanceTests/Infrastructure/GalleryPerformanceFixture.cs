@@ -42,7 +42,8 @@ internal sealed class GalleryPerformanceFixture : IDisposable
 
     internal IReadOnlyList<PreviewSeed> PreviewSeeds { get; private set; } = [];
 
-    internal static async Task<GalleryPerformanceFixture> CreateAsync(int captureCount, bool sceneBearingOutputs = false)
+    internal static async Task<GalleryPerformanceFixture> CreateAsync(int captureCount, bool sceneBearingOutputs = false,
+        bool tenSecondCadence = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-performance-{captureCount}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -64,7 +65,8 @@ internal sealed class GalleryPerformanceFixture : IDisposable
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var fixture = new GalleryPerformanceFixture(root, options, processingStore);
-            fixture.PreviewSeeds = await fixture.SeedAsync(captureCount, sceneBearingOutputs).ConfigureAwait(false);
+            fixture.PreviewSeeds = await fixture.SeedAsync(captureCount, sceneBearingOutputs, tenSecondCadence)
+                .ConfigureAwait(false);
             return fixture;
         }
         catch
@@ -106,7 +108,8 @@ internal sealed class GalleryPerformanceFixture : IDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1849:Call async methods when in an async method", Justification = "Synchronous prepared-command execution inside one local SQLite transaction is intentional efficient setup outside the measured workload.")]
-    private async Task<IReadOnlyList<PreviewSeed>> SeedAsync(int captureCount, bool sceneBearingOutputs)
+    private async Task<IReadOnlyList<PreviewSeed>> SeedAsync(int captureCount, bool sceneBearingOutputs,
+        bool tenSecondCadence)
     {
         var previewSeeds = new List<PreviewSeed>(3);
         using var connection = new SqliteConnection($"Data Source={DatabasePath};Pooling=False");
@@ -168,7 +171,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
             // Captures spread evenly across 62 days so calendar and time-range
             // reads exercise a populated retention window, not one night.
             var started = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
-                .AddSeconds(index * (62d * 24 * 3600 / captureCount));
+                .AddSeconds(tenSecondCadence ? (index - 1) * 10 : index * (62d * 24 * 3600 / captureCount));
             var rawManifest = CreateManifest(
                 captureId,
                 rawArtifactId,
