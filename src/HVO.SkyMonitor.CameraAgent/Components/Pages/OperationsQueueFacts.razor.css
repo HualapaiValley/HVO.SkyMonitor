@@ -2,4 +2,4 @@
 .fact-grid > div { min-width: 0; padding: .55rem 0; border-top: 1px solid var(--hvo-border-muted); }
 .fact-grid > div:nth-child(odd) { padding-right: .6rem; }
 dt { color: var(--hvo-muted-weak); font-size: .75rem; letter-spacing: .04em; text-transform: uppercase; }
-dd { margin: .2rem 0 0; overflow-wrap: anywhere; font-size: .96rem; font-weight: 650; }
+dd { margin: .2rem 0 0; overflow-wrap: anywhere; font-size: .93rem; font-weight: 500; }

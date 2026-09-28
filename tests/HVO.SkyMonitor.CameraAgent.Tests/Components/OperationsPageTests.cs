@@ -36,6 +36,7 @@ public sealed class OperationsPageTests
             Assert.AreEqual("/", cut.Find(".operating-deck a[href='/']").GetAttribute("href"));
             StringAssert.Contains(cut.Find(".configuration-links").TextContent, "profile r2", StringComparison.Ordinal);
             Assert.HasCount(2, cut.FindAll(".change-list li"));
+            Assert.AreEqual("Profile r2", cut.Find(".change-list li strong").TextContent);
             StringAssert.Contains(cut.Find(".recent-changes").TextContent, "Recent profile revisions", StringComparison.Ordinal);
             Assert.AreEqual("/operations/schedule", cut.Find(".configuration-links a[href='/operations/schedule']").GetAttribute("href"));
         });
@@ -79,7 +80,6 @@ public sealed class OperationsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "LogicHost integration is disabled", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.OrdinalIgnoreCase);
             StringAssert.Contains(cut.Markup, ">Current<", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("connectivity is unavailable", StringComparison.OrdinalIgnoreCase));

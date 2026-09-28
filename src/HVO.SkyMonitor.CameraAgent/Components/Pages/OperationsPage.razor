@@ -12,9 +12,9 @@
 <div class="operations-page">
     <header class="operations-heading">
         <div>
-            <p class="eyebrow">Protected local operations</p>
+            <p class="eyebrow">Local operations</p>
             <h1>Operations overview</h1>
-            <p>Local capture and system health at a glance. Open a section to inspect or change its configuration.</p>
+            <p>Capture, work queues, and configuration for this camera.</p>
         </div>
         <div class="heading-status" aria-live="polite">
             <span class="hvo-chip state-chip @OverallStateClass">@OverallStateText</span>
@@ -60,12 +60,6 @@
                 <div><strong>LogicHost connectivity is unavailable</strong><p>Local capture and durable queues continue independently.</p></div>
             </section>
         }
-        @if (IsCentralIntegrationDisabled)
-        {
-            <section class="state-banner" role="status">
-                <div><strong>LogicHost integration is disabled</strong><p>Local capture, processing, retention, and operations continue independently.</p></div>
-            </section>
-        }
         @if (HasPressure)
         {
             <section class="state-banner state-banner--warning" role="alert">
@@ -75,9 +69,12 @@
 
         <section class="operating-deck" aria-labelledby="operating-heading">
             <div>
-                <p class="eyebrow">@(_errorMessage is not null || HasStaleSection ? "Last observed state" : HasUnknownSection ? "Partially observed state" : "Current operating state")</p>
+                <p class="eyebrow">@(_errorMessage is not null || HasStaleSection ? "Last observed state" : HasUnknownSection ? "Partially observed state" : "Acquisition")</p>
                 <h2 id="operating-heading">Capture @SplitWords(_view.Summary.CaptureControl.Value.State)</h2>
-                <p>Local acquisition is independent of central delivery. @(_errorMessage is not null || HasStaleSection || HasUnknownSection ? "Some facts need a fresh reading." : "")</p>
+                @if (_errorMessage is not null || HasStaleSection || HasUnknownSection)
+                {
+                    <p>Some facts need a fresh reading.</p>
+                }
             </div>
             <dl>
                 <div><dt>Capture admission</dt><dd>@SplitWords(_view.Summary.CaptureRuntime.Value.Availability)</dd></div>
@@ -109,10 +106,10 @@
 
         <div class="overview-top">
             <section class="overview-panel" aria-labelledby="attention-heading">
-                <header><div><p class="eyebrow">Actionable signals</p><h2 id="attention-heading">Needs attention</h2></div></header>
+                <header><div><h2 id="attention-heading">Needs attention</h2></div></header>
                 @if (!HasAttention)
                 {
-                    <p class="panel-empty">No pressure, retries, or quarantined delivery items reported. A disabled service is not an error.</p>
+                    <p class="panel-empty">No pressure, retries, or quarantined items reported.</p>
                 }
                 else
                 {
@@ -133,7 +130,7 @@
                 }
             </section>
             <section class="overview-panel" aria-labelledby="configuration-heading">
-                <header><div><p class="eyebrow">Read at page open</p><h2 id="configuration-heading">Configuration</h2></div></header>
+                <header><div><h2 id="configuration-heading">Configuration</h2><p class="panel-caption">Profile and system facts read when this page opened</p></div></header>
                 <nav class="configuration-links" aria-label="Operations configuration">
                     <a href="/operations/camera"><strong>Camera &amp; rig</strong><span>@SplitWords(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable") / @(_schedule is null ? "revision unavailable" : $"profile r{_schedule.ActiveRevision.RevisionNumber}")</span></a>
                     <a href="/operations/schedule"><strong>Capture schedule</strong><span>@(_schedule is null ? "Revision unavailable" : $"Active revision {_schedule.ActiveRevision.RevisionNumber}"); review schedule</span></a>
@@ -144,7 +141,7 @@
         </div>
 
         <section class="instrument-grid" aria-label="Primary operations facts">
-            <header class="grid-heading"><div><p class="eyebrow">Durable work</p><h2>Capture and delivery</h2></div><p>Queues and storage are local facts, not editable settings.</p></header>
+            <header class="grid-heading"><div><h2>Capture and delivery</h2></div><p>Durable work and storage</p></header>
             <article class="instrument-card instrument-card--control">
                 <header>
                     <div><p class="eyebrow">Durable capture control</p><h2>Acquisition</h2></div>
@@ -225,7 +222,7 @@
         </details>
 
         <section class="overview-panel recent-changes" aria-labelledby="changes-heading">
-            <header><div><p class="eyebrow">Read at page open</p><h2 id="changes-heading">Recent profile revisions</h2></div><a href="/operations/schedule">View revisions</a></header>
+            <header><div><h2 id="changes-heading">Recent profile revisions</h2><p class="panel-caption">Read when this page opened</p></div><a href="/operations/schedule">View revisions</a></header>
             @if (_schedule is null)
             {
                 <p class="panel-empty">Recent profile revisions are unavailable. Review the capture schedule for the current state.</p>
@@ -239,7 +236,7 @@
                 <ol class="change-list">
                     @foreach (var revision in _schedule.History.Take(4))
                     {
-                        <li><time datetime="@revision.CreatedUtc.ToString("O")">@revision.CreatedUtc.ToString("MMM d, HH:mm 'UTC'")</time><strong>Profile r@revision.RevisionNumber</strong><span>@revision.Source</span></li>
+                        <li><time datetime="@revision.CreatedUtc.ToString("O")">@revision.CreatedUtc.ToString("MMM d, HH:mm 'UTC'")</time><strong>Profile r@(revision.RevisionNumber)</strong><span>@revision.Source</span></li>
                     }
                 </ol>
             }
