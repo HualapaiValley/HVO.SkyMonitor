@@ -48,12 +48,16 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
                 PRAGMA synchronous=FULL;
                 CREATE TABLE IF NOT EXISTS capture_lookup(
                     capture_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, sequence INTEGER NOT NULL,
-                    exposure_hour INTEGER NOT NULL, fact_path TEXT NOT NULL, fact_sha256 TEXT NOT NULL,
+                    exposure_hour INTEGER NOT NULL, exposure_unix_ms INTEGER NOT NULL,
+                    fact_path TEXT NOT NULL, fact_sha256 TEXT NOT NULL,
                     state TEXT NOT NULL, retention_hold INTEGER NOT NULL, UNIQUE(agent_id,sequence));
+                CREATE INDEX IF NOT EXISTS ix_shadow_capture_time ON capture_lookup(exposure_unix_ms,sequence);
                 CREATE TABLE IF NOT EXISTS output_lookup(
                     output_identity TEXT PRIMARY KEY, capture_id TEXT NOT NULL, committed_unix_ms INTEGER NOT NULL,
-                    fact_sha256 TEXT NOT NULL, availability TEXT NOT NULL, fact_path TEXT NOT NULL,
+                    role TEXT NOT NULL, variant TEXT NOT NULL, fact_sha256 TEXT NOT NULL,
+                    availability TEXT NOT NULL, fact_path TEXT NOT NULL,
                     FOREIGN KEY(capture_id) REFERENCES capture_lookup(capture_id));
+                CREATE INDEX IF NOT EXISTS ix_shadow_output_capture ON output_lookup(capture_id,output_identity);
                 CREATE TABLE IF NOT EXISTS projection_state(
                     id INTEGER PRIMARY KEY CHECK(id=1), ready INTEGER NOT NULL CHECK(ready IN (0,1)));
                 INSERT OR IGNORE INTO projection_state VALUES (1,0);
@@ -127,16 +131,19 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
             using (var update = index.CreateCommand())
             {
                 update.CommandText = """
-                    INSERT INTO capture_lookup VALUES ($capture,$agent,$sequence,$hour,$path,$hash,$state,$hold)
+                    INSERT INTO capture_lookup VALUES ($capture,$agent,$sequence,$hour,$exposure,$path,$hash,$state,$hold)
                     ON CONFLICT(capture_id) DO UPDATE SET state=excluded.state,retention_hold=excluded.retention_hold
                     WHERE capture_lookup.agent_id=excluded.agent_id AND capture_lookup.sequence=excluded.sequence
-                      AND capture_lookup.exposure_hour=excluded.exposure_hour AND capture_lookup.fact_path=excluded.fact_path
+                      AND capture_lookup.exposure_hour=excluded.exposure_hour
+                      AND capture_lookup.exposure_unix_ms=excluded.exposure_unix_ms
+                      AND capture_lookup.fact_path=excluded.fact_path
                       AND capture_lookup.fact_sha256=excluded.fact_sha256;
                     """;
                 update.Parameters.AddWithValue("$capture", capture);
                 update.Parameters.AddWithValue("$agent", agent);
                 update.Parameters.AddWithValue("$sequence", sequence);
                 update.Parameters.AddWithValue("$hour", hour);
+                update.Parameters.AddWithValue("$exposure", reader.GetInt64(3));
                 update.Parameters.AddWithValue("$path", relative);
                 update.Parameters.AddWithValue("$hash", hash);
                 update.Parameters.AddWithValue("$state", reader.GetString(5));
@@ -247,16 +254,19 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
                 }
                 using var outputUpdate = index.CreateCommand();
                 outputUpdate.CommandText = """
-                    INSERT INTO output_lookup VALUES ($identity,$capture,$committed,$hash,$availability,$path)
+                    INSERT INTO output_lookup VALUES ($identity,$capture,$committed,$role,$variant,$hash,$availability,$path)
                     ON CONFLICT(output_identity) DO UPDATE SET availability=excluded.availability
                     WHERE output_lookup.capture_id=excluded.capture_id
                       AND output_lookup.committed_unix_ms=excluded.committed_unix_ms
+                      AND output_lookup.role=excluded.role AND output_lookup.variant=excluded.variant
                       AND output_lookup.fact_sha256=excluded.fact_sha256
                       AND output_lookup.fact_path=excluded.fact_path;
                     """;
                 outputUpdate.Parameters.AddWithValue("$identity", identity);
                 outputUpdate.Parameters.AddWithValue("$capture", capture);
                 outputUpdate.Parameters.AddWithValue("$committed", outputReader.GetInt64(2));
+                outputUpdate.Parameters.AddWithValue("$role", artifact.Role.ToString());
+                outputUpdate.Parameters.AddWithValue("$variant", artifact.Variant);
                 outputUpdate.Parameters.AddWithValue("$hash", productHash);
                 outputUpdate.Parameters.AddWithValue("$availability", outputReader.GetString(3));
                 outputUpdate.Parameters.AddWithValue("$path", productRelative);

@@ -229,7 +229,7 @@ public sealed class CameraAgentArtifactJournalBaselineTests
         TestContext.WriteLine(path);
     }
 
-    private static string Digest(SqliteConnection connection)
+    internal static string Digest(SqliteConnection connection)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024];

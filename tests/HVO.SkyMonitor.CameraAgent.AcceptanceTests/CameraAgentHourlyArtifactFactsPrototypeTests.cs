@@ -945,6 +945,23 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
             source.BackupDatabase(target);
         }
         await VerifySnapshotAsync(root, snapshotPath).ConfigureAwait(false);
+        for (var mutation = 0; mutation < 3; mutation++)
+        {
+            var tamperedPath = Path.Combine(fixture.Root, $"tampered-index-{mutation}.db");
+            File.Copy(snapshotPath, tamperedPath);
+            using var index = new SqliteConnection($"Data Source={tamperedPath};Pooling=False");
+            await index.OpenAsync().ConfigureAwait(false);
+            using var change = index.CreateCommand();
+            if (mutation == 0)
+                change.CommandText = "UPDATE capture_lookup SET exposure_unix_ms=exposure_unix_ms+1 WHERE capture_id=(SELECT capture_id FROM capture_lookup LIMIT 1);";
+            else if (mutation == 1)
+                change.CommandText = "UPDATE output_lookup SET role='Raw' WHERE output_identity=(SELECT output_identity FROM output_lookup LIMIT 1);";
+            else
+                change.CommandText = "UPDATE output_lookup SET variant='tampered' WHERE output_identity=(SELECT output_identity FROM output_lookup LIMIT 1);";
+            Assert.AreEqual(1, await change.ExecuteNonQueryAsync().ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => VerifySnapshotAsync(root, tamperedPath))
+                .ConfigureAwait(false);
+        }
         var changedProduct = Directory.EnumerateFiles(Path.Combine(root, "products"), "*.json").First();
         var original = await File.ReadAllBytesAsync(changedProduct).ConfigureAwait(false);
         using (var document = JsonDocument.Parse(original))
@@ -1290,8 +1307,15 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
         }
     }
 
-    private static async Task VerifySnapshotAsync(string root, string snapshotPath)
+    internal static async Task VerifySnapshotAsync(string root, string snapshotPath,
+        long? fromUnixMs = null, long? toUnixMs = null, long? minSequence = null,
+        long? maxSequence = null, string? agentId = null)
     {
+        if (fromUnixMs.HasValue != toUnixMs.HasValue || fromUnixMs >= toUnixMs)
+            throw new ArgumentOutOfRangeException(nameof(fromUnixMs));
+        if (minSequence.HasValue != maxSequence.HasValue ||
+            minSequence.HasValue && (agentId is null || minSequence > maxSequence))
+            throw new ArgumentOutOfRangeException(nameof(minSequence));
         using var snapshot = new SqliteConnection($"Data Source={snapshotPath};Mode=ReadOnly;Pooling=False");
         await snapshot.OpenAsync().ConfigureAwait(false);
         using (var ready = snapshot.CreateCommand())
@@ -1314,12 +1338,23 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
         }
         using var command = snapshot.CreateCommand();
         command.CommandText = """
-            SELECT fact_path, fact_sha256, 0, capture_id, agent_id, sequence, exposure_hour FROM capture_lookup
+            SELECT fact_path, fact_sha256, 0, capture_id, agent_id, sequence, exposure_hour,
+                   exposure_unix_ms, NULL, NULL FROM capture_lookup
+            WHERE ($from IS NULL OR (exposure_unix_ms >= $from AND exposure_unix_ms < $to))
+              AND ($min_sequence IS NULL OR (agent_id=$agent AND sequence BETWEEN $min_sequence AND $max_sequence))
             UNION ALL
             SELECT output.fact_path, output.fact_sha256, 1, output.output_identity, output.capture_id,
-                   capture.sequence, capture.exposure_hour
-            FROM output_lookup output LEFT JOIN capture_lookup capture ON capture.capture_id=output.capture_id;
+                   capture.sequence, capture.exposure_hour, capture.exposure_unix_ms,
+                   output.role, output.variant
+            FROM output_lookup output LEFT JOIN capture_lookup capture ON capture.capture_id=output.capture_id
+            WHERE ($from IS NULL OR (capture.exposure_unix_ms >= $from AND capture.exposure_unix_ms < $to))
+              AND ($min_sequence IS NULL OR (capture.agent_id=$agent AND capture.sequence BETWEEN $min_sequence AND $max_sequence));
             """;
+        command.Parameters.AddWithValue("$from", fromUnixMs.HasValue ? fromUnixMs.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$to", toUnixMs.HasValue ? toUnixMs.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$min_sequence", minSequence.HasValue ? minSequence.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$max_sequence", maxSequence.HasValue ? maxSequence.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$agent", agentId ?? (object)DBNull.Value);
         using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
         var referenced = new HashSet<string>(StringComparer.Ordinal);
         while (await reader.ReadAsync().ConfigureAwait(false))
@@ -1373,8 +1408,11 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
                         ProcessingIdentity.CreateOutputIdentity(artifact.Role, artifact.Variant,
                             ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256,
                             artifact.SourceArtifactIds) != reader.GetString(3) ||
+                        artifact.Role.ToString() != reader.GetString(8) ||
+                        artifact.Variant != reader.GetString(9) ||
                         capture.CaptureId.ToString("N") != reader.GetString(4) ||
                         capture.CaptureSequence != reader.GetInt64(5) ||
+                        rawManifest.Descriptor.Timing.ExposureStartedUtc.ToUnixTimeMilliseconds() != reader.GetInt64(7) ||
                         parsed is not null && parsed.Descriptor.Timing.ExposureStartedUtc.ToUnixTimeMilliseconds() / 3_600_000 != reader.GetInt64(6))
                         throw new InvalidDataException("Product fact descriptor conflicts with index.");
                     var sources = product.RootElement.GetProperty("Sources").EnumerateArray()
@@ -1404,6 +1442,7 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
                         parsed.Descriptor.Capture.CaptureId.ToString("N") != reader.GetString(3) ||
                         parsed.Descriptor.Capture.AgentId != reader.GetString(4) ||
                         parsed.Descriptor.Capture.CaptureSequence != reader.GetInt64(5) ||
+                        parsed.Descriptor.Timing.ExposureStartedUtc.ToUnixTimeMilliseconds() != reader.GetInt64(7) ||
                         parsed.Descriptor.Timing.ExposureStartedUtc.ToUnixTimeMilliseconds() / 3_600_000 != reader.GetInt64(6))
                         throw new InvalidDataException("Raw fact identity conflicts with index.");
                 }
@@ -1413,13 +1452,16 @@ public sealed class CameraAgentHourlyArtifactFactsPrototypeTests
                 }
             }
         }
-        foreach (var directory in new[] { "hours", "products" })
+        if (fromUnixMs is null && minSequence is null)
         {
-            foreach (var file in Directory.EnumerateFiles(Path.Combine(root, directory), "*", SearchOption.AllDirectories))
+            foreach (var directory in new[] { "hours", "products" })
             {
-                var relative = Path.GetRelativePath(root, file);
-                if (!referenced.Contains(relative))
-                    throw new InvalidDataException("Unindexed fact file in offline dataset.");
+                foreach (var file in Directory.EnumerateFiles(Path.Combine(root, directory), "*", SearchOption.AllDirectories))
+                {
+                    var relative = Path.GetRelativePath(root, file);
+                    if (!referenced.Contains(relative))
+                        throw new InvalidDataException("Unindexed fact file in offline dataset.");
+                }
             }
         }
     }

@@ -85,8 +85,9 @@ reported statistics; there is no excluded warm-up window) found:
 The raw/output lookups materialize manifest/descriptor bytes; page and range
 reads return capture IDs only. The source database is open throughout; page
 and range cursors vary across 35 reads, but there is no cold-cache guarantee.
-Page and range results are not yet compared row by row to a candidate; that
-belongs to #1058.
+At the time of this #1056 baseline, page and range results had not been
+compared row by row to a candidate; #1058 subsequently recorded those
+comparisons in `artifact-history-1058-comparison-progress.md`.
 At 1K, opening a new unpooled SQLite connection for each of 35 varied
 raw-manifest reads gave 0.655 ms median and 0.977 ms p95. This includes
 connection startup but **does not flush the Linux page cache**; it is not
