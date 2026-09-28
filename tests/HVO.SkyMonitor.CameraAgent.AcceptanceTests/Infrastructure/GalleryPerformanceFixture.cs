@@ -20,15 +20,17 @@ internal sealed class GalleryPerformanceFixture : IDisposable
     private static readonly ProcessingCompatibilityIdentity Compatibility = new(
         "rig-v1", "orientation-v1", "calibration-v1", "mask-v1", "sensor-v1", "setpoint-v1", "processing-v1");
     private readonly SqliteCaptureProcessingStore _processingStore;
+    private readonly bool _retainOnDispose;
 
     private GalleryPerformanceFixture(
         string root,
         IOptions<CameraAgentHostOptions> options,
-        SqliteCaptureProcessingStore processingStore)
+        SqliteCaptureProcessingStore processingStore, bool retainOnDispose)
     {
         Root = root;
         Options = options;
         _processingStore = processingStore;
+        _retainOnDispose = retainOnDispose;
         Gallery = new SqliteCameraAgentGallery(options, processingStore);
     }
 
@@ -43,10 +45,11 @@ internal sealed class GalleryPerformanceFixture : IDisposable
     internal IReadOnlyList<PreviewSeed> PreviewSeeds { get; private set; } = [];
 
     internal static async Task<GalleryPerformanceFixture> CreateAsync(int captureCount, bool sceneBearingOutputs = false,
-        bool tenSecondCadence = false)
+        bool tenSecondCadence = false, bool retainOnDispose = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-performance-{captureCount}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
+        if (retainOnDispose) Console.WriteLine($"Retained disposable fixture: {root}");
         var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = root,
@@ -64,7 +67,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
         {
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var fixture = new GalleryPerformanceFixture(root, options, processingStore);
+            var fixture = new GalleryPerformanceFixture(root, options, processingStore, retainOnDispose);
             fixture.PreviewSeeds = await fixture.SeedAsync(captureCount, sceneBearingOutputs, tenSecondCadence)
                 .ConfigureAwait(false);
             return fixture;
@@ -73,7 +76,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
         {
             processingStore.Dispose();
             SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root))
+            if (!retainOnDispose && Directory.Exists(root))
             {
                 Directory.Delete(root, recursive: true);
             }
@@ -263,6 +266,9 @@ internal sealed class GalleryPerformanceFixture : IDisposable
                     extra.ExecuteNonQuery();
                 }
             }
+            if (_retainOnDispose && (index % 1000 == 0 || index == captureCount))
+                await File.AppendAllTextAsync(Path.Combine(Root, "seed-progress.log"),
+                    $"{DateTimeOffset.UtcNow:O} seeded={index}/{captureCount}{Environment.NewLine}").ConfigureAwait(false);
 
             if (previewSeeds.Count < previewSeeds.Capacity)
             {
@@ -417,7 +423,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
     {
         _processingStore.Dispose();
         SqliteConnection.ClearAllPools();
-        if (Directory.Exists(Root))
+        if (!_retainOnDispose && Directory.Exists(Root))
         {
             Directory.Delete(Root, recursive: true);
         }
