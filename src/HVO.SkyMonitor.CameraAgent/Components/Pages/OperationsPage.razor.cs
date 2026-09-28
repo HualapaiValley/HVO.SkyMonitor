@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -24,6 +25,10 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     private Task? _pollTask;
     private Task? _commandTask;
     private CameraAgentOperationsView? _view;
+    private CaptureScheduleOperatorState? _schedule;
+    private CameraAgentPipelineOperatorState? _pipeline;
+    private CalibrationUiStatus? _calibration;
+    private CameraAgentProcessingExecutionSummary? _latestRun;
     private PendingOperatorCommand? _pendingCommand;
     private string? _pendingReasonCode;
     private string? _errorMessage;
@@ -38,6 +43,9 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     private int _refreshRequested;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+    [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
+    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
+    [Inject] internal ICameraAgentCalibrationUiService CalibrationService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -46,6 +54,34 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     {
         _lifetime = new CancellationTokenSource();
         await RequestRefreshAsync(_lifetime.Token);
+        var schedule = await ScheduleService.GetAsync(_lifetime.Token).ConfigureAwait(false);
+        if (schedule.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
+            return;
+        }
+        _schedule = schedule.IsSuccess ? schedule.Value : null;
+        var pipeline = await ScheduleService.GetPipelineAsync(_lifetime.Token).ConfigureAwait(false);
+        if (pipeline.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
+            return;
+        }
+        _pipeline = pipeline.IsSuccess ? pipeline.Value : null;
+        var calibration = await CalibrationService.GetStatusAsync(_lifetime.Token).ConfigureAwait(false);
+        if (calibration.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
+            return;
+        }
+        _calibration = calibration.IsSuccess ? calibration.Value : null;
+        var executions = await GraphService.GetExecutionsAsync(1, _lifetime.Token).ConfigureAwait(false);
+        if (executions.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
+            return;
+        }
+        _latestRun = executions.IsSuccess && executions.Value?.Live is { Count: > 0 } live ? live[0] : null;
         _timer = new PeriodicTimer(RefreshInterval, TimeProvider);
         _pollTask = PollAsync(_lifetime.Token);
     }
@@ -329,11 +365,19 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     private bool CanResume => _view?.Summary.CaptureControl.Value.State == "Paused";
     private bool IsCentralIntegrationDisabled =>
         _view?.Summary.Configuration.Value.CentralIntegration == "Disabled";
-    private bool IsDisconnected => !IsCentralIntegrationDisabled &&
-        _view?.Summary.Heartbeat.Value.Availability is not "Available";
+    private bool IsDisconnected => !IsCentralIntegrationDisabled && _view is not null &&
+        string.Equals(_view.Summary.Heartbeat.Freshness, "fresh", StringComparison.OrdinalIgnoreCase) &&
+        _view.Summary.Heartbeat.Value.Availability is "Unavailable" or "Unhealthy";
     private bool HasPressure => _view is not null && (
         _view.Summary.Storage.Value.Any(static item => item.IsUnderPressure) ||
         _view.Summary.CaptureLanes.Value.Lanes.Any(static lane => lane.PressureLevel > 0));
+    private bool HasAttention => _view is not null && (HasPressure || IsDisconnected || HasStaleSection || HasUnknownSection ||
+        _errorMessage is not null ||
+        _view.ArtifactQuarantine.Count > 0 || _view.EnvironmentalQuarantine.Count > 0 ||
+        _view.Summary.ArtifactOutbox.Value.RetryCount > 0 ||
+        _view.Summary.ArtifactOutbox.Value.QuarantineCount > 0 ||
+        _view.Summary.EnvironmentalDelivery.Value.RetryCount > 0 ||
+        _view.Summary.EnvironmentalDelivery.Value.QuarantineCount > 0);
     private bool IsEmpty => _view is not null &&
         _view.Summary.CaptureTelemetry.Value.SampleCount == 0 &&
         _view.Summary.RawIngress.Value.PendingCount == 0 &&
@@ -354,6 +398,21 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         _view.Summary.CaptureTelemetry.Freshness,
         _view.Summary.Configuration.Freshness
     }.Any(static freshness => string.Equals(freshness, "stale", StringComparison.OrdinalIgnoreCase));
+    private bool HasUnknownSection => _view is not null && new[]
+    {
+        _view.Summary.CaptureControl.Freshness,
+        _view.Summary.RawIngress.Freshness,
+        _view.Summary.CaptureLanes.Freshness,
+        _view.Summary.CaptureProcessing.Freshness,
+        _view.Summary.ArtifactOutbox.Freshness,
+        _view.Summary.Storage.Freshness,
+        _view.Summary.CaptureRuntime.Freshness,
+        _view.Summary.Heartbeat.Freshness,
+        _view.Summary.EnvironmentalDelivery.Freshness,
+        _view.Summary.TransientWorker.Freshness,
+        _view.Summary.CaptureTelemetry.Freshness,
+        _view.Summary.Configuration.Freshness
+    }.Any(static freshness => string.Equals(freshness, "unknown", StringComparison.OrdinalIgnoreCase));
 
     private string OverallStateText => _isInitialLoading
         ? "Loading"
@@ -361,6 +420,8 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
             ? "Error"
             : _errorMessage is not null || HasStaleSection
                 ? "Stale"
+                : HasUnknownSection
+                    ? "Needs review"
                 : IsDisconnected
                     ? "Disconnected"
                     : HasPressure
@@ -372,6 +433,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         "Loading" => "state-chip--loading",
         "Error" => "state-chip--error",
         "Stale" => "state-chip--stale",
+        "Needs review" => "state-chip--stale",
         "Disconnected" => "state-chip--disconnected",
         "Pressure" => "state-chip--pressure",
         _ => "state-chip--current"

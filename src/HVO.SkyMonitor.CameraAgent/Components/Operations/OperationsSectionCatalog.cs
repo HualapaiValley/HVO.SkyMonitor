@@ -37,7 +37,8 @@ public sealed record OperationsSection(
     public bool Matches(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
-        if (UnavailableReason is not null) return false;
+        if (UnavailableReason is not null)
+            return string.Equals(TrimSlash(path), $"/operations/unavailable/{Slug}", StringComparison.OrdinalIgnoreCase);
         if (string.Equals(Href, OperationsSectionCatalog.OverviewPath, StringComparison.Ordinal))
         {
             return string.Equals(TrimSlash(path), Href, StringComparison.OrdinalIgnoreCase);

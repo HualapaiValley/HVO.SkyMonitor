@@ -27,10 +27,10 @@
                         <li>
                             @if (section.UnavailableReason is { } reason)
                             {
-                                <button type="button" class="operations-navigation__link operations-navigation__link--unavailable" disabled title="@reason" aria-describedby="@($"operations-unavailable-{section.Slug}")">
+                                <a href="@($"/operations/unavailable/{section.Slug}")" class="@(current ? "operations-navigation__link operations-navigation__link--unavailable operations-navigation__link--current" : "operations-navigation__link operations-navigation__link--unavailable")" aria-current="@(current ? "page" : null)" title="@reason" aria-describedby="@($"operations-unavailable-{section.Slug}")">
                                     <svg class="operations-navigation__icon" viewBox="0 0 20 20" aria-hidden="true"><path d="@section.IconPath"></path></svg>
                                     <span>@section.Label</span><small>#@section.UnavailableIssue</small>
-                                </button>
+                                </a>
                                 <p id="@($"operations-unavailable-{section.Slug}")" class="operations-navigation__reason">@reason</p>
                             }
                             else

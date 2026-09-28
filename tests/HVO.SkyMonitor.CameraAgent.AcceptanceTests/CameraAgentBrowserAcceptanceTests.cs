@@ -29,6 +29,84 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    public async Task OperationsOverviewIsReadableAtDesktopAndNarrowWidthsAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        var output = Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-992");
+        Directory.CreateDirectory(output);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await page.GotoAsync("/operations").ConfigureAwait(false);
+            await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Operations overview" }))
+                .ConfigureAwait(false);
+            await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture and delivery" }))
+                .ConfigureAwait(false);
+            await page.Locator(".configuration-links a").First.WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(4, await page.Locator(".configuration-links a").CountAsync().ConfigureAwait(false));
+            Assert.IsFalse(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
+                .ConfigureAwait(false), $"Horizontal overflow at {width}px.");
+            Assert.IsTrue(await page.EvaluateAsync<bool>("""
+                () => [...document.querySelectorAll('.operations-page a, .operations-page button, .operations-page summary')]
+                    .filter(element => element.getClientRects().length && element.closest('details:not([open])') === null)
+                    .every(element => {
+                        const bounds = element.getBoundingClientRect();
+                        return bounds.left >= -1 && bounds.right <= document.documentElement.clientWidth + 1;
+                    })
+                """).ConfigureAwait(false), $"An Operations control is clipped at {width}px.");
+            var details = page.Locator(".secondary-details").First;
+            Assert.IsFalse(await details.EvaluateAsync<bool>("element => element.open").ConfigureAwait(false));
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"operations-{width}.png") })
+                .ConfigureAwait(false);
+            await details.Locator("summary").ClickAsync().ConfigureAwait(false);
+            Assert.IsTrue(await details.EvaluateAsync<bool>("element => element.open").ConfigureAwait(false));
+            if (width == 1440)
+            {
+                await page.WaitForTimeoutAsync(5500).ConfigureAwait(false);
+                Assert.IsTrue(await details.EvaluateAsync<bool>("element => element.open").ConfigureAwait(false),
+                    "Automatic refresh must not close operator-controlled details.");
+            }
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"operations-details-{width}.png"), FullPage = true })
+                .ConfigureAwait(false);
+            if (width == 1440) continue;
+            var toggle = page.Locator("button[aria-controls='operations-sections']");
+            await toggle.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === true")
+                .ConfigureAwait(false);
+            await AssertNavigationModalAsync(page, "operations-sections").ConfigureAwait(false);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"operations-drawer-{width}.png") })
+                .ConfigureAwait(false);
+            await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+            await WaitForFocusAsync(page, toggle).ConfigureAwait(false);
+        }
+        await page.GotoAsync("/operations/unavailable/focus").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus Assistant" }))
+            .ConfigureAwait(false);
+        StringAssert.Contains(await page.Locator(".unavailable-section").InnerTextAsync().ConfigureAwait(false),
+            "#1017", StringComparison.Ordinal);
+        Assert.IsEmpty(await page.Locator(".unavailable-section form, .unavailable-section button").AllAsync().ConfigureAwait(false));
+        await page.GetByRole(AriaRole.Link, new() { Name = "Back to Operations overview" }).ClickAsync()
+            .ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Operations overview" }))
+            .ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task FirstOwnerLoginRequiresPasswordReplacementAndRevokesStaleSessionAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);

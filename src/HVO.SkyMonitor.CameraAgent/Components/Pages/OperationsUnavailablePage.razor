@@ -1,0 +1,23 @@
+@page "/operations/unavailable/{Section}"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+
+<PageTitle>@(Entry?.Label ?? "Unavailable section") | Operations</PageTitle>
+
+<section class="unavailable-section" aria-labelledby="unavailable-heading">
+    <p class="eyebrow">Operations / @Entry?.Group</p>
+    <h1 id="unavailable-heading">@(Entry?.Label ?? "Section unavailable")</h1>
+    @if (Entry is null)
+    {
+        <p>This Operations section does not exist.</p>
+    }
+    else
+    {
+        <p>@Entry.UnavailableReason</p>
+        <p>This page has no controls until the section's local capability is available.</p>
+    }
+    <a href="/operations">Back to Operations overview</a>
+</section>

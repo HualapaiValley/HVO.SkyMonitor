@@ -1,4 +1,5 @@
 using Bunit;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -24,7 +25,20 @@ public sealed class OperationsPageTests
         StringAssert.Contains(cut.Markup, "Loading current operations", StringComparison.Ordinal);
 
         pending.SetResult(OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations(samples: 0)));
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "No capture activity yet", StringComparison.Ordinal));
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "No capture activity yet", StringComparison.Ordinal);
+            Assert.HasCount(1, cut.FindAll(".operating-deck"));
+            Assert.HasCount(1, cut.FindAll("#attention-heading"));
+            Assert.HasCount(4, cut.FindAll(".configuration-links a"));
+            Assert.HasCount(1, cut.FindAll(".grid-heading"));
+            Assert.HasCount(2, cut.FindAll(".secondary-details > summary"));
+            Assert.AreEqual("/", cut.Find(".operating-deck a[href='/']").GetAttribute("href"));
+            StringAssert.Contains(cut.Find(".configuration-links").TextContent, "profile r2", StringComparison.Ordinal);
+            Assert.HasCount(2, cut.FindAll(".change-list li"));
+            StringAssert.Contains(cut.Find(".recent-changes").TextContent, "Recent profile revisions", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/schedule", cut.Find(".configuration-links a[href='/operations/schedule']").GetAttribute("href"));
+        });
     }
 
     [TestMethod]
@@ -42,6 +56,8 @@ public sealed class OperationsPageTests
         {
             StringAssert.Contains(cut.Markup, "LogicHost connectivity is unavailable", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Storage or lane pressure detected", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Inspect storage", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Inspect status", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Critical pressure", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
             StringAssert.Contains(cut.Markup, "Fresh", StringComparison.Ordinal);
@@ -68,6 +84,7 @@ public sealed class OperationsPageTests
             StringAssert.Contains(cut.Markup, ">Current<", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("connectivity is unavailable", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(cut.Markup.Contains(">Disconnected<", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".operating-deck").TextContent, "Disabled", StringComparison.Ordinal);
         });
     }
 
@@ -175,6 +192,8 @@ public sealed class OperationsPageTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.Contains(cut.Markup, "Showing last valid data", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Some operating facts are stale", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".operating-deck").TextContent, "Last observed state", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, ">Stale<", StringComparison.Ordinal);
         });
@@ -249,7 +268,150 @@ public sealed class OperationsPageTests
 
         var cut = context.Render<OperationsPage>();
 
-        cut.WaitForAssertion(() => Assert.AreEqual("Stale", cut.Find(".heading-status .state-chip").TextContent.Trim()));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Stale", cut.Find(".heading-status .state-chip").TextContent.Trim());
+            StringAssert.Contains(cut.Markup, "Some operating facts are stale", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void UnknownFacts_DoNotAnnounceAllClear()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(current with
+            {
+                Summary = current.Summary with
+                {
+                    Storage = current.Summary.Storage with { Freshness = "unknown" }
+                }
+            }));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Some operating facts have not been observed", StringComparison.Ordinal);
+            Assert.AreEqual("Needs review", cut.Find(".heading-status .state-chip").TextContent.Trim());
+            Assert.IsFalse(cut.Markup.Contains("No pressure, retries, or quarantined delivery items reported", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void UnknownHeartbeat_DoesNotInventAConnectionOutage()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations(heartbeat: "Unavailable");
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(current with
+            {
+                Summary = current.Summary with
+                {
+                    Heartbeat = current.Summary.Heartbeat with { Freshness = "unknown" }
+                }
+            }));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Some operating facts have not been observed", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("LogicHost connectivity is unavailable", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void UnavailableSchedule_DoesNotInventActiveRevisionOrRecentChanges()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new UnavailableScheduleUiService());
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".configuration-links").TextContent, "revision unavailable", StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(cut.Find(".recent-changes").TextContent, "Recent profile revisions are unavailable", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".change-list li"));
+        });
+    }
+
+    [TestMethod]
+    public void LatestLiveRun_LinksToRecordedExecution()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var runId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        var run = ProcessingExecutionPagesTests.Execution(runId, ProcessingGraphExecutionClass.Live,
+            ProcessingGraphExecutionStatus.Completed);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService
+        {
+            Executions = new CameraAgentProcessingExecutionsView(OperatorUiTestData.Now, 1,
+                [CameraAgentProcessingExecutionProjection.Summarize(run)], [])
+        });
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual($"/operations/pipeline/executions/{runId}",
+            cut.Find(".operating-deck a[href*='/pipeline/executions/']").GetAttribute("href")));
+    }
+
+    [TestMethod]
+    public void InitializingCapture_DoesNotInventAnInFlightCommand()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(current with
+            {
+                Summary = current.Summary with
+                {
+                    CaptureControl = current.Summary.CaptureControl with
+                    {
+                        Value = current.Summary.CaptureControl.Value with { State = "Initializing" }
+                    }
+                }
+            }));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "pause and resume are unavailable", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("command is settling", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void EnvironmentalDeliveryAttention_LinksToEnvironmentalQuarantine()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(current with
+            {
+                Summary = current.Summary with
+                {
+                    EnvironmentalDelivery = current.Summary.EnvironmentalDelivery with
+                    {
+                        Value = current.Summary.EnvironmentalDelivery.Value with { RetryCount = 1 }
+                    }
+                }
+            }));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("/operations/data",
+            cut.Find(".attention-list a[href='/operations/data']").GetAttribute("href")));
+    }
+
+    [TestMethod]
+    public void QuarantinedArtifact_LinksToHeldItems()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations(
+                artifactQuarantine: [new OperatorOutboxItem("Artifact", "Quarantined", "raw-ingress", "Preview",
+                    1, 100, OperatorUiTestData.Now, "invalid-source", "replay-token", "abandon-token")])));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("/operations/quarantine",
+            cut.Find(".attention-list a[href='/operations/quarantine']").GetAttribute("href")));
     }
 
     [TestMethod]
@@ -351,8 +513,78 @@ public sealed class OperationsPageTests
     {
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(
+            new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
+        context.Services.AddSingleton<ICameraAgentCalibrationUiService>(new OverviewCalibrationUiService());
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService
+        {
+            Executions = new CameraAgentProcessingExecutionsView(OperatorUiTestData.Now, 1, [], [])
+        });
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         return service;
+    }
+
+    private sealed class UnavailableScheduleUiService : ICameraAgentScheduleUiService
+    {
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOperatorState>> GetAsync(
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOperatorState>
+                .Failure(OperatorUiResultKind.Unavailable, "Schedule unavailable."));
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureSchedulePreview>> PreviewAsync(
+            string profileJson, string basisRevisionId, int dayCount, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> StageAsync(
+            string profileJson, string basisRevisionId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> ActivateAsync(
+            string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> RollbackAsync(
+            string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> AddOverrideAsync(
+            HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOverride scheduleOverride, long expectedVersion,
+            string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> ClearOverrideAsync(
+            string overrideId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class OverviewCalibrationUiService : ICameraAgentCalibrationUiService
+    {
+        public ValueTask<OperatorUiResult<CalibrationUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiStatus>.Success(new(
+                1, null, null, 0, 0, null, null, null, null, null)));
+
+        public ValueTask<OperatorUiResult<CalibrationUiBundlePage>> GetBundlesAsync(int pageSize, string? cursor,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CalibrationUiBundleDetail>> GetBundleAsync(string bundleId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CalibrationUiAcquisition>> AcquireAsync(CalibrationUiAcquisitionRequest request,
+            long expectedVersion, string idempotencyKey, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CalibrationUiAcquisition>> CancelAsync(string jobId, long expectedVersion,
+            string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CalibrationUiStatus>> ActivateAsync(string bundleId, long expectedVersion,
+            string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CalibrationUiStatus>> RollbackAsync(string bundleId, long expectedVersion,
+            string idempotencyKey, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }
 
