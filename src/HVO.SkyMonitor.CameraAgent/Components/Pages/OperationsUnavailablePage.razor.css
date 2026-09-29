@@ -1,5 +1,1 @@
-.unavailable-section { max-width: 52rem; margin: 0 auto; padding: clamp(1.5rem, 4vw, 3rem); border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); }
-.unavailable-section .eyebrow { color: var(--hvo-accent); font-size: .78rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-.unavailable-section h1 { margin: .4rem 0 1rem; font-size: clamp(1.8rem, 3vw, 2.6rem); }
-.unavailable-section p { color: var(--hvo-muted-strong); line-height: 1.55; }
-.unavailable-section a { display: inline-flex; min-height: 44px; align-items: center; margin-top: .6rem; }
+.unavailable-section .ops-note-banner p { margin: 0; }

@@ -1,7 +1,7 @@
 @page "/operations"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
-@using HVO.SkyMonitor.CameraAgent.Common.Operations
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -9,283 +9,173 @@
 
 <PageTitle>Operations</PageTitle>
 
-<div class="operations-page">
-    <header class="operations-heading">
-        <div>
-            <p class="eyebrow">Local operations</p>
-            <h1>Operations overview</h1>
-            <p>Capture, work queues, and configuration for this camera.</p>
-        </div>
-        <div class="heading-status" aria-live="polite">
-            <span class="hvo-chip state-chip @OverallStateClass">@OverallStateText</span>
-            @if (_view is not null)
-            {
-                <span>Updated <time datetime="@_view.Summary.CapturedUtc.ToString("O")">@FormatAge(_view.Summary.CapturedUtc)</time></span>
-            }
-            <button type="button" class="btn btn-outline-secondary btn-sm refresh-link" disabled="@_isSubmitting" @onclick="RefreshNowAsync">Refresh now</button>
-        </div>
-    </header>
+<OperationsPageHeading Eyebrow="@HeadingEyebrow" Title="Operations" HeadingId="operations-heading"
+                       Description="Configure and operate this camera without making local acquisition dependent on LogicHost.">
+    <Actions>
+        <a class="button secondary" href="/">View current sky</a>
+        @if (CanPause)
+        {
+            <button id="capture-action" type="button" class="button secondary" disabled="@_isSubmitting" @onclick="BeginPause">Pause capture</button>
+        }
+        else if (CanResume)
+        {
+            <button id="capture-action" type="button" class="button primary" disabled="@_isSubmitting" @onclick="BeginResume">Resume capture</button>
+        }
+    </Actions>
+</OperationsPageHeading>
 
-    @if (_isInitialLoading)
+@if (_isInitialLoading && _view is null)
+{
+    <section class="ops-state-deck pending" aria-label="Current operating state" aria-busy="true">
+        <div class="ops-state-primary"><span class="ops-state-orbit" aria-hidden="true"><i></i></span><span><strong>Loading current operations</strong><span>Reading durable and runtime sources.</span></span></div>
+    </section>
+}
+else if (_view is null && !_unauthorized)
+{
+    <div class="ops-note-banner operations-failure" role="alert">
+        <span class="status-icon failure" aria-hidden="true"></span>
+        <span><strong>Operations unavailable.</strong> @(_errorMessage ?? "Current operations data is unavailable.")</span>
+        <button type="button" class="button secondary small" @onclick="RefreshNowAsync">Try again</button>
+    </div>
+}
+else if (_view is not null)
+{
+    var summary = _view.Summary;
+    var telemetry = summary.CaptureTelemetry.Value;
+    var attention = OperationsAttention.From(_view, _errorMessage is not null);
+    var changes = RecentChanges;
+
+    @if (_errorMessage is not null)
     {
-        <section class="state-banner" role="status" aria-label="Loading operations">
-            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
-            <div><strong>Loading current operations</strong><p>Reading durable and runtime sources.</p></div>
-        </section>
+        <div class="ops-note-banner" role="alert">
+            <span class="status-icon warning" aria-hidden="true"></span>
+            <span><strong>Showing last valid data.</strong> @_errorMessage Automatic refresh will retry.</span>
+        </div>
     }
-    else if (_view is null)
-    {
-        <section class="state-banner state-banner--error" role="alert">
-            <div><strong>Operations unavailable</strong><p>@(_errorMessage ?? "Current operations data could not be read.")</p></div>
-            <button type="button" class="btn btn-outline-light btn-sm" @onclick="RefreshNowAsync">Try again</button>
-        </section>
-    }
-    else
-    {
-        @if (_errorMessage is not null)
+
+    <section class="ops-state-deck @DeckClass" aria-label="Current operating state">
+        <div class="ops-state-primary"><span class="ops-state-orbit" aria-hidden="true"><i></i></span><span><strong>@CaptureHeadline</strong><span>@CaptureDetail</span></span></div>
+        <dl class="ops-state-facts">
+            <div><dt>Next capture</dt><dd>Not reported</dd></div>
+            <div><dt>Admission</dt><dd>@AdmissionText</dd></div>
+            <div><dt>Active profile</dt><dd>@ActiveProfileText</dd></div>
+            <div><dt>LogicHost</dt><dd>@(IsCentralIntegrationDisabled ? "Disabled" : SplitWords(summary.Heartbeat.Value.Availability))</dd></div>
+        </dl>
+        @if (_latestRun is not null)
         {
-            <section class="state-banner state-banner--warning" role="alert">
-                <div><strong>Showing last valid data</strong><p>@_errorMessage Automatic refresh will retry.</p></div>
-            </section>
+            <a class="button primary" href="@($"/operations/pipeline/executions/{_latestRun.ExecutionId}")">Latest run</a>
         }
-        @if (IsEmpty)
+        else
         {
-            <section class="state-banner" role="status">
-                <div><strong>No capture activity yet</strong><p>Queues are empty and no telemetry samples have been observed.</p></div>
-            </section>
+            <a class="button primary" href="/operations/pipeline/executions">Processing runs</a>
         }
-        @if (IsDisconnected)
-        {
-            <section class="state-banner state-banner--error" role="alert">
-                <div><strong>LogicHost connectivity is unavailable</strong><p>Local capture and durable queues continue independently.</p></div>
-            </section>
-        }
-        @if (HasPressure)
-        {
-            <section class="state-banner state-banner--warning" role="alert">
-                <div><strong>Storage or lane pressure detected</strong><p>Review the pressure-marked facts and backlogs below.</p></div>
-            </section>
-        }
+    </section>
 
-        <section class="operating-deck" aria-labelledby="operating-heading">
-            <div>
-                <p class="eyebrow">@(_errorMessage is not null || HasStaleSection ? "Last observed state" : HasUnknownSection ? "Partially observed state" : "Acquisition")</p>
-                <h2 id="operating-heading">Capture @SplitWords(_view.Summary.CaptureControl.Value.State)</h2>
-                @if (_errorMessage is not null || HasStaleSection || HasUnknownSection)
-                {
-                    <p>Some facts need a fresh reading.</p>
-                }
-            </div>
-            <dl>
-                <div><dt>Capture admission</dt><dd>@SplitWords(_view.Summary.CaptureRuntime.Value.Availability)</dd></div>
-                <div><dt>Last success</dt><dd>@FormatTime(_view.Summary.CaptureRuntime.Value.LastSucceededUtc)</dd></div>
-                <div><dt>LogicHost</dt><dd>@(IsCentralIntegrationDisabled ? "Disabled" : SplitWords(_view.Summary.Heartbeat.Value.Availability))</dd></div>
-                <div><dt>Active setpoint</dt><dd>@(_schedule?.Decision.SetpointProfileId ?? "Unavailable")</dd></div>
-                <div><dt>Next schedule transition</dt><dd>@FormatTime(_schedule?.Decision.NextTransitionUtc)</dd></div>
-            </dl>
-            <div class="operating-deck__links">
-                <a class="inline-link" href="/">View current sky</a>
-                @if (_latestRun is not null)
-                {
-                    <a class="inline-link" href="/operations/pipeline/executions/@_latestRun.ExecutionId">Latest run</a>
-                }
-                else
-                {
-                    <a class="inline-link" href="/operations/pipeline/executions">Processing runs</a>
-                }
-                @if (CanPause)
-                {
-                    <button id="capture-action" type="button" class="btn btn-outline-warning" disabled="@_isSubmitting" @onclick="BeginPause">Review pause</button>
-                }
-                else if (CanResume)
-                {
-                    <button id="capture-action" type="button" class="btn btn-primary" disabled="@_isSubmitting" @onclick="BeginResume">Review resume</button>
-                }
-            </div>
-        </section>
-
-        <div class="overview-top">
-            <section class="overview-panel" aria-labelledby="attention-heading">
-                <header><div><h2 id="attention-heading">Needs attention</h2></div></header>
-                @if (!HasAttention)
-                {
-                    <p class="panel-empty">No pressure, retries, or quarantined items reported.</p>
-                }
-                else
-                {
-                    <ul class="attention-list">
-                        @if (_errorMessage is not null || HasStaleSection) { <li><span>Some operating facts are stale</span><button type="button" class="btn btn-outline-light" disabled="@_isSubmitting" @onclick="RefreshNowAsync">Retry refresh</button></li> }
-                        @if (HasUnknownSection) { <li><span>Some operating facts have not been observed</span><a href="/operations/system">Inspect status</a></li> }
-                        @if (HasPressure) { <li><span>Storage or lane pressure</span><a href="/operations/data">Inspect storage</a></li> }
-                        @if (_view.Summary.ArtifactOutbox.Value.RetryCount > 0)
-                        { <li><span>Artifact delivery is retrying</span><a href="/operations/data">Inspect delivery</a></li> }
-                        @if (_view.Summary.ArtifactOutbox.Value.QuarantineCount > 0 || _view.ArtifactQuarantine.Count > 0)
-                        { <li><span>Artifact items are quarantined</span><a href="/operations/quarantine">Review held items</a></li> }
-                        @if (_view.Summary.EnvironmentalDelivery.Value.RetryCount > 0)
-                        { <li><span>Environmental delivery is retrying</span><a href="/operations/data">Inspect observations</a></li> }
-                        @if (_view.Summary.EnvironmentalDelivery.Value.QuarantineCount > 0 || _view.EnvironmentalQuarantine.Count > 0)
-                        { <li><span>Environmental items are quarantined</span><a href="/operations/quarantine?kind=Environmental">Review observations</a></li> }
-                        @if (IsDisconnected) { <li><span>LogicHost connection unavailable</span><a href="/operations/system">Inspect status</a></li> }
-                    </ul>
-                }
-            </section>
-            <section class="overview-panel" aria-labelledby="configuration-heading">
-                <header><div><h2 id="configuration-heading">Configuration</h2><p class="panel-caption">Profile and system facts read when this page opened</p></div></header>
-                <nav class="configuration-links" aria-label="Operations configuration">
-                    <a href="/operations/camera"><strong>Camera &amp; rig</strong><span>@SplitWords(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable") / @(_schedule is null ? "revision unavailable" : $"profile r{_schedule.ActiveRevision.RevisionNumber}")</span></a>
-                    <a href="/operations/schedule"><strong>Capture schedule</strong><span>@(_schedule is null ? "Revision unavailable" : $"Active revision {_schedule.ActiveRevision.RevisionNumber}"); review schedule</span></a>
-                    <a href="/operations/pipeline"><strong>Pipeline</strong><span>@(_pipeline is null ? "Plan unavailable" : $"Profile r{_pipeline.Active.RevisionNumber}; {_pipeline.Active.Plan.EffectiveNodes.Count} effective steps")</span></a>
-                    <a href="/operations/calibration"><strong>Calibration</strong><span>@(_calibration is null ? "Library status unavailable" : _calibration.ActiveBundle is null ? "No active bundle" : _calibration.ActiveBundle.BundleId)</span></a>
-                </nav>
-            </section>
-        </div>
-
-        <section class="instrument-grid" aria-label="Primary operations facts">
-            <header class="grid-heading"><div><h2>Capture and delivery</h2></div><p>Durable work and storage</p></header>
-            <article class="instrument-card instrument-card--control">
-                <header>
-                    <div><p class="eyebrow">Durable capture control</p><h2>Acquisition</h2></div>
-                    <span class="hvo-chip state-chip @StateClass(_view.Summary.CaptureControl.Value.State)">@SplitWords(_view.Summary.CaptureControl.Value.State)</span>
-                </header>
-                <dl class="fact-grid">
-                    <div><dt>State version</dt><dd>@_view.Summary.CaptureControl.Value.Version</dd></div>
-                    <div><dt>Initialized</dt><dd>@YesNo(_view.Summary.CaptureControl.Value.IsInitialized)</dd></div>
-                    <div><dt>Runtime</dt><dd>@SplitWords(_view.Summary.CaptureRuntime.Value.Availability)</dd></div>
-                    <div><dt>Last success</dt><dd>@FormatTime(_view.Summary.CaptureRuntime.Value.LastSucceededUtc)</dd></div>
-                </dl>
-                @if (_isSubmitting)
-                {
-                    <p class="muted">A capture command is settling.</p>
-                }
-                else if (!CanPause && !CanResume)
-                {
-                    <p class="muted">Capture control is @SplitWords(_view.Summary.CaptureControl.Value.State); pause and resume are unavailable in this state.</p>
-                }
-            </article>
-
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">Durable boundary</p><h2>Raw ingress</h2></div><FreshnessBadge Value="@_view.Summary.RawIngress.Freshness" /></header>
-                <OperationsQueueFacts Queue="_view.Summary.RawIngress.Value" />
-            </article>
-
-            <article class="instrument-card instrument-card--wide">
-                <header><div><p class="eyebrow">Per-lane durable backlog</p><h2>Capture lanes</h2></div><FreshnessBadge Value="@_view.Summary.CaptureLanes.Freshness" /></header>
-                <CaptureLaneFacts Lanes="_view.Summary.CaptureLanes.Value" />
-            </article>
-
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">Capture-derived work</p><h2>Processing</h2></div><FreshnessBadge Value="@_view.Summary.CaptureProcessing.Freshness" /></header>
-                <OperationsQueueFacts Queue="_view.Summary.CaptureProcessing.Value" />
-            </article>
-
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">Central delivery</p><h2>Artifact outbox</h2></div><FreshnessBadge Value="@_view.Summary.ArtifactOutbox.Freshness" /></header>
-                <OperationsQueueFacts Queue="_view.Summary.ArtifactOutbox.Value" />
-            </article>
-
-            <article class="instrument-card instrument-card--wide">
-                <header><div><p class="eyebrow">Container-visible filesystems</p><h2>Storage</h2></div><FreshnessBadge Value="@_view.Summary.Storage.Freshness" /></header>
-                <StorageFacts Storage="_view.Summary.Storage.Value" />
-            </article>
-
-        </section>
-
-        <details class="secondary-details">
-            <summary><span><strong>Signals and status</strong><small>Connectivity, environment, telemetry, and startup configuration</small></span><span>Show details</span></summary>
-            <div class="instrument-grid">
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">LogicHost connectivity</p><h2>Heartbeat</h2></div><FreshnessBadge Value="@_view.Summary.Heartbeat.Freshness" /></header>
-                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.Heartbeat.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@FormatTime(_view.Summary.Heartbeat.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.Heartbeat.Value.PendingCount</dd></div><div><dt>Blocked</dt><dd>@_view.Summary.Heartbeat.Value.BlockedCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.Heartbeat.Value.RetryCount</dd></div><div><dt>Quarantine</dt><dd>@_view.Summary.Heartbeat.Value.QuarantineCount</dd></div></dl>
-            </article>
-
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">Observation delivery</p><h2>Environmental</h2></div><FreshnessBadge Value="@_view.Summary.EnvironmentalDelivery.Freshness" /></header>
-                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.EnvironmentalDelivery.Value.Availability)</dd></div><div><dt>Last acknowledged</dt><dd>@FormatTime(_view.Summary.EnvironmentalDelivery.Value.LastAcknowledgedUtc)</dd></div><div><dt>Pending</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.PendingCount</dd></div><div><dt>Stored</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.StoredCount</dd></div><div><dt>Retry</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.RetryCount</dd></div><div><dt>Terminal</dt><dd>@_view.Summary.EnvironmentalDelivery.Value.TerminalCount</dd></div></dl>
-            </article>
-
-            <article class="instrument-card">
-                <header><div><p class="eyebrow">Local candidate work</p><h2>Transient</h2></div><FreshnessBadge Value="@_view.Summary.TransientWorker.Freshness" /></header>
-                <dl class="fact-grid"><div><dt>Availability</dt><dd>@SplitWords(_view.Summary.TransientWorker.Value.Availability)</dd></div><div><dt>Pending frames</dt><dd>@_view.Summary.TransientWorker.Value.PendingFrames</dd></div><div><dt>Pending candidates</dt><dd>@_view.Summary.TransientWorker.Value.PendingCandidates</dd></div></dl>
-            </article>
-
-            <article class="instrument-card instrument-card--wide telemetry-card">
-                <header><div><p class="eyebrow">Bounded runtime window</p><h2>Capture telemetry</h2></div><FreshnessBadge Value="@_view.Summary.CaptureTelemetry.Freshness" /></header>
-                <dl class="telemetry-facts"><div><dt>Samples</dt><dd>@_view.Summary.CaptureTelemetry.Value.SampleCount</dd></div><div><dt>Latest capture</dt><dd>@FormatTime(_view.Summary.CaptureTelemetry.Value.LatestCaptureStartedUtc)</dd></div><div><dt>Mode</dt><dd>@(_view.Summary.CaptureTelemetry.Value.LatestMode ?? "Unavailable")</dd></div><div><dt>Exposure</dt><dd>@FormatMilliseconds(_view.Summary.CaptureTelemetry.Value.LatestExposureMilliseconds)</dd></div><div><dt>Gain</dt><dd>@FormatNumber(_view.Summary.CaptureTelemetry.Value.LatestGain)</dd></div><div><dt>Frames/min</dt><dd>@FormatNumber(_view.Summary.CaptureTelemetry.Value.CapturesPerMinute)</dd></div><div><dt>Loop average</dt><dd>@FormatMilliseconds(_view.Summary.CaptureTelemetry.Value.AverageLoopMilliseconds)</dd></div><div><dt>Stored</dt><dd>@_view.Summary.CaptureTelemetry.Value.FramesStored</dd></div></dl>
-            </article>
-
-            <article class="instrument-card instrument-card--wide">
-                <header><div><p class="eyebrow">Startup snapshot</p><h2>Configuration status</h2></div><FreshnessBadge Value="@_view.Summary.Configuration.Freshness" /></header>
-                <dl class="fact-grid"><div><dt>Validation</dt><dd>@SplitWords(_view.Summary.Configuration.Value.ValidationStatus)</dd></div><div><dt>Current</dt><dd>@YesNo(_view.Summary.Configuration.Value.IsCurrent)</dd></div><div><dt>Central integration</dt><dd>@SplitWords(_view.Summary.Configuration.Value.CentralIntegration)</dd></div><div><dt>Agent</dt><dd>@(_view.Summary.Configuration.Value.AgentId ?? "Unavailable")</dd></div><div><dt>Module</dt><dd>@(_view.Summary.Configuration.Value.ModuleType ?? "Unavailable")</dd></div></dl>
-                <a class="inline-link" href="/operations/system">Inspect allowlisted startup configuration</a>
-            </article>
-            </div>
-        </details>
-
-        <section class="overview-panel recent-changes" aria-labelledby="changes-heading">
-            <header><div><h2 id="changes-heading">Recent profile revisions</h2><p class="panel-caption">Read when this page opened</p></div><a href="/operations/schedule">View revisions</a></header>
-            @if (_schedule is null)
+    <div class="ops-grid sidebar-right">
+        <section class="ops-panel" aria-labelledby="attention-heading">
+            <header class="ops-panel-heading"><div><h2 id="attention-heading">Needs attention</h2><p>Items that do not stop local acquisition but should be reviewed.</p></div><span>@attention.Items.Count open</span></header>
+            @if (attention.Items.Count == 0)
             {
-                <p class="panel-empty">Recent profile revisions are unavailable. Review the capture schedule for the current state.</p>
-            }
-            else if (_schedule.History.Count == 0)
-            {
-                <p class="panel-empty">No profile revisions have been recorded.</p>
+                <p class="ops-panel-empty"><span class="status-icon success" aria-hidden="true"></span>No open items in the latest reading.</p>
             }
             else
             {
-                <ol class="change-list">
-                    @foreach (var revision in _schedule.History.Take(4))
+                <div class="ops-attention-list">
+                    @foreach (var item in attention.Items)
                     {
-                        <li><time datetime="@revision.CreatedUtc.ToString("O")">@revision.CreatedUtc.ToString("MMM d, HH:mm 'UTC'")</time><strong>Profile r@(revision.RevisionNumber)</strong><span>@revision.Source</span></li>
+                        <article class="ops-attention-item @item.Tone"><span class="status-icon @item.Icon" aria-hidden="true"></span><span><strong>@item.Title</strong><small>@item.Detail</small></span><a href="@item.Href">@item.LinkText</a></article>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="ops-panel" aria-labelledby="configuration-heading">
+            <header class="ops-panel-heading"><div><h2 id="configuration-heading">Active configuration</h2><p>Every capture binds these exact revisions.</p></div><span>@(_configurationReadUtc is { } read ? $"Read {FormatClock(read)} UTC" : "Not read")</span></header>
+            <div class="ops-configuration-grid">
+                <a class="ops-config-card" href="/operations/camera"><span>Camera &amp; rig</span><strong>@RigTitle</strong><small>@RigDetail</small></a>
+                <a class="ops-config-card" href="/operations/schedule"><span>Schedule</span><strong>@(_schedule is null ? "Schedule unavailable" : $"Schedule r{_schedule.ActiveRevision.RevisionNumber}")</strong><small>@ScheduleDetail</small></a>
+                <a class="ops-config-card" href="/operations/pipeline"><span>Pipeline</span><strong>@(_pipeline is null ? "Pipeline unavailable" : $"Pipeline r{_pipeline.Active.RevisionNumber}")</strong><small>@PipelineDetail</small></a>
+                <a class="ops-config-card" href="/operations/calibration"><span>Calibration</span><strong>@CalibrationTitle</strong><small>@CalibrationDetail</small></a>
+            </div>
+        </section>
+    </div>
+
+    <section class="ops-panel ops-grid" aria-labelledby="lane-heading">
+        <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/system">Full diagnostics</a></header>
+        <div class="ops-lane-list">
+            <div class="ops-lane"><span><strong>Raw ingress</strong><small>Immutable evidence</small></span><small class="ops-lane-note">@BacklogText(summary.RawIngress.Value)</small><span>@CountText(summary.RawIngress.Value.PendingCount, "pending")</span></div>
+            <div class="ops-lane"><span><strong>Frame processing</strong><small>Current graph</small></span><small class="ops-lane-note">@BacklogText(summary.CaptureProcessing.Value)</small><span>@ProcessingLaneText</span></div>
+            <div class="ops-lane"><span><strong>Central delivery</strong><small>Durable outbox</small></span><small class="ops-lane-note">@(IsCentralIntegrationDisabled ? "Central integration is disabled" : BacklogText(summary.ArtifactOutbox.Value))</small><span>@DeliveryLaneText</span></div>
+            @if (FullestStorage is { } storage)
+            {
+                var used = UsedPercent(storage);
+                <div class="ops-lane"><span><strong>Storage pressure</strong><small>@FormatBytes(storage.AvailableBytes) available</small></span><span class="ops-meter @(storage.IsUnderPressure ? "attention" : "blue")" role="meter" aria-label="@($"{SplitWords(storage.Alias)} storage used")" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@used"><i style="@($"width: {used}%")"></i></span><span>@used% used</span></div>
+            }
+            else
+            {
+                <div class="ops-lane"><span><strong>Storage pressure</strong><small>Capacity not reported</small></span><small class="ops-lane-note">No storage probe has succeeded</small><span>Unavailable</span></div>
+            }
+        </div>
+    </section>
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="facts-heading">
+            <header class="ops-panel-heading"><div><h2 id="facts-heading">Current operating facts</h2><p>Bounded signals for this CameraAgent process.</p></div><span>@FormatClock(summary.CapturedUtc) UTC</span></header>
+            <div class="ops-metric-grid">
+                @if (telemetry.LatestCaptureStartedUtc is { } latestCapture)
+                {
+                    <div class="ops-metric"><span>Capture age</span><strong>@FormatAge(latestCapture)</strong><small>Average interval @FormatSeconds(telemetry.AverageIntervalMilliseconds)</small></div>
+                }
+                else
+                {
+                    <div class="ops-metric"><span>Capture age</span><strong>None</strong><small>No capture activity yet</small></div>
+                }
+                <div class="ops-metric"><span>Last processing</span><strong>@LastProcessingValue</strong><small>@LastProcessingDetail</small></div>
+                <div class="ops-metric"><span>Sensor</span><strong class="unreported">Not reported</strong><small>Not reported by this CameraAgent</small></div>
+                <div class="ops-metric"><span>Cloud estimate</span><strong class="unreported">Not reported</strong><small>Not reported by this CameraAgent</small></div>
+            </div>
+        </section>
+        <section class="ops-panel" aria-labelledby="changes-heading">
+            <header class="ops-panel-heading"><div><h2 id="changes-heading">Recent changes</h2><p>Authenticated configuration and control history.</p></div><span>UTC</span></header>
+            @if (changes.Count == 0)
+            {
+                <p class="ops-panel-empty"><span class="status-icon pending" aria-hidden="true"></span>Recent changes are unavailable.</p>
+            }
+            else
+            {
+                <ol class="ops-audit-list">
+                    @foreach (var change in changes)
+                    {
+                        <li><time datetime="@FormatIso(change.Utc)">@FormatChangeTime(change.Utc)</time><strong>@change.Area</strong><span>@change.Text</span></li>
                     }
                 </ol>
             }
         </section>
+    </div>
+}
 
-        <details class="secondary-details">
-            <summary><span><strong>Quarantine and recovery</strong><small>Review held delivery items before replay or abandon</small></span><span>Show items</span></summary>
-            <section class="quarantine-section" aria-labelledby="quarantine-heading">
-                <header><div><p class="eyebrow">Bounded recovery lists</p><h2 id="quarantine-heading">Quarantine</h2></div><span>Latest @MaximumQuarantineDisplay per source</span></header>
-                <div class="quarantine-grid">
-                    <QuarantineList Title="Artifact quarantine" Items="_view.ArtifactQuarantine" BeginAction="BeginOutboxAction" />
-                    <QuarantineList Title="Environmental quarantine" Items="_view.EnvironmentalQuarantine" BeginAction="BeginOutboxAction" />
-                </div>
-                <a class="inline-link" href="/operations/quarantine">Browse complete quarantine history</a>
-            </section>
-        </details>
-    }
+@if (_pendingCommand is not null)
+{
+    <dialog class="action-dialog operations-dialog" aria-labelledby="operations-dialog-heading" aria-describedby="operations-dialog-description"
+            @ref="_confirmationDialog" @oncancel="CancelConfirmationAsync" @oncancel:preventDefault>
+        <div class="dialog-header">
+            <div><p class="eyebrow">Authenticated local action</p><h2 id="operations-dialog-heading">@_pendingCommand.Heading</h2></div>
+            <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_isSubmitting" @onclick="CancelConfirmationAsync"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg></button>
+        </div>
+        <p id="operations-dialog-description">@_pendingCommand.Description</p>
+        <div class="operations-dialog-note"><strong>Local authority only</strong><span>Changes capture admission on this CameraAgent only. Expected state version @_pendingCommand.ExpectedVersion.</span></div>
+        @if (_commandError is not null)
+        {
+            <div class="ops-note-banner compact dialog-error" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandError Confirming again retries the same request.</span></div>
+        }
+        <footer>
+            <button type="button" class="button secondary" disabled="@_isSubmitting" @onclick="CancelConfirmationAsync">Cancel</button>
+            <button type="button" class="button primary" disabled="@_isSubmitting" @onclick="ConfirmCommandAsync">@(_isSubmitting ? "Submitting..." : "Confirm")</button>
+        </footer>
+    </dialog>
+}
 
-    @if (_statusMessage is not null)
-    {
-        <p class="receipt receipt--success" role="status">@_statusMessage</p>
-    }
-    @if (_pendingCommand is not null)
-    {
-        <dialog @ref="_confirmationDialog" class="confirmation" aria-labelledby="operation-confirm-heading" aria-describedby="operation-confirm-description" @oncancel="CancelConfirmationAsync" @oncancel:preventDefault>
-            <p class="eyebrow">Explicit confirmation</p>
-            <h2 id="operation-confirm-heading">@_pendingCommand.Heading</h2>
-            <p id="operation-confirm-description">@_pendingCommand.Description</p>
-            <dl><div><dt>Action</dt><dd>@_pendingCommand.ActionLabel</dd></div><div><dt>Expected state</dt><dd>@_pendingCommand.ExpectedState</dd></div>@if (_pendingCommand.ExpectedVersion is not null) { <div><dt>Expected version</dt><dd>@_pendingCommand.ExpectedVersion</dd></div> }</dl>
-            @if (_pendingCommand.IsOutbox)
-            {
-                <label for="reason-code">Controlled reason</label>
-                <select id="reason-code" class="form-select" @bind="_pendingReasonCode">
-                    @foreach (var reason in PendingReasonCodes)
-                    {
-                        <option value="@reason.Code">@reason.Label</option>
-                    }
-                </select>
-            }
-            @if (_commandError is not null)
-            {
-                <p class="dialog-error" role="alert">@_commandError</p>
-            }
-            <div class="confirmation-actions">
-                <button type="button" class="btn btn-outline-light" disabled="@_isSubmitting" @onclick="CancelConfirmationAsync">Cancel action</button>
-                <button type="button" class="btn @(_pendingCommand.IsAbandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmCommandAsync">
-                    @(_isSubmitting ? "Submitting..." : $"Confirm {_pendingCommand.ActionLabel.ToLowerInvariant()}")
-                </button>
-            </div>
-        </dialog>
-    }
+<div class="toast" role="status" aria-live="polite" hidden="@(_toast is null)">
+    <span class="status-icon success" aria-hidden="true"></span>
+    <div><strong>@_toast?.Title</strong><p>@_toast?.Detail</p></div>
 </div>

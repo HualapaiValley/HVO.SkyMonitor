@@ -8,16 +8,18 @@
 <PageTitle>@(Entry?.Label ?? "Unavailable section") | Operations</PageTitle>
 
 <section class="unavailable-section" aria-labelledby="unavailable-heading">
-    <p class="eyebrow">Operations / @Entry?.Group</p>
-    <h1 id="unavailable-heading">@(Entry?.Label ?? "Section unavailable")</h1>
     @if (Entry is null)
     {
-        <p>This Operations section does not exist.</p>
+        <OperationsPageHeading Eyebrow="Operations" Title="Section unavailable" HeadingId="unavailable-heading"
+                               Description="This Operations section does not exist." />
     }
     else
     {
-        <p>@Entry.UnavailableReason</p>
-        <p>This page has no controls until the section's local capability is available.</p>
+        <OperationsPageHeading Eyebrow="@Entry.Eyebrow" Title="@Entry.Label" HeadingId="unavailable-heading" Description="@Entry.Description" />
+        <div class="ops-note-banner" role="status">
+            <span class="status-icon pending" aria-hidden="true"></span>
+            <p><strong>Not implemented on this CameraAgent.</strong> @Entry.UnavailableReason This page has no controls until the section's local capability exists.</p>
+        </div>
     }
-    <a href="/operations">Back to Operations overview</a>
+    <a class="button secondary" href="/operations">Back to Operations overview</a>
 </section>

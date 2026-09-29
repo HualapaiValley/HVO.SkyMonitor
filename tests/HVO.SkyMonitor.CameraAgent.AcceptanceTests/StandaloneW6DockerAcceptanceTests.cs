@@ -1560,16 +1560,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await PlaywrightNavigation.NavigateOrJoinAsync(page, "/operations").ConfigureAwait(false);
         var action = page.Locator("#capture-action");
         await action.WaitForAsync().ConfigureAwait(false);
-        var expected = pause ? "Review pause" : "Review resume";
+        var expected = pause ? "Pause capture" : "Resume capture";
         if (!string.Equals((await action.InnerTextAsync().ConfigureAwait(false)).Trim(), expected, StringComparison.Ordinal))
         {
             return;
         }
-        var confirmation = page.Locator("dialog.confirmation");
+        var confirmation = page.Locator("dialog.operations-dialog");
         await OpenDialogAsync(action, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = pause ? "Confirm pause capture" : "Confirm resume capture" })
+        await confirmation.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true })
             .ClickAsync().ConfigureAwait(false);
-        await page.Locator(".receipt[role='status']").WaitForAsync().ConfigureAwait(false);
+        await page.Locator(".toast[role='status']").WaitForAsync().ConfigureAwait(false);
     }
 
     private static async Task<ExactCaptureWindow> CaptureExactWindowAsync(

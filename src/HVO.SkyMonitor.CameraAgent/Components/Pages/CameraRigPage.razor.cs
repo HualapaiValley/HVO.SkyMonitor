@@ -1,15 +1,42 @@
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class CameraRigPage : ComponentBase
+/// <summary>
+/// The prototype Camera &amp; rig page: the active rig's module, readout, and optics, a composer whose
+/// building blocks are named, versioned equipment selected from dropdowns and edited in a modal dialog,
+/// the compare-and-stage flow, and the named rig's immutable revision history.
+/// </summary>
+public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+    private static readonly (string Kind, string Label)[] EquipmentBlocks = [("camera", "Camera"), ("optics", "Optics"), ("mount", "Mount")];
     [Inject] internal ICameraAgentNamedRigUiService RigService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+
+    private enum RigDialog
+    {
+        None,
+        Equipment,
+        Profile,
+        Starter
+    }
+
+    private sealed record CompareRow(string Label, string Active, string Selected, bool Changed);
+
+    private IJSObjectReference? _module;
+    private ElementReference _dialogElement;
+    private RigDialog _dialog;
+    private bool _showDialog;
+    private bool _restoreFocus;
+    private string _restoreFocusId = "rig-profile-select";
+    private bool _createNew;
 
     private NamedRigUiCatalog? _catalog;
     private NamedRigInventory? _inventory;
@@ -82,6 +109,9 @@ public sealed partial class CameraRigPage : ComponentBase
             await RefreshAsync();
             _equipmentId = revisionId;
             _cameraId = revisionId;
+            _createNew = false;
+            _dialog = RigDialog.Equipment;
+            _restoreFocusId = SelectId("camera");
             await LoadEquipmentAsync();
             _message = "ZWO camera created. Review its typed settings, then compose a rig.";
             _error = false;
@@ -243,13 +273,32 @@ public sealed partial class CameraRigPage : ComponentBase
         }
     }
 
-    private async Task ChangeKindAsync()
+    private async Task BasisChangedAsync()
     {
-        _equipmentId = string.Empty;
-        _duplicate = true;
-        _customCameraModel = string.Empty;
-        _acknowledgeCustomModel = false;
         await LoadEquipmentAsync();
+        if (_createNew) ForceDuplicate();
+    }
+
+    // A bool bound to a select renders an empty value attribute, so the mode travels as a string.
+    private string SaveMode => _duplicate ? "duplicate" : "revise";
+
+    private void SetSaveMode(string? value)
+    {
+        if (_basis is null) return;
+        var duplicate = value != "revise" || !_basis.CanRevise;
+        if (duplicate == _duplicate) return;
+        // Swap the proposed name with the mode unless the operator already typed their own.
+        var proposed = _duplicate ? ProposeDuplicateName(_basis.DisplayName) : _basis.DisplayName;
+        if (string.Equals(_equipmentName, proposed, StringComparison.Ordinal))
+            _equipmentName = duplicate ? ProposeDuplicateName(_basis.DisplayName) : _basis.DisplayName;
+        _duplicate = duplicate;
+    }
+
+    private void ForceDuplicate()
+    {
+        if (_basis is null || _duplicate) return;
+        _duplicate = true;
+        _equipmentName = ProposeDuplicateName(_basis.DisplayName);
     }
 
     private async Task SaveEquipmentAsync()
@@ -330,6 +379,7 @@ public sealed partial class CameraRigPage : ComponentBase
             }
             await RefreshAsync();
             await LoadEquipmentAsync();
+            FinishDialog(SelectId(_kind));
             _message = "Equipment revision saved. Compose a rig to use it."; _error = false;
         }
         finally { _busy = false; }
@@ -347,6 +397,7 @@ public sealed partial class CameraRigPage : ComponentBase
             _profileName = result.Value.DisplayName;
             _newProfile = false;
             await RefreshAsync();
+            FinishDialog(SelectId("profile"));
             _message = "Rig name saved."; _error = false;
         }
         finally { _busy = false; }
@@ -571,4 +622,194 @@ public sealed partial class CameraRigPage : ComponentBase
         _message = "Cancel retry abandoned. Check the pending selection before submitting a new cancellation.";
         _error = false;
     }
+
+    private async Task InspectRevisionAsync(string revisionId)
+    {
+        _revisionId = revisionId;
+        await RevisionSelectionChangedAsync();
+        _restoreFocusId = "rig-revision-select";
+        _restoreFocus = true;
+    }
+
+    private async Task OpenEquipmentEditorAsync(string kind, bool createNew)
+    {
+        _message = null;
+        _error = false;
+        _kind = kind;
+        _createNew = createNew;
+        _equipmentId = ComposerId(kind);
+        _restoreFocusId = $"rig-{kind}-{(createNew ? "new" : "edit")}";
+        OpenDialog(RigDialog.Equipment);
+        await LoadEquipmentAsync();
+        if (createNew) ForceDuplicate();
+    }
+
+    private void OpenProfileDialog(bool createNew)
+    {
+        _message = null;
+        _error = false;
+        _newProfile = createNew;
+        _profileName = createNew ? string.Empty : ProfileNameOrNull(_profileId) ?? string.Empty;
+        _restoreFocusId = createNew ? "rig-profile-new" : "rig-profile-rename";
+        OpenDialog(RigDialog.Profile);
+    }
+
+    private void OpenStarterDialog()
+    {
+        _message = null;
+        _error = false;
+        _restoreFocusId = "rig-add-zwo";
+        OpenDialog(RigDialog.Starter);
+    }
+
+    private void OpenDialog(RigDialog dialog)
+    {
+        _dialog = dialog;
+        _showDialog = true;
+    }
+
+    /// <summary>Dismisses the dialog without saving, discarding any message and unsaved rig name.</summary>
+    private void CloseDialog()
+    {
+        _message = null;
+        _error = false;
+        _newProfile = false;
+        _profileName = ProfileNameOrNull(_profileId) ?? string.Empty;
+        FinishDialog(_restoreFocusId);
+    }
+
+    /// <summary>Closes the dialog after a completed action, keeping its outcome message for the page.</summary>
+    private void FinishDialog(string focusId)
+    {
+        _dialog = RigDialog.None;
+        _showDialog = false;
+        _restoreFocusId = focusId;
+        _restoreFocus = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_showDialog && _dialog != RigDialog.None)
+        {
+            _showDialog = false;
+            await InvokeModuleAsync("showModal", _dialogElement);
+        }
+        else if (_restoreFocus && _dialog == RigDialog.None)
+        {
+            _restoreFocus = false;
+            await InvokeModuleAsync("focusById", _restoreFocusId, SelectId("profile"));
+        }
+    }
+
+    private async ValueTask InvokeModuleAsync(string identifier, params object?[] arguments)
+    {
+        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CameraRigPage.razor.js");
+        await _module.InvokeVoidAsync(identifier, arguments);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+    }
+
+    private string DialogEyebrow => _dialog switch
+    {
+        RigDialog.Profile => "Named rig",
+        RigDialog.Starter => "Physical camera starter",
+        _ => "Immutable equipment version"
+    };
+
+    private string DialogTitle => _dialog switch
+    {
+        RigDialog.Profile => _newProfile ? "New named rig" : "Rename rig",
+        RigDialog.Starter => "Add ZWO camera",
+        _ => $"{(_createNew ? "New" : "Edit")} {_kind}"
+    };
+
+    private static string SelectId(string kind) => $"rig-{kind}-select";
+
+    private string ComposerId(string kind) => kind switch
+    {
+        "camera" => _cameraId,
+        "optics" => _opticsId,
+        _ => _mountId
+    };
+
+    private IEnumerable<NamedEquipmentDefinition> Equipment(string kind)
+        => _inventory?.Equipment.Where(e => e.Kind == kind) ?? [];
+
+    private string? ProfileNameOrNull(string profileId)
+        => _inventory?.Profiles.FirstOrDefault(p => p.ProfileId == profileId)?.DisplayName;
+
+    private string ProfileName(string profileId) => ProfileNameOrNull(profileId) ?? "Named rig";
+
+    /// <summary>
+    /// A rig installed from a capture schedule keeps its installed name; the service refuses a rename, so
+    /// the dialog explains that instead of offering a save that cannot succeed. Only loaded revisions are
+    /// known here, and the service remains the authority.
+    /// </summary>
+    private bool ProfileNameIsFixed(string profileId)
+        => _catalog?.Revisions.Any(r => r.ProfileId == profileId && r.SourceScheduleRevisionId is not null) == true ||
+           _history?.Revisions.Any(r => r.ProfileId == profileId && r.SourceScheduleRevisionId is not null) == true;
+
+    private bool ProfileNameFixed => !_newProfile && ProfileNameIsFixed(_profileId);
+
+    private List<CompareRow> CompareRows(NamedRigRevision? active, NamedRigRevision selected)
+    {
+        var rows = new List<CompareRow>(8);
+        void Add(string label, string? activeValue, string selectedValue)
+            => rows.Add(new CompareRow(label, activeValue ?? "Not active", selectedValue,
+                activeValue is not null && !string.Equals(activeValue, selectedValue, StringComparison.Ordinal)));
+
+        Add("Rig", active is null ? null : $"{ProfileName(active.ProfileId)} / revision {active.RevisionNumber}",
+            $"{ProfileName(selected.ProfileId)} / revision {selected.RevisionNumber}");
+        Add("Camera", active is null ? null : EquipmentLabel(_activeCamera), EquipmentLabel(_selectedCamera));
+        Add("Model", active is null ? null : CameraModel(_activeCamera), CameraModel(_selectedCamera));
+        Add("Module", active is null ? null : Words(active.Module.Type), Words(selected.Module.Type));
+        Add("Sensor", active is null ? null : SensorSummary(active.Rig), SensorSummary(selected.Rig));
+        Add("Readout", active is null ? null : ReadoutSummary(active.Rig), ReadoutSummary(selected.Rig));
+        Add("Optics", active is null ? null : OpticsSummary(active.Rig), OpticsSummary(selected.Rig));
+        Add("Mount", active is null ? null : MountSummary(active.Rig), MountSummary(selected.Rig));
+        return rows;
+    }
+
+    private static string EquipmentLabel(NamedEquipmentDetail? detail)
+        => detail is null ? "Equipment unavailable" : $"{detail.DisplayName} v{detail.RevisionNumber}";
+
+    private static string SensorSummary(HVO.SkyMonitor.AgentCore.CameraRigConfig rig)
+        => $"{rig.Sensor.Name} / {rig.Sensor.WidthPixels} x {rig.Sensor.HeightPixels} px";
+
+    private static string ReadoutSummary(HVO.SkyMonitor.AgentCore.CameraRigConfig rig)
+        => rig.Readout is { } readout ? $"{readout.PixelFormat} / {readout.BinX} x {readout.BinY} bin" : "Not configured";
+
+    private static string OpticsSummary(HVO.SkyMonitor.AgentCore.CameraRigConfig rig)
+        => $"{Words(rig.Optics.ProjectionModel)} / {Number(rig.Optics.FocalLengthMillimeters)} mm / {Number(rig.Optics.FieldOfViewDegrees)} deg";
+
+    private static string MountSummary(HVO.SkyMonitor.AgentCore.CameraRigConfig rig)
+        => $"Alt {Number(rig.Orientation.BoresightAltitudeDegrees)} / az {Number(rig.Orientation.BoresightAzimuthDegrees)} deg";
+
+    private static string Words(string value) => OperationsPage.SplitWords(value);
+
+    // The mappings Astronomy projects; a basis spelled another accepted way (for example Rectilinear) stays selected.
+    private static string[] ProjectionModels(string? current)
+    {
+        var names = Enum.GetNames<HVO.SkyMonitor.Astronomy.ProjectionModel>();
+        return string.IsNullOrWhiteSpace(current) || names.Contains(current, StringComparer.Ordinal) ? names : [current, .. names];
+    }
+
+    private static string Number(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static string Stride(int? bytes) => bytes is { } value ? $"{value} bytes" : "Derived";
+
+    private static string ByteOrder(HVO.SkyMonitor.AgentCore.SampleByteOrder order)
+        => order == HVO.SkyMonitor.AgentCore.SampleByteOrder.LittleEndian ? "LE" : "BE";
 }

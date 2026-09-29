@@ -1,6 +1,9 @@
+using System.Text.Json;
 using Bunit;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,8 +14,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class OperationsPageTests
 {
+    private static readonly string[] LoadedFacts = ["Not reported", "Schedule open", "Installed rig", "Available"];
+
     [TestMethod]
-    public void LoadingThenEmpty_RendersExplicitStates()
+    public void LoadingThenLoaded_RendersPrototypeOverviewFromRecordedSources()
     {
         using var context = new BunitContext();
         var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentOperationsView>>(
@@ -22,28 +27,74 @@ public sealed class OperationsPageTests
             pending.Task.WaitAsync(token));
 
         var cut = context.Render<OperationsPage>();
+        Assert.AreEqual("true", cut.Find(".ops-state-deck.pending").GetAttribute("aria-busy"));
         StringAssert.Contains(cut.Markup, "Loading current operations", StringComparison.Ordinal);
 
         pending.SetResult(OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations(samples: 0)));
         cut.WaitForAssertion(() =>
         {
+            Assert.AreEqual("Operations", cut.Find("h1#operations-heading").TextContent.Trim());
+            StringAssert.Contains(cut.Markup, "agent-test / local authority", StringComparison.Ordinal);
+            Assert.AreEqual("/", cut.Find("a.button.secondary[href='/']").GetAttribute("href"));
+
+            var deck = cut.Find(".ops-state-deck");
+            Assert.AreEqual("Capture loop running", deck.QuerySelector("strong")!.TextContent);
+            StringAssert.Contains(deck.TextContent, "No capture activity yet", StringComparison.Ordinal);
+            var facts = cut.FindAll(".ops-state-facts dd").Select(static fact => fact.TextContent).ToArray();
+            CollectionAssert.AreEqual(LoadedFacts, facts);
+            Assert.AreEqual("Processing runs", cut.Find(".ops-state-deck a.button.primary[href='/operations/pipeline/executions']").TextContent);
+
+            Assert.AreEqual("0 open", cut.Find("#attention-heading").ParentElement!.ParentElement!.QuerySelector(":scope > span")!.TextContent);
+            StringAssert.Contains(cut.Find(".ops-panel-empty").TextContent, "No open items in the latest reading.", StringComparison.Ordinal);
+
+            Assert.HasCount(4, cut.FindAll(".ops-config-card"));
+            AssertCard(cut, "/operations/camera", "Installed rig / r1", "Module Virtual Sky");
+            AssertCard(cut, "/operations/schedule", "Schedule r2", "Next transition 00:00 UTC");
+            AssertCard(cut, "/operations/pipeline", "Pipeline r2", "1 configured step");
+            AssertCard(cut, "/operations/calibration", "No active bundle", "0 published bundles");
+
+            var lanes = cut.FindAll(".ops-lane");
+            Assert.HasCount(4, lanes);
+            StringAssert.Contains(lanes[0].TextContent, "0 pending", StringComparison.Ordinal);
+            var meter = cut.Find(".ops-meter.blue[role='meter']");
+            Assert.AreEqual("50", meter.GetAttribute("aria-valuenow"));
+            StringAssert.Contains(lanes[3].TextContent, "50% used", StringComparison.Ordinal);
+
             StringAssert.Contains(cut.Markup, "No capture activity yet", StringComparison.Ordinal);
-            Assert.HasCount(1, cut.FindAll(".operating-deck"));
-            Assert.HasCount(1, cut.FindAll("#attention-heading"));
-            Assert.HasCount(4, cut.FindAll(".configuration-links a"));
-            Assert.HasCount(1, cut.FindAll(".grid-heading"));
-            Assert.HasCount(2, cut.FindAll(".secondary-details > summary"));
-            Assert.AreEqual("/", cut.Find(".operating-deck a[href='/']").GetAttribute("href"));
-            StringAssert.Contains(cut.Find(".configuration-links").TextContent, "profile r2", StringComparison.Ordinal);
-            Assert.HasCount(2, cut.FindAll(".change-list li"));
-            Assert.AreEqual("Profile r2", cut.Find(".change-list li strong").TextContent);
-            StringAssert.Contains(cut.Find(".recent-changes").TextContent, "Recent profile revisions", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/schedule", cut.Find(".configuration-links a[href='/operations/schedule']").GetAttribute("href"));
+            Assert.HasCount(2, cut.FindAll(".ops-metric strong").Where(static metric => metric.TextContent == "Not reported").ToArray());
+
+            var changes = cut.FindAll(".ops-audit-list li");
+            Assert.HasCount(2, changes);
+            Assert.AreEqual("Profile", changes[0].QuerySelector("strong")!.TextContent);
+            Assert.AreEqual("Revision r2 saved from an operator draft; active.", changes[0].QuerySelector("span")!.TextContent);
+            Assert.AreEqual("Revision r1 saved from an operator draft.", changes[1].QuerySelector("span")!.TextContent);
+            Assert.AreEqual("1970-01-01T00:00:00.0000000+00:00", changes[0].QuerySelector("time")!.GetAttribute("datetime"));
+            Assert.AreEqual("Jan 1", changes[0].QuerySelector("time")!.TextContent);
+
+            Assert.IsTrue(cut.Find(".toast").HasAttribute("hidden"));
+            Assert.IsEmpty(cut.FindAll("dialog"));
         });
     }
 
     [TestMethod]
-    public void FreshDisconnectedAndPressure_RenderTextualStates()
+    public void CaptureActivity_ReportsModeSetpointAndAverages()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+
+        var cut = context.Render<OperationsPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".ops-state-deck").TextContent, "Still mode / setpoint night", StringComparison.Ordinal);
+            var metrics = cut.FindAll(".ops-metric");
+            StringAssert.Contains(metrics[0].TextContent, "1s", StringComparison.Ordinal);
+            StringAssert.Contains(metrics[1].TextContent, "Average of recent captures", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void FreshDisconnectedAndPressure_RaiseAttentionItems()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -55,18 +106,21 @@ public sealed class OperationsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "LogicHost connectivity is unavailable", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Storage or lane pressure detected", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Inspect storage", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Inspect status", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Critical pressure", StringComparison.Ordinal);
+            var items = cut.FindAll(".ops-attention-item");
+            Assert.HasCount(2, items);
+            StringAssert.Contains(items[0].TextContent, "LogicHost connection unavailable", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/system", items[0].QuerySelector("a")!.GetAttribute("href"));
+            StringAssert.Contains(items[1].TextContent, "Storage or lane pressure", StringComparison.Ordinal);
+            StringAssert.Contains(items[1].TextContent, "Under pressure: Raw ingress storage, Standard lane.", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/data", items[1].QuerySelector("a")!.GetAttribute("href"));
+            Assert.IsNotNull(cut.Find(".ops-meter.attention[role='meter']"));
+            Assert.AreEqual("Unavailable", cut.FindAll(".ops-state-facts dd")[3].TextContent);
             Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
-            StringAssert.Contains(cut.Markup, "Fresh", StringComparison.Ordinal);
         });
     }
 
     [TestMethod]
-    public void StandaloneMode_RendersNeutralCurrentStateWithoutDisconnectedWarning()
+    public void StandaloneMode_RendersDisabledCentralWithoutDisconnectedWarning()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -80,16 +134,17 @@ public sealed class OperationsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.OrdinalIgnoreCase);
-            StringAssert.Contains(cut.Markup, ">Current<", StringComparison.Ordinal);
-            Assert.IsFalse(cut.Markup.Contains("connectivity is unavailable", StringComparison.OrdinalIgnoreCase));
-            Assert.IsFalse(cut.Markup.Contains(">Disconnected<", StringComparison.Ordinal));
-            StringAssert.Contains(cut.Find(".operating-deck").TextContent, "Disabled", StringComparison.Ordinal);
+            Assert.AreEqual("Disabled", cut.FindAll(".ops-state-facts dd")[3].TextContent);
+            var delivery = cut.FindAll(".ops-lane")[2];
+            StringAssert.Contains(delivery.TextContent, "Central integration is disabled", StringComparison.Ordinal);
+            StringAssert.Contains(delivery.TextContent, "Disabled", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".ops-attention-item"));
+            Assert.IsFalse(cut.Markup.Contains("LogicHost connection unavailable", StringComparison.Ordinal));
         });
     }
 
     [TestMethod]
-    public void InitialFailure_RendersSanitizedError()
+    public void InitialFailure_RendersSanitizedErrorWithRetry()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -100,13 +155,17 @@ public sealed class OperationsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Operations unavailable", StringComparison.Ordinal);
+            var failure = cut.Find(".operations-failure");
+            Assert.AreEqual("alert", failure.GetAttribute("role"));
+            StringAssert.Contains(failure.TextContent, "Operations unavailable.", StringComparison.Ordinal);
+            Assert.AreEqual("Try again", failure.QuerySelector("button")!.TextContent);
             Assert.IsFalse(cut.Markup.Contains("Exception", StringComparison.Ordinal));
+            Assert.IsEmpty(cut.FindAll("#capture-action"));
         });
     }
 
     [TestMethod]
-    public void PauseConfirmation_PreventsDuplicateSubmitAndAnnouncesReceipt()
+    public void PauseConfirmation_PreventsDuplicateSubmitAndAnnouncesToast()
     {
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
@@ -125,52 +184,80 @@ public sealed class OperationsPageTests
         };
 
         var cut = context.Render<OperationsPage>();
+        Assert.AreEqual("Pause capture", cut.Find("#capture-action").TextContent);
         cut.Find("#capture-action").Click();
-        cut.WaitForAssertion(() => Assert.AreEqual("DIALOG", cut.Find(".confirmation").TagName));
-        cut.Find(".confirmation-actions .btn-primary").Click();
+        cut.WaitForAssertion(() =>
+        {
+            var dialog = cut.Find("dialog.operations-dialog");
+            Assert.AreEqual("Pause capture?", dialog.QuerySelector("#operations-dialog-heading")!.TextContent);
+            StringAssert.Contains(dialog.QuerySelector(".operations-dialog-note")!.TextContent, "Expected state version 7.", StringComparison.Ordinal);
+        });
+        cut.Find("dialog footer .button.primary").Click();
 
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual(1, calls);
             Assert.AreEqual(true, paused);
             Assert.AreEqual(7, version);
-            Assert.AreEqual("status", cut.Find(".receipt--success").GetAttribute("role"));
-            StringAssert.Contains(cut.Markup, "Current state: Paused", StringComparison.Ordinal);
+            var toast = cut.Find(".toast");
+            Assert.AreEqual("status", toast.GetAttribute("role"));
+            Assert.IsFalse(toast.HasAttribute("hidden"));
+            Assert.AreEqual("Pause capture: Applied", toast.QuerySelector("strong")!.TextContent);
+            Assert.AreEqual("Current state: Paused.", toast.QuerySelector("p")!.TextContent);
+            Assert.IsEmpty(cut.FindAll("dialog"));
         });
     }
 
     [TestMethod]
-    public void OutboxAbandon_UsesControlledReasonAndAlertOnConflict()
+    public void Toast_ClearsAfterItsLifetime()
     {
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
-        var item = new OperatorOutboxItem(
-            "Artifact", "Quarantined", "raw-ingress", "Preview", 2, 100, OperatorUiTestData.Now,
-            "invalid-source", "replay-token", "abandon-token");
+        Configure(context);
+        var time = new ManualTimeProvider(OperatorUiTestData.Now);
+        context.Services.AddSingleton<TimeProvider>(time);
+
+        var cut = context.Render<OperationsPage>();
+        cut.Find("#capture-action").Click();
+        cut.Find("dialog footer .button.primary").Click();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".toast").HasAttribute("hidden")));
+
+        time.Advance(TimeSpan.FromSeconds(4));
+
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find(".toast").HasAttribute("hidden")));
+    }
+
+    [TestMethod]
+    public void PausedCapture_OffersPrimaryResumeAndMarksDeck()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
         service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations(artifactQuarantine: [item])));
-        string? reason = null;
-        service.OutboxHandler = (_, action, token, selectedReason, _, _) =>
+            OperatorUiResult<CameraAgentOperationsView>.Success(WithCaptureState(current, "Paused")));
+        bool? paused = null;
+        service.CaptureHandler = (requestedPause, _, _, _) =>
         {
-            Assert.AreEqual(OutboxOperationAction.Abandon, action);
-            Assert.AreEqual("abandon-token", token);
-            reason = selectedReason;
-            return ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Failure(
-                OperatorUiResultKind.Conflict, "The outbox item changed. Refresh and review the command again."));
+            paused = requestedPause;
+            return Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                "Resume capture", "Applied", "Running", 8, OperatorUiTestData.Now)));
         };
 
         var cut = context.Render<OperationsPage>();
-        cut.Find("button[id$='-abandon']").Click();
-        cut.Find("select").Change("irrecoverable-evidence");
-        cut.Find(".confirmation-actions .btn-danger").Click();
 
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("irrecoverable-evidence", reason);
-            Assert.AreEqual("alert", cut.Find(".dialog-error").GetAttribute("role"));
-            Assert.IsNotNull(cut.Find("dialog"));
+            var action = cut.Find("#capture-action");
+            Assert.AreEqual("Resume capture", action.TextContent);
+            Assert.IsTrue(action.ClassList.Contains("primary"));
+            Assert.IsTrue(cut.Find(".ops-state-deck").ClassList.Contains("warning"));
+            Assert.AreEqual("Capture paused", cut.Find(".ops-state-deck strong").TextContent);
         });
+        cut.Find("#capture-action").Click();
+        Assert.AreEqual("Resume capture?", cut.Find("#operations-dialog-heading").TextContent);
+        cut.Find("dialog footer .button.primary").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(false, paused));
     }
 
     [TestMethod]
@@ -187,15 +274,16 @@ public sealed class OperationsPageTests
 
         var cut = context.Render<OperationsPage>();
         cut.Find("#capture-action").Click();
-        cut.Find(".confirmation-actions .btn-primary").Click();
+        cut.Find("dialog footer .button.primary").Click();
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Showing last valid data", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Some operating facts are stale", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".operating-deck").TextContent, "Last observed state", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Showing last valid data.", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".ops-attention-list").TextContent, "Some operating facts are stale", StringComparison.Ordinal);
+            var deck = cut.Find(".ops-state-deck");
+            Assert.IsTrue(deck.ClassList.Contains("pending"));
+            StringAssert.Contains(deck.TextContent, "Last observed state", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, ">Stale<", StringComparison.Ordinal);
         });
     }
 
@@ -242,7 +330,7 @@ public sealed class OperationsPageTests
         var cut = context.Render<OperationsPage>();
         cut.WaitForElement("#capture-action");
         await cut.Find("#capture-action").ClickAsync().ConfigureAwait(false);
-        var commandTask = cut.Find(".confirmation-actions .btn-primary").TriggerEventAsync("onclick", EventArgs.Empty);
+        var commandTask = cut.Find("dialog footer .button.primary").TriggerEventAsync("onclick", EventArgs.Empty);
         await commandStarted.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
 
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
@@ -252,7 +340,7 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
-    public void StaleSection_MarksOverallStateStale()
+    public void StaleSection_MarksDeckPendingAndRaisesAttention()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -270,8 +358,8 @@ public sealed class OperationsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("Stale", cut.Find(".heading-status .state-chip").TextContent.Trim());
-            StringAssert.Contains(cut.Markup, "Some operating facts are stale", StringComparison.Ordinal);
+            Assert.IsTrue(cut.Find(".ops-state-deck").ClassList.Contains("pending"));
+            StringAssert.Contains(cut.Find(".ops-attention-item.warning").TextContent, "Some operating facts are stale", StringComparison.Ordinal);
         });
     }
 
@@ -292,9 +380,9 @@ public sealed class OperationsPageTests
         var cut = context.Render<OperationsPage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Some operating facts have not been observed", StringComparison.Ordinal);
-            Assert.AreEqual("Needs review", cut.Find(".heading-status .state-chip").TextContent.Trim());
-            Assert.IsFalse(cut.Markup.Contains("No pressure, retries, or quarantined delivery items reported", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".ops-attention-item").TextContent, "Some operating facts have not been observed", StringComparison.Ordinal);
+            Assert.IsTrue(cut.Find(".ops-state-deck").ClassList.Contains("pending"));
+            Assert.IsFalse(cut.Markup.Contains("No open items in the latest reading.", StringComparison.Ordinal));
         });
     }
 
@@ -316,7 +404,7 @@ public sealed class OperationsPageTests
         cut.WaitForAssertion(() =>
         {
             StringAssert.Contains(cut.Markup, "Some operating facts have not been observed", StringComparison.Ordinal);
-            Assert.IsFalse(cut.Markup.Contains("LogicHost connectivity is unavailable", StringComparison.Ordinal));
+            Assert.IsFalse(cut.Markup.Contains("LogicHost connection unavailable", StringComparison.Ordinal));
         });
     }
 
@@ -329,9 +417,80 @@ public sealed class OperationsPageTests
         var cut = context.Render<OperationsPage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Find(".configuration-links").TextContent, "revision unavailable", StringComparison.OrdinalIgnoreCase);
-            StringAssert.Contains(cut.Find(".recent-changes").TextContent, "Recent profile revisions are unavailable", StringComparison.Ordinal);
-            Assert.IsEmpty(cut.FindAll(".change-list li"));
+            AssertCard(cut, "/operations/schedule", "Schedule unavailable", "Open Schedule to load the revision");
+            AssertCard(cut, "/operations/pipeline", "Pipeline unavailable", "Open Pipeline to load the plan");
+            Assert.AreEqual("Unavailable", cut.FindAll(".ops-state-facts dd")[1].TextContent);
+            StringAssert.Contains(cut.Find("[aria-labelledby='changes-heading'] .ops-panel-empty").TextContent, "Recent changes are unavailable.", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".ops-audit-list li"));
+            Assert.IsFalse(cut.Find(".ops-state-deck").TextContent.Contains("setpoint", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void RigCatalog_ReportsPendingRestartAndFallsBackWhenUnavailable()
+    {
+        using (var context = new BunitContext())
+        {
+            Configure(context, new OverviewRigUiService { PendingRevisionId = "rig-v2" });
+            var cut = context.Render<OperationsPage>();
+            cut.WaitForAssertion(() => AssertCard(cut, "/operations/camera", "Installed rig / r1", "Revision r2 pending restart"));
+        }
+
+        using (var context = new BunitContext())
+        {
+            Configure(context, new OverviewRigUiService { Unavailable = true });
+            var cut = context.Render<OperationsPage>();
+            cut.WaitForAssertion(() =>
+            {
+                AssertCard(cut, "/operations/camera", "Rig catalog unavailable", "Open Camera & rig to load the inventory");
+                Assert.AreEqual("Capture profile r2", cut.FindAll(".ops-state-facts dd")[2].TextContent);
+            });
+        }
+    }
+
+    [TestMethod]
+    public void ActiveConfiguration_IsReadAgainOnceAMinute()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var rig = new OverviewRigUiService();
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(rig);
+        var time = new ManualTimeProvider(OperatorUiTestData.Now);
+        context.Services.AddSingleton<TimeProvider>(time);
+
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() => AssertCard(cut, "/operations/camera", "Installed rig / r1", "Module Virtual Sky"));
+        rig.PendingRevisionId = "rig-v2";
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentOperationsView>.Success(WithCaptureState(current, "Paused")));
+
+        time.Advance(TimeSpan.FromSeconds(5));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".ops-state-primary strong").TextContent, "paused", StringComparison.Ordinal));
+        Assert.AreEqual(1, rig.Reads);
+        AssertCard(cut, "/operations/camera", "Installed rig / r1", "Module Virtual Sky");
+
+        time.Advance(TimeSpan.FromSeconds(55));
+        cut.WaitForAssertion(() => AssertCard(cut, "/operations/camera", "Installed rig / r1", "Revision r2 pending restart"));
+        Assert.AreEqual(2, rig.Reads);
+    }
+
+    [TestMethod]
+    public void CalibrationActivation_AppearsInRecentChanges()
+    {
+        using var context = new BunitContext();
+        Configure(context, calibration: new CalibrationUiStatus(3, null, null, 2, 0, null, null, null, null,
+            new CalibrationLibraryActivationSnapshot("RollbackBundle", "bundle-2", "bundle-1", 3,
+                OperatorUiTestData.Now.AddMinutes(-2), null)));
+        var cut = context.Render<OperationsPage>();
+        cut.WaitForAssertion(() =>
+        {
+            AssertCard(cut, "/operations/calibration", "No active bundle", "2 published bundles");
+            var first = cut.Find(".ops-audit-list li");
+            Assert.AreEqual("Calibration", first.QuerySelector("strong")!.TextContent);
+            Assert.AreEqual("Rollback Bundle: bundle bundle-1 active.", first.QuerySelector("span")!.TextContent);
+            Assert.AreEqual(OperatorUiTestData.Now.AddMinutes(-2).UtcDateTime.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+                first.QuerySelector("time")!.TextContent);
         });
     }
 
@@ -349,37 +508,36 @@ public sealed class OperationsPageTests
                 [CameraAgentProcessingExecutionProjection.Summarize(run)], [])
         });
         var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() => Assert.AreEqual($"/operations/pipeline/executions/{runId}",
-            cut.Find(".operating-deck a[href*='/pipeline/executions/']").GetAttribute("href")));
+        cut.WaitForAssertion(() =>
+        {
+            var link = cut.Find(".ops-state-deck a.button.primary");
+            Assert.AreEqual("Latest run", link.TextContent);
+            Assert.AreEqual($"/operations/pipeline/executions/{runId}", link.GetAttribute("href"));
+            var processing = cut.FindAll(".ops-metric")[1];
+            Assert.AreEqual("3.0 min", processing.QuerySelector("strong")!.TextContent);
+            Assert.AreEqual("Completed run", processing.QuerySelector("small")!.TextContent);
+        });
     }
 
     [TestMethod]
-    public void InitializingCapture_DoesNotInventAnInFlightCommand()
+    public void InitializingCapture_DoesNotOfferPauseOrResume()
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        var current = OperatorUiTestData.Operations();
         service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(current with
-            {
-                Summary = current.Summary with
-                {
-                    CaptureControl = current.Summary.CaptureControl with
-                    {
-                        Value = current.Summary.CaptureControl.Value with { State = "Initializing" }
-                    }
-                }
-            }));
+            OperatorUiResult<CameraAgentOperationsView>.Success(WithCaptureState(OperatorUiTestData.Operations(), "Initializing")));
         var cut = context.Render<OperationsPage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "pause and resume are unavailable", StringComparison.Ordinal);
+            Assert.AreEqual("Capture initializing", cut.Find(".ops-state-deck strong").TextContent);
+            StringAssert.Contains(cut.Markup, "pause and resume are unavailable in this state", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("#capture-action"));
             Assert.IsFalse(cut.Markup.Contains("command is settling", StringComparison.Ordinal));
         });
     }
 
     [TestMethod]
-    public void EnvironmentalDeliveryAttention_LinksToEnvironmentalQuarantine()
+    public void EnvironmentalDeliveryAttention_LinksToDataPage()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -396,12 +554,16 @@ public sealed class OperationsPageTests
                 }
             }));
         var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() => Assert.AreEqual("/operations/data",
-            cut.Find(".attention-list a[href='/operations/data']").GetAttribute("href")));
+        cut.WaitForAssertion(() =>
+        {
+            var item = cut.Find(".ops-attention-item.info");
+            StringAssert.Contains(item.TextContent, "One environmental delivery is retrying", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/data", item.QuerySelector("a")!.GetAttribute("href"));
+        });
     }
 
     [TestMethod]
-    public void QuarantinedArtifact_LinksToHeldItems()
+    public void QuarantinedArtifact_LinksToQuarantineWithoutInlineActions()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -410,8 +572,12 @@ public sealed class OperationsPageTests
                 artifactQuarantine: [new OperatorOutboxItem("Artifact", "Quarantined", "raw-ingress", "Preview",
                     1, 100, OperatorUiTestData.Now, "invalid-source", "replay-token", "abandon-token")])));
         var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() => Assert.AreEqual("/operations/quarantine",
-            cut.Find(".attention-list a[href='/operations/quarantine']").GetAttribute("href")));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Review", cut.Find(".ops-attention-item a[href='/operations/quarantine']").TextContent);
+            Assert.IsEmpty(cut.FindAll("button[id$='-abandon']"));
+            Assert.IsEmpty(cut.FindAll("button[id$='-replay']"));
+        });
     }
 
     [TestMethod]
@@ -433,9 +599,14 @@ public sealed class OperationsPageTests
 
         var cut = context.Render<OperationsPage>();
         cut.Find("#capture-action").Click();
-        cut.Find(".confirmation-actions .btn-primary").Click();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".dialog-error").TextContent, "could not be completed", StringComparison.Ordinal));
-        cut.Find(".confirmation-actions .btn-primary").Click();
+        cut.Find("dialog footer .button.primary").Click();
+        cut.WaitForAssertion(() =>
+        {
+            var error = cut.Find(".dialog-error");
+            Assert.AreEqual("alert", error.GetAttribute("role"));
+            StringAssert.Contains(error.TextContent, "could not be completed. Confirming again retries the same request.", StringComparison.Ordinal);
+        });
+        cut.Find("dialog footer .button.primary").Click();
 
         cut.WaitForAssertion(() =>
         {
@@ -479,10 +650,10 @@ public sealed class OperationsPageTests
         var cut = context.Render<OperationsPage>();
         cut.WaitForElement("#capture-action");
         await cut.Find("#capture-action").ClickAsync().ConfigureAwait(false);
-        var commandTask = cut.Find(".confirmation-actions .btn-primary").TriggerEventAsync("onclick", EventArgs.Empty);
+        var commandTask = cut.Find("dialog footer .button.primary").TriggerEventAsync("onclick", EventArgs.Empty);
         await commandStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        var refreshTask1 = cut.Find(".refresh-link").TriggerEventAsync("onclick", EventArgs.Empty);
-        var refreshTask2 = cut.Find(".refresh-link").TriggerEventAsync("onclick", EventArgs.Empty);
+        var refreshTask1 = cut.InvokeAsync(cut.Instance.RefreshNowAsync);
+        var refreshTask2 = cut.InvokeAsync(cut.Instance.RefreshNowAsync);
         releaseCommand.SetResult();
         await Task.WhenAll(commandTask, refreshTask1, refreshTask2).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
 
@@ -499,7 +670,7 @@ public sealed class OperationsPageTests
 
         cut.Find("#capture-action").Click();
         cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation => invocation.Identifier == "showModal")));
-        cut.Find("dialog").TriggerEvent("oncancel", EventArgs.Empty);
+        cut.Find("dialog.operations-dialog").TriggerEvent("oncancel", EventArgs.Empty);
 
         cut.WaitForAssertion(() =>
         {
@@ -509,13 +680,38 @@ public sealed class OperationsPageTests
         });
     }
 
-    private static TestOperatorUiService Configure(BunitContext context)
+    private static void AssertCard(IRenderedComponent<OperationsPage> cut, string href, string title, string detail)
+    {
+        var card = cut.Find($".ops-config-card[href='{href}']");
+        Assert.AreEqual(title, card.QuerySelector("strong")!.TextContent);
+        Assert.AreEqual(detail, card.QuerySelector("small")!.TextContent);
+    }
+
+    private static CameraAgentOperationsView WithCaptureState(CameraAgentOperationsView current, string state) => current with
+    {
+        Summary = current.Summary with
+        {
+            CaptureControl = current.Summary.CaptureControl with
+            {
+                Value = current.Summary.CaptureControl.Value with { State = state }
+            }
+        }
+    };
+
+    internal static TestOperatorUiService ConfigureOverview(BunitContext context) => Configure(context);
+
+    private static TestOperatorUiService Configure(
+        BunitContext context,
+        OverviewRigUiService? rig = null,
+        CalibrationUiStatus? calibration = null)
     {
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(
             new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
-        context.Services.AddSingleton<ICameraAgentCalibrationUiService>(new OverviewCalibrationUiService());
+        context.Services.AddSingleton<ICameraAgentCalibrationUiService>(new OverviewCalibrationUiService(
+            calibration ?? new CalibrationUiStatus(1, null, null, 0, 0, null, null, null, null, null)));
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(rig ?? new OverviewRigUiService());
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService
         {
             Executions = new CameraAgentProcessingExecutionsView(OperatorUiTestData.Now, 1, [], [])
@@ -526,43 +722,41 @@ public sealed class OperationsPageTests
 
     private sealed class UnavailableScheduleUiService : ICameraAgentScheduleUiService
     {
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOperatorState>> GetAsync(
-            CancellationToken cancellationToken)
-            => ValueTask.FromResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOperatorState>
+        public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CaptureScheduleOperatorState>
                 .Failure(OperatorUiResultKind.Unavailable, "Schedule unavailable."));
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureSchedulePreview>> PreviewAsync(
+        public ValueTask<OperatorUiResult<CaptureSchedulePreview>> PreviewAsync(
             string profileJson, string basisRevisionId, int dayCount, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> StageAsync(
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageAsync(
             string profileJson, string basisRevisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> ActivateAsync(
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ActivateAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> RollbackAsync(
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> RollbackAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> AddOverrideAsync(
-            HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleOverride scheduleOverride, long expectedVersion,
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> AddOverrideAsync(
+            CaptureScheduleOverride scheduleOverride, long expectedVersion,
             string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Scheduling.CaptureScheduleStoreSnapshot>> ClearOverrideAsync(
+        public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ClearOverrideAsync(
             string overrideId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
     }
 
-    private sealed class OverviewCalibrationUiService : ICameraAgentCalibrationUiService
+    private sealed class OverviewCalibrationUiService(CalibrationUiStatus status) : ICameraAgentCalibrationUiService
     {
         public ValueTask<OperatorUiResult<CalibrationUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult(OperatorUiResult<CalibrationUiStatus>.Success(new(
-                1, null, null, 0, 0, null, null, null, null, null)));
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiStatus>.Success(status));
 
         public ValueTask<OperatorUiResult<CalibrationUiBundlePage>> GetBundlesAsync(int pageSize, string? cursor,
             CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -585,6 +779,152 @@ public sealed class OperationsPageTests
         public ValueTask<OperatorUiResult<CalibrationUiStatus>> RollbackAsync(string bundleId, long expectedVersion,
             string idempotencyKey, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
+    }
+
+    /// <summary>The read side of the named-rig service the overview uses; every mutation is out of scope here.</summary>
+    private sealed class OverviewRigUiService : ICameraAgentNamedRigUiService
+    {
+        private int _reads;
+
+        internal string? PendingRevisionId { get; set; }
+        internal bool Unavailable { get; init; }
+        internal int Reads => Volatile.Read(ref _reads);
+
+        public ValueTask<OperatorUiResult<NamedRigUiCatalog>> GetAsync(CancellationToken token)
+        {
+            Interlocked.Increment(ref _reads);
+            if (Unavailable)
+            {
+                return ValueTask.FromResult(OperatorUiResult<NamedRigUiCatalog>.Failure(
+                    OperatorUiResultKind.Unavailable, "Catalog unavailable"));
+            }
+            var profile = SchedulePageTests.Profile();
+            var installed = new NamedRigRevision("rig-v1", "rig", 1, "camera-v1", "optics-v1", "mount-v1",
+                profile.Module, profile.Rig, null);
+            return ValueTask.FromResult(OperatorUiResult<NamedRigUiCatalog>.Success(new(
+                new NamedRigSelection("rig-v1", PendingRevisionId, 3),
+                [installed, installed with { RevisionId = "rig-v2", RevisionNumber = 2 }],
+                null,
+                null)));
+        }
+
+        public ValueTask<OperatorUiResult<NamedRigInventory>> GetInventoryAsync(CancellationToken token)
+            => ValueTask.FromResult(Unavailable
+                ? OperatorUiResult<NamedRigInventory>.Failure(OperatorUiResultKind.Unavailable, "Inventory unavailable")
+                : OperatorUiResult<NamedRigInventory>.Success(new([new NamedRigProfile("rig", "Installed rig")], [])));
+
+        public ValueTask<OperatorUiResult<NamedRigHistoryPage>> GetHistoryAsync(string profileId, int limit,
+            long? beforeRevisionNumber, long? version, CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedEquipmentDetail>> GetEquipmentAsync(string revisionId, CancellationToken token)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedEquipmentDefinition>> SaveEquipmentAsync(string? definitionId, string kind,
+            string name, JsonElement definition, string? basisRevisionId, string? expectedRevisionId, CancellationToken token)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedEquipmentDefinition>> CreateZwoStarterAsync(string templateId, string name,
+            CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedRigProfile>> SaveProfileAsync(string? profileId, string name,
+            CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedRigRevision>> ComposeAsync(string profileId, string cameraId,
+            string opticsId, string mountId, CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedRigPreview>> PreviewAsync(string revisionId, CancellationToken token)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedRigStageReceipt>> StageAsync(string revisionId, long version, string key,
+            bool acknowledgeUnvalidated, string expectedScheduleRevisionId, string expectedScheduleProfileSha256,
+            CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<NamedRigStageReceipt>> CancelAsync(string revisionId, long version, string key,
+            CancellationToken token) => throw new NotSupportedException();
+    }
+
+    /// <summary>A clock whose timers fire only when a test advances it.</summary>
+    private sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
+    {
+        private readonly Lock _gate = new();
+        private readonly List<ManualTimer> _timers = [];
+        private DateTimeOffset _now = start;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_gate)
+            {
+                return _now;
+            }
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+
+        internal void Advance(TimeSpan duration)
+        {
+            ManualTimer[] due;
+            lock (_gate)
+            {
+                _now += duration;
+                due = _timers.Where(timer => timer.DueUtc <= _now).ToArray();
+                foreach (var timer in due)
+                {
+                    if (timer.Period > TimeSpan.Zero && timer.Period != Timeout.InfiniteTimeSpan)
+                    {
+                        timer.DueUtc = _now + timer.Period;
+                    }
+                    else
+                    {
+                        _timers.Remove(timer);
+                    }
+                }
+            }
+            foreach (var timer in due)
+            {
+                timer.Fire();
+            }
+        }
+
+        private void Schedule(ManualTimer timer, TimeSpan dueTime, TimeSpan period)
+        {
+            lock (_gate)
+            {
+                _timers.Remove(timer);
+                if (dueTime != Timeout.InfiniteTimeSpan)
+                {
+                    timer.DueUtc = _now + dueTime;
+                    timer.Period = period;
+                    _timers.Add(timer);
+                }
+            }
+        }
+
+        private sealed class ManualTimer(ManualTimeProvider owner, TimerCallback callback, object? state) : ITimer
+        {
+            internal DateTimeOffset DueUtc { get; set; }
+            internal TimeSpan Period { get; set; }
+
+            internal void Fire() => callback(state);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                owner.Schedule(this, dueTime, period);
+                return true;
+            }
+
+            public void Dispose() => owner.Schedule(this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }
 
