@@ -281,6 +281,8 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     /// <summary>
     /// Submits the pending pause or resume. A failed attempt keeps the pending command, so
     /// confirming again retries with the same idempotency key and cannot apply the change twice.
+    /// A version conflict is the exception: the same request can never succeed, so the page
+    /// reads the current state and the operator reviews a new command against it.
     /// </summary>
     private async Task ExecuteCommandAsync(PendingOperatorCommand command, CancellationToken cancellationToken)
     {
@@ -298,6 +300,10 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
                 {
                     var receipt = result.Value;
                     await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
+                    if (_unauthorized)
+                    {
+                        return;
+                    }
                     await CloseDialogAsync(command.TriggerId).ConfigureAwait(false);
                     await InvokeAsync(() =>
                     {
@@ -310,11 +316,15 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
                 {
                     await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
                 }
+                else if (result.Kind == OperatorUiResultKind.Conflict)
+                {
+                    await ReviewAfterConflictAsync(command, cancellationToken).ConfigureAwait(false);
+                }
                 else
                 {
                     await InvokeAsync(() =>
                     {
-                        _commandError = result.Message ?? "The command could not be completed.";
+                        _commandError = $"{result.Message ?? "The command could not be completed."} Confirming again retries the same request.";
                     }).ConfigureAwait(false);
                 }
             }
@@ -330,6 +340,52 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         {
             await InvokeAsync(() => _isSubmitting = false).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Replaces a command whose expected state version went stale. When the fresh read shows the
+    /// command still applies, the dialog stays open with a new expected version and idempotency
+    /// key for the operator to confirm; otherwise it closes without sending anything again.
+    /// </summary>
+    private async Task ReviewAfterConflictAsync(PendingOperatorCommand command, CancellationToken cancellationToken)
+    {
+        await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
+        if (_unauthorized)
+        {
+            return;
+        }
+        OperationsCaptureControlState? current = null;
+        var stillApplies = false;
+        await InvokeAsync(() =>
+        {
+            current = _errorMessage is null ? _view?.Summary.CaptureControl.Value : null;
+            stillApplies = current is not null && current.State == (command.PauseCapture ? "Running" : "Paused");
+            if (stillApplies)
+            {
+                _pendingCommand = command with
+                {
+                    ExpectedVersion = current!.Version,
+                    IdempotencyKey = CreateIdempotencyKey()
+                };
+                _commandError = $"Capture state changed while this was open. Capture is still {current.State}; review the new expected state version and confirm again.";
+            }
+        }).ConfigureAwait(false);
+        if (stillApplies)
+        {
+            return;
+        }
+        await CloseDialogAsync(command.TriggerId).ConfigureAwait(false);
+        await InvokeAsync(() =>
+        {
+            _pendingCommand = null;
+            _commandError = null;
+            ShowToast(new ToastMessage(
+                "Capture state changed",
+                current is null
+                    ? "The current capture state could not be read, so the command was not sent again."
+                    : $"Current state: {current.State}. The command was not sent again.",
+                "warning"));
+        }).ConfigureAwait(false);
     }
 
     private void ShowToast(ToastMessage toast)
@@ -752,7 +808,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         string TriggerId,
         string IdempotencyKey);
 
-    private sealed record ToastMessage(string Title, string Detail);
+    private sealed record ToastMessage(string Title, string Detail, string Tone = "success");
 
     private sealed record RecentChange(DateTimeOffset Utc, string Area, string Text);
 }

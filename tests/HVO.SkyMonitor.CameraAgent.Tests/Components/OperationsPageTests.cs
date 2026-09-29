@@ -619,6 +619,115 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
+    public void VersionConflict_RereadsStateAndRequiresANewlyReviewedCommand()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(current));
+        var attempts = new List<(long Version, string Key)>();
+        service.CaptureHandler = (_, expectedVersion, key, _) =>
+        {
+            attempts.Add((expectedVersion, key));
+            if (attempts.Count == 1)
+            {
+                // Another actor paused and resumed capture while the dialog was open.
+                current = WithCaptureControl(current, "Running", 9);
+                return Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Failure(
+                    OperatorUiResultKind.Conflict, "Capture state changed. Refresh and review the command again."));
+            }
+            return Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                "Pause capture", "Applied", "Paused", 10, OperatorUiTestData.Now)));
+        };
+
+        var cut = context.Render<OperationsPage>();
+        cut.Find("#capture-action").Click();
+        cut.Find("dialog footer .button.primary").Click();
+        cut.WaitForAssertion(() =>
+        {
+            var dialog = cut.Find("dialog.operations-dialog");
+            StringAssert.Contains(dialog.QuerySelector(".operations-dialog-note")!.TextContent, "Expected state version 9.", StringComparison.Ordinal);
+            var error = dialog.QuerySelector(".dialog-error")!.TextContent;
+            StringAssert.Contains(error, "Capture state changed while this was open. Capture is still Running", StringComparison.Ordinal);
+            Assert.DoesNotContain("retries the same request", error);
+        });
+        cut.Find("dialog footer .button.primary").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(2, attempts);
+            Assert.AreEqual(7, attempts[0].Version);
+            Assert.AreEqual(9, attempts[1].Version);
+            Assert.AreNotEqual(attempts[0].Key, attempts[1].Key);
+            Assert.IsEmpty(cut.FindAll("dialog"));
+            Assert.AreEqual("Pause capture: Applied", cut.Find(".toast strong").TextContent);
+        });
+    }
+
+    [TestMethod]
+    public void VersionConflict_ClosesWithoutResendingWhenTheRequestedStateIsAlreadyCurrent()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(current));
+        var calls = 0;
+        service.CaptureHandler = (_, _, _, _) =>
+        {
+            calls++;
+            current = WithCaptureControl(current, "Paused", 8);
+            return Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Failure(
+                OperatorUiResultKind.Conflict, "Capture state changed. Refresh and review the command again."));
+        };
+
+        var cut = context.Render<OperationsPage>();
+        cut.Find("#capture-action").Click();
+        cut.Find("dialog footer .button.primary").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(1, calls);
+            Assert.IsEmpty(cut.FindAll("dialog"));
+            var toast = cut.Find(".toast");
+            Assert.IsFalse(toast.HasAttribute("hidden"));
+            Assert.AreEqual("status-icon warning", toast.QuerySelector(".status-icon")!.GetAttribute("class"));
+            Assert.AreEqual("Capture state changed", toast.QuerySelector("strong")!.TextContent);
+            Assert.AreEqual("Current state: Paused. The command was not sent again.", toast.QuerySelector("p")!.TextContent);
+            Assert.AreEqual("Resume capture", cut.Find("#capture-action").TextContent);
+        });
+    }
+
+    [TestMethod]
+    public void AppliedCommand_StopsWhenTheVerificationReadIsDenied()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        var applied = false;
+        service.OperationsHandler = _ => ValueTask.FromResult(applied
+            ? OperatorUiResult<CameraAgentOperationsView>.Failure(OperatorUiResultKind.Unauthorized, "denied")
+            : OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations()));
+        service.CaptureHandler = (_, _, _, _) =>
+        {
+            applied = true;
+            return Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                "Pause capture", "Applied", "Paused", 8, OperatorUiTestData.Now)));
+        };
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+
+        var cut = context.Render<OperationsPage>();
+        cut.Find("#capture-action").Click();
+        cut.Find("dialog footer .button.primary").Click();
+
+        cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+        Assert.IsTrue(cut.Find(".toast").HasAttribute("hidden"));
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsEmpty(cut.FindAll("#capture-action"));
+    }
+
+    [TestMethod]
     public async Task CommandAndRefreshRequests_AreSerializedAndCoalescedAsync()
     {
         using var context = new BunitContext();
@@ -686,6 +795,17 @@ public sealed class OperationsPageTests
         Assert.AreEqual(title, card.QuerySelector("strong")!.TextContent);
         Assert.AreEqual(detail, card.QuerySelector("small")!.TextContent);
     }
+
+    private static CameraAgentOperationsView WithCaptureControl(CameraAgentOperationsView current, string state, long version) => current with
+    {
+        Summary = current.Summary with
+        {
+            CaptureControl = current.Summary.CaptureControl with
+            {
+                Value = current.Summary.CaptureControl.Value with { State = state, Version = version }
+            }
+        }
+    };
 
     private static CameraAgentOperationsView WithCaptureState(CameraAgentOperationsView current, string state) => current with
     {

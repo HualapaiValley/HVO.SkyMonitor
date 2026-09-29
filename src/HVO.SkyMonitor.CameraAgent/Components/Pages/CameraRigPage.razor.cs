@@ -668,9 +668,13 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         _showDialog = true;
     }
 
-    /// <summary>Dismisses the dialog without saving, discarding any message and unsaved rig name.</summary>
+    /// <summary>
+    /// Dismisses the dialog without saving, discarding any message and unsaved rig name. The dialog
+    /// stays open while a request is in flight, so its outcome is always presented where it was asked.
+    /// </summary>
     private void CloseDialog()
     {
+        if (_busy) return;
         _message = null;
         _error = false;
         _newProfile = false;

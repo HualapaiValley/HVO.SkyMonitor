@@ -192,6 +192,32 @@ public sealed class OperationsLayoutTests
     }
 
     [TestMethod]
+    public async Task RevokedRead_ClearsTheRenderedIdentityAndLeavesAsync()
+    {
+        using var context = CreateContext(out var service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+        cut.WaitForAssertion(() => Assert.AreEqual("agent-test / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
+        var deniedReads = 0;
+        service.OperationsHandler = _ =>
+        {
+            deniedReads++;
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
+        };
+
+        // An unavailable section makes no read of its own, so only the layout can notice the revocation.
+        navigation.NavigateTo("/operations/unavailable/focus");
+
+        cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+        Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll(".operations-sidebar-head .state-chip"));
+        Assert.AreEqual(1, deniedReads);
+
+        await cut.InvokeAsync(() => cut.Instance.Publish(OperatorUiTestData.Operations(), refreshFailed: false)).ConfigureAwait(false);
+        Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
+    }
+
+    [TestMethod]
     public async Task Publish_ReplacesTheSidebarStateWithThePagesRead()
     {
         using var context = CreateContext(out _);

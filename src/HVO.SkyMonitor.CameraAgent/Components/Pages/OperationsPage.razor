@@ -166,7 +166,7 @@ else if (_view is not null)
         <div class="operations-dialog-note"><strong>Local authority only</strong><span>Changes capture admission on this CameraAgent only. Expected state version @_pendingCommand.ExpectedVersion.</span></div>
         @if (_commandError is not null)
         {
-            <div class="ops-note-banner compact dialog-error" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandError Confirming again retries the same request.</span></div>
+            <div class="ops-note-banner compact dialog-error" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandError</span></div>
         }
         <footer>
             <button type="button" class="button secondary" disabled="@_isSubmitting" @onclick="CancelConfirmationAsync">Cancel</button>
@@ -176,6 +176,6 @@ else if (_view is not null)
 }
 
 <div class="toast" role="status" aria-live="polite" hidden="@(_toast is null)">
-    <span class="status-icon success" aria-hidden="true"></span>
+    <span class="status-icon @(_toast?.Tone ?? "success")" aria-hidden="true"></span>
     <div><strong>@_toast?.Title</strong><p>@_toast?.Detail</p></div>
 </div>

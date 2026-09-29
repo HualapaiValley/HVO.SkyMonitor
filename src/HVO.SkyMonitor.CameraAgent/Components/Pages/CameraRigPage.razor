@@ -333,7 +333,7 @@ else
         <dialog class="action-dialog operations-dialog rig-dialog" aria-labelledby="rig-dialog-heading" @ref="_dialogElement" @oncancel="CloseDialog">
             <div class="dialog-header">
                 <div><p class="eyebrow">@DialogEyebrow</p><h2 id="rig-dialog-heading">@DialogTitle</h2></div>
-                <button type="button" class="icon-button" aria-label="Close dialog" @onclick="CloseDialog">
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CloseDialog">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
                 </button>
             </div>
@@ -467,7 +467,7 @@ else
                 <div class="rig-dialog-message"><div class="ops-note-banner compact rig-message" role="@(_error ? "alert" : "status")"><span class="status-icon @(_error ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
             }
             <footer>
-                <button type="button" class="button secondary" @onclick="CloseDialog">Cancel</button>
+                <button type="button" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
                 @switch (_dialog)
                 {
                     case RigDialog.Starter:

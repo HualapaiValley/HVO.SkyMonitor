@@ -22,6 +22,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     private string? _agentId;
     private string? _moduleType;
     private bool _readFailed;
+    private bool _unauthorized;
     private int _readVersion;
     private bool _disposed;
 
@@ -51,6 +52,10 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     internal void Publish(CameraAgentOperationsView view, bool refreshFailed)
     {
         ArgumentNullException.ThrowIfNull(view);
+        if (_unauthorized)
+        {
+            return;
+        }
         Interlocked.Increment(ref _readVersion);
         Apply(view, refreshFailed);
         _ = InvokeAsync(StateHasChanged);
@@ -68,7 +73,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
 
     private async Task RefreshAsync()
     {
-        if (_disposed)
+        if (_disposed || _unauthorized)
         {
             return;
         }
@@ -96,11 +101,23 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
         {
             Apply(view, refreshFailed: false);
         }
+        else if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            // Revoked access: drop everything earlier reads rendered and leave, because a section
+            // without a read of its own (an unavailable one, say) would otherwise keep showing it.
+            _unauthorized = true;
+            _attention = null;
+            _agentId = null;
+            _moduleType = null;
+            _readFailed = false;
+            StateHasChanged();
+            NavigationManager.NavigateTo("/Account/AccessDenied");
+            return;
+        }
         else
         {
-            // A denied read is presented by the page; the sidebar only drops its chip.
             _attention = null;
-            _readFailed = result.Kind != OperatorUiResultKind.Unauthorized;
+            _readFailed = true;
         }
         StateHasChanged();
     }

@@ -457,6 +457,32 @@ public sealed class CameraRigPageTests
     }
 
     [TestMethod]
+    public async Task RigDialog_StaysOpenUntilAnInFlightSaveSettlesAsync()
+    {
+        var service = new FakeRigService { DeferredProfileSave = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        await cut.Find("#rig-profile-new").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        await cut.Find("#rig-profile-name").InputAsync(new ChangeEventArgs { Value = "New rig" }).ConfigureAwait(false);
+
+        var save = DialogPrimary(cut).ClickAsync(new MouseEventArgs());
+        Assert.IsFalse(save.IsCompleted);
+        Assert.IsTrue(cut.Find("dialog .dialog-header .icon-button").HasAttribute("disabled"));
+        Assert.IsTrue(cut.FindAll("dialog footer button").Single(b => b.TextContent == "Cancel").HasAttribute("disabled"));
+        // Escape raises the native cancel event, which the page routes to its dismiss handler.
+        await cut.Find("dialog").TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
+        Assert.HasCount(1, cut.FindAll("dialog"));
+        Assert.AreEqual("New named rig", cut.Find("#rig-dialog-heading").TextContent);
+
+        service.DeferredProfileSave.SetResult();
+        await save.ConfigureAwait(false);
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent, "Rig name saved", StringComparison.Ordinal);
+        Assert.AreEqual("new", cut.Find("#rig-profile-select").GetAttribute("value"));
+    }
+
+    [TestMethod]
     public void InstalledRigName_IsFixedAndCancelRestoresFocus()
     {
         var service = new FakeRigService();
@@ -982,6 +1008,7 @@ public sealed class CameraRigPageTests
         internal string? StageKey { get; private set; }
         internal long StageVersion { get; private set; }
         internal TaskCompletionSource<OperatorUiResult<NamedRigPreview>>? DeferredPreview { get; set; }
+        internal TaskCompletionSource? DeferredProfileSave { get; set; }
         internal string? SavedProfileId { get; private set; }
         internal string? SavedProfileName { get; private set; }
         private readonly List<NamedRigProfile> _profiles = [new("rig", "Installed rig"), new("other", "Other rig")];
@@ -1150,7 +1177,14 @@ public sealed class CameraRigPageTests
             var saved = new NamedRigProfile(profileId ?? "new", name);
             _profiles.RemoveAll(p => p.ProfileId == saved.ProfileId);
             _profiles.Add(saved);
-            return ValueTask.FromResult(OperatorUiResult<NamedRigProfile>.Success(saved));
+            var result = OperatorUiResult<NamedRigProfile>.Success(saved);
+            return DeferredProfileSave is { } deferred ? AfterAsync(deferred.Task, result) : ValueTask.FromResult(result);
+        }
+
+        private static async ValueTask<T> AfterAsync<T>(Task gate, T value)
+        {
+            await gate.ConfigureAwait(false);
+            return value;
         }
         public ValueTask<OperatorUiResult<NamedRigRevision>> ComposeAsync(string profileId, string cameraId, string opticsId,
             string mountId, CancellationToken token)
