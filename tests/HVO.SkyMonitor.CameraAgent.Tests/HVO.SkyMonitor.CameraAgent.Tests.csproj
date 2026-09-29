@@ -39,6 +39,7 @@
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycleClient.cs" Link="Deployment/CameraAgentLifecycleClient.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerException.cs" Link="Deployment/InstallerException.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/Redaction.cs" Link="Deployment/Redaction.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/RawIngressV13Schema.cs" Link="Deployment/RawIngressV13Schema.cs" />
     <Compile Include="../../src/HVO.SkyMonitor.Deployment.Contracts/LifecycleResumeReceipt.cs" Link="Deployment/LifecycleResumeReceipt.cs" />
   </ItemGroup>
 

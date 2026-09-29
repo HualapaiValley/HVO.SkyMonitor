@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.Deployment;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 
@@ -37,6 +38,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
+        Assert.AreEqual(RawIngressV13Schema.MigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]

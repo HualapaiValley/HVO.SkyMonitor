@@ -121,6 +121,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var minimumCompatibleRevision = Label(labels, "io.hvo.skymonitor.minimum-compatible-revision");
         var identityMigration = Label(labels, "io.hvo.skymonitor.identity-migration");
         var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
+        var rawIngressMigration = Label(labels, "io.hvo.skymonitor.raw-ingress-migration");
         var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
 
         var installationIdentity = new ImageInstallationIdentity(
@@ -138,7 +139,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             MinimumCompatibleRevision: minimumCompatibleRevision,
             IdentityMigration: identityMigration,
             RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion);
+            CatalogManifestVersion: catalogManifestVersion,
+            RawIngressMigration: rawIngressMigration);
         if (signedImage is not null)
         {
             EnsureSignedImageAgreement(signedImage, installationIdentity);
@@ -168,6 +170,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         Compare(mismatches, "state compatibility", signed.Compatibility.StateContract, actual.UpgradeCompatibility);
         Compare(mismatches, "minimum compatible revision", signed.Compatibility.MinimumCompatibleRevision, actual.MinimumCompatibleRevision);
         Compare(mismatches, "identity migration", signed.Compatibility.IdentityMigration, actual.IdentityMigration);
+        Compare(mismatches, "raw ingress migration", signed.Compatibility.RawIngressMigration, actual.RawIngressMigration);
         Compare(
             mismatches,
             "raw ingress schema",

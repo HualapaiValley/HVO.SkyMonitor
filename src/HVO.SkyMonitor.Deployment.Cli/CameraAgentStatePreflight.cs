@@ -84,14 +84,16 @@ internal sealed record CameraAgentStateRequirements(
     string? MinimumCompatibleRevision,
     string? IdentityMigration,
     int? RawIngressSchema,
-    int? CatalogManifestVersion)
+    int? CatalogManifestVersion,
+    string? RawIngressMigration = null)
 {
     public static CameraAgentStateRequirements From(ImageInstallationIdentity image) => new(
         image.UpgradeCompatibility,
         image.MinimumCompatibleRevision,
         image.IdentityMigration,
         ParseVersion(image.RawIngressSchema),
-        ParseVersion(image.CatalogManifestVersion));
+        ParseVersion(image.CatalogManifestVersion),
+        image.RawIngressMigration);
 
     /// <summary>
     /// The boundaries a signed image release declares. These are exactly the label values an upgrade requires the
@@ -107,7 +109,8 @@ internal sealed record CameraAgentStateRequirements(
             compatibility.MinimumCompatibleRevision,
             compatibility.IdentityMigration,
             compatibility.RawIngressSchema,
-            compatibility.CatalogManifestVersion);
+            compatibility.CatalogManifestVersion,
+            compatibility.RawIngressMigration);
     }
 
     private static int? ParseVersion(string? value)
@@ -161,7 +164,7 @@ internal static class CameraAgentStatePreflight
             findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
         EvaluateCatalog(findings, paths, requirements);
         EvaluateIdentityLineage(findings, paths, requirements);
-        EvaluateRawIngressSchema(findings, paths, requirements);
+        EvaluateRawIngressSchema(findings, paths, requirements, contractPolicy);
         EvaluateBindSources(findings, paths, uid, gid, replayProfile);
         var compatible = !findings.Any(static finding => finding.Blocking);
         return new CameraAgentStatePreflightReport(
@@ -487,7 +490,8 @@ internal static class CameraAgentStatePreflight
     private static void EvaluateRawIngressSchema(
         List<CameraAgentStatePreflightFinding> findings,
         InstallationPaths paths,
-        CameraAgentStateRequirements requirements)
+        CameraAgentStateRequirements requirements,
+        CameraAgentStateContractPolicy contractPolicy)
     {
         const string boundary = "raw-ingress";
         if (requirements.RawIngressSchema is not { } expected)
@@ -502,9 +506,31 @@ internal static class CameraAgentStatePreflight
 
         long observed;
         long schemaObjects;
+        bool canonical = false;
         try
         {
-            (observed, schemaObjects) = ReadRawIngressSchema(databasePath);
+            using var database = ReadOnlyDatabase.Open(databasePath);
+            (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
+            if ((observed == 14 && expected == 14) ||
+                (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract))
+            {
+                canonical = observed == 14
+                    ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
+                    : RawIngressV13Schema.IsCanonical(database.Connection);
+                if (canonical)
+                {
+                    using var integrity = database.Connection.CreateCommand();
+                    integrity.CommandText = "PRAGMA integrity_check;";
+                    canonical = string.Equals(integrity.ExecuteScalar() as string, "ok", StringComparison.Ordinal);
+                    if (canonical)
+                    {
+                        using var foreignKeys = database.Connection.CreateCommand();
+                        foreignKeys.CommandText = "SELECT COUNT(*) FROM pragma_foreign_key_check;";
+                        canonical = Convert.ToInt64(foreignKeys.ExecuteScalar(), CultureInfo.InvariantCulture) == 0;
+                    }
+                }
+            }
         }
         catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
         {
@@ -517,14 +543,18 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if (observed == expected || (observed == 0 && schemaObjects == 0))
+        if ((observed == expected && expected != 14) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
+            observed == 14 && expected == 14
+                ? "The v14 journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
+                : observed == 13 && expected == 14
+                ? "The v13 journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before the v14 image can migrate it; resolve drift or restore a healthy canonical backup."
+                : "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
     }
 
     private static void EvaluateBindSources(
@@ -663,7 +693,11 @@ internal static class CameraAgentStatePreflight
     private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var database = ReadOnlyDatabase.Open(databasePath);
-        var connection = database.Connection;
+        return ReadRawIngressSchema(database.Connection);
+    }
+
+    private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(SqliteConnection connection)
+    {
         long userVersion;
         using (var version = connection.CreateCommand())
         {
