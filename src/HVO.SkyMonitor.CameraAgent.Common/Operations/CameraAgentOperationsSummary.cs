@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
@@ -217,7 +218,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
     ICaptureTelemetryProvider captureTelemetry,
     ICameraAgentConfigurationAccessor configurationAccessor,
     CameraAgentStorageResolver storageResolver,
-    IOptions<CameraAgentHostOptions> hostOptions)
+    IOptions<CameraAgentHostOptions> hostOptions,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime = null)
 {
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
 
@@ -240,10 +242,11 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
         var centralDisabled = hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
         var transientDisabled = hostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Off or TransientOperatingMode.Central;
-        var config = configurationAccessor.IsConfigured
+        var startupConfig = configurationAccessor.IsConfigured
             ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
             : null;
-        var locations = config is null
+        var config = scheduleRuntime?.Snapshot?.Configuration ?? startupConfig;
+        var locations = startupConfig is null
             ? []
             : await storageResolver.GetStorageLocationsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -355,8 +358,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored,
                 telemetry.Aggregate.ImmediateUploadCount)),
             Section("validated-configuration", OperationsFreshness.Static, null, new OperationsConfigurationState(
-                config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
-                config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
+                config is not null, config is null ? "unavailable" : "validated", startupConfig?.AgentId,
+                startupConfig?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
                 hostOptions.Value.TransientDetection.Mode.ToString())));
     }
 

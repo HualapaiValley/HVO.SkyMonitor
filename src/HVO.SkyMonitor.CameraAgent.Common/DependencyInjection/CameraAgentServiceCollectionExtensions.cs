@@ -159,7 +159,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<TimeProvider>(),
             provider.GetService<IConstellationTopology>(),
             provider.GetService<IDeploymentLocationStore>(),
-            provider.GetService<ILatestFrameAccessor>()));
+            provider.GetService<ILatestFrameAccessor>(),
+            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>()));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

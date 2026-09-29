@@ -1,7 +1,10 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -47,6 +50,171 @@ public sealed class TransientWorkerRuntimeTests
             runtime.ResolveObservatory(descriptor, configuration));
 
         Assert.AreEqual("transient-runtime.capture-location-missing", exception.Message);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(3)]
+    [DataRow(5)]
+    public async Task CaptureTimeRig_QueuedOldNewAndMixedWindowsUseTheirOwnMasks(int switchAt)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-rig-switch", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var old = CreateConfiguration();
+            var current = old with { Rig = old.Rig with { ProfileVersion = "rig-after-switch" } };
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(current);
+            await StageVirtualFramesAsync(provider, current, epoch, frameCount: 5,
+                configurationForFrame: index => index < switchAt ? old : current).ConfigureAwait(false);
+            var runtime = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            var frames = await runtime.LoadWindowAsync(old.AgentId!, 3, [-2, -1, 0, 1, 2], CancellationToken.None)
+                .ConfigureAwait(false);
+            foreach (var (offset, frame) in frames)
+            {
+                var expected = offset + 2 < switchAt ? old : current;
+                Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(expected.Rig),
+                    CameraRigProfileIdentity.ComputeSha256(frame.CaptureConfiguration!.Rig));
+                Assert.AreEqual(frame.Manifest.Descriptor.Profiles.Rig.Sha256,
+                    CameraRigProfileIdentity.ComputeSha256(frame.CaptureConfiguration.Rig));
+            }
+            for (var index = 1; index < 5; index++)
+                Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM transient_worker_frames WHERE state = 'quarantined';").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task CaptureTimeRig_MismatchedEnvelopeQuarantinesTarget()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-rig-mismatch", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var old = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(old);
+            await StageVirtualFramesAsync(provider, old,
+                new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero)).ConfigureAwait(false);
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var update = connection.CreateCommand())
+            {
+                var wrong = old with { Rig = old.Rig with { ProfileVersion = "wrong-rig" } };
+                var (json, sha) = CaptureLaneEnvelopeSerializer.Serialize(wrong,
+                    new CaptureLoopSubmission(new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1),
+                        CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
+                        new CaptureResult(null, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
+                            TimeSpan.Zero, CaptureMode.Still, false), DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), TimeSpan.Zero));
+                update.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha WHERE raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence = 3);";
+                update.Parameters.AddWithValue("$json", json);
+                update.Parameters.AddWithValue("$sha", sha);
+                Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            using var verify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("transient-runtime.capture-rig-mismatch", await ScalarStringAsync(verify,
+                "SELECT f.failure_reason FROM transient_worker_frames f JOIN raw_captures r USING(raw_capture_row_id) WHERE r.capture_sequence = 3;").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task CaptureTimeRig_LegacyEnvelopeNormalizesWithoutRejectingOriginalRigHash()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-legacy-rig", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var baseline = CreateConfiguration();
+            var configuration = baseline with
+            {
+                Rig = baseline.Rig with
+                {
+                    ControlPolicy = new CameraControlPolicy
+                    {
+                        AutoExposure = CameraFeatureDirective.Enabled,
+                        AutoGain = CameraFeatureDirective.Disabled
+                    }
+                },
+                Pipeline = baseline.Pipeline
+            };
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            await StageVirtualFramesAsync(provider, configuration,
+                new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero)).ConfigureAwait(false);
+
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            {
+                var contexts = new List<(long RowId, byte[] Json)>();
+                using (var query = connection.CreateCommand())
+                {
+                    query.CommandText = "SELECT raw_capture_row_id, context_json FROM capture_lane_contexts;";
+                    using var reader = await query.ExecuteReaderAsync().ConfigureAwait(false);
+                    while (await reader.ReadAsync().ConfigureAwait(false))
+                        contexts.Add((reader.GetInt64(0),
+                            await reader.GetFieldValueAsync<byte[]>(1).ConfigureAwait(false)));
+                }
+                Assert.HasCount(5, contexts);
+                foreach (var (rowId, json) in contexts)
+                {
+                    var envelope = JsonNode.Parse(json)!.AsObject();
+                    var captured = envelope["configuration"]!.AsObject();
+                    captured["processingSteps"] = captured["pipeline"]!["steps"]!.DeepClone();
+                    captured["pipeline"] = null;
+                    var legacyJson = Encoding.UTF8.GetBytes(envelope.ToJsonString());
+                    using var update = connection.CreateCommand();
+                    update.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha WHERE raw_capture_row_id = $row;";
+                    update.Parameters.AddWithValue("$json", legacyJson);
+                    update.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(legacyJson)));
+                    update.Parameters.AddWithValue("$row", rowId);
+                    Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
+                }
+            }
+
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            var frames = await provider.GetRequiredService<SqliteTransientRuntimeStore>()
+                .LoadWindowAsync(configuration.AgentId!, 3, [-2, -1, 0, 1, 2], CancellationToken.None)
+                .ConfigureAwait(false);
+            foreach (var frame in frames.Values)
+            {
+                var normalized = frame.CaptureConfiguration!;
+                Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
+                    frame.Manifest.Descriptor.Profiles.Rig.Sha256);
+                Assert.AreNotEqual(frame.Manifest.Descriptor.Profiles.Rig.Sha256,
+                    CameraRigProfileIdentity.ComputeSha256(normalized.Rig));
+                Assert.AreEqual(AutomaticControlOwnership.HostMetered, normalized.Rig.ControlPolicy!.ExposureControl);
+                Assert.AreEqual(AutomaticControlOwnership.Disabled, normalized.Rig.ControlPolicy.GainControl);
+                Assert.IsNull(normalized.ProcessingSteps);
+                Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, normalized.Pipeline!.SchemaVersion);
+                CollectionAssert.AreEquivalent(configuration.Pipeline.Steps.Select(static step => step.Id).ToArray(),
+                    normalized.Pipeline.Steps.Select(static step => step.Id).ToArray());
+            }
+            for (var index = 1; index < 5; index++)
+                Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            using var verify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(0L, await ScalarAsync(verify,
+                "SELECT COUNT(*) FROM transient_worker_frames WHERE state = 'quarantined';").ConfigureAwait(false));
+            Assert.AreEqual(3L, await ScalarAsync(verify,
+                "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key = 'causal-scan' AND state = 'succeeded';").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
     }
 
     [TestMethod]
@@ -1658,7 +1826,8 @@ public sealed class TransientWorkerRuntimeTests
         DateTimeOffset epoch,
         int frameCount = 5,
         bool candidateLimitFrame = false,
-        bool invalidLevels = false)
+        bool invalidLevels = false,
+        Func<int, CameraModuleConfig>? configurationForFrame = null)
     {
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1673,6 +1842,9 @@ public sealed class TransientWorkerRuntimeTests
         var handler = provider.GetServices<ICaptureLaneHandler>().Single(static value => value.Lane == "transient");
         for (var index = 0; index < frameCount; index++)
         {
+            var captureConfiguration = configurationForFrame?.Invoke(index) ?? cameraConfiguration;
+            if (configurationForFrame is not null)
+                await module.InitializeAsync(captureConfiguration, CancellationToken.None).ConfigureAwait(false);
             var request = new CaptureRequest(
                 epoch.AddSeconds(index * 5),
                 TimeSpan.FromSeconds(5),
@@ -1744,7 +1916,7 @@ public sealed class TransientWorkerRuntimeTests
                 TimeSpan.FromSeconds(1),
                 TimeSpan.Zero);
             Assert.IsNotNull(await ingress.AcceptAsync(
-                cameraConfiguration, submission, CancellationToken.None).ConfigureAwait(false));
+                captureConfiguration, submission, CancellationToken.None).ConfigureAwait(false));
             foreach (var completedLane in definitions.Where(static value => value.Name != "transient"))
             {
                 var completedLease = await laneStore.ClaimAsync(

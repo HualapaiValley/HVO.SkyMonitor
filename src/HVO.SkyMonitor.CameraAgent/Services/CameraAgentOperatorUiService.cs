@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -296,6 +297,7 @@ internal sealed class CameraAgentOperatorUiService(
     EnvironmentalObservationDeliveryWakeup environmentalWakeup,
     ITransientRuntimeManagement transientRuntime,
     ICameraAgentConfigurationAccessor configurationAccessor,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     IEnumerable<CaptureProcessingStepRegistration> processingRegistrations,
     IEnumerable<CameraModuleRegistration> moduleRegistrations,
     IOptions<CameraAgentHostOptions> hostOptions,
@@ -964,7 +966,8 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
-            var config = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var startupConfig = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var config = scheduleRuntime?.Snapshot?.Configuration ?? startupConfig;
             var pipeline = config.Pipeline.Steps
                 .Select((step, index) => new CameraAgentPipelineNodeStatus(
                     string.IsNullOrWhiteSpace(step.Id) ? $"node-{index + 1}" : step.Id,
@@ -986,13 +989,13 @@ internal sealed class CameraAgentOperatorUiService(
             var centralEnabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
 
             var status = new CameraAgentSystemStatus(
-                config.DeploymentLocation is { } deploymentLocation
+                startupConfig.DeploymentLocation is { } deploymentLocation
                     ? $"Deployment location {deploymentLocation.LocationId} v{deploymentLocation.Version}"
                     : "Legacy location unknown",
                 string.Empty,
                 "Validated at startup",
-                config.AgentId ?? "Unavailable",
-                ResolveModuleAlias(config.ModuleType, moduleRegistrations),
+                startupConfig.AgentId ?? "Unavailable",
+                ResolveModuleAlias(startupConfig.ModuleType, moduleRegistrations),
                 _hostOptions.CentralIntegration.Mode.ToString(),
                 new CameraAgentSensorStatus(
                     sensor.Name,

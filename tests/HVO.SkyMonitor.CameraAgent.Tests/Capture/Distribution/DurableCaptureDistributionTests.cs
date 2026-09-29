@@ -487,6 +487,32 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
+    public async Task ContextlessFallback_RejectsDifferentCaptureRig()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM capture_lane_contexts;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        var different = fixture.Configuration with
+        {
+            Rig = fixture.Configuration.Rig with { ProfileVersion = "switched-rig" }
+        };
+        var lane = fixture.Policy.Definitions.Single(static definition => definition.Name == "standard");
+        Assert.IsNull(await fixture.Store.ClaimAsync(lane, "rig-switch-test", different, CancellationToken.None)
+            .ConfigureAwait(false));
+        using var verify = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual("quarantined", await ScalarStringAsync(verify,
+            "SELECT state FROM capture_lane_work WHERE lane_name = 'standard';").ConfigureAwait(false));
+        Assert.AreEqual("evidence-invalid", await ScalarStringAsync(verify,
+            "SELECT failure_reason FROM capture_lane_work WHERE lane_name = 'standard';").ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task Service_RediscoversWithoutWakeupAndBlockedOptionalLaneDoesNotBlockStandard()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions

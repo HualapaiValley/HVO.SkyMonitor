@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -10,12 +11,18 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components.Authorization;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
@@ -23,6 +30,78 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 [TestCategory("Unit")]
 public sealed class CaptureScheduleRuntimeCoordinatorTests
 {
+    [TestMethod]
+    public async Task SkyMap_AfterDistinctOpticsActivationAndRollback_FollowsActiveRig()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(fixture.Configuration);
+        var projection = new CameraAgentSkyMapProjection(
+            accessor,
+            CameraAgentSkyMapProjectionTests.CreateCatalog(CameraAgentSkyMapProjectionTests.BrightStars()),
+            fixture.TimeProvider,
+            scheduleRuntime: fixture.Runtime);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var statusService = new CameraAgentOperatorUiService(
+            new FixedAuthenticationStateProvider(principal), authorization.Object,
+            null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            accessor, fixture.Runtime, [], [], fixture.HostOptions, null!, fixture.TimeProvider,
+            NullLogger<CameraAgentOperatorUiService>.Instance);
+        var initial = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var initialStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        var original = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var replacement = fixture.Configuration with
+        {
+            Rig = fixture.Configuration.Rig with
+            {
+                Optics = fixture.Configuration.Rig.Optics with
+                {
+                    FieldOfViewDegrees = 18,
+                    CalibrationVersion = "replacement-optics-v2"
+                },
+                ProfileVersion = "replacement-rig-v2"
+            }
+        };
+        var staged = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(replacement, AlwaysOpenDefinition("initial")),
+            "stage-sky-rig", original.Version, "owner", null,
+            CancellationToken.None).ConfigureAwait(false);
+        var activated = await fixture.Runtime.ActivateAsync(
+            staged.PendingRevision!.RevisionId, "activate-sky-rig", staged.Version, "owner", null,
+            CancellationToken.None).ConfigureAwait(false);
+        var active = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var activeStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual("replacement-optics-v2", active.Geometry.ProjectionCalibrationVersion);
+        Assert.AreEqual("replacement-rig-v2", active.Geometry.RigProfileVersion);
+        Assert.AreEqual(18d, active.Geometry.FieldOfViewDegrees);
+        Assert.AreEqual(initial.Observer.LocationId, active.Observer.LocationId);
+        Assert.AreEqual("replacement-optics-v2", activeStatus.Optics.CalibrationVersion);
+        Assert.AreEqual("replacement-rig-v2", activeStatus.Sensor.ProfileVersion);
+        Assert.AreEqual(initialStatus.AgentId, activeStatus.AgentId);
+        Assert.AreEqual(initialStatus.SnapshotLabel, activeStatus.SnapshotLabel);
+        Assert.AreNotEqual(initialStatus.SnapshotIdentity, activeStatus.SnapshotIdentity);
+
+        _ = await fixture.Runtime.RollbackAsync(
+            original.ActiveRevision.RevisionId,
+            "rollback-sky-rig", activated.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var rolledBack = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var rolledBackStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.AreEqual(initial.Geometry.ProjectionCalibrationVersion, rolledBack.Geometry.ProjectionCalibrationVersion);
+        Assert.AreEqual(initial.Geometry.RigProfileVersion, rolledBack.Geometry.RigProfileVersion);
+        Assert.AreEqual(initial.Observer.LocationId, rolledBack.Observer.LocationId);
+        Assert.AreEqual(initialStatus.SnapshotIdentity, rolledBackStatus.SnapshotIdentity);
+    }
+
+    private sealed class FixedAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
+    {
+        public override Task<AuthenticationState> GetAuthenticationStateAsync()
+            => Task.FromResult(new AuthenticationState(principal));
+    }
+
     [TestMethod]
     public async Task OperatorState_AfterFileConfigurationReload_ExposesReloadedProfileSha256()
     {

@@ -17,7 +17,7 @@ internal sealed class TransientDetectorRuntime(
         5, 3, 8, 3, 1.8, 0.5, 10, 100_000, 3, 3, 3, 1_000, 30, 2);
 
     internal async ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> CreateSourcesAsync(
-        CameraModuleConfig configuration,
+        IReadOnlyDictionary<int, CameraModuleConfig> configurations,
         TransientDetectionOptions options,
         IReadOnlyDictionary<int, TransientLoadedFrame> frames,
         CancellationToken cancellationToken)
@@ -47,27 +47,21 @@ internal sealed class TransientDetectorRuntime(
             inputs.Add(pair.Key, created.Input);
         }
 
-        var first = inputs.OrderBy(static pair => pair.Key).First().Value;
-        var width = first.Descriptor.Layout.Width;
-        var height = first.Descriptor.Layout.Height;
-        var projection = RigProjectionContextFactory.Create(configuration.Rig);
-        var projector = ProjectorFactory.Create(projection);
-        var imageCircle = CreateProjectionMask(width, height, first, projector, static direction => direction is null);
-        var horizon = CreateProjectionMask(
-            width,
-            height,
-            first,
-            projector,
-            static direction => direction is { AltitudeDegrees: < 0 });
-        var obstruction = CreateObstructionMask(
-            width,
-            height,
-            first,
-            configuration.Rig.ControlPolicy?.Metering?.ExcludedRegions);
-        var empty = Linear16MaskOperations.Empty(width, height);
-        var starRegions = new List<Linear16CircularMaskRegion>();
+        var output = new Dictionary<int, TransientTemporalSource>();
         foreach (var pair in frames.OrderBy(static pair => pair.Key))
         {
+            var configuration = configurations[pair.Key];
+            var input = inputs[pair.Key];
+            var width = input.Descriptor.Layout.Width;
+            var height = input.Descriptor.Layout.Height;
+            var projection = RigProjectionContextFactory.Create(configuration.Rig);
+            var projector = ProjectorFactory.Create(projection);
+            var imageCircle = CreateProjectionMask(width, height, input, projector, static direction => direction is null);
+            var horizon = CreateProjectionMask(width, height, input, projector,
+                static direction => direction is { AltitudeDegrees: < 0 });
+            var obstruction = CreateObstructionMask(width, height, input,
+                configuration.Rig.ControlPolicy?.Metering?.ExcludedRegions);
+            var empty = Linear16MaskOperations.Empty(width, height);
             var observatory = ResolveObservatory(pair.Value.Manifest.Descriptor, configuration);
             var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? new CatalogMetadata(
                 "runtime-catalog",
@@ -90,37 +84,33 @@ internal sealed class TransientDetectorRuntime(
                 algorithmVersion: "visible-scene-iau1976-constellation-v2");
             var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
                 .BuildAsync(request, cancellationToken).ConfigureAwait(false);
-            var transform = inputs[pair.Key].Descriptor.SourceToDetectorTransform;
+            var transform = input.Descriptor.SourceToDetectorTransform;
             var radius = Math.Max(0.5, options.StarSupportRadiusSourcePixels * Math.Max(transform.ScaleX, transform.ScaleY));
-            starRegions.AddRange(scene.Objects.Select(item => new Linear16CircularMaskRegion(
+            var starRegions = scene.Objects.Select(item => new Linear16CircularMaskRegion(
                 item.Pixel.X * transform.ScaleX + transform.OffsetX,
                 item.Pixel.Y * transform.ScaleY + transform.OffsetY,
-                radius)));
+                radius)).ToArray();
+            var star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
+            var masks = new[]
+            {
+                TransientDetectorMask.Create(TransientDetectorMaskKind.Sky,
+                    new ProcessingAlgorithmIdentity("geometric-sky-mask", "v1"), empty),
+                TransientDetectorMask.Create(TransientDetectorMaskKind.ImageCircle,
+                    new ProcessingAlgorithmIdentity("calibrated-image-circle-mask", "v1"), imageCircle),
+                TransientDetectorMask.Create(TransientDetectorMaskKind.Horizon,
+                    new ProcessingAlgorithmIdentity("geometric-horizon-mask", "v1"), horizon),
+                TransientDetectorMask.Create(TransientDetectorMaskKind.Obstruction,
+                    new ProcessingAlgorithmIdentity("configured-obstruction-mask", "v1"), obstruction),
+                TransientDetectorMask.Create(TransientDetectorMaskKind.BadPixel,
+                    new ProcessingAlgorithmIdentity("configured-bad-pixel-mask", "v1"), empty),
+                TransientDetectorMask.Create(TransientDetectorMaskKind.Star,
+                    new ProcessingAlgorithmIdentity("catalog-projected-star-mask", "v1"), star)
+            };
+            output.Add(pair.Key, new TransientTemporalSource(
+                ToPosition(pair.Key), input.CaptureSequence!.Value, input,
+                new TransientSensitivityV1(input.Descriptor.Compatibility.SetpointRegime, 1, 1), masks));
         }
-        var star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
-        var masks = new[]
-        {
-            TransientDetectorMask.Create(TransientDetectorMaskKind.Sky,
-                new ProcessingAlgorithmIdentity("geometric-sky-mask", "v1"), empty),
-            TransientDetectorMask.Create(TransientDetectorMaskKind.ImageCircle,
-                new ProcessingAlgorithmIdentity("calibrated-image-circle-mask", "v1"), imageCircle),
-            TransientDetectorMask.Create(TransientDetectorMaskKind.Horizon,
-                new ProcessingAlgorithmIdentity("geometric-horizon-mask", "v1"), horizon),
-            TransientDetectorMask.Create(TransientDetectorMaskKind.Obstruction,
-                new ProcessingAlgorithmIdentity("configured-obstruction-mask", "v1"), obstruction),
-            TransientDetectorMask.Create(TransientDetectorMaskKind.BadPixel,
-                new ProcessingAlgorithmIdentity("configured-bad-pixel-mask", "v1"), empty),
-            TransientDetectorMask.Create(TransientDetectorMaskKind.Star,
-                new ProcessingAlgorithmIdentity("catalog-projected-star-mask", "v1"), star)
-        };
-        return inputs.ToDictionary(
-            static pair => pair.Key,
-            pair => new TransientTemporalSource(
-                ToPosition(pair.Key),
-                pair.Value.CaptureSequence!.Value,
-                pair.Value,
-                new TransientSensitivityV1(pair.Value.Descriptor.Compatibility.SetpointRegime, 1, 1),
-                masks));
+        return output;
     }
 
     internal ObservatoryLocation ResolveObservatory(
