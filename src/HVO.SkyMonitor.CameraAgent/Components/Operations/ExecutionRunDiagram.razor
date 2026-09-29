@@ -72,7 +72,7 @@
                             var x = EdgeX + (lane.CandidateId is null ? i : CaptureLaneCount + i) * (NodeWidth + ColumnGap);
                             @if (i > 0 && IsRecordedPredecessor(lane.Events[i - 1], stage))
                             {
-                                <path class="run-diagram__transient-edge" d="M@(x - ColumnGap),@(lane.Y + 49) H@x" />
+                                <path class="run-diagram__transient-edge" d="M@(x - ColumnGap),@(lane.Y + 49) H@(x)" />
                             }
                             @if (i == 0 && lane.CandidateId is not null && CausalSuccess is not null && stage.StageKey == "candidate-allocated")
                             {

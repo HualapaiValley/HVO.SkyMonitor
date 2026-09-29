@@ -3,55 +3,72 @@
 
 <div class="operations-layout">
     <div class="operations-navigation-shell">
-    <ResponsiveNavigation Id="operations-sections" Label="Operations sections" Breakpoint="940">
-        <ToggleContent>
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"></path></svg>
-        <span>Operations sections</span>
-        </ToggleContent>
-        <ChildContent>
-    <aside class="operations-sidebar" aria-label="Operations sections">
-        <div class="operations-sidebar__head">
-            <p class="eyebrow">Local administration</p>
-            <strong>Operations</strong>
-        </div>
-        <nav class="operations-navigation" aria-label="Operations navigation">
-            @foreach (var group in OperationsSectionCatalog.Groups)
-            {
-                var sections = OperationsSectionCatalog.Sections.Where(section => section.Group == group).ToArray();
-                if (sections.Length == 0) { continue; }
-                if (group != "Overview") { <p class="operations-navigation__group" id="@GroupId(group)">@group</p> }
-                <ul aria-labelledby="@(group == "Overview" ? null : GroupId(group))">
-                    @foreach (var section in sections)
-                    {
-                        var current = Current is not null && section.Slug == Current.Slug;
-                        <li>
-                            @if (section.UnavailableReason is { } reason)
+        <ResponsiveNavigation Id="operations-sections" Label="Operations sections" Breakpoint="940">
+            <ToggleContent>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"></path></svg>
+                <span>Operations sections</span>
+            </ToggleContent>
+            <ChildContent>
+                <aside class="operations-sidebar" aria-label="Operations sections">
+                    <header class="operations-sidebar-head">
+                        <div>
+                            <p class="eyebrow">Local administration</p>
+                            <strong>Operations</strong>
+                        </div>
+                        @if (_attention is { } attention)
+                        {
+                            <span class="state-chip @attention.HealthClass" title="@HealthTitle(attention)">@attention.HealthLabel</span>
+                        }
+                        else if (_readFailed)
+                        {
+                            <span class="state-chip pending" title="Current operations data is unavailable.">Unknown</span>
+                        }
+                    </header>
+
+                    <nav class="operations-navigation" aria-label="Operations navigation">
+                        @foreach (var group in OperationsSectionCatalog.Groups)
+                        {
+                            if (group != "Overview")
                             {
-                                <button type="button" class="operations-navigation__link operations-navigation__link--unavailable" disabled title="@reason" aria-describedby="@($"operations-unavailable-{section.Slug}")">
-                                    <svg class="operations-navigation__icon" viewBox="0 0 20 20" aria-hidden="true"><path d="@section.IconPath"></path></svg>
-                                    <span>@section.Label</span><small>#@section.UnavailableIssue</small>
-                                </button>
-                                <p id="@($"operations-unavailable-{section.Slug}")" class="operations-navigation__reason">@reason</p>
+                                <p class="ops-nav-group" id="@GroupId(group)">@group</p>
                             }
-                            else
+                            foreach (var section in OperationsSectionCatalog.Sections.Where(section => section.Group == group))
                             {
-                            <a href="@section.Href" class="@(current ? "operations-navigation__link operations-navigation__link--current" : "operations-navigation__link")" aria-current="@(current ? "page" : null)" title="@section.Summary">
-                                <svg class="operations-navigation__icon" viewBox="0 0 20 20" aria-hidden="true"><path d="@section.IconPath"></path></svg>
-                                <span>@section.Label</span>
-                            </a>
+                                var current = Current is not null && section.Slug == Current.Slug;
+                                var count = _attention?.CountFor(section.Slug) ?? 0;
+                                <a href="@section.NavigationHref"
+                                   class="@LinkClass(section, current)"
+                                   aria-current="@(current ? "page" : null)"
+                                   aria-describedby="@(section.UnavailableReason is null ? null : UnavailableId(section))"
+                                   title="@(section.UnavailableReason ?? section.Description)">
+                                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="@section.IconPath"></path></svg></span>
+                                    <span>@section.Label</span>
+                                    @if (count > 0)
+                                    {
+                                        <span class="ops-nav-badge attention">@count<span class="visually-hidden"> open attention @(count == 1 ? "item" : "items")</span></span>
+                                    }
+                                </a>
+                                @if (section.UnavailableReason is { } reason)
+                                {
+                                    <span id="@UnavailableId(section)" class="visually-hidden">@reason</span>
+                                }
                             }
-                        </li>
-                    }
-                </ul>
-            }
-        </nav>
-        <footer class="operations-scope"><strong>Local authority</strong><small>CameraAgent workspace</small></footer>
-    </aside>
-        </ChildContent>
-    </ResponsiveNavigation>
+                        }
+                    </nav>
+
+                    <footer class="operations-scope">
+                        <span class="agent-dot" aria-hidden="true"></span>
+                        <span><strong>Local authority</strong><small>@ScopeText</small></span>
+                        <a href="/devices/bootstrap" aria-label="View registration"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"></path></svg></a>
+                    </footer>
+                </aside>
+            </ChildContent>
+        </ResponsiveNavigation>
     </div>
 
     <div class="operations-content">
-        @Body
+        <CascadingValue Value="this" IsFixed="true">
+            <div class="operations-page-frame">@Body</div>
+        </CascadingValue>
     </div>
 </div>

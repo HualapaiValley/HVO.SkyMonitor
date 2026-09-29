@@ -269,6 +269,7 @@ public sealed class ProcessingExecutionPagesTests
         Assert.HasCount(5, cut.FindAll(".run-diagram__transient-node"));
         Assert.HasCount(3, cut.FindAll(".run-diagram__transient-label"));
         Assert.HasCount(1, cut.FindAll(".run-diagram__transient-edge"));
+        StringAssert.Matches(cut.Find(".run-diagram__transient-edge").GetAttribute("d")!, new System.Text.RegularExpressions.Regex(@"^M[-0-9.]+,[-0-9.]+ H[-0-9.]+$"));
         Assert.IsTrue(cut.FindAll(".run-diagram__transient-node")[1].ClassList.Contains("run-diagram__transient-node--attention"));
         StringAssert.Contains(cut.Markup, "No processing nodes were recorded", StringComparison.Ordinal);
     }

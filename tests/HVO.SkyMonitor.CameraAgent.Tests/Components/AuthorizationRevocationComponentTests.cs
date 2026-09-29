@@ -47,12 +47,12 @@ public sealed class AuthorizationRevocationComponentTests
     {
         using var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
-        var service = Configure(context);
+        var service = OperationsPageTests.ConfigureOverview(context);
         var cut = context.Render<OperationsPage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Raw ingress", StringComparison.Ordinal));
         service.OperationsHandler = _ => ValueTask.FromResult(Denied<CameraAgentOperationsView>());
 
-        await cut.Find(".refresh-link").ClickAsync(new Microsoft.AspNetCore.Components.Web.MouseEventArgs());
+        await cut.InvokeAsync(cut.Instance.RefreshNowAsync);
 
         cut.WaitForAssertion(() =>
         {

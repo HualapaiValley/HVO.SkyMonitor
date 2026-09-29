@@ -22,128 +22,134 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void FreshVirtualSkyInventory_CreatesStarterAndOpensTypedCameraEditor()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { VirtualOnly = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.WaitForElement("[aria-label='Add ZWO camera']");
-        cut.Find("[aria-label='Add ZWO camera'] button").Click();
+        cut.WaitForElement("#rig-add-zwo").Click();
+        Assert.AreEqual("Add ZWO camera", cut.Find("#rig-dialog-heading").TextContent);
+        DialogPrimary(cut).Click();
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual("asi676mc", service.StarterTemplate);
-            Assert.AreEqual("starter-v1", cut.FindAll("[aria-label='Equipment editor'] select")[1].GetAttribute("value"));
-            StringAssert.Contains(cut.Markup, "Basis expected model: ASI676MC", StringComparison.Ordinal);
+            Assert.AreEqual("Edit camera", cut.Find("#rig-dialog-heading").TextContent);
+            Assert.AreEqual("starter-v1", cut.FindAll("dialog select")[0].GetAttribute("value"));
+            StringAssert.Contains(cut.Find("dialog").TextContent, "Basis expected model: ASI676MC", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("dialog .rig-message[role='status']").TextContent, "ZWO camera created", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("libraryPathEnvironmentVariable", StringComparison.Ordinal));
         });
-        Assert.IsEmpty(cut.FindAll("[aria-label='Add ZWO camera']"));
+        Assert.IsEmpty(cut.FindAll("#rig-add-zwo"));
+        Assert.AreEqual("starter-v1", cut.Find("#rig-camera-select").GetAttribute("value"));
     }
 
     [TestMethod]
     public void VirtualSkyStarter_CustomCameraDuplicate_SelectsSavedCameraForComposition()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { VirtualOnly = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.Find("[aria-label='Add ZWO camera'] button").Click();
-        cut.WaitForAssertion(() => Assert.AreEqual("starter-v1", cut.FindAll("[aria-label='Rig composer'] select")[1].GetAttribute("value")));
-        cut.FindAll("[aria-label='Equipment editor'] select")[2].Change(true);
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.StartsWith("Equipment name", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change("Custom ASI120MM Mini");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Custom ZWO expected model", StringComparison.Ordinal));
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.StartsWith("Custom ZWO expected model", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change("ASI120MM Mini");
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.Contains("unvalidated camera model", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change(true);
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal)).Click();
+        cut.Find("#rig-add-zwo").Click();
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("starter-v1", cut.Find("#rig-camera-select").GetAttribute("value")));
+        EditorSelect(cut, "Save mode").Change("duplicate");
+        EditorInput(cut, "Equipment name").Change("Custom ASI120MM Mini");
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "Custom ZWO expected model", StringComparison.Ordinal));
+        EditorInput(cut, "Custom ZWO expected model").Change("ASI120MM Mini");
+        DialogCheck(cut, "unvalidated camera model").Change(true);
+        Assert.AreEqual("Create duplicate equipment", DialogPrimary(cut).TextContent);
+        DialogPrimary(cut).Click();
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("camera-v3", cut.FindAll("[aria-label='Rig composer'] select")[1].GetAttribute("value"));
-            StringAssert.Contains(cut.Find("[aria-label='Rig composer']").TextContent, "Camera: Custom ASI120MM Mini", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("dialog"));
+            Assert.AreEqual("camera-v3", cut.Find("#rig-camera-select").GetAttribute("value"));
+            Assert.AreEqual("Custom ASI120MM Mini (v2)", cut.Find("#rig-camera-select option[value='camera-v3']").TextContent);
+            StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent, "Equipment revision saved", StringComparison.Ordinal);
         });
-        cut.FindAll("button").Single(b => b.TextContent == "Compose immutable revision").Click();
+        Assert.IsTrue(FocusRequested(context, "rig-camera-select"));
+        ClickButton(cut, "Compose immutable revision");
         cut.WaitForAssertion(() => Assert.AreEqual("camera-v3", service.ComposedCameraId));
     }
 
     [TestMethod]
     public void Render_UsesNamedRigInventoryWithoutScheduleEditor()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
         cut.WaitForElement("[aria-label='Rig composer']");
-        StringAssert.Contains(cut.Markup, "Pending restart", StringComparison.Ordinal);
+        Assert.AreEqual("None", SelectionFact(cut, "Pending restart"));
+        Assert.AreEqual("Restart", SelectionFact(cut, "Apply boundary"));
+        Assert.AreEqual("Capture schedule", cut.Find("[aria-label='Rig selection'] a[href='/operations/schedule']").TextContent);
         StringAssert.Contains(cut.Markup, "Compare &amp; stage", StringComparison.Ordinal);
         Assert.IsFalse(cut.Markup.Contains("Night gain", StringComparison.Ordinal));
         Assert.IsFalse(cut.Markup.Contains("Capture interval", StringComparison.Ordinal));
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        var module = cut.Find("[aria-labelledby='rig-module-heading']").TextContent;
+        StringAssert.Contains(module, "Held in module options; not shown", StringComparison.Ordinal);
+        StringAssert.Contains(module, "Not reported", StringComparison.Ordinal);
+        Assert.IsNotNull(cut.Find("[aria-labelledby='rig-optics-heading'] .ops-geometry-visual[role='img']"));
+        StringAssert.Contains(cut.Find("[aria-labelledby='rig-capabilities-heading']").TextContent,
+            "A capability inventory is not reported", StringComparison.Ordinal);
     }
 
     [TestMethod]
     public void Render_ShowsSelectionFactsProvenanceAndCollapsedAdvancedReadout()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("camera-v1");
-        var advanced = cut.Find(".camera-advanced");
-        Assert.IsFalse(advanced.HasAttribute("open"));
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.Contains("Sensor readout", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change(true);
-        advanced = cut.Find(".camera-advanced");
-        StringAssert.Contains(advanced.TextContent, "ROI width", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "Installed rig / revision 1", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".camera-compare").TextContent, "Readout:", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".camera-provenance").TextContent, "older-v3", StringComparison.Ordinal);
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("rig-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".camera-provenance").TextContent,
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("camera-v1", cut.FindAll("dialog select")[0].GetAttribute("value")));
+        Assert.IsFalse(cut.Find(".rig-advanced").HasAttribute("open"));
+        DialogCheck(cut, "Sensor readout").Change(true);
+        StringAssert.Contains(cut.Find(".rig-advanced").TextContent, "ROI width", StringComparison.Ordinal);
+        ClickButton(cut, "Cancel");
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsTrue(FocusRequested(context, "rig-camera-edit"));
+        StringAssert.Contains(cut.Find("[aria-label='Rig selection'] strong").TextContent, "Installed rig revision 1 is active", StringComparison.Ordinal);
+        CollectionAssert.Contains(cut.FindAll(".rig-compare tbody th").Select(th => th.TextContent).ToList(), "Readout");
+        StringAssert.Contains(cut.Find(".rig-provenance").TextContent, "older-v3", StringComparison.Ordinal);
+        cut.Find("#rig-revision-select").Change("rig-v1");
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".rig-provenance").TextContent,
             "installed-schedule", StringComparison.Ordinal));
-        Assert.IsNotEmpty(cut.FindAll("[aria-label='Rig revision history'] li"));
+        Assert.IsNotEmpty(cut.FindAll("[aria-label='Rig revision history'] tbody tr"));
     }
 
     [TestMethod]
     public void PendingFailure_RefreshShowsFailureAndCancellationWithoutInternalDetails()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { PendingId = "rig-v1" };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         Assert.IsEmpty(cut.FindAll("[aria-label='Rig runtime failure']"));
+        Assert.AreEqual("Revision 1", SelectionFact(cut, "Pending restart"));
+        StringAssert.Contains(cut.Find("[aria-label='Pending restart']").TextContent, "unvalidated at runtime", StringComparison.Ordinal);
         service.PendingFailure = "Pending rig failed to initialize.";
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         var alert = cut.Find("[aria-label='Rig runtime failure']");
         StringAssert.Contains(alert.TextContent, "Cancel the pending restart", StringComparison.Ordinal);
         StringAssert.Contains(alert.TextContent, "correct the hardware and restart", StringComparison.Ordinal);
         Assert.IsFalse(cut.Markup.Contains("pending-command-secret", StringComparison.Ordinal));
-        Assert.IsFalse(cut.Markup.Contains("Unvalidated at runtime. Restart required", StringComparison.Ordinal));
-        cut.FindAll("button").Single(b => b.TextContent == "Cancel pending restart").Click();
+        Assert.IsFalse(cut.Find("[aria-label='Pending restart']").TextContent.Contains("unvalidated at runtime", StringComparison.Ordinal));
+        ClickButton(cut, "Cancel pending restart");
         Assert.AreEqual(1, service.CancelCount);
     }
 
     [TestMethod]
     public void ActiveFailure_RefreshShowsCaptureUnavailableThenClears()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { ActiveFailure = "Active camera is unavailable for capture." };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         StringAssert.Contains(cut.Find("[aria-label='Rig runtime failure']").TextContent,
             "Check the camera hardware and restart", StringComparison.Ordinal);
         service.ActiveFailure = null;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         Assert.IsEmpty(cut.FindAll("[aria-label='Rig runtime failure']"));
     }
 
     [TestMethod]
     public void UnauthorizedRuntimeRead_DoesNotShowFailure()
     {
-        using var context = new BunitContext();
-        var service = new FakeRigService { Unauthorized = true, PendingFailure = "Pending rig failed to initialize." };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(new FakeRigService { Unauthorized = true, PendingFailure = "Pending rig failed to initialize." });
         var cut = context.Render<CameraRigPage>();
         Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
         Assert.IsEmpty(cut.FindAll("[aria-label='Rig runtime failure']"));
@@ -177,15 +183,14 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void Preview_RequiresExplicitAcknowledgement_BeforeStaging()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Runtime verified: no", StringComparison.Ordinal));
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.StageCount));
         Assert.IsTrue(service.Acknowledged);
         Assert.AreEqual("schedule-v1", service.StagedScheduleId);
@@ -198,21 +203,20 @@ public sealed class CameraRigPageTests
     [DataRow(true)]
     public void Stage_SuccessfulCommandButRefreshFails_DoesNotClaimStagedSelection(bool failInventory)
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
         if (failInventory) service.FailNextInventory = true;
         else service.FailNextGet = true;
 
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
 
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual(1, service.StageCount);
-            var banner = cut.Find("[role='alert'].camera-banner").TextContent;
+            var banner = cut.Find("[role='alert'].rig-message").TextContent;
             StringAssert.Contains(banner, "current selection could not be verified", StringComparison.Ordinal);
             Assert.IsFalse(banner.Contains("refreshed", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(banner.Contains("Rig staged for restart", StringComparison.Ordinal));
@@ -225,19 +229,18 @@ public sealed class CameraRigPageTests
     [DataRow(true)]
     public void Cancel_SuccessfulCommandButRefreshFails_DoesNotClaimCancelledSelection(bool failInventory)
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { PendingId = "rig-v1" };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         if (failInventory) service.FailNextInventory = true;
         else service.FailNextGet = true;
 
-        cut.FindAll("button").Single(b => b.TextContent == "Cancel pending restart").Click();
+        ClickButton(cut, "Cancel pending restart");
 
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual(1, service.CancelCount);
-            var banner = cut.Find("[role='alert'].camera-banner").TextContent;
+            var banner = cut.Find("[role='alert'].rig-message").TextContent;
             StringAssert.Contains(banner, "current selection could not be verified", StringComparison.Ordinal);
             Assert.IsFalse(banner.Contains("refreshed", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(banner.Contains("Pending restart cancelled", StringComparison.Ordinal));
@@ -248,47 +251,45 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void PreviewFailure_CannotBeAcknowledgedOrStaged()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { Valid = false };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Preview failed", StringComparison.Ordinal));
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Rig preview and selection'] input[type=checkbox]"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
         Assert.AreEqual(0, service.StageCount);
     }
 
     [TestMethod]
     public void ScheduleChangesAfterPreview_RequiresAnotherPreview()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
         service.ScheduleId = "schedule-v2";
-        cut.Find("button.btn-primary").Click();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[role='alert']").TextContent, "Preview again", StringComparison.Ordinal));
+        cut.Find("#rig-stage").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[role='alert'].rig-message").TextContent, "Preview again", StringComparison.Ordinal));
         Assert.AreEqual(0, service.StageCount);
     }
 
     [TestMethod]
     public async Task Stage_DuringFreshPreview_IsSingleFlight()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        await cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        await PreviewButton(cut).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
         await cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").ChangeAsync(new ChangeEventArgs { Value = true }).ConfigureAwait(false);
         service.DeferredPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var first = cut.Find("button.btn-primary").ClickAsync(new MouseEventArgs());
+        var first = cut.Find("#rig-stage").ClickAsync(new MouseEventArgs());
         Assert.IsFalse(first.IsCompleted);
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
-        await cut.Find("button.btn-primary").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
+        await cut.Find("#rig-stage").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
         service.DeferredPreview.SetResult(OperatorUiResult<NamedRigPreview>.Success(
-            new(service.ScheduleId, service.ScheduleHash, "rig-v1", true, null, false)));
+            new(service.ScheduleId, service.ScheduleHash, "older-v3", true, null, false)));
         await first.ConfigureAwait(false);
         Assert.AreEqual(1, service.StageCount);
     }
@@ -296,113 +297,124 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public async Task Stage_AcknowledgementChangesDuringFreshPreview_DoesNotSend()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        await cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        await PreviewButton(cut).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
         await cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").ChangeAsync(new ChangeEventArgs { Value = true }).ConfigureAwait(false);
         service.DeferredPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var stage = cut.Find("button.btn-primary").ClickAsync(new MouseEventArgs());
+        var stage = cut.Find("#rig-stage").ClickAsync(new MouseEventArgs());
         Assert.IsFalse(stage.IsCompleted);
         await cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").ChangeAsync(new ChangeEventArgs { Value = false }).ConfigureAwait(false);
         service.DeferredPreview.SetResult(OperatorUiResult<NamedRigPreview>.Success(
-            new(service.ScheduleId, service.ScheduleHash, "rig-v1", true, null, false)));
+            new(service.ScheduleId, service.ScheduleHash, "older-v3", true, null, false)));
         await stage.ConfigureAwait(false);
         Assert.AreEqual(0, service.StageCount);
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
     }
 
     [TestMethod]
     public async Task Stage_RevisionChangesDuringFreshPreview_DoesNotSend()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        await cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        await PreviewButton(cut).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
         await cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").ChangeAsync(new ChangeEventArgs { Value = true }).ConfigureAwait(false);
         service.DeferredPreview = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var stage = cut.Find("button.btn-primary").ClickAsync(new MouseEventArgs());
+        var stage = cut.Find("#rig-stage").ClickAsync(new MouseEventArgs());
         Assert.IsFalse(stage.IsCompleted);
-        await cut.Find("[aria-label='Rig preview and selection'] select").ChangeAsync(new ChangeEventArgs { Value = "older-v3" }).ConfigureAwait(false);
+        await cut.Find("#rig-revision-select").ChangeAsync(new ChangeEventArgs { Value = "rig-v1" }).ConfigureAwait(false);
         service.DeferredPreview.SetResult(OperatorUiResult<NamedRigPreview>.Success(
-            new(service.ScheduleId, service.ScheduleHash, "rig-v1", true, null, false)));
+            new(service.ScheduleId, service.ScheduleHash, "older-v3", true, null, false)));
         await stage.ConfigureAwait(false);
         Assert.AreEqual(0, service.StageCount);
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
     }
 
     [TestMethod]
     public void HistorySelector_LoadsOlderRevisionsAndCanPreviewThem()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.WaitForElement("[aria-label='Rig preview and selection'] option[value='older-v3']");
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Load older revisions", StringComparison.Ordinal)).Click();
-        cut.WaitForElement("[aria-label='Rig preview and selection'] option[value='older-v1']");
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("older-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Selected</h3>", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Markup, "Camera: Historical sensor", StringComparison.Ordinal);
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        cut.WaitForElement("#rig-revision-select option[value='older-v3']");
+        ClickButton(cut, "Load older revisions");
+        cut.WaitForElement("#rig-revision-select option[value='older-v1']");
+        cut.Find("#rig-revision-select").Change("older-v1");
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Selected</th>", StringComparison.Ordinal));
+        StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal);
+        ClickPreview(cut);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Contract preview passed", StringComparison.Ordinal));
         Assert.AreEqual(2, service.HistoryCalls);
         Assert.IsFalse(cut.Markup.Contains("ASI_SDK_PATH", StringComparison.Ordinal));
     }
 
     [TestMethod]
-    public void SwitchingProfile_FromHistoricalRevision_SelectsNewProfileRevisionAndName()
+    public void HistoryInspect_SelectsRevisionAndReturnsFocusToSelector()
     {
-        using var context = new BunitContext();
-        var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("older-v3");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "ASI120MM (unvalidated model)", StringComparison.Ordinal));
-        cut.Find("[aria-label='Rig composer'] select").Change("other");
+        ClickButton(cut, "Load older revisions");
+        cut.WaitForElement("[aria-label='Inspect revision 1']");
+        Assert.HasCount(2, cut.FindAll("[aria-label='Rig revision history'] tbody tr"));
+        StringAssert.Contains(cut.Find("[aria-label='Rig revision history'] tbody tr").TextContent, "Composed", StringComparison.Ordinal);
+        cut.Find("[aria-label='Inspect revision 1']").Click();
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("other-v2", cut.Find("[aria-label='Rig preview and selection'] select").GetAttribute("value"));
-            Assert.AreEqual("Other rig", cut.Find("[aria-label='Rig composer'] label input:not([type])").GetAttribute("value"));
-            Assert.IsFalse(cut.Find("[aria-label='Rig preview and selection'] article:last-child").TextContent.Contains("ASI120MM", StringComparison.Ordinal));
+            Assert.AreEqual("older-v1", cut.Find("#rig-revision-select").GetAttribute("value"));
+            StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal);
+            Assert.IsTrue(FocusRequested(context, "rig-revision-select"));
+        });
+    }
+
+    [TestMethod]
+    public void SwitchingProfile_FromHistoricalRevision_SelectsNewProfileRevisionAndName()
+    {
+        using var context = CreateContext(new FakeRigService());
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-revision-select").Change("older-v3");
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"), "ASI120MM (unvalidated model)", StringComparison.Ordinal));
+        cut.Find("#rig-profile-select").Change("other");
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("other-v2", cut.Find("#rig-revision-select").GetAttribute("value"));
+            StringAssert.Contains(cut.Find("[aria-label='Rig revision history']").TextContent, "Loaded revisions of Other rig", StringComparison.Ordinal);
+            Assert.IsFalse(CompareValue(cut, "Model", "selected").Contains("ASI120MM", StringComparison.Ordinal));
         });
     }
 
     [TestMethod]
     public async Task DelayedHistory_AfterRapidProfileSwitches_DoesNotReplaceLatestSelection()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         var delayed = service.DeferHistory("other");
-        var other = cut.Find("[aria-label='Rig composer'] select").ChangeAsync(new ChangeEventArgs { Value = "other" });
+        var other = cut.Find("#rig-profile-select").ChangeAsync(new ChangeEventArgs { Value = "other" });
         Assert.IsFalse(other.IsCompleted);
-        await cut.Find("[aria-label='Rig composer'] select").ChangeAsync(new ChangeEventArgs { Value = "rig" }).ConfigureAwait(false);
+        await cut.Find("#rig-profile-select").ChangeAsync(new ChangeEventArgs { Value = "rig" }).ConfigureAwait(false);
         delayed.SetResult(OperatorUiResult<NamedRigHistoryPage>.Success(new(1,
             [new("foreign-v9", "other", 9, "camera-v2", "optics-v1", "mount-v1", null)], null)));
         await other.ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("rig", cut.Find("[aria-label='Rig composer'] select").GetAttribute("value"));
-            Assert.AreEqual("older-v3", cut.Find("[aria-label='Rig preview and selection'] select").GetAttribute("value"));
+            Assert.AreEqual("rig", cut.Find("#rig-profile-select").GetAttribute("value"));
+            Assert.AreEqual("older-v3", cut.Find("#rig-revision-select").GetAttribute("value"));
             Assert.IsFalse(cut.Markup.Contains("foreign-v9", StringComparison.Ordinal));
         });
-        await cut.FindAll("button").Single(b => b.TextContent.Contains("Load older revisions", StringComparison.Ordinal)).ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
-        cut.WaitForElement("[aria-label='Rig preview and selection'] option[value='older-v1']");
+        await cut.FindAll("button").Single(b => b.TextContent == "Load older revisions").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        cut.WaitForElement("#rig-revision-select option[value='older-v1']");
     }
 
     [TestMethod]
     public async Task DelayedHistory_AfterNewerRequestForSameProfile_DoesNotReplaceNewerPage()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         var delayed = service.DeferHistory("rig");
-        var older = cut.FindAll("button").Single(b => b.TextContent.Contains("Load older revisions", StringComparison.Ordinal)).ClickAsync(new MouseEventArgs());
+        var older = cut.FindAll("button").Single(b => b.TextContent == "Load older revisions").ClickAsync(new MouseEventArgs());
         Assert.IsFalse(older.IsCompleted);
         await cut.FindAll("button").Single(b => b.TextContent == "Refresh").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
         delayed.SetResult(OperatorUiResult<NamedRigHistoryPage>.Success(new(3,
@@ -411,47 +423,97 @@ public sealed class CameraRigPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.IsFalse(cut.Markup.Contains("obsolete-v1", StringComparison.Ordinal));
-            Assert.IsNotEmpty(cut.FindAll("button").Where(b => b.TextContent.Contains("Load older revisions", StringComparison.Ordinal)));
+            Assert.IsNotEmpty(cut.FindAll("button").Where(b => b.TextContent == "Load older revisions"));
         });
     }
 
     [TestMethod]
     public void CreatedProfile_CanBeRenamedWithoutCreatingAnotherProfile()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        var composer = cut.Find("[aria-label='Rig composer']");
-        composer.QuerySelector("input[type=checkbox]")!.Change(true);
-        composer.QuerySelector("label input:not([type])")!.Change("New rig");
-        cut.FindAll("button").Single(b => b.TextContent == "Save rig name").Click();
-        cut.WaitForAssertion(() => Assert.AreEqual("new", cut.Find("[aria-label='Rig composer'] select").GetAttribute("value")));
-        Assert.IsFalse(cut.Find("[aria-label='Rig composer'] input[type=checkbox]").HasAttribute("checked"));
-        cut.Find("[aria-label='Rig composer'] label input:not([type])").Change("Renamed rig");
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
-        Assert.AreEqual("Renamed rig", cut.Find("[aria-label='Rig composer'] label input:not([type])").GetAttribute("value"));
-        cut.FindAll("button").Single(b => b.TextContent == "Save rig name").Click();
+        cut.Find("#rig-profile-new").Click();
+        Assert.AreEqual("New named rig", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.IsTrue(DialogPrimary(cut).HasAttribute("disabled"));
+        cut.Find("#rig-profile-name").Input("New rig");
+        Assert.IsFalse(DialogPrimary(cut).HasAttribute("disabled"));
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("new", cut.Find("#rig-profile-select").GetAttribute("value")));
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsNull(service.SavedProfileId);
+        StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent, "Rig name saved", StringComparison.Ordinal);
+        Assert.IsTrue(FocusRequested(context, "rig-profile-select"));
+
+        cut.Find("#rig-profile-rename").Click();
+        Assert.AreEqual("Rename rig", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.AreEqual("New rig", cut.Find("#rig-profile-name").GetAttribute("value"));
+        cut.Find("#rig-profile-name").Input("Renamed rig");
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("Renamed rig", service.SavedProfileName));
         Assert.AreEqual("new", service.SavedProfileId);
-        Assert.AreEqual("Renamed rig", service.SavedProfileName);
+        Assert.HasCount(3, cut.FindAll("#rig-profile-select option:not([value=''])"));
+        Assert.AreEqual("Renamed rig", cut.Find("#rig-profile-select option[value='new']").TextContent);
+    }
+
+    [TestMethod]
+    public async Task RigDialog_StaysOpenUntilAnInFlightSaveSettlesAsync()
+    {
+        var service = new FakeRigService { DeferredProfileSave = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        await cut.Find("#rig-profile-new").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        await cut.Find("#rig-profile-name").InputAsync(new ChangeEventArgs { Value = "New rig" }).ConfigureAwait(false);
+
+        var save = DialogPrimary(cut).ClickAsync(new MouseEventArgs());
+        Assert.IsFalse(save.IsCompleted);
+        Assert.IsTrue(cut.Find("dialog .dialog-header .icon-button").HasAttribute("disabled"));
+        Assert.IsTrue(cut.FindAll("dialog footer button").Single(b => b.TextContent == "Cancel").HasAttribute("disabled"));
+        // Escape raises the native cancel event, which the page routes to its dismiss handler.
+        await cut.Find("dialog").TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
+        Assert.HasCount(1, cut.FindAll("dialog"));
+        Assert.AreEqual("New named rig", cut.Find("#rig-dialog-heading").TextContent);
+
+        service.DeferredProfileSave.SetResult();
+        await save.ConfigureAwait(false);
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent, "Rig name saved", StringComparison.Ordinal);
+        Assert.AreEqual("new", cut.Find("#rig-profile-select").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void InstalledRigName_IsFixedAndCancelRestoresFocus()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-profile-rename").Click();
+        Assert.AreEqual("Rename rig", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.IsTrue(cut.Find("dialog fieldset").HasAttribute("disabled"));
+        StringAssert.Contains(cut.Find("dialog .dialog-note").TextContent, "This name is fixed.", StringComparison.Ordinal);
+        Assert.IsTrue(DialogPrimary(cut).HasAttribute("disabled"));
+        ClickButton(cut, "Cancel");
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsTrue(FocusRequested(context, "rig-profile-rename"));
+        Assert.IsNull(service.SavedProfileName);
     }
 
     [TestMethod]
     public void Refresh_RestoresSelectedRevisionBeyondFirstHundred_WithoutExposingSecrets()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { DeepHistory = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         for (var page = 0; page < 2; page++)
-            cut.FindAll("button").Single(b => b.TextContent.Contains("Load older revisions", StringComparison.Ordinal)).Click();
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("older-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Camera: Historical sensor", StringComparison.Ordinal));
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+            ClickButton(cut, "Load older revisions");
+        cut.Find("#rig-revision-select").Change("older-v1");
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal));
+        ClickButton(cut, "Refresh");
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("older-v1", cut.Find("[aria-label='Rig preview and selection'] select").GetAttribute("value"));
-            StringAssert.Contains(cut.Markup, "Camera: Historical sensor", StringComparison.Ordinal);
+            Assert.AreEqual("older-v1", cut.Find("#rig-revision-select").GetAttribute("value"));
+            StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("ASI_SDK_PATH", StringComparison.Ordinal));
         });
         Assert.AreEqual(6, service.HistoryCalls);
@@ -460,28 +522,26 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void PreviewResult_AfterRevisionChanges_CannotEnableStage()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { DeferredPreview = new(TaskCreationOptions.RunContinuationsAsynchronously) };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("older-v3");
+        ClickPreview(cut);
+        cut.Find("#rig-revision-select").Change("rig-v1");
         service.DeferredPreview.SetResult(OperatorUiResult<NamedRigPreview>.Success(
-            new("schedule-v1", service.ScheduleHash, "rig-v1", true, null, false)));
+            new("schedule-v1", service.ScheduleHash, "older-v3", true, null, false)));
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Markup.Contains("Contract preview passed", StringComparison.Ordinal)));
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
     }
 
     [TestMethod]
     public void UncertainStage_RefreshAndScheduleChange_RetryOrAbandon()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { StageUnavailable = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.StageCount));
         var key = service.StageKey;
         var version = service.StageVersion;
@@ -489,20 +549,20 @@ public sealed class CameraRigPageTests
         service.ScheduleId = "schedule-v2";
         service.ScheduleHash = new('B', 64);
         service.Version = 2;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         StringAssert.Contains(cut.Markup, "uncertain outcome", StringComparison.Ordinal);
         Assert.AreEqual(1, service.StageCount);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.StageCount));
         Assert.AreEqual(key, service.StageKey);
         Assert.AreEqual(version, service.StageVersion);
         Assert.AreEqual("schedule-v1", service.StagedScheduleId);
         Assert.AreEqual(hash, service.StagedScheduleHash);
-        cut.FindAll("button").Single(b => b.TextContent == "Abandon stage retry").Click();
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickButton(cut, "Abandon stage retry");
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(3, service.StageCount));
         Assert.AreNotEqual(key, service.StageKey);
         Assert.AreEqual("schedule-v2", service.StagedScheduleId);
@@ -512,73 +572,70 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void UncertainSuccessfulStage_PendingRefresh_AllowsOnlyOriginalRequestReplay()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { StageUnavailable = true, StageCommittedOnUnavailable = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.StageCount));
         var key = service.StageKey;
         var version = service.StageVersion;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
-        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled")));
-        Assert.AreEqual("Retry same stage request", cut.Find("button.btn-primary").TextContent);
+        ClickButton(cut, "Refresh");
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#rig-stage").HasAttribute("disabled")));
+        Assert.AreEqual("Retry same stage request", cut.Find("#rig-stage").TextContent);
         service.StageUnavailable = false;
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.StageCount));
         Assert.AreEqual(key, service.StageKey);
         Assert.AreEqual(version, service.StageVersion);
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
-        Assert.AreEqual("Confirm restart-only stage", cut.Find("button.btn-primary").TextContent);
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
+        Assert.AreEqual("Confirm restart-only stage", cut.Find("#rig-stage").TextContent);
     }
 
     [TestMethod]
     public void UncertainStage_CommittedThenCancelled_ReplayDoesNotClaimCurrentStage()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { StageUnavailable = true, StageCommittedOnUnavailable = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         var key = service.StageKey;
         service.PendingId = null;
         service.Version++;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         service.StageUnavailable = false;
-        cut.Find("button.btn-primary").Click();
+        cut.Find("#rig-stage").Click();
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.StageCount));
         Assert.AreEqual(key, service.StageKey);
-        StringAssert.Contains(cut.Find("[role='status'].camera-banner").TextContent,
-            "current selection does not match its receipt", StringComparison.Ordinal);
-        Assert.IsFalse(cut.Find("[role='status'].camera-banner").TextContent.Contains("Rig staged for restart", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "No restart staged", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "Installed rig", StringComparison.Ordinal);
+        var banner = cut.Find("[role='status'].rig-message").TextContent;
+        StringAssert.Contains(banner, "current selection does not match its receipt", StringComparison.Ordinal);
+        Assert.IsFalse(banner.Contains("Rig staged for restart", StringComparison.Ordinal));
+        Assert.AreEqual("None", SelectionFact(cut, "Pending restart"));
+        StringAssert.Contains(cut.Find("[aria-label='Rig selection'] strong").TextContent, "Installed rig revision 1 is active", StringComparison.Ordinal);
     }
 
     [TestMethod]
     public void UncertainCancel_Refresh_RetriesIdenticalKeyAndVersion()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { PendingId = "rig-v1", CancelUnavailable = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Cancel pending", StringComparison.Ordinal)).Click();
+        ClickButton(cut, "Cancel pending restart");
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.CancelCount));
         var key = service.CancelKey;
         service.Version = 2;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         Assert.AreEqual(1, service.CancelCount);
         StringAssert.Contains(cut.Markup, "uncertain outcome", StringComparison.Ordinal);
-        cut.FindAll("button").Single(b => b.TextContent == "Retry same cancel request").Click();
+        ClickButton(cut, "Retry same cancel request");
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.CancelCount));
         Assert.AreEqual(key, service.CancelKey);
         Assert.AreEqual(1L, service.CancelVersion);
-        cut.FindAll("button").Single(b => b.TextContent == "Abandon cancel retry").Click();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Cancel pending", StringComparison.Ordinal)).Click();
+        ClickButton(cut, "Abandon cancel retry");
+        ClickButton(cut, "Cancel pending restart");
         cut.WaitForAssertion(() => Assert.AreEqual(3, service.CancelCount));
         Assert.AreNotEqual(key, service.CancelKey);
         Assert.AreEqual(2L, service.CancelVersion);
@@ -587,225 +644,279 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void UncertainCancel_CommittedThenRestaged_ReplayDoesNotClaimPendingCancelled()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { PendingId = "rig-v1", CancelUnavailable = true, CancelCommittedOnUnavailable = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent == "Cancel pending restart").Click();
+        ClickButton(cut, "Cancel pending restart");
         var key = service.CancelKey;
         service.PendingId = "rig-v1";
         service.Version++;
-        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        ClickButton(cut, "Refresh");
         service.CancelUnavailable = false;
-        cut.FindAll("button").Single(b => b.TextContent == "Retry same cancel request").Click();
+        ClickButton(cut, "Retry same cancel request");
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.CancelCount));
         Assert.AreEqual(key, service.CancelKey);
         Assert.AreEqual(1L, service.CancelVersion);
-        StringAssert.Contains(cut.Find("[role='status'].camera-banner").TextContent,
-            "current selection does not match its receipt", StringComparison.Ordinal);
-        Assert.IsFalse(cut.Find("[role='status'].camera-banner").TextContent.Contains("Pending restart cancelled", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "Pending restart", StringComparison.Ordinal);
-        Assert.IsFalse(cut.Find("[aria-label='Rig selection']").TextContent.Contains("No restart staged", StringComparison.Ordinal));
+        var banner = cut.Find("[role='status'].rig-message").TextContent;
+        StringAssert.Contains(banner, "current selection does not match its receipt", StringComparison.Ordinal);
+        Assert.IsFalse(banner.Contains("Pending restart cancelled", StringComparison.Ordinal));
+        Assert.AreEqual("Revision 1", SelectionFact(cut, "Pending restart"));
+        Assert.IsNotNull(cut.Find("[aria-label='Pending restart']"));
     }
 
     [TestMethod]
     public void EquipmentEditor_UsesBasisAndRejectsInvalidTypedField()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[0].Change("optics");
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("optics-v1");
-        cut.WaitForElement("[aria-label='Equipment editor'] input[value='50']");
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.StartsWith("Focal length", StringComparison.Ordinal)).QuerySelector("input")!.Change("wide");
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal)).Click();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[role='alert']").TextContent, "Focal length", StringComparison.Ordinal));
+        cut.Find("#rig-optics-edit").Click();
+        cut.WaitForElement("dialog input[value='50']");
+        Assert.AreEqual("Edit optics", cut.Find("#rig-dialog-heading").TextContent);
+        EditorInput(cut, "Focal length").Change("wide");
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog .rig-message[role='alert']").TextContent, "Focal length", StringComparison.Ordinal));
+        Assert.HasCount(1, cut.FindAll(".rig-message"));
         Assert.AreEqual(0, service.SaveCount);
     }
 
     [TestMethod]
     public void InstalledEquipment_OnlyAllowsDuplicate_AndSubmitsNewDefinition()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[0].Change("optics");
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("optics-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Installed basis is immutable", StringComparison.Ordinal));
-        var mode = cut.FindAll("[aria-label='Equipment editor'] select")[2];
-        Assert.AreEqual("true", mode.QuerySelector("option")!.GetAttribute("value"));
+        cut.Find("#rig-optics-edit").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "Installed basis is immutable", StringComparison.Ordinal));
+        var mode = cut.FindAll("dialog select")[1];
+        Assert.AreEqual("duplicate", mode.GetAttribute("value"));
+        Assert.AreEqual("duplicate", mode.QuerySelector("option")!.GetAttribute("value"));
         Assert.AreEqual(1, mode.QuerySelectorAll("option").Length);
-        Assert.AreEqual("Installed optics copy", cut.Find("[aria-label='Equipment editor'] label input[maxlength='128']").GetAttribute("value"));
+        Assert.AreEqual("Installed optics copy", EditorInput(cut, "Equipment name").GetAttribute("value"));
+        var projection = EditorSelect(cut, "Projection model");
+        CollectionAssert.IsSubsetOf(Enum.GetNames<HVO.SkyMonitor.Astronomy.ProjectionModel>(),
+            projection.QuerySelectorAll("option").Select(o => o.GetAttribute("value")).ToArray());
+        Assert.AreEqual("Stereographic Fisheye", projection.QuerySelector("option[value='StereographicFisheye']")!.TextContent);
+        projection.Change("StereographicFisheye");
         Assert.AreEqual(0, service.SaveCount);
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal)).Click();
+        DialogPrimary(cut).Click();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
         Assert.AreEqual("Installed optics copy", service.SavedName);
+        Assert.AreEqual("StereographicFisheye", service.SavedDefinition.GetProperty("projectionModel").GetString());
         Assert.IsNull(service.SavedDefinitionId);
         Assert.IsNull(service.SavedExpectedRevisionId);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(cut.FindAll("dialog"));
+            Assert.AreEqual("optics-v2", cut.Find("#rig-optics-select").GetAttribute("value"));
+            Assert.IsTrue(FocusRequested(context, "rig-optics-select"));
+        });
+    }
+
+    [TestMethod]
+    public void NewEquipment_AlwaysDuplicatesEvenFromRevisableBasis()
+    {
+        var service = new FakeRigService { VirtualOnly = true };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-add-zwo").Click();
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("starter-v1", cut.Find("#rig-camera-select").GetAttribute("value")));
+        ClickButton(cut, "Cancel");
+        cut.Find("#rig-camera-new").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("ASI676MC camera copy", EditorInput(cut, "Equipment name").GetAttribute("value")));
+        Assert.AreEqual("New camera", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.AreEqual("starter-v1", EditorSelect(cut, "Start from").GetAttribute("value"));
+        Assert.IsFalse(cut.FindAll("dialog label").Any(l => l.TextContent.StartsWith("Save mode", StringComparison.Ordinal)));
+        Assert.AreEqual("Create duplicate equipment", DialogPrimary(cut).TextContent);
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
+        Assert.IsNull(service.SavedDefinitionId);
+        Assert.IsNull(service.SavedExpectedRevisionId);
+        Assert.AreEqual("starter-v1", service.SavedBasisRevisionId);
+        Assert.AreEqual("ASI676MC camera copy", service.SavedName);
+    }
+
+    [TestMethod]
+    public void RevisableEquipment_SaveModeShowsSelectedModeAndSwapsProposedName()
+    {
+        var service = new FakeRigService { VirtualOnly = true };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-add-zwo").Click();
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("starter-v1", cut.Find("#rig-camera-select").GetAttribute("value")));
+        ClickButton(cut, "Cancel");
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("ASI676MC camera", EditorInput(cut, "Equipment name").GetAttribute("value")));
+        Assert.AreEqual("revise", EditorSelect(cut, "Save mode").GetAttribute("value"));
+        Assert.HasCount(2, EditorSelect(cut, "Save mode").QuerySelectorAll("option"));
+
+        EditorSelect(cut, "Save mode").Change("duplicate");
+        Assert.AreEqual("duplicate", EditorSelect(cut, "Save mode").GetAttribute("value"));
+        Assert.AreEqual("ASI676MC camera copy", EditorInput(cut, "Equipment name").GetAttribute("value"));
+        EditorSelect(cut, "Save mode").Change("revise");
+        Assert.AreEqual("ASI676MC camera", EditorInput(cut, "Equipment name").GetAttribute("value"));
+
+        EditorInput(cut, "Equipment name").Change("Roof camera");
+        EditorSelect(cut, "Save mode").Change("duplicate");
+        Assert.AreEqual("Roof camera", EditorInput(cut, "Equipment name").GetAttribute("value"));
+        EditorSelect(cut, "Save mode").Change("revise");
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
+        Assert.AreEqual("starter", service.SavedDefinitionId);
+        Assert.AreEqual("starter-v1", service.SavedExpectedRevisionId);
+        Assert.AreEqual("Roof camera", service.SavedName);
     }
 
     [TestMethod]
     public void InstalledEquipment_ExistingDuplicateName_RequiresDifferentName()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[0].Change("optics");
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("optics-v1");
-        cut.Find("[aria-label='Equipment editor'] label input[maxlength='128']").Change("Installed optics");
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal)).Click();
-        StringAssert.Contains(cut.Find("[role='alert']").TextContent, "Enter a different name", StringComparison.Ordinal);
+        cut.Find("#rig-optics-edit").Click();
+        cut.WaitForElement("dialog input[value='50']");
+        EditorInput(cut, "Equipment name").Change("Installed optics");
+        DialogPrimary(cut).Click();
+        StringAssert.Contains(cut.Find("dialog [role='alert']").TextContent, "Enter a different name", StringComparison.Ordinal);
         Assert.AreEqual(0, service.SaveCount);
     }
 
     [TestMethod]
     public void InstalledEquipment_ProposedNameSkipsExistingCopy_WithoutSavingOnLoad()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { ExistingOpticsCopy = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[0].Change("optics");
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("optics-v1");
-        Assert.AreEqual("Installed optics copy 2", cut.Find("[aria-label='Equipment editor'] label input[maxlength='128']").GetAttribute("value"));
+        cut.Find("#rig-optics-edit").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("Installed optics copy 2", EditorInput(cut, "Equipment name").GetAttribute("value")));
         Assert.AreEqual(0, service.SaveCount);
     }
 
     [TestMethod]
     public void InstalledEquipment_ConcurrentNameConflict_ShowsActionableMessage()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService { SaveConflict = true };
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[0].Change("optics");
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("optics-v1");
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal)).Click();
-        StringAssert.Contains(cut.Find("[role='alert']").TextContent, "Refresh the inventory and choose a different name", StringComparison.Ordinal);
+        cut.Find("#rig-optics-edit").Click();
+        cut.WaitForElement("dialog input[value='50']");
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog [role='alert']").TextContent,
+            "Refresh the inventory and choose a different name", StringComparison.Ordinal));
         Assert.AreEqual(1, service.SaveCount);
     }
 
     [TestMethod]
     public void DetailMetadata_ControlsRevisionAndShowsExactCameraModels()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Model: ASI676MC (model not flagged unvalidated)", StringComparison.Ordinal));
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("camera-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Basis expected model: ASI676MC", StringComparison.Ordinal));
-        Assert.AreEqual(1, cut.FindAll("[aria-label='Equipment editor'] select")[2].QuerySelectorAll("option").Length);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-labelledby='rig-module-heading']").TextContent,
+            "ASI676MC (model not flagged unvalidated)", StringComparison.Ordinal));
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "Basis expected model: ASI676MC", StringComparison.Ordinal));
+        Assert.AreEqual(1, cut.FindAll("dialog select")[1].QuerySelectorAll("option").Length);
         Assert.IsFalse(cut.Markup.Contains("libraryPathEnvironmentVariable", StringComparison.OrdinalIgnoreCase));
     }
 
     [TestMethod]
     public void NonInstalledOlderRevision_CannotBeRevised()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("camera-v2");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Only the latest editable revision", StringComparison.Ordinal));
-        Assert.AreEqual(1, cut.FindAll("[aria-label='Equipment editor'] select")[2].QuerySelectorAll("option").Length);
+        cut.Find("#rig-camera-select").Change("camera-v2");
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "Only the latest editable revision", StringComparison.Ordinal));
+        Assert.AreEqual("camera-v2", cut.FindAll("dialog select")[0].GetAttribute("value"));
+        Assert.AreEqual(1, cut.FindAll("dialog select")[1].QuerySelectorAll("option").Length);
     }
 
     [TestMethod]
     public void SelectingHistoricalRig_ShowsItsExactUnvalidatedModel()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.Find("[aria-label='Rig preview and selection'] select").Change("older-v3");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Model: ASI120MM (unvalidated model)", StringComparison.Ordinal));
-        StringAssert.Contains(cut.Markup, "Model: ASI676MC (model not flagged unvalidated)", StringComparison.Ordinal);
+        cut.Find("#rig-revision-select").Change("older-v3");
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"), "ASI120MM (unvalidated model)", StringComparison.Ordinal));
+        StringAssert.Contains(CompareValue(cut, "Model", "active"), "ASI676MC (model not flagged unvalidated)", StringComparison.Ordinal);
+        StringAssert.Contains(CompareValue(cut, "Model", "selected"), "(differs from active)", StringComparison.Ordinal);
         Assert.IsFalse(cut.Markup.Contains("libraryPathEnvironmentVariable", StringComparison.OrdinalIgnoreCase));
     }
 
     [TestMethod]
     public async Task DelayedCatalogCamera_AfterSelectingHistory_DoesNotReplaceSelectedModel()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         var staleResult = await service.GetEquipmentAsync("camera-v1", CancellationToken.None).ConfigureAwait(false);
         var delayed = service.DeferEquipment("camera-v1");
-        var selection = cut.Find("[aria-label='Rig preview and selection'] select").ChangeAsync(new ChangeEventArgs { Value = "rig-v1" });
+        var selection = cut.Find("#rig-revision-select").ChangeAsync(new ChangeEventArgs { Value = "rig-v1" });
         Assert.IsFalse(selection.IsCompleted);
-        await cut.Find("[aria-label='Rig preview and selection'] select").ChangeAsync(new ChangeEventArgs { Value = "older-v3" }).ConfigureAwait(false);
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Rig preview and selection'] article:last-child").TextContent,
+        await cut.Find("#rig-revision-select").ChangeAsync(new ChangeEventArgs { Value = "older-v3" }).ConfigureAwait(false);
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"),
             "ASI120MM (unvalidated model)", StringComparison.Ordinal));
         delayed.SetResult(staleResult);
         await selection.ConfigureAwait(false);
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Rig preview and selection'] article:last-child").TextContent,
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"),
             "ASI120MM (unvalidated model)", StringComparison.Ordinal));
     }
 
     [TestMethod]
     public async Task DelayedHistoricalCamera_AfterRefresh_DoesNotReplaceRefreshedModel()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
         var cameraResult = await service.GetEquipmentAsync("camera-v2", CancellationToken.None).ConfigureAwait(false);
         var staleResult = await service.GetEquipmentAsync("camera-v1", CancellationToken.None).ConfigureAwait(false);
         var delayed = service.DeferEquipment("camera-v2");
-        var selection = cut.Find("[aria-label='Rig preview and selection'] select").ChangeAsync(new ChangeEventArgs { Value = "older-v3" });
+        var selection = cut.Find("#rig-revision-select").ChangeAsync(new ChangeEventArgs { Value = "older-v3" });
         Assert.IsFalse(selection.IsCompleted);
         var refreshed = service.DeferEquipment("camera-v2");
         var refresh = cut.FindAll("button").Single(b => b.TextContent == "Refresh").ClickAsync(new MouseEventArgs());
         refreshed.SetResult(cameraResult);
         await refresh.ConfigureAwait(false);
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Rig preview and selection'] article:last-child").TextContent,
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"),
             "ASI120MM (unvalidated model)", StringComparison.Ordinal));
         delayed.SetResult(staleResult);
         await selection.ConfigureAwait(false);
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Rig preview and selection'] article:last-child").TextContent,
+        cut.WaitForAssertion(() => StringAssert.Contains(CompareValue(cut, "Model", "selected"),
             "ASI120MM (unvalidated model)", StringComparison.Ordinal));
     }
 
     [TestMethod]
     public void EditingComposerSelection_InvalidatesAcknowledgedPreview()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService());
+        using var context = CreateContext(new FakeRigService());
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        ClickPreview(cut);
         cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
-        Assert.IsFalse(cut.Find("button.btn-primary").HasAttribute("disabled"));
-        cut.FindAll("[aria-label='Rig composer'] select")[1].Change("optics-v1");
-        Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#rig-stage").HasAttribute("disabled"));
+        cut.Find("#rig-camera-select").Change("camera-v2");
+        Assert.IsTrue(cut.Find("#rig-stage").HasAttribute("disabled"));
         Assert.IsFalse(cut.Markup.Contains("Contract preview passed", StringComparison.Ordinal));
     }
 
     [TestMethod]
     public void CustomZwoDuplicate_RequiresRiskAcknowledgementAndSubmitsModelFlag()
     {
-        using var context = new BunitContext();
         var service = new FakeRigService();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        using var context = CreateContext(service);
         var cut = context.Render<CameraRigPage>();
-        cut.FindAll("[aria-label='Equipment editor'] select")[1].Change("camera-v1");
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Custom ZWO expected model", StringComparison.Ordinal));
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "Custom ZWO expected model", StringComparison.Ordinal));
         StringAssert.Contains(cut.Markup, "ASI120MM Mini", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "SDK V1.41", StringComparison.Ordinal);
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.StartsWith("Custom ZWO expected model", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change("ASI120MM Mini");
+        EditorInput(cut, "Custom ZWO expected model").Change("ASI120MM Mini");
         StringAssert.Contains(cut.Markup, "Expected model for this duplicate: ASI120MM Mini", StringComparison.Ordinal);
-        var save = cut.FindAll("button").Single(b => b.TextContent.Contains("Create duplicate equipment", StringComparison.Ordinal));
-        save.Click();
+        DialogPrimary(cut).Click();
         Assert.AreEqual(0, service.SaveCount);
-        StringAssert.Contains(cut.Find("[role='alert']").TextContent, "acknowledgement", StringComparison.Ordinal);
-        cut.FindAll("[aria-label='Equipment editor'] label")
-            .Single(l => l.TextContent.Contains("unvalidated camera model", StringComparison.Ordinal))
-            .QuerySelector("input")!.Change(true);
-        save.Click();
+        StringAssert.Contains(cut.Find("dialog [role='alert']").TextContent, "acknowledgement", StringComparison.Ordinal);
+        DialogCheck(cut, "unvalidated camera model").Change(true);
+        DialogPrimary(cut).Click();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
         Assert.IsNull(service.SavedDefinitionId);
         Assert.AreEqual("camera-v1", service.SavedBasisRevisionId);
@@ -817,11 +928,51 @@ public sealed class CameraRigPageTests
     [TestMethod]
     public void UnauthorizedRead_NavigatesToAccessDenied()
     {
-        using var context = new BunitContext();
-        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(new FakeRigService { Unauthorized = true });
+        using var context = CreateContext(new FakeRigService { Unauthorized = true });
         _ = context.Render<CameraRigPage>();
         Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
     }
+
+    private static BunitContext CreateContext(FakeRigService service)
+    {
+        var context = new BunitContext();
+        var module = context.JSInterop.SetupModule("./Components/Pages/CameraRigPage.razor.js");
+        module.SetupVoid("showModal", _ => true).SetVoidResult();
+        module.SetupVoid("focusById", _ => true).SetVoidResult();
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        return context;
+    }
+
+    private static bool FocusRequested(BunitContext context, string id)
+        => context.JSInterop.Invocations.Any(i => i.Identifier == "focusById" && Equals(i.Arguments[0], id));
+
+    private static void ClickButton(IRenderedComponent<CameraRigPage> cut, string text)
+        => cut.FindAll("button").Single(b => b.TextContent == text).Click();
+
+    private static AngleSharp.Dom.IElement PreviewButton(IRenderedComponent<CameraRigPage> cut)
+        => cut.FindAll("button").Single(b => b.TextContent == "Preview against active schedule");
+
+    private static void ClickPreview(IRenderedComponent<CameraRigPage> cut) => PreviewButton(cut).Click();
+
+    private static AngleSharp.Dom.IElement DialogPrimary(IRenderedComponent<CameraRigPage> cut)
+        => cut.Find("dialog footer .button.primary");
+
+    private static AngleSharp.Dom.IElement EditorInput(IRenderedComponent<CameraRigPage> cut, string labelPrefix)
+        => cut.FindAll("dialog label").Single(l => l.TextContent.StartsWith(labelPrefix, StringComparison.Ordinal)).QuerySelector("input")!;
+
+    private static AngleSharp.Dom.IElement EditorSelect(IRenderedComponent<CameraRigPage> cut, string labelPrefix)
+        => cut.FindAll("dialog label").Single(l => l.TextContent.StartsWith(labelPrefix, StringComparison.Ordinal)).QuerySelector("select")!;
+
+    private static AngleSharp.Dom.IElement DialogCheck(IRenderedComponent<CameraRigPage> cut, string text)
+        => cut.FindAll("dialog label.rig-check").Single(l => l.TextContent.Contains(text, StringComparison.Ordinal)).QuerySelector("input")!;
+
+    private static string CompareValue(IRenderedComponent<CameraRigPage> cut, string label, string column)
+        => cut.FindAll(".rig-compare tbody tr").Single(r => r.QuerySelector("th")!.TextContent == label)
+            .QuerySelector($"td.rig-{column}")!.TextContent;
+
+    private static string SelectionFact(IRenderedComponent<CameraRigPage> cut, string term)
+        => cut.FindAll("[aria-label='Rig selection'] dl > div").Single(d => d.QuerySelector("dt")!.TextContent == term)
+            .QuerySelector("dd")!.TextContent;
 
     private sealed class FakeRigService : ICameraAgentNamedRigUiService
     {
@@ -857,6 +1008,7 @@ public sealed class CameraRigPageTests
         internal string? StageKey { get; private set; }
         internal long StageVersion { get; private set; }
         internal TaskCompletionSource<OperatorUiResult<NamedRigPreview>>? DeferredPreview { get; set; }
+        internal TaskCompletionSource? DeferredProfileSave { get; set; }
         internal string? SavedProfileId { get; private set; }
         internal string? SavedProfileName { get; private set; }
         private readonly List<NamedRigProfile> _profiles = [new("rig", "Installed rig"), new("other", "Other rig")];
@@ -1025,7 +1177,14 @@ public sealed class CameraRigPageTests
             var saved = new NamedRigProfile(profileId ?? "new", name);
             _profiles.RemoveAll(p => p.ProfileId == saved.ProfileId);
             _profiles.Add(saved);
-            return ValueTask.FromResult(OperatorUiResult<NamedRigProfile>.Success(saved));
+            var result = OperatorUiResult<NamedRigProfile>.Success(saved);
+            return DeferredProfileSave is { } deferred ? AfterAsync(deferred.Task, result) : ValueTask.FromResult(result);
+        }
+
+        private static async ValueTask<T> AfterAsync<T>(Task gate, T value)
+        {
+            await gate.ConfigureAwait(false);
+            return value;
         }
         public ValueTask<OperatorUiResult<NamedRigRevision>> ComposeAsync(string profileId, string cameraId, string opticsId,
             string mountId, CancellationToken token)
