@@ -34,6 +34,51 @@ public sealed class ReplayRunnerComposeTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Write_FriendlyName_BecomesTheTrimmedCameraDisplayName()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
+
+            Write(request with { FriendlyName = "  North Camera  " }, paths);
+
+            Assert.AreEqual(
+                "North Camera",
+                File.ReadAllText(Path.Combine(paths.ConfigRoot, "secrets", "CameraAgent__DisplayName")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Write_OverlongLegacyFriendlyName_LeavesTheCameraUnnamedRatherThanUnstartable()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
+            Write(request, paths);
+            var setting = Path.Combine(paths.ConfigRoot, "secrets", "CameraAgent__DisplayName");
+            Assert.IsTrue(File.Exists(setting));
+
+            // CameraAgent refuses a display name over the bound, so a manifest that predates the install-time check
+            // renders no name at all, including over one an earlier render wrote.
+            Write(request with { FriendlyName = new string('n', InstallRequest.MaximumFriendlyNameLength + 1) }, paths);
+
+            Assert.IsFalse(File.Exists(setting));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Write_LocalRunnerProfile_UsesSameImageWithLeastPrivilegeLocalBoundary()
     {
         var root = CreateRoot();

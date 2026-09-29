@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -28,6 +29,53 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestCategory("Unit")]
 public sealed class CameraAgentOperatorUiServiceTests
 {
+    [TestMethod]
+    [DataRow("no-store", "  North Camera  ", "North Camera")]
+    [DataRow("no-store", "   ", null)]
+    [DataRow("recorded", "North Camera", "East dome")]
+    [DataRow("unreadable", " North Camera ", "North Camera")]
+    [DataRow("unreadable", null, null)]
+    public async Task ReadDisplayNameAsync_PrefersTheRecordedNameAndDegradesToTheConfiguredOneAsync(
+        string scenario,
+        string? configured,
+        string? expected)
+    {
+        var store = new Mock<ISiteProfileStore>(MockBehavior.Strict);
+        if (scenario == "recorded")
+        {
+            store.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new SiteProfileState(
+                1, new SiteProfileValues(null, "East dome", null, null), "East dome", configured, null, null, []));
+        }
+        else
+        {
+            store.Setup(item => item.GetAsync(It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidDataException("fixture failure"));
+        }
+
+        var name = await CameraAgentOperatorUiService.ReadDisplayNameAsync(
+            scenario == "no-store" ? null : store.Object,
+            configured,
+            NullLogger.Instance,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, name);
+    }
+
+    [TestMethod]
+    public async Task ReadDisplayNameAsync_WhenTheCallerCancels_DoesNotSwallowItAsync()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        var store = new Mock<ISiteProfileStore>(MockBehavior.Strict);
+        store.Setup(item => item.GetAsync(cancellation.Token))
+            .ThrowsAsync(new OperationCanceledException(cancellation.Token));
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+            await CameraAgentOperatorUiService.ReadDisplayNameAsync(
+                store.Object, "North Camera", NullLogger.Instance, cancellation.Token).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
     [TestMethod]
     public async Task EveryReadAndMutation_ReReadsPrincipalAndReauthorizesAsync()
     {

@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -54,6 +55,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<DeploymentLocationTelemetry>();
         services.AddSingleton<IDeploymentLocationStore, ProtectedDeploymentLocationStore>();
+        services.AddSingleton<ISiteProfileStore, FileSiteProfileStore>();
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         var acceptanceFaultRoot = configuration["CameraAgent:AcceptanceFaultControlRoot"];
@@ -160,7 +162,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetService<IConstellationTopology>(),
             provider.GetService<IDeploymentLocationStore>(),
             provider.GetService<ILatestFrameAccessor>(),
-            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>()));
+            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.SkyMap.MaximumObjects));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

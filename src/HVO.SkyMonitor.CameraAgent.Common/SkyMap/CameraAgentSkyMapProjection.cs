@@ -30,10 +30,21 @@ public sealed class CameraAgentSkyMapProjection(
     IConstellationTopology? constellationTopology = null,
     IDeploymentLocationStore? deploymentLocationStore = null,
     ILatestFrameAccessor? latestFrameAccessor = null,
-    CaptureScheduleRuntimeCoordinator? scheduleRuntime = null) : ICameraAgentSkyMapProjection
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime = null,
+    int maximumObjects = CameraAgentSkyMapProjection.DefaultMaximumObjects) : ICameraAgentSkyMapProjection
 {
-    /// <summary>The hard upper bound on projected objects returned by one query.</summary>
-    public const int MaximumObjects = 200;
+    /// <summary>The object bound applied when the host does not configure <c>SkyMap:MaximumObjects</c>.</summary>
+    public const int DefaultMaximumObjects = 200;
+
+    /// <summary>The largest object bound a host may configure for one projection.</summary>
+    public const int MaximumConfigurableObjects = 5_000;
+
+    private readonly int _maximumObjects = maximumObjects is >= 1 and <= MaximumConfigurableObjects
+        ? maximumObjects
+        : throw new ArgumentOutOfRangeException(
+            nameof(maximumObjects),
+            maximumObjects,
+            $"The sky map object bound must be between 1 and {MaximumConfigurableObjects}.");
 
     /// <summary>The fixed limiting magnitude applied before exact horizon and projection rejection.</summary>
     public const double MaximumMagnitude = 6.5;
@@ -86,7 +97,7 @@ public sealed class CameraAgentSkyMapProjection(
             new ObserverLocation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters),
             projection,
             // One past the bound so truncation is observed rather than inferred from an exact count.
-            new CatalogQuery(MaximumMagnitude, MaximumObjects + 1),
+            new CatalogQuery(MaximumMagnitude, _maximumObjects + 1),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
             projectionVersion: config.Rig.Optics.CalibrationVersion,
@@ -98,7 +109,7 @@ public sealed class CameraAgentSkyMapProjection(
         var objects = scene.Objects
             .OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
-            .Take(MaximumObjects)
+            .Take(_maximumObjects)
             .Select(static item => new CameraAgentSkyMapObject(
                 item.Id,
                 item.DisplayName,
@@ -130,8 +141,8 @@ public sealed class CameraAgentSkyMapProjection(
             CreateGeometry(config, projection),
             objects,
             constellations,
-            MaximumObjects,
-            scene.Objects.Count > MaximumObjects,
+            _maximumObjects,
+            scene.Objects.Count > _maximumObjects,
             MaximumMagnitude,
             AstronomyAlgorithmVersion,
             CreateSummary(objects.Length, constellations.Length, constellationIds.Length, latestScene),
@@ -203,7 +214,7 @@ public sealed class CameraAgentSkyMapProjection(
             scene.ProjectedSceneStageIdentitySha256);
     }
 
-    private static string CreateSummary(
+    private string CreateSummary(
         int objectCount,
         int constellationCount,
         int requestedConstellationCount,
@@ -211,7 +222,7 @@ public sealed class CameraAgentSkyMapProjection(
     {
         var summary = string.Create(
             CultureInfo.InvariantCulture,
-            $"{objectCount} of at most {MaximumObjects} catalog objects brighter than magnitude {MaximumMagnitude} fall inside the calibrated image, with {constellationCount} of {requestedConstellationCount} installed constellation figures partly visible.");
+            $"{objectCount} of at most {_maximumObjects} catalog objects brighter than magnitude {MaximumMagnitude} fall inside the calibrated image, with {constellationCount} of {requestedConstellationCount} installed constellation figures partly visible.");
         if (requestedConstellationCount == 0)
         {
             summary += " Constellation topology is unavailable to this catalog, so no figures were resolved.";

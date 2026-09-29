@@ -1,10 +1,17 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
+using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -27,7 +34,71 @@ internal interface ICameraAgentSkyMapUiService
         string idempotencyKey,
         string? reason,
         CancellationToken cancellationToken);
+
+    /// <summary>The site profile, the LogicHost assignment as this camera last heard it, and the map settings.</summary>
+    ValueTask<OperatorUiResult<CameraAgentSiteView>> GetSiteAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<SiteProfileResult>> SaveSiteProfileAsync(
+        SiteProfileValues profile,
+        long expectedVersion,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken);
 }
+
+/// <summary>Everything the Observatory &amp; location page shows besides geometry and the projected scene.</summary>
+/// <param name="OwnerLoginEmail">The local owner account's email, offered as the default owner contact.</param>
+/// <param name="ActorNames">
+/// The sign-in name of every account that recorded a profile or manual location change, keyed by the account
+/// identifier the audit stores, so history shows who acted without exposing the identifier.
+/// </param>
+internal sealed record CameraAgentSiteView(
+    SiteProfileState Profile,
+    string? OwnerLoginEmail,
+    CameraAgentSiteAssignment Assignment,
+    CameraAgentSiteMapSettings Map,
+    IReadOnlyDictionary<string, string> ActorNames);
+
+internal enum CameraAgentSiteAssignmentState
+{
+    /// <summary>Central integration is disabled, so this camera never contacts LogicHost.</summary>
+    Standalone,
+
+    /// <summary>Central integration is enabled but this camera has not completed device registration.</summary>
+    NotRegistered,
+
+    /// <summary>The registration record could not be read.</summary>
+    Unavailable,
+
+    /// <summary>This camera holds a LogicHost registration.</summary>
+    Registered
+}
+
+/// <summary>
+/// The LogicHost Observatory assignment as this camera last received it. LogicHost owns every fact here; the
+/// camera only reports what it was told and when, and never lets it replace local geometry.
+/// </summary>
+/// <param name="LocationReview">
+/// LogicHost's disposition of the deployment location this camera reported. It is not Observatory membership,
+/// which LogicHost never sends to the camera.
+/// </param>
+internal sealed record CameraAgentSiteAssignment(
+    CameraAgentSiteAssignmentState State,
+    string? RegistrationName,
+    DeploymentLocationResolutionStatus? LocationReview,
+    long? AcknowledgedVersion,
+    long? ProposedVersion,
+    string ReconciliationOutcome,
+    DateTimeOffset? LastAttemptUtc,
+    DateTimeOffset? LastSuccessUtc);
+
+/// <summary>The browser-side map backdrop. The browser fetches tiles itself; CameraAgent never proxies them.</summary>
+internal sealed record CameraAgentSiteMapSettings(
+    bool Enabled,
+    string TileTemplate,
+    string Attribution,
+    Uri AttributionLink,
+    int Zoom);
 
 internal sealed class CameraAgentSkyMapUiService(
     AuthenticationStateProvider authenticationStateProvider,
@@ -35,7 +106,13 @@ internal sealed class CameraAgentSkyMapUiService(
     ICameraAgentSkyMapProjection projection,
     IDeploymentLocationStore deploymentLocationStore,
     TimeProvider timeProvider,
-    ILogger<CameraAgentSkyMapUiService> logger) : ICameraAgentSkyMapUiService
+    ILogger<CameraAgentSkyMapUiService> logger,
+    ISiteProfileStore? siteProfileStore = null,
+    IOptions<CameraAgentHostOptions>? hostOptions = null,
+    IOptions<LocalIdentityOptions>? localIdentityOptions = null,
+    IDeviceSecretStore? deviceSecretStore = null,
+    DeploymentLocationReconciliationState? reconciliationState = null,
+    UserManager<ApplicationUser>? userManager = null) : ICameraAgentSkyMapUiService
 {
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
@@ -151,6 +228,183 @@ internal sealed class CameraAgentSkyMapUiService(
             return OperatorUiResult<ManualDeploymentLocationResult>.Failure(
                 OperatorUiResultKind.Unavailable, "The coordinate change could not be completed.");
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentSiteView>> GetSiteAsync(CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync().ConfigureAwait(false))
+        {
+            return OperatorUiResult<CameraAgentSiteView>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        if (siteProfileStore is null)
+        {
+            return OperatorUiResult<CameraAgentSiteView>.Failure(
+                OperatorUiResultKind.Unavailable, "The site profile is unavailable.");
+        }
+        try
+        {
+            var profile = await siteProfileStore.GetAsync(cancellationToken).ConfigureAwait(false);
+            var options = hostOptions?.Value ?? new CameraAgentHostOptions();
+            var map = options.SiteMap;
+            var ownerEmail = localIdentityOptions?.Value.AdminEmail;
+            return OperatorUiResult<CameraAgentSiteView>.Success(new CameraAgentSiteView(
+                profile,
+                string.IsNullOrWhiteSpace(ownerEmail) ? null : ownerEmail.Trim(),
+                await ReadAssignmentAsync(options, cancellationToken).ConfigureAwait(false),
+                new CameraAgentSiteMapSettings(
+                    map.Enabled, map.TileTemplate, map.Attribution, map.AttributionLink, map.Zoom),
+                await ResolveActorNamesAsync(
+                    profile.History.Select(revision => revision.Actor)
+                        .Concat(deploymentLocationStore.Manual.History.Select(entry => entry.Actor)))
+                    .ConfigureAwait(false)));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent site profile read failed.");
+            return OperatorUiResult<CameraAgentSiteView>.Failure(
+                OperatorUiResultKind.Unavailable, "The site profile is unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<SiteProfileResult>> SaveSiteProfileAsync(
+        SiteProfileValues profile,
+        long expectedVersion,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        var principal = await GetAuthorizedPrincipalAsync(
+            CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
+        if (string.IsNullOrWhiteSpace(actor))
+        {
+            return OperatorUiResult<SiteProfileResult>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        if (siteProfileStore is null)
+        {
+            return OperatorUiResult<SiteProfileResult>.Failure(
+                OperatorUiResultKind.Unavailable, "The site profile is unavailable.");
+        }
+        try
+        {
+            var result = await siteProfileStore.ApplyAsync(
+                new SiteProfileRequest(profile, expectedVersion, idempotencyKey, actor, reason),
+                cancellationToken).ConfigureAwait(false);
+            return result.Status switch
+            {
+                SiteProfileStatus.Conflict => OperatorUiResult<SiteProfileResult>.Failure(
+                    OperatorUiResultKind.Conflict, DescribeProfileFailure(result)),
+                SiteProfileStatus.Invalid => OperatorUiResult<SiteProfileResult>.Failure(
+                    OperatorUiResultKind.Invalid, DescribeProfileFailure(result)),
+                _ => OperatorUiResult<SiteProfileResult>.Success(result)
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent site profile command failed.");
+            return OperatorUiResult<SiteProfileResult>.Failure(
+                OperatorUiResultKind.Unavailable, "The site profile change could not be completed.");
+        }
+    }
+
+    /// <summary>Maps a rejected profile command to fixed operator-facing guidance.</summary>
+    internal static string DescribeProfileFailure(SiteProfileResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return (result.ReasonCode, result.FieldPath) switch
+        {
+            (SiteProfileLimits.ExpectedVersionConflictReasonCode, _) =>
+                "The site profile changed since this page was read. Refresh before retrying.",
+            (SiteProfileLimits.IdempotencyKeyConflictReasonCode, _) =>
+                "This command identifier was already recorded with a different profile. Refresh before retrying.",
+            (_, "observatoryName") =>
+                $"Observatory name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
+            (_, "cameraName") =>
+                $"Camera name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
+            (_, "ownerName") =>
+                $"Owner name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
+            (_, "ownerContact") =>
+                $"Owner contact must be at most {SiteProfileLimits.MaximumContactLength} characters without control characters.",
+            _ => "The profile change was rejected before anything durable changed."
+        };
+    }
+
+    private async ValueTask<IReadOnlyDictionary<string, string>> ResolveActorNamesAsync(IEnumerable<string> actors)
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (userManager is null)
+        {
+            return names;
+        }
+        foreach (var actor in actors.Where(actor => !string.IsNullOrWhiteSpace(actor)).Distinct(StringComparer.Ordinal))
+        {
+            var user = await userManager.FindByIdAsync(actor).ConfigureAwait(false);
+            if ((user?.Email ?? user?.UserName) is { Length: > 0 } name)
+            {
+                names[actor] = name;
+            }
+        }
+        return names;
+    }
+
+    private async ValueTask<CameraAgentSiteAssignment> ReadAssignmentAsync(
+        CameraAgentHostOptions options,
+        CancellationToken cancellationToken)
+    {
+        var outcome = reconciliationState?.Outcome ?? "not-started";
+        var lastAttempt = reconciliationState?.LastAttemptUtc;
+        var lastSuccess = reconciliationState?.LastSuccessUtc;
+        if (options.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return new(CameraAgentSiteAssignmentState.Standalone, null, null, null, null, outcome, null, null);
+        }
+        if (deviceSecretStore is null)
+        {
+            return new(CameraAgentSiteAssignmentState.Unavailable, null, null, null, null, outcome, lastAttempt, lastSuccess);
+        }
+
+        DeviceSecrets? secrets;
+        try
+        {
+            secrets = await deviceSecretStore.GetAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException
+            or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException)
+        {
+            logger.LogWarning(exception, "CameraAgent device registration read failed for the site page.");
+            return new(CameraAgentSiteAssignmentState.Unavailable, null, null, null, null, outcome, lastAttempt, lastSuccess);
+        }
+        if (secrets is null)
+        {
+            return new(CameraAgentSiteAssignmentState.NotRegistered, null, null, null, null, outcome, lastAttempt, lastSuccess);
+        }
+
+        var acknowledgement = secrets.DeploymentLocationAcknowledgment;
+        return new(
+            CameraAgentSiteAssignmentState.Registered,
+            string.IsNullOrWhiteSpace(secrets.FriendlyName) ? null : secrets.FriendlyName.Trim(),
+            acknowledgement?.Status,
+            acknowledgement is { Status: DeploymentLocationResolutionStatus.Acknowledged }
+                ? acknowledgement.Deployment.Version
+                : null,
+            deploymentLocationStore.Manual.PendingVersion,
+            outcome,
+            lastAttempt,
+            lastSuccess);
     }
 
     /// <summary>Maps a rejected manual command to fixed operator-facing guidance.</summary>

@@ -105,11 +105,17 @@ body[data-theme="hvo-dark"] .btn.btn-sm {
     min-height: 2.1rem;
 }
 
-/* Touch targets: every control reaches 44px on a coarse pointer, whatever its size class.
-   This is the single place that rule lives; layouts must not re-declare it. */
-@media (pointer: coarse) {
+/* Touch targets: every control reaches 44px on a coarse pointer or a phone-width viewport,
+   whatever its size class. This is the single place that rule lives; layouts must not re-declare it. */
+@media (pointer: coarse), (max-width: 480px) {
     body[data-theme="hvo-dark"] :is(.btn, .btn.btn-sm, .button, .icon-button, .hvo-segmented__option, .form-control, .form-select) {
         min-height: 44px;
+    }
+
+    /* An icon-only button has no label to widen it, so it takes the floor in both dimensions. The repeated class
+       matches the specificity of the rule above, which the layouts' base control sizes sit below. */
+    body[data-theme="hvo-dark"] .icon-button.icon-button {
+        min-width: 44px;
     }
 
     body[data-theme="hvo-dark"] .ops-field :is(input:not([type="checkbox"], [type="radio"]), select, textarea) {

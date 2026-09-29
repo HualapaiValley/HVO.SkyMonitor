@@ -23,6 +23,9 @@ internal sealed record InstallRequest
 {
     public const string DefaultProductRoot = "/var/lib/hvo/skymonitor";
 
+    /// <summary>The longest camera name CameraAgent accepts as its operator-facing display name.</summary>
+    public const int MaximumFriendlyNameLength = 80;
+
     public Guid? InstanceId { get; init; }
     public required string FriendlyName { get; init; }
     public required string OwnerEmail { get; init; }
@@ -73,6 +76,11 @@ internal sealed record InstallRequest
         if (string.IsNullOrWhiteSpace(FriendlyName))
         {
             throw new InstallUsageException("--friendly-name is required.");
+        }
+        if (FriendlyName.Trim().Length > MaximumFriendlyNameLength)
+        {
+            throw new InstallUsageException(
+                $"--friendly-name must be at most {MaximumFriendlyNameLength} characters.");
         }
 
         if (!Regex.IsMatch(OwnerEmail, "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", RegexOptions.CultureInvariant))

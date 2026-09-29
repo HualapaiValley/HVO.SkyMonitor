@@ -34,7 +34,8 @@ public sealed class OperationsPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual("Operations", cut.Find("h1#operations-heading").TextContent.Trim());
-            StringAssert.Contains(cut.Markup, "agent-test / local authority", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "North Camera / local authority", StringComparison.Ordinal);
+            Assert.DoesNotContain("agent-test", cut.Find(".ops-page-heading").TextContent);
             Assert.AreEqual("/", cut.Find("a.button.secondary[href='/']").GetAttribute("href"));
 
             var deck = cut.Find(".ops-state-deck");

@@ -19,8 +19,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private string _currentPath = OperationsSectionCatalog.OverviewPath;
     private OperationsAttention? _attention;
-    private string? _agentId;
+    private string? _displayName;
     private string? _moduleType;
+    private bool _haveRead;
     private bool _readFailed;
     private bool _unauthorized;
     private int _readVersion;
@@ -34,9 +35,19 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
 
     internal OperationsSection? Current => OperationsSectionCatalog.Resolve(_currentPath);
 
-    private string ScopeText => _agentId is null
-        ? "CameraAgent"
-        : _moduleType is null ? _agentId : $"{_agentId} / {OperationsPage.SplitWords(_moduleType)}";
+    // The camera's friendly name, never its agent identifier: the identifier is a GUID an operator cannot read.
+    private string ScopeText
+    {
+        get
+        {
+            if (!_haveRead)
+            {
+                return "CameraAgent";
+            }
+            var name = _displayName ?? "This camera";
+            return _moduleType is null ? name : $"{name} / {OperationsPage.SplitWords(_moduleType)}";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -60,6 +71,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
         Apply(view, refreshFailed);
         _ = InvokeAsync(StateHasChanged);
     }
+
+    /// <summary>Re-reads the sidebar after a page changed something it shows, such as the camera's name.</summary>
+    internal void Refresh() => _ = InvokeAsync(RefreshAsync);
 
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
@@ -107,8 +121,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
             // without a read of its own (an unavailable one, say) would otherwise keep showing it.
             _unauthorized = true;
             _attention = null;
-            _agentId = null;
+            _displayName = null;
             _moduleType = null;
+            _haveRead = false;
             _readFailed = false;
             StateHasChanged();
             NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -127,8 +142,9 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
         _attention = OperationsAttention.From(view, refreshFailed);
         _readFailed = false;
         var configuration = view.Summary.Configuration.Value;
-        _agentId = string.IsNullOrWhiteSpace(configuration.AgentId) ? null : configuration.AgentId;
+        _displayName = string.IsNullOrWhiteSpace(view.DisplayName) ? null : view.DisplayName;
         _moduleType = string.IsNullOrWhiteSpace(configuration.ModuleType) ? null : configuration.ModuleType;
+        _haveRead = true;
     }
 
     private void UpdatePath(string location)
