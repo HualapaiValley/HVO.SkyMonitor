@@ -558,6 +558,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                         capturedConfiguration = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256).Configuration;
                         var original = JsonSerializer.Deserialize<CaptureLaneEnvelope>(contextJson, CaptureContextJson)
                             ?? throw new InvalidDataException("Transient capture context is invalid.");
+                        if (original.Configuration?.Rig is null)
+                            throw new InvalidDataException("Transient capture context rig is missing.");
                         capturedRigSha256 = CameraRigProfileIdentity.ComputeSha256(original.Configuration.Rig);
                     }
                     catch (JsonException exception)

@@ -133,7 +133,9 @@ public sealed class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
-    public async Task CaptureTimeRig_MalformedChecksummedEnvelopeQuarantinesTarget()
+    [DataRow("{invalid-json")]
+    [DataRow("{\"configuration\":null,\"submission\":null}")]
+    public async Task CaptureTimeRig_MalformedChecksummedEnvelopeQuarantinesTarget(string context)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-context-invalid", Guid.NewGuid().ToString("N"));
         try
@@ -146,7 +148,7 @@ public sealed class TransientWorkerRuntimeTests
             using (var connection = await OpenAsync(root).ConfigureAwait(false))
             using (var update = connection.CreateCommand())
             {
-                var malformed = Encoding.UTF8.GetBytes("{invalid-json");
+                var malformed = Encoding.UTF8.GetBytes(context);
                 update.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha WHERE raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence = 3);";
                 update.Parameters.AddWithValue("$json", malformed);
                 update.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(malformed)));
