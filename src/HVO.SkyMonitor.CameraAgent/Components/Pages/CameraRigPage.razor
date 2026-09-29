@@ -1,127 +1,218 @@
 @page "/operations/camera"
 @layout OperationsLayout
-@using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Services
-@using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
 <PageTitle>Camera &amp; rig</PageTitle>
-
 <div class="camera-page">
-    <PageHeader Eyebrow="Immutable local profile" Title="Camera &amp; rig" Lead="Optics, orientation, exposure, and control policy of the local capture profile. Changes become a validated draft revision that is applied only at a capture boundary from the capture schedule.">
-        <button class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    <PageHeader Eyebrow="Named local equipment" Title="Camera &amp; rig" Lead="Compose immutable equipment revisions. A selected rig only becomes active after restart and successful camera initialization.">
+        <button type="button" class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
     </PageHeader>
-
-    @if (_loading)
+    @if (_message is not null)
     {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading the local profile" Message="Reading immutable revisions." />
+        <section class="camera-banner @(_error ? "camera-banner--error" : null)" role="@(_error ? "alert" : "status")">@_message</section>
     }
-    else if (_state is null || _model is null)
+    @if (_catalog is null || _inventory is null)
     {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Profile unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light btn-sm" @onclick="RefreshAsync">Try again</button>
-        </PageStateNotice>
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Rig inventory unavailable" Message="Refresh to load the local rig inventory." />
     }
     else
     {
-        @if (_message is not null)
+        var active = _catalog.Revisions.FirstOrDefault(r => r.RevisionId == _catalog.Selection.ActiveRevisionId);
+        var pending = _catalog.Revisions.FirstOrDefault(r => r.RevisionId == _catalog.Selection.PendingRevisionId);
+        var selected = _catalog.Revisions.FirstOrDefault(r => r.RevisionId == _revisionId) ??
+            (_historicalRevision?.RevisionId == _revisionId ? _historicalRevision : null);
+        @if (_catalog.PendingRuntimeFailure is not null || _catalog.ActiveRuntimeFailure is not null)
         {
-            <section class="camera-banner @(_messageIsError ? "camera-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message</section>
+            <section class="camera-banner camera-banner--error" role="alert" aria-label="Rig runtime failure">
+                @if (_catalog.PendingRuntimeFailure is not null)
+                {
+                    <p>@_catalog.PendingRuntimeFailure Pending selection has not become active. Cancel the pending restart, or correct the hardware and restart.</p>
+                }
+                @if (_catalog.ActiveRuntimeFailure is not null)
+                {
+                    <p>@_catalog.ActiveRuntimeFailure Check the camera hardware and restart for recovery.</p>
+                }
+            </section>
         }
-
-        <section class="camera-revisions" aria-label="Profile revisions">
-            <article class="camera-card">
-                <p class="eyebrow">Active immutable profile</p>
-                <h2>Revision @_state.ActiveRevision.RevisionNumber</h2>
-                <code>@ShortHash(_state.ActiveRevision.ProfileSha256)</code>
-                <p>@_state.ActiveRevision.Source / @_state.ActiveRevision.CreatedUtc.ToString("u")</p>
-            </article>
-            <article class="camera-card">
-                <p class="eyebrow">Pending draft</p>
-                @if (_state.PendingRevision is null)
+        <section class="camera-revisions camera-status" aria-label="Rig selection">
+            <article class="camera-card camera-card--active"><p class="eyebrow">Active rig</p><h2>@(active is null ? "Not selected" : $"{_inventory.Profiles.FirstOrDefault(p => p.ProfileId == active.ProfileId)?.DisplayName ?? "Named rig"} / revision {active.RevisionNumber}")</h2><p>@(active is null ? "No rig is active." : $"{active.Rig.Sensor.Name} / {active.Module.Type}")</p></article>
+            <article class="camera-card"><p class="eyebrow">Pending restart</p><h2>@(pending is null ? "None" : $"Revision {pending.RevisionNumber}")</h2><p>@(pending is null ? "No restart staged." : _catalog.PendingRuntimeFailure is not null ? "Initialization failed. Cancel or correct the hardware and restart." : "Unvalidated at runtime. Restart required; initialization may fail.")</p>
+                @if (pending is not null && _cancelAttempt is null) { <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="CancelAsync">Cancel pending restart</button> }
+                @if (_cancelAttempt is { } cancelAttempt)
                 {
-                    <h2>No draft</h2><p>Saving below creates an immutable draft; apply or roll it back from the <a href="/operations/schedule">capture schedule</a>.</p>
-                }
-                else
-                {
-                    <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
-                    <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
-                    <p>This form edits the pending draft. <a href="/operations/schedule">Review and apply it</a> at the capture boundary.</p>
+                    <p role="status">Cancel request for revision @cancelAttempt.Revision has an uncertain outcome. Retry the same request, or abandon the retry and check the pending selection before making a new request.</p>
+                    <button type="button" class="btn btn-outline-light" disabled="@(_busy || _catalog.Selection.PendingRevisionId != cancelAttempt.Revision)" @onclick="CancelAsync">Retry same cancel request</button>
+                    <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="AbandonCancelAttempt">Abandon cancel retry</button>
                 }
             </article>
-            <article class="camera-card">
-                <p class="eyebrow">Module and sensor</p>
-                <h2>@_model.ModuleType</h2>
-                <dl>
-                    <div><dt>Sensor</dt><dd>@_model.SensorName</dd></div>
-                    <div><dt>Layout</dt><dd>@_model.SensorSummary</dd></div>
-                    <div><dt>Projection</dt><dd>@_model.ProjectionModel</dd></div>
-                    <div><dt>Schema</dt><dd>@_model.SchemaVersion</dd></div>
-                </dl>
-                <p class="camera-note">Module options, sensor identity@(_model.HasReadoutProfile ? ", readout" : "")@(_model.HasMeteringPolicy ? ", metering" : "")@(_model.HasSolarRegimePolicy ? ", solar regimes" : ""), and processing steps are read-only here and carry over from the basis revision unchanged.</p>
-            </article>
+            <article class="camera-card camera-card--version"><p class="eyebrow">Selection version</p><h2>@_catalog.Selection.Version</h2><p>Schedule and exposure settings remain on the <a href="/operations/schedule">capture schedule</a>.</p></article>
         </section>
 
-        <form class="camera-form" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
-            <fieldset class="camera-group" disabled="@_busy">
-                <legend>Optics and orientation</legend>
-                <div class="field-grid">
-                    <label>Lens kind<select class="form-select" @bind="_model.LensKind" @bind:after="FormChanged">@foreach (var kind in Enum.GetNames<LensKind>()) { <option value="@kind">@kind</option> }</select></label>
-                    <label>Focal length mm<input class="form-control" inputmode="decimal" @bind="_model.FocalLengthMillimeters" @bind:after="FormChanged" /></label>
-                    <label>Field of view deg<input class="form-control" inputmode="decimal" @bind="_model.FieldOfViewDegrees" @bind:after="FormChanged" /></label>
-                    <label>Optics roll deg<input class="form-control" inputmode="decimal" @bind="_model.RollDegrees" @bind:after="FormChanged" /></label>
-                    <label class="check"><input type="checkbox" @bind="_model.HorizontalFlip" @bind:after="FormChanged" /> Horizontal flip</label>
-                    <label>Boresight altitude deg<input class="form-control" inputmode="decimal" @bind="_model.BoresightAltitudeDegrees" @bind:after="FormChanged" /></label>
-                    <label>Boresight azimuth deg<input class="form-control" inputmode="decimal" @bind="_model.BoresightAzimuthDegrees" @bind:after="FormChanged" /></label>
-                    <label>Roll adjustment deg<input class="form-control" inputmode="decimal" @bind="_model.RollAdjustmentDegrees" @bind:after="FormChanged" /></label>
-                </div>
-            </fieldset>
-
-            <fieldset class="camera-group" disabled="@_busy">
-                <legend>Exposure and cadence</legend>
-                <div class="field-grid">
-                    <label>Capture interval s<input class="form-control" inputmode="decimal" @bind="_model.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
-                    <label>Cadence mode<select class="form-select" @bind="_model.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
-                    <label>Day exposure ms<input class="form-control" inputmode="decimal" @bind="_model.DayExposureMilliseconds" @bind:after="FormChanged" /></label>
-                    <label>Night exposure ms<input class="form-control" inputmode="decimal" @bind="_model.NightExposureMilliseconds" @bind:after="FormChanged" /></label>
-                    <label>Day gain<input class="form-control" inputmode="decimal" @bind="_model.DayGain" @bind:after="FormChanged" /></label>
-                    <label>Night gain<input class="form-control" inputmode="decimal" @bind="_model.NightGain" @bind:after="FormChanged" /></label>
-                </div>
-                @if (_model.HasEnvelope)
-                {
-                    <p class="camera-note">Metered exposure envelope</p>
+        @if (VirtualOnlyInventory)
+        {
+            <section class="camera-group camera-starter" aria-label="Add ZWO camera">
+                <h2>Add ZWO camera</h2>
+                <p class="camera-note">Start from a checked-in physical camera definition. Review the typed settings before composing or staging a rig.</p>
+                <fieldset disabled="@_busy">
                     <div class="field-grid">
-                        <label>Minimum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MinimumExposureMilliseconds" @bind:after="FormChanged" /></label>
-                        <label>Maximum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MaximumExposureMilliseconds" @bind:after="FormChanged" /></label>
-                        <label>Minimum gain<input class="form-control" inputmode="decimal" @bind="_model.MinimumGain" @bind:after="FormChanged" /></label>
-                        <label>Maximum gain<input class="form-control" inputmode="decimal" @bind="_model.MaximumGain" @bind:after="FormChanged" /></label>
-                        <label>Target ADU level<input class="form-control" inputmode="decimal" @bind="_model.TargetAduLevel" @bind:after="FormChanged" /></label>
-                        <label>Adjustment order<select class="form-select" @bind="_model.ExposurePreference" @bind:after="FormChanged">@foreach (var preference in Enum.GetNames<ExposureGainPreference>()) { <option value="@preference">@Split(preference)</option> }</select></label>
+                        <label>Camera starter<select class="form-select" @bind="_starterTemplate"><option value="asi676mc">ASI676MC</option><option value="asi178mc">ASI178MC</option></select></label>
+                        <label>Camera name<input class="form-control" @bind="_starterName" /></label>
                     </div>
-                }
-                else
-                {
-                    <p class="camera-note">This profile has no metered exposure envelope; day and night values apply directly.</p>
-                }
-            </fieldset>
+                    <button type="button" class="btn btn-outline-light" @onclick="CreateZwoStarterAsync">Add ZWO camera</button>
+                </fieldset>
+            </section>
+        }
 
-            <fieldset class="camera-group" disabled="@_busy">
-                <legend>Control policy</legend>
+        <section class="camera-group" aria-label="Equipment editor">
+            <h2>Equipment</h2><p class="camera-note">Select a basis to duplicate into new named equipment. Revising appends an immutable revision to an editable definition; installed equipment cannot be revised. Camera module options never appear in this form.</p>
+            <fieldset disabled="@_busy" @onchange="InvalidatePreview">
                 <div class="field-grid">
-                    <label>Exposure control<select class="form-select" @bind="_model.ExposureControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
-                    <label>Gain control<select class="form-select" @bind="_model.GainControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
-                    <label>Temperature mode<select class="form-select" @bind="_model.TemperatureMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<TemperatureControlMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
-                    <label>Temperature target C<input class="form-control" inputmode="decimal" placeholder="none" @bind="_model.TemperatureTargetC" @bind:after="FormChanged" /></label>
+                    <label>Equipment kind<select class="form-select" @bind="_kind" @bind:after="ChangeKindAsync"><option value="camera">Camera</option><option value="optics">Optics</option><option value="mount">Mount</option></select></label>
+                    <label>Basis revision<select class="form-select" @bind="_equipmentId" @bind:after="LoadEquipmentAsync"><option value="">Select basis</option>@foreach (var item in _inventory.Equipment.Where(e => e.Kind == _kind)) { <option value="@item.RevisionId">@item.DisplayName (v@item.RevisionNumber)</option> }</select></label>
+                    <label>Equipment name<input class="form-control" maxlength="128" @bind="_equipmentName" /></label>
+                    <label>Save mode<select class="form-select" @bind="_duplicate"><option value="true">Duplicate as new equipment</option>@if (_basis?.CanRevise == true) { <option value="false">Revise existing equipment</option> }</select></label>
                 </div>
+                @if (_basis is not null)
+                {
+                    <div class="field-grid">
+                        @if (_kind == "camera")
+                        {
+                            <label>Module type<input class="form-control" value="@_form.ModuleType" readonly /></label>
+                            <p class="camera-note">Basis expected model: @CameraModel(_basis)</p>
+                            @if (_form.ModuleType == "ZwoAsi")
+                            {
+                                <p class="camera-note">ZWO SDK V1.41 compares the exact expected model string (case-sensitive, without the "ZWO " prefix). Validated models: ASI676MC and ASI178MC. ASI120MM Mini is capability-inventoried only, not capture-validated.</p>
+                            }
+                            <label>Sensor name<input class="form-control" @bind="_form.SensorName" /></label>
+                            <label>Sensor width px<input class="form-control" @bind="_form.WidthPixels" /></label>
+                            <label>Sensor height px<input class="form-control" @bind="_form.HeightPixels" /></label>
+                            <label>Pixel size um<input class="form-control" @bind="_form.PixelSizeMicrons" /></label>
+                            <label>Color mode<select class="form-select" @bind="_form.ColorMode">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.SensorColorMode>()) { <option value="@choice">@choice</option> }</select></label>
+                            <label>Sensor pixel format<select class="form-select" @bind="_form.SensorPixelFormat">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.CameraPixelFormat>()) { <option value="@choice">@choice</option> }</select></label>
+                            <label class="check"><input type="checkbox" @bind="_form.HasReadout" /> Sensor readout</label>
+                        }
+                        else if (_kind == "optics")
+                        {
+                            <label>Projection model<input class="form-control" @bind="_form.ProjectionModel" /></label>
+                            <label>Lens kind<select class="form-select" @bind="_form.LensKind">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.LensKind>()) { <option value="@choice">@choice</option> }</select></label>
+                            <label>Focal length mm<input class="form-control" @bind="_form.FocalLengthMillimeters" /></label>
+                            <label>Field of view degrees<input class="form-control" @bind="_form.FieldOfViewDegrees" /></label>
+                            <label>Optics roll degrees<input class="form-control" @bind="_form.RollDegrees" /></label>
+                            <label class="check"><input type="checkbox" @bind="_form.HorizontalFlip" /> Horizontal flip</label>
+                        }
+                        else
+                        {
+                            <label>Boresight altitude degrees<input class="form-control" @bind="_form.BoresightAltitudeDegrees" /></label>
+                            <label>Boresight azimuth degrees<input class="form-control" @bind="_form.BoresightAzimuthDegrees" /></label>
+                            <label>Roll adjustment degrees<input class="form-control" @bind="_form.RollAdjustmentDegrees" /></label>
+                        }
+                    </div>
+                    @if (_kind == "camera")
+                    {
+                        <details class="camera-advanced">
+                            <summary>Advanced sensor &amp; readout</summary>
+                            <div class="field-grid">
+                                <label>Sensor stride bytes (optional)<input class="form-control" @bind="_form.SensorStrideBytes" /></label>
+                                @if (_form.HasReadout)
+                                {
+                                <label>ROI X<input class="form-control" @bind="_form.RoiX" /></label><label>ROI Y<input class="form-control" @bind="_form.RoiY" /></label>
+                                <label>ROI width<input class="form-control" @bind="_form.RoiWidth" /></label><label>ROI height<input class="form-control" @bind="_form.RoiHeight" /></label>
+                                <label>Bin X<input class="form-control" @bind="_form.BinX" /></label><label>Bin Y<input class="form-control" @bind="_form.BinY" /></label>
+                                <label>Binning algorithm<select class="form-select" @bind="_form.BinningAlgorithm">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.FrameBinningAlgorithm>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>Readout pixel format<select class="form-select" @bind="_form.ReadoutPixelFormat">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.CameraPixelFormat>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>Sample depth bits<input class="form-control" @bind="_form.SampleDepthBits" /></label><label>Container depth bits<input class="form-control" @bind="_form.ContainerDepthBits" /></label>
+                                <label>Packing<select class="form-select" @bind="_form.Packing">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.FrameSamplePacking>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>Stored code transform<select class="form-select" @bind="_form.StoredCodeTransform">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.FrameStoredCodeTransform>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>Level code space<select class="form-select" @bind="_form.LevelCodeSpace">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.FrameLevelCodeSpace>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>Black level<input class="form-control" @bind="_form.BlackLevel" /></label><label>White level<input class="form-control" @bind="_form.WhiteLevel" /></label>
+                                <label>Stride bytes<input class="form-control" @bind="_form.StrideBytes" /></label>
+                                <label>Byte order<select class="form-select" @bind="_form.ByteOrder">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.SampleByteOrder>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>CFA pattern<select class="form-select" @bind="_form.CfaPattern">@foreach (var choice in Enum.GetNames<HVO.SkyMonitor.AgentCore.ColorFilterArrayPattern>()) { <option value="@choice">@choice</option> }</select></label>
+                                <label>CFA origin X<input class="form-control" @bind="_form.CfaOriginX" /></label><label>CFA origin Y<input class="form-control" @bind="_form.CfaOriginY" /></label>
+                                }
+                            </div>
+                        </details>
+                    }
+                    @if (_kind == "camera" && _duplicate && _form.ModuleType == "ZwoAsi")
+                    {
+                        <label>Custom ZWO expected model (optional)<input class="form-control" @bind="_customCameraModel" placeholder="ASI120MM Mini" /></label>
+                        <p class="camera-note">Expected model for this duplicate: @(string.IsNullOrWhiteSpace(_customCameraModel) ? CameraModel(_basis) : $"{_customCameraModel.Trim()} (unvalidated model)")</p>
+                        @if (!string.IsNullOrWhiteSpace(_customCameraModel))
+                        {
+                            <label class="check"><input type="checkbox" @bind="_acknowledgeCustomModel" /> I accept the risk of an unvalidated camera model on this new definition.</label>
+                        }
+                    }
+                    @if (InstalledBasis) { <p class="camera-note">Installed basis is immutable; review the proposed duplicate name and save as new equipment.</p> }
+                    else if (!_basis.CanRevise) { <p class="camera-note">Only the latest editable revision can be revised; save a duplicate instead.</p> }
+                    <button type="button" class="btn btn-outline-light" @onclick="SaveEquipmentAsync">@(_duplicate ? "Create duplicate equipment" : "Save equipment revision")</button>
+                }
             </fieldset>
+        </section>
 
-            <div class="camera-actions">
-                <button type="submit" class="btn btn-outline-light" disabled="@_busy">Validate</button>
-                <button type="button" class="btn btn-primary" disabled="@(_busy || !_validated)" @onclick="StageAsync">Save immutable draft</button>
-                @if (!_validated) { <span class="camera-note">Validate the draft before saving it.</span> }
-            </div>
-        </form>
+        <section class="camera-group" aria-label="Rig composer">
+            <h2>Compose rig</h2>
+            <fieldset disabled="@_busy" @onchange="InvalidatePreview">
+                <div class="field-grid">
+                    <label>Named rig<select class="form-select" @bind="_profileId" @bind:after="ProfileChangedAsync"><option value="">Select rig</option>@foreach (var profile in _inventory.Profiles) { <option value="@profile.ProfileId">@profile.DisplayName</option> }</select></label>
+                    <label>Rig name<input class="form-control" @bind="_profileName" /></label>
+                    <label class="check"><input type="checkbox" @bind="_newProfile" /> Create new named rig</label>
+                </div>
+                <button type="button" class="btn btn-outline-light" @onclick="SaveProfileAsync">Save rig name</button>
+                <div class="field-grid">
+                    <label>Camera<select class="form-select" @bind="_cameraId">@foreach (var item in _inventory.Equipment.Where(e => e.Kind == "camera")) { <option value="@item.RevisionId">@item.DisplayName (v@item.RevisionNumber)</option> }</select></label>
+                    <label>Optics<select class="form-select" @bind="_opticsId">@foreach (var item in _inventory.Equipment.Where(e => e.Kind == "optics")) { <option value="@item.RevisionId">@item.DisplayName (v@item.RevisionNumber)</option> }</select></label>
+                    <label>Mount<select class="form-select" @bind="_mountId">@foreach (var item in _inventory.Equipment.Where(e => e.Kind == "mount")) { <option value="@item.RevisionId">@item.DisplayName (v@item.RevisionNumber)</option> }</select></label>
+                </div>
+                <p class="camera-note">Selected for next composition: Camera: @(_inventory.Equipment.FirstOrDefault(e => e.Kind == "camera" && e.RevisionId == _cameraId)?.DisplayName ?? "None") / Optics: @(_inventory.Equipment.FirstOrDefault(e => e.Kind == "optics" && e.RevisionId == _opticsId)?.DisplayName ?? "None") / Mount: @(_inventory.Equipment.FirstOrDefault(e => e.Kind == "mount" && e.RevisionId == _mountId)?.DisplayName ?? "None")</p>
+                <button type="button" class="btn btn-outline-light" disabled="@(string.IsNullOrEmpty(_profileId) || string.IsNullOrEmpty(_cameraId) || string.IsNullOrEmpty(_opticsId) || string.IsNullOrEmpty(_mountId))" @onclick="ComposeAsync">Compose immutable revision</button>
+            </fieldset>
+        </section>
+
+        <section class="camera-group" aria-label="Rig preview and selection">
+            <h2>Compare &amp; stage</h2>
+            <label>Rig revision<select class="form-select" disabled="@_busy" @bind="_revisionId" @bind:after="RevisionSelectionChangedAsync">@foreach (var revision in _catalog.Revisions) { <option value="@revision.RevisionId">@(_inventory.Profiles.FirstOrDefault(p => p.ProfileId == revision.ProfileId)?.DisplayName) / revision @revision.RevisionNumber</option> }@if (_history is not null) { @foreach (var revision in _history.Revisions.Where(r => !_catalog.Revisions.Any(c => c.RevisionId == r.RevisionId))) { <option value="@revision.RevisionId">@(_inventory.Profiles.FirstOrDefault(p => p.ProfileId == revision.ProfileId)?.DisplayName) / revision @revision.RevisionNumber</option> } }</select></label>
+            @if (_history?.NextBeforeRevisionNumber is not null) { <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="() => LoadHistoryAsync(true)">Load older revisions</button> }
+            @if (selected is not null)
+            {
+                <div class="camera-revisions camera-compare">
+                    <article class="camera-card"><h3>Active</h3><p class="camera-note">Current runtime selection</p><div class="camera-fact-columns"><div><h4>Camera &amp; readout</h4><p>Camera: @(active?.Rig.Sensor.Name ?? "Not selected")</p><p>Model: @CameraModel(_activeCamera)</p><p>Module: @(active?.Module.Type ?? "Unavailable")</p><p>Sensor: @(active is null ? "Unavailable" : $"{active.Rig.Sensor.WidthPixels} x {active.Rig.Sensor.HeightPixels} px")</p><p>Readout: @(active?.Rig.Readout is { } activeReadout ? $"{activeReadout.PixelFormat} / {activeReadout.BinX} x {activeReadout.BinY} bin" : "Not configured")</p></div><div><h4>Optics &amp; mount</h4><p>Optics: @(active?.Rig.Optics.ProjectionModel ?? "Unavailable")</p><p>Mount: @active?.Rig.Orientation.BoresightAltitudeDegrees / @active?.Rig.Orientation.BoresightAzimuthDegrees</p></div></div></article>
+                    <article class="camera-card"><h3>Selected</h3><p class="camera-note">Revision @selected.RevisionNumber / @(_inventory.Profiles.FirstOrDefault(p => p.ProfileId == selected.ProfileId)?.DisplayName ?? "Named rig")</p><div class="camera-fact-columns"><div><h4>Camera &amp; readout</h4><p>Camera: @selected.Rig.Sensor.Name</p><p>Model: @CameraModel(_selectedCamera)</p><p>Module: @selected.Module.Type</p><p>Sensor: @selected.Rig.Sensor.WidthPixels x @selected.Rig.Sensor.HeightPixels px</p><p>Readout: @(selected.Rig.Readout is { } selectedReadout ? $"{selectedReadout.PixelFormat} / {selectedReadout.BinX} x {selectedReadout.BinY} bin" : "Not configured")</p></div><div><h4>Optics &amp; mount</h4><p>Optics: @selected.Rig.Optics.ProjectionModel</p><p>Mount: @selected.Rig.Orientation.BoresightAltitudeDegrees / @selected.Rig.Orientation.BoresightAzimuthDegrees</p></div></div></article>
+                </div>
+                <details class="camera-provenance"><summary>Revision provenance</summary><dl><div><dt>Revision ID</dt><dd><code>@selected.RevisionId</code></dd></div><div><dt>Camera revision ID</dt><dd><code>@selected.CameraRevisionId</code></dd></div><div><dt>Optics revision ID</dt><dd><code>@selected.OpticsRevisionId</code></dd></div><div><dt>Mount revision ID</dt><dd><code>@selected.MountRevisionId</code></dd></div><div><dt>Source schedule revision ID</dt><dd><code>@(selected.SourceScheduleRevisionId ?? "Not recorded")</code></dd></div></dl></details>
+            }
+            <div class="camera-actions"><button type="button" class="btn btn-outline-light" disabled="@(_busy || string.IsNullOrEmpty(_revisionId))" @onclick="PreviewAsync">Preview against active schedule</button></div>
+            @if (CurrentPreview is { } preview)
+            {
+                <p role="status">@(preview.Valid ? "Contract preview passed." : $"Preview failed: {preview.Failure}") Runtime verified: @(preview.RuntimeVerified ? "yes" : "no"). Schedule revision: @preview.ScheduleRevisionId.</p>
+                @if (preview.Valid && !preview.RuntimeVerified)
+                {
+                    <label class="check"><input type="checkbox" @bind="_acknowledge" /> I acknowledge this rig is unvalidated at runtime; staging requires restart and may fail camera initialization.</label>
+                }
+            }
+             @if (_stageAttempt is { } stageAttempt)
+             {
+                 <p role="status">Stage request for revision @stageAttempt.Revision has an uncertain outcome. Retry the same request with its original schedule, or abandon the retry to preview and acknowledge the current schedule before a new stage request.</p>
+                 <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="AbandonStageAttempt">Abandon stage retry</button>
+             }
+              <button type="button" class="btn btn-primary" disabled="@(_busy || (_stageAttempt is { } attempt ? attempt.Revision != _revisionId || pending is not null && pending.RevisionId != attempt.Revision : pending is not null || !_acknowledge || CurrentPreview is not { Valid: true, RuntimeVerified: false } || CurrentPreview.RigRevisionId != _revisionId))" @onclick="StageAsync">@(_stageAttempt?.Revision == _revisionId ? "Retry same stage request" : "Confirm restart-only stage")</button>
+            <p class="camera-note">To roll back, select a previous immutable rig revision, preview, acknowledge, and stage it for restart. This does not apply at a capture boundary.</p>
+        </section>
+        <section class="camera-group camera-history" aria-label="Rig revision history">
+            <h2>Revision history</h2>
+            <p class="camera-note">Loaded revisions for @(_inventory.Profiles.FirstOrDefault(p => p.ProfileId == _profileId)?.DisplayName ?? "the selected rig"). Choose a revision above to inspect or stage it.</p>
+            @if (_history is { Revisions.Count: > 0 })
+            {
+                <ol>
+                    @foreach (var entry in _history.Revisions)
+                    {
+                        <li><strong>Revision @entry.RevisionNumber</strong><span>@(entry.RevisionId == _catalog.Selection.ActiveRevisionId ? "Active" : entry.RevisionId == _catalog.Selection.PendingRevisionId ? "Pending restart" : "Historical")</span><code>@entry.RevisionId</code></li>
+                    }
+                </ol>
+            }
+            else { <p class="camera-note">No revisions loaded for this rig.</p> }
+        </section>
     }
 </div>

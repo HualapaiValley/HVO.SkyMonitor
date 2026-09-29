@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -24,10 +25,10 @@ public sealed record NamedRigCatalog(
 public sealed record NamedRigProfile(string ProfileId, string DisplayName);
 
 public sealed record NamedEquipmentDefinition(string DefinitionId, string Kind, string DisplayName,
-    long RevisionNumber, string RevisionId);
+    long RevisionNumber, string RevisionId, bool IsInstalled = false, bool CanRevise = true);
 
 public sealed record NamedEquipmentDetail(string DefinitionId, string Kind, string DisplayName,
-    long RevisionNumber, string RevisionId, object Definition);
+    long RevisionNumber, string RevisionId, object Definition, bool IsInstalled = false, bool CanRevise = true);
 
 public sealed record NamedCameraEquipment(CameraModuleDescriptor Module, SensorProfile Sensor, SensorReadoutProfile? Readout);
 
@@ -36,6 +37,12 @@ public sealed record NamedRigPreview(string ScheduleRevisionId, string ScheduleP
 
 public sealed record NamedRigInventory(IReadOnlyList<NamedRigProfile> Profiles,
     IReadOnlyList<NamedEquipmentDefinition> Equipment);
+
+public sealed record NamedRigHistoryEntry(string RevisionId, string ProfileId, long RevisionNumber,
+    string CameraRevisionId, string OpticsRevisionId, string MountRevisionId, string? SourceScheduleRevisionId);
+
+public sealed record NamedRigHistoryPage(long Version, IReadOnlyList<NamedRigHistoryEntry> Revisions,
+    long? NextBeforeRevisionNumber);
 
 public sealed record NamedRigStageReceipt(
     string ReceiptId, string RevisionId, long Version, string Disposition, bool AcknowledgedUnvalidated,
@@ -376,21 +383,24 @@ public sealed class SqliteNamedRigProfileStore(
 
     public async Task<NamedRigStageReceipt> StageAsync(
         string revisionId, long expectedVersion, string idempotencyKey, string actor,
-        bool acknowledgeUnvalidated, CancellationToken cancellationToken)
+        bool acknowledgeUnvalidated, string expectedScheduleRevisionId,
+        string expectedScheduleProfileSha256, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(revisionId) || revisionId.Length > 128 ||
             string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128 ||
-            string.IsNullOrWhiteSpace(actor) || actor.Length > 128 || expectedVersion < 0)
+            string.IsNullOrWhiteSpace(actor) || actor.Length > 128 || expectedVersion < 0 ||
+            string.IsNullOrWhiteSpace(expectedScheduleRevisionId) || expectedScheduleRevisionId.Length > 128 ||
+            expectedScheduleProfileSha256 is null || expectedScheduleProfileSha256.Length != 64 ||
+            !expectedScheduleProfileSha256.All(Uri.IsHexDigit))
         {
             throw new ArgumentException("Invalid named rig selection command.");
         }
         if (scheduleStore is null) throw new InvalidOperationException("Schedule authority is unavailable.");
-        var schedule = await scheduleStore.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var requestHash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
-            new { revisionId, expectedVersion, actor, acknowledgeUnvalidated })));
+            new { revisionId, expectedVersion, actor, acknowledgeUnvalidated, expectedScheduleRevisionId, expectedScheduleProfileSha256 })));
         using (var replay = connection.CreateCommand())
         {
             replay.Transaction = transaction;
@@ -417,6 +427,11 @@ public sealed class SqliteNamedRigProfileStore(
         {
             throw new CaptureScheduleStoreConflictException("The named rig selection version has changed.");
         }
+        var schedule = await SqliteCaptureScheduleStore.ReadSnapshotAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
+        if (!string.Equals(schedule.ActiveRevision.RevisionId, expectedScheduleRevisionId, StringComparison.Ordinal) ||
+            !string.Equals(schedule.ActiveRevision.ProfileSha256, expectedScheduleProfileSha256, StringComparison.OrdinalIgnoreCase))
+            throw new CaptureScheduleStoreConflictException("The active schedule differs from the preview.");
         var target = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false);
         if (target is null)
         {
@@ -570,10 +585,19 @@ public sealed class SqliteNamedRigProfileStore(
     public async Task<NamedRigPreview> PreviewAsync(string revisionId, CancellationToken cancellationToken)
     {
         if (scheduleStore is null) throw new InvalidOperationException("Schedule authority is unavailable.");
-        var schedule = await scheduleStore.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var revision = await ReadRevisionAsync(connection, null, revisionId, cancellationToken).ConfigureAwait(false)
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var schedule = await SqliteCaptureScheduleStore.ReadSnapshotAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
+        var selection = await ReadSelectionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var revision = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("Rig revision was not found.");
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (selection.PendingRevisionId is not null || schedule.PendingRevision is not null)
+            return new NamedRigPreview(schedule.ActiveRevision.RevisionId, schedule.ActiveRevision.ProfileSha256,
+                revisionId, false, selection.PendingRevisionId is not null ? "pending-named-rig" : "pending-schedule-draft",
+                RuntimeVerified: false);
         var current = schedule.ActiveRevision.Profile;
         var rig = current.Rig with
         {
@@ -600,6 +624,13 @@ public sealed class SqliteNamedRigProfileStore(
                 if (response is not null && candidate.Schedule.SetpointProfiles.Any(value =>
                     value.Gain < response.MinimumGainControl || value.Gain > response.MaximumGainControl))
                     failure = "rig.sensor.simulationResponse";
+                if (failure is null && scheduleRuntime?.Snapshot is { } snapshot &&
+                    snapshot.Revision.RevisionId == schedule.ActiveRevision.RevisionId)
+                    _ = scheduleRuntime.Preview(candidate, 1);
+            }
+            catch (CaptureProfileCompatibilityException exception)
+            {
+                failure = exception.Message;
             }
             catch (Exception exception) when (exception is ArgumentException or OverflowException)
             {
@@ -628,7 +659,10 @@ public sealed class SqliteNamedRigProfileStore(
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
-                SELECT d.definition_id, d.kind, d.display_name, r.revision_number, r.revision_id
+                SELECT d.definition_id, d.kind, d.display_name, r.revision_number, r.revision_id,
+                       EXISTS (SELECT 1 FROM named_equipment_revisions e JOIN named_rig_revisions rig
+                           ON e.revision_id IN (rig.camera_revision_id, rig.optics_revision_id, rig.mount_revision_id)
+                           WHERE e.definition_id = d.definition_id AND rig.source_schedule_revision_id IS NOT NULL)
                 FROM named_equipment_definitions d JOIN named_equipment_revisions r ON r.definition_id = d.definition_id
                 WHERE r.revision_number = (SELECT MAX(latest.revision_number) FROM named_equipment_revisions latest
                     WHERE latest.definition_id = d.definition_id)
@@ -638,10 +672,65 @@ public sealed class SqliteNamedRigProfileStore(
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 equipment.Add(new NamedEquipmentDefinition(reader.GetString(0), reader.GetString(1),
-                    reader.GetString(2), reader.GetInt64(3), reader.GetString(4)));
+                    reader.GetString(2), reader.GetInt64(3), reader.GetString(4), reader.GetInt64(5) != 0,
+                    reader.GetInt64(5) == 0));
             }
         }
         return new NamedRigInventory(profiles, equipment);
+    }
+
+    public async Task<NamedRigHistoryPage> GetHistoryAsync(string profileId, int limit,
+        long? beforeRevisionNumber, long? version, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(profileId) || profileId.Length > 128 || limit is < 1 or > 100 ||
+            beforeRevisionNumber is <= 0 || version is < 0)
+            throw new ArgumentException("Invalid rig history request.");
+        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        long latest;
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT (SELECT MAX(revision_number) FROM named_rig_revisions WHERE profile_id = p.profile_id)
+                FROM named_rig_profiles p WHERE p.profile_id = $profile;
+                """;
+            command.Parameters.AddWithValue("$profile", profileId);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new KeyNotFoundException("Rig profile was not found.");
+            latest = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(0);
+        }
+        if (version > latest)
+            throw new ArgumentException("Rig history version is invalid.");
+        var bound = version ?? latest;
+        var revisions = new List<NamedRigHistoryEntry>(limit + 1);
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT revision_id, profile_id, revision_number, camera_revision_id, optics_revision_id,
+                       mount_revision_id, source_schedule_revision_id
+                FROM named_rig_revisions
+                WHERE profile_id = $profile AND revision_number <= $version AND revision_number < $before
+                ORDER BY revision_number DESC LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$profile", profileId);
+            command.Parameters.AddWithValue("$version", bound);
+            command.Parameters.AddWithValue("$before", beforeRevisionNumber ?? long.MaxValue);
+            command.Parameters.AddWithValue("$limit", limit + 1);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                revisions.Add(new NamedRigHistoryEntry(reader.GetString(0), reader.GetString(1), reader.GetInt64(2),
+                    reader.GetString(3), reader.GetString(4), reader.GetString(5),
+                    await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6)));
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        var hasMore = revisions.Count > limit;
+        if (hasMore) revisions.RemoveAt(limit);
+        return new NamedRigHistoryPage(bound, revisions,
+            hasMore ? revisions[^1].RevisionNumber : null);
     }
 
     public async Task<NamedEquipmentDetail> GetEquipmentAsync(string revisionId, CancellationToken cancellationToken)
@@ -651,7 +740,12 @@ public sealed class SqliteNamedRigProfileStore(
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT d.definition_id, d.kind, d.display_name, r.revision_number, r.revision_id,
-                   r.definition_json, r.definition_sha256
+                    r.definition_json, r.definition_sha256,
+                    EXISTS (SELECT 1 FROM named_equipment_revisions e JOIN named_rig_revisions rig
+                        ON e.revision_id IN (rig.camera_revision_id, rig.optics_revision_id, rig.mount_revision_id)
+                        WHERE e.definition_id = d.definition_id AND rig.source_schedule_revision_id IS NOT NULL),
+                    r.revision_number = (SELECT MAX(latest.revision_number) FROM named_equipment_revisions latest
+                        WHERE latest.definition_id = d.definition_id)
             FROM named_equipment_revisions r JOIN named_equipment_definitions d ON d.definition_id = r.definition_id
             WHERE r.revision_id = $revision;
             """;
@@ -674,15 +768,42 @@ public sealed class SqliteNamedRigProfileStore(
             _ => throw new InvalidDataException("Invalid equipment kind.")
         };
         return new NamedEquipmentDetail(reader.GetString(0), kind, reader.GetString(2), reader.GetInt64(3),
-            reader.GetString(4), definition);
+            reader.GetString(4), definition, reader.GetInt64(7) != 0,
+            reader.GetInt64(7) == 0 && reader.GetInt64(8) != 0);
     }
 
-    private static object RedactCamera(NamedCameraEquipment camera) => new
+    private static object RedactCamera(NamedCameraEquipment camera)
     {
-        Module = new { camera.Module.Type },
-        camera.Sensor,
-        camera.Readout
-    };
+        string? expectedModel = null;
+        bool? unvalidated = null;
+        if (camera.Module?.Type == "ZwoAsi" && camera.Module.Options is { ValueKind: JsonValueKind.Object } options)
+        {
+            var modelFields = options.EnumerateObject().Where(field =>
+                field.Name.Equals("ExpectedModel", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var riskFields = options.EnumerateObject().Where(field =>
+                field.Name.Equals("UseUnvalidatedCameraAtOwnRisk", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (modelFields.Length == 1 && modelFields[0].Value.ValueKind == JsonValueKind.String &&
+                riskFields.Length <= 1 && (riskFields.Length == 0 ||
+                    riskFields[0].Value.ValueKind is JsonValueKind.True or JsonValueKind.False))
+            {
+                var model = modelFields[0].Value.GetString();
+                if (model is { Length: >= 3 and <= 63 } && model.StartsWith("ASI", StringComparison.Ordinal) &&
+                    model.All(character => char.IsAsciiLetterOrDigit(character) || character is ' ' or '-' or '_'))
+                {
+                    expectedModel = model;
+                    unvalidated = riskFields.Length == 1 && riskFields[0].Value.GetBoolean();
+                }
+            }
+        }
+        return new
+        {
+            Module = new { camera.Module?.Type },
+            camera.Sensor,
+            camera.Readout,
+            ExpectedModel = expectedModel,
+            UseUnvalidatedCameraAtOwnRisk = unvalidated
+        };
+    }
 
     public async Task<NamedEquipmentDefinition> SaveEquipmentAsync(string? definitionId, string kind,
         string displayName, JsonElement definition, CancellationToken cancellationToken,
@@ -691,11 +812,16 @@ public sealed class SqliteNamedRigProfileStore(
         if (kind is not ("camera" or "optics" or "mount") || !ValidName(displayName) ||
             definition.ValueKind != JsonValueKind.Object ||
             JsonSerializer.SerializeToUtf8Bytes(definition).Length > 1048576 ||
-            (definitionId is null && (basisRevisionId is not null || expectedRevisionId is not null)) ||
+            (definitionId is null && (expectedRevisionId is not null ||
+                basisRevisionId is not null && kind != "camera")) ||
             (definitionId is not null && (string.IsNullOrWhiteSpace(basisRevisionId) || string.IsNullOrWhiteSpace(expectedRevisionId))) ||
-            (kind == "camera" && definitionId is not null &&
-             (!definition.TryGetProperty("module", out var module) || module.ValueKind != JsonValueKind.Object ||
-              module.EnumerateObject().Any(property => property.Name.Equals("options", StringComparison.OrdinalIgnoreCase)))))
+            (kind == "camera" && (definitionId is not null || basisRevisionId is not null) &&
+              (definition.EnumerateObject().Any(property => property.Name.Equals("options", StringComparison.OrdinalIgnoreCase)) ||
+                definition.EnumerateObject().Count(property => property.Name.Equals("module", StringComparison.OrdinalIgnoreCase)) != 1 ||
+                definition.EnumerateObject().Any(property => property.Name.Equals("module", StringComparison.OrdinalIgnoreCase) &&
+                    (property.Value.ValueKind != JsonValueKind.Object ||
+                     property.Value.EnumerateObject().Count(field => field.Name.Equals("type", StringComparison.OrdinalIgnoreCase)) != 1 ||
+                     property.Value.EnumerateObject().Any(field => !field.Name.Equals("type", StringComparison.OrdinalIgnoreCase)))))))
         {
             throw new ArgumentException("Invalid equipment definition.");
         }
@@ -716,26 +842,52 @@ public sealed class SqliteNamedRigProfileStore(
         if (typed is null || typed is NamedCameraEquipment { Module: null } or NamedCameraEquipment { Sensor: null } ||
             typed is NamedCameraEquipment camera && string.IsNullOrWhiteSpace(camera.Module.Type))
             throw new ArgumentException("Equipment definition is incomplete.");
+        JsonElement? overrideModel = null;
+        if (kind == "camera" && (definitionId is not null || basisRevisionId is not null))
+        {
+            foreach (var field in definition.EnumerateObject())
+            {
+                if (field.Name.Equals("expectedModel", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (overrideModel is not null) throw new ArgumentException("Duplicate model override.");
+                    overrideModel = field.Value;
+                }
+                else if (!field.Name.Equals("module", StringComparison.OrdinalIgnoreCase) &&
+                         !field.Name.Equals("sensor", StringComparison.OrdinalIgnoreCase) &&
+                         !field.Name.Equals("readout", StringComparison.OrdinalIgnoreCase) &&
+                         !field.Name.Equals("useUnvalidatedCameraAtOwnRisk", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("Unknown camera definition field.");
+            }
+            var riskFields = definition.EnumerateObject()
+                .Where(field => field.Name.Equals("useUnvalidatedCameraAtOwnRisk", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (riskFields.Length > 1 || overrideModel is not null &&
+                (definitionId is not null || riskFields.Length != 1 || riskFields[0].Value.ValueKind != JsonValueKind.True))
+                throw new ArgumentException("A model override requires explicit risk acknowledgement on a new camera.");
+            if (overrideModel is null && riskFields.Length != 0)
+                throw new ArgumentException("Risk acknowledgement requires a model override.");
+        }
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         var id = definitionId ?? Guid.NewGuid().ToString("N");
-        if (definitionId is not null)
+        if (definitionId is not null || basisRevisionId is not null)
         {
             using var basis = connection.CreateCommand();
             basis.Transaction = transaction;
             basis.CommandText = """
                 SELECT r.definition_json, r.definition_sha256 FROM named_equipment_revisions r
                 JOIN named_equipment_definitions d ON d.definition_id = r.definition_id
-                WHERE r.revision_id = $basis AND d.definition_id = $id AND d.kind = $kind
-                  AND (SELECT revision_id FROM named_equipment_revisions WHERE definition_id = $id
-                       ORDER BY revision_number DESC LIMIT 1) = $expected;
+                WHERE r.revision_id = $basis AND d.kind = $kind
+                  AND ($new = 1 OR (d.definition_id = $id AND
+                       (SELECT revision_id FROM named_equipment_revisions WHERE definition_id = $id
+                        ORDER BY revision_number DESC LIMIT 1) = $expected));
                 """;
             basis.Parameters.AddWithValue("$basis", basisRevisionId);
-            basis.Parameters.AddWithValue("$expected", expectedRevisionId);
+            basis.Parameters.AddWithValue("$expected", (object?)expectedRevisionId ?? DBNull.Value);
             basis.Parameters.AddWithValue("$id", id);
             basis.Parameters.AddWithValue("$kind", kind);
+            basis.Parameters.AddWithValue("$new", definitionId is null ? 1 : 0);
             using var reader = await basis.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 throw new CaptureScheduleStoreConflictException("Equipment basis or expected revision has changed.");
@@ -747,9 +899,39 @@ public sealed class SqliteNamedRigProfileStore(
                 var original = JsonSerializer.Deserialize<NamedCameraEquipment>(basisBytes, EquipmentJson)
                     ?? throw new InvalidDataException("Equipment basis is invalid.");
                 var revised = (NamedCameraEquipment)typed;
-                if (revised.Module.Type != original.Module.Type)
+                if (original.Module is null || revised.Module.Type != original.Module.Type)
                     throw new ArgumentException("Camera module type cannot change during revision.");
-                typed = revised with { Module = revised.Module with { Options = original.Module.Options } };
+                var moduleOptions = original.Module.Options;
+                if (overrideModel is { } model)
+                {
+                    var expected = model.ValueKind == JsonValueKind.String ? model.GetString() : null;
+                    if (original.Module.Type != "ZwoAsi" || expected is null || expected.Length is < 3 or > 63 ||
+                        !expected.StartsWith("ASI", StringComparison.Ordinal) ||
+                        expected.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not (' ' or '-' or '_')) ||
+                        moduleOptions is not { ValueKind: JsonValueKind.Object })
+                        throw new ArgumentException("Invalid ZWO camera model override.");
+                    JsonObject optionsNode;
+                    try
+                    {
+                        optionsNode = JsonNode.Parse(moduleOptions.Value.GetRawText()) as JsonObject
+                            ?? throw new ArgumentException("Invalid ZWO camera options.");
+                    }
+                    catch (JsonException exception)
+                    {
+                        throw new ArgumentException("Invalid ZWO camera options.", exception);
+                    }
+                    if (!optionsNode.Any(property => property.Key.Equals("LibraryPathEnvironmentVariable", StringComparison.OrdinalIgnoreCase)) ||
+                        !optionsNode.Any(property => property.Key.Equals("CameraSerialEnvironmentVariable", StringComparison.OrdinalIgnoreCase)))
+                        throw new ArgumentException("ZWO camera basis is missing environment-variable names.");
+                    foreach (var key in optionsNode.Select(property => property.Key).Where(key =>
+                        key.Equals("ExpectedModel", StringComparison.OrdinalIgnoreCase) ||
+                        key.Equals("UseUnvalidatedCameraAtOwnRisk", StringComparison.OrdinalIgnoreCase)).ToArray())
+                        optionsNode.Remove(key);
+                    optionsNode["ExpectedModel"] = expected;
+                    optionsNode["UseUnvalidatedCameraAtOwnRisk"] = true;
+                    moduleOptions = JsonSerializer.SerializeToElement(optionsNode);
+                }
+                typed = revised with { Module = revised.Module with { Options = moduleOptions } };
             }
         }
         var bytes = JsonSerializer.SerializeToUtf8Bytes(typed);

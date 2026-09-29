@@ -42,6 +42,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="cameraagent.zwo-asi676mc.sample.json" />
+    <EmbeddedResource Include="cameraagent.zwo-asi178mc.sample.json" />
     <None Update="cameraagent.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

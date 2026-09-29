@@ -24,8 +24,9 @@
 .confirmation-panel { width: min(42rem, calc(100% - 2rem)); color: var(--hvo-body-color); padding: 1rem 1.2rem; border: 1px solid #e9c986; background: #292617; }
 .confirmation-panel[open] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .confirmation-panel::backdrop { background: rgba(1, 4, 9, .78); }
-.confirmation-panel h2 { margin: 0; }.confirmation-panel div:last-child { display: flex; gap: .6rem; }
+.confirmation-panel h2 { margin: 0; }.confirmation-panel div:last-child { display: flex; flex-wrap: wrap; gap: .6rem; }
 .confirmation-panel .btn { min-height: 44px; }
+.confirmation-panel .btn:focus-visible { outline: 3px solid #e9c986; outline-offset: 2px; }
 .pipeline-console { padding: 1.1rem; border: 1px solid #3c5265; background: linear-gradient(145deg, #13232b, #0c151d); }
 .pipeline-console > header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; }
 .pipeline-console h2,.pipeline-console h3 { margin: .2rem 0 .65rem; font-family: Georgia, serif; }
@@ -49,6 +50,7 @@
 .editor-note { margin: .4rem 0 .8rem; color: #aeb9c8; font-size: .85rem; }
 .editor-group { margin: 0 0 1rem; padding: .75rem .9rem; border: 1px solid #354253; min-inline-size: 0; }
 .editor-group legend { float: none; width: auto; padding: 0 .4rem; color: #8fd4be; font: 700 .72rem/1.2 ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.policy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .3rem .8rem; }
 .editor-table { position: relative; display: grid; gap: .35rem; margin-bottom: .6rem; overflow-x: auto; }
 .editor-row { display: grid; grid-template-columns: 1.2fr 1fr .7fr .8fr 1.3fr .8fr auto; gap: .4rem; align-items: center; min-width: 46rem; }
 .editor-row--head span { color: #8fa0b3; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
@@ -70,3 +72,4 @@
 .editor-advanced summary { cursor: pointer; color: #aeb9c8; }
 .editor-advanced textarea { min-height: 20rem; }
 @media (max-width: 900px) { .window-item__head, .boundary-grid, .blackout-list li { grid-template-columns: 1fr; } .boundary-fields { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 480px) { .confirmation-panel div:last-child { display: grid; grid-template-columns: minmax(0, 1fr); } }

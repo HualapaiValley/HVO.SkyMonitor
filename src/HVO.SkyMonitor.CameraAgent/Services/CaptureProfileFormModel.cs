@@ -244,6 +244,10 @@ internal sealed class CaptureProfileFormModel
             ParseDouble(BoresightAltitudeDegrees, "Boresight altitude", problems),
             ParseDouble(BoresightAzimuthDegrees, "Boresight azimuth", problems),
             ParseDouble(RollAdjustmentDegrees, "Roll adjustment", problems));
+        var dayExposure = Milliseconds(DayExposureMilliseconds, "Day exposure", problems);
+        var nightExposure = Milliseconds(NightExposureMilliseconds, "Night exposure", problems);
+        var dayGain = ParseDouble(DayGain, "Day gain", problems);
+        var nightGain = ParseDouble(NightGain, "Night gain", problems);
         var envelope = rig.Pipeline.Envelope;
         if (envelope is not null)
         {
@@ -253,17 +257,41 @@ internal sealed class CaptureProfileFormModel
                 MaxExposure = Milliseconds(MaximumExposureMilliseconds, "Maximum exposure", problems),
                 MinGain = ParseDouble(MinimumGain, "Minimum gain", problems),
                 MaxGain = ParseDouble(MaximumGain, "Maximum gain", problems),
+                DayDefaults = envelope.DayDefaults with
+                {
+                    Exposure = dayExposure != rig.Pipeline.DayExposure ? dayExposure : envelope.DayDefaults.Exposure,
+                    Gain = dayGain != rig.Pipeline.DayGain ? dayGain : envelope.DayDefaults.Gain
+                },
+                NightDefaults = envelope.NightDefaults with
+                {
+                    Exposure = nightExposure != rig.Pipeline.NightExposure ? nightExposure : envelope.NightDefaults.Exposure,
+                    Gain = nightGain != rig.Pipeline.NightGain ? nightGain : envelope.NightDefaults.Gain
+                },
                 TargetAduLevel = ParseDouble(TargetAduLevel, "Target ADU level", problems),
                 Preference = ParseEnum<ExposureGainPreference>(ExposurePreference, "Adjustment order", problems)
             };
+            if (problems.Count == 0)
+            {
+                foreach (var (label, defaults) in new[] { ("Day", envelope.DayDefaults), ("Night", envelope.NightDefaults) })
+                {
+                    if (defaults.Exposure < envelope.MinExposure || defaults.Exposure > envelope.MaxExposure)
+                    {
+                        problems.Add($"{label} exposure must be within the exposure envelope.");
+                    }
+                    if (defaults.Gain < envelope.MinGain || defaults.Gain > envelope.MaxGain)
+                    {
+                        problems.Add($"{label} gain must be within the gain envelope.");
+                    }
+                }
+            }
         }
         var pipeline = rig.Pipeline with
         {
             CaptureInterval = Seconds(CaptureIntervalSeconds, "Capture interval", problems),
-            DayExposure = Milliseconds(DayExposureMilliseconds, "Day exposure", problems),
-            NightExposure = Milliseconds(NightExposureMilliseconds, "Night exposure", problems),
-            DayGain = ParseDouble(DayGain, "Day gain", problems),
-            NightGain = ParseDouble(NightGain, "Night gain", problems),
+            DayExposure = dayExposure,
+            NightExposure = nightExposure,
+            DayGain = dayGain,
+            NightGain = nightGain,
             CadenceMode = ParseEnum<CaptureCadenceMode>(CadenceMode, "Cadence mode", problems),
             Envelope = envelope
         };

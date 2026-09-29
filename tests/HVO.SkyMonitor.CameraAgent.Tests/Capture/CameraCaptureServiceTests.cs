@@ -102,7 +102,7 @@ public sealed class CameraCaptureServiceTests
                 }
                 Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(config.Rig), before.Manifest.Descriptor.Profiles.Rig.Sha256);
                 var receipt = await named.StageAsync(alternateId, catalog.Selection.Version, "hosted-stage", "owner", true,
-                    CancellationToken.None).ConfigureAwait(false);
+                    initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsTrue(receipt.AcknowledgedUnvalidated);
                 Assert.AreEqual("restart_required", receipt.Disposition);
                 stagedScheduleId = receipt.ScheduleRevisionId!;
@@ -166,7 +166,7 @@ public sealed class CameraCaptureServiceTests
                     CaptureContractJson.ComputeDescriptorSha256(after.Manifest.Descriptor)));
                 await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 var rollback = await named.StageAsync(originalId, selection.Version, "hosted-rollback", "owner", true,
-                    CancellationToken.None).ConfigureAwait(false);
+                    schedule.ActiveRevision.RevisionId, schedule.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual("restart_required", rollback.Disposition);
                 Assert.AreEqual(alternateId, (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection.ActiveRevisionId);
                 var cancelled = await named.CancelPendingAsync(originalId, rollback.Version, "hosted-cancel", "owner",
@@ -316,7 +316,7 @@ public sealed class CameraCaptureServiceTests
             var target = await named.ComposeAsync(profile.ProfileId, camera.RevisionId, optics.RevisionId,
                 mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
             var staged = await named.StageAsync(target.RevisionId, selection.Version, "override-race-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                active.ActiveRevision.RevisionId, active.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             named.SnapshotStartupPendingSelection((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
             var stale = new GatedInitializationModule();
             var fresh = new RigRecordingModule(clock);
@@ -403,7 +403,7 @@ public sealed class CameraCaptureServiceTests
             var selection = (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection;
             var id = selection.ActiveRevisionId!;
             var first = await named.StageAsync(id, selection.Version, "startup-first", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             named.SnapshotStartupPendingSelection((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
             var stale = new GatedInitializationModule();
             var activeModule = new RigRecordingModule(clock);
@@ -420,7 +420,7 @@ public sealed class CameraCaptureServiceTests
                 var cancelled = await named.CancelPendingAsync(id, first.Version, "startup-cancel", "owner",
                     CancellationToken.None).ConfigureAwait(false);
                 var second = await named.StageAsync(id, cancelled.Version, "startup-second", "owner", true,
-                    CancellationToken.None).ConfigureAwait(false);
+                    initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
                 stale.ReleaseInitialization.TrySetResult();
                 await stale.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 _ = await ingress.Captured.Task.WaitAsync(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
@@ -503,6 +503,7 @@ public sealed class CameraCaptureServiceTests
                 .StartAsync(CancellationToken.None).ConfigureAwait(false);
             _ = await runtime.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
             var selection = (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection;
+            var activeSchedule = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
             var profile = await named.SaveProfileNameAsync(null, "Pending rig", CancellationToken.None).ConfigureAwait(false);
             var camera = await named.SaveEquipmentAsync(null, "camera", "Camera",
                 JsonSerializer.SerializeToElement(new NamedCameraEquipment(config.Module, config.Rig.Sensor, config.Rig.Readout)),
@@ -515,6 +516,7 @@ public sealed class CameraCaptureServiceTests
             var pending = await named.ComposeAsync(profile.ProfileId, camera.RevisionId, optics.RevisionId,
                 mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
             _ = await named.StageAsync(pending.RevisionId, selection.Version, "pending-preparation", "owner", true,
+                activeSchedule.ActiveRevision.RevisionId, activeSchedule.ActiveRevision.ProfileSha256,
                 CancellationToken.None).ConfigureAwait(false);
             named.SnapshotStartupPendingSelection((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
             validator.Reject = true;
@@ -581,7 +583,7 @@ public sealed class CameraCaptureServiceTests
             var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var selected = catalog.Selection.ActiveRevisionId!;
             var staged = await named.StageAsync(selected, catalog.Selection.Version, "pending-hosted", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             named.SnapshotStartupPendingSelection((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
             using var telemetry = new CaptureControlTelemetry();
             using var admission = new CaptureAdmissionCoordinator(ingress, options, TimeProvider.System, telemetry);

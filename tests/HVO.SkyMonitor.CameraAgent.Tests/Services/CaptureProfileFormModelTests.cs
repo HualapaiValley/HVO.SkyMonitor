@@ -30,6 +30,8 @@ public sealed class CaptureProfileFormModelTests
         Assert.AreEqual(basis.Rig.Optics.PrincipalPointX, applied.Rig.Optics.PrincipalPointX);
         Assert.AreEqual(basis.Rig.Pipeline.CaptureFailureInitialDelay, applied.Rig.Pipeline.CaptureFailureInitialDelay);
         Assert.AreEqual(basis.Rig.Pipeline.Envelope!.Hysteresis, applied.Rig.Pipeline.Envelope!.Hysteresis);
+        Assert.AreEqual(basis.Rig.Pipeline.Envelope.DayDefaults, applied.Rig.Pipeline.Envelope.DayDefaults);
+        Assert.AreEqual(basis.Rig.Pipeline.Envelope.NightDefaults, applied.Rig.Pipeline.Envelope.NightDefaults);
         Assert.AreEqual(1, model.DateExceptionCount);
         Assert.IsTrue(model.HasReadoutProfile);
         Assert.IsTrue(model.HasMeteringPolicy);
@@ -102,6 +104,8 @@ public sealed class CaptureProfileFormModelTests
         Assert.IsTrue(model.TryApply(basis, out var applied, out var errors), string.Join(" ", errors));
 
         Assert.AreEqual(2.5, applied.Rig.Pipeline.NightGain);
+        Assert.AreEqual(2.5, applied.Rig.Pipeline.Envelope!.NightDefaults.Gain);
+        Assert.AreEqual(basis.Rig.Pipeline.Envelope!.DayDefaults, applied.Rig.Pipeline.Envelope.DayDefaults);
         Assert.IsTrue(applied.Rig.Optics.HorizontalFlip);
         Assert.AreEqual(AutomaticControlOwnership.CameraNative, applied.Rig.ControlPolicy!.ExposureControl);
         Assert.AreEqual(AutomaticControlOwnership.HostMetered, applied.Rig.ControlPolicy.GainControl);
@@ -113,6 +117,52 @@ public sealed class CaptureProfileFormModelTests
         Assert.AreEqual(basis.Rig.Pipeline.DayGain, applied.Rig.Pipeline.DayGain);
         Assert.AreEqual(basis.Rig.Optics.RollDegrees, applied.Rig.Optics.RollDegrees);
         Assert.AreEqual(basis.Module.Options!.Value.GetRawText(), applied.Module.Options!.Value.GetRawText());
+    }
+
+    [TestMethod]
+    public void DayNightEdits_UpdateEffectiveDefaultsAndPreserveTwilightAndSchedule()
+    {
+        var original = RichProfile();
+        var basis = original with
+        {
+            Rig = original.Rig with
+            {
+                Pipeline = original.Rig.Pipeline with
+                {
+                    Envelope = original.Rig.Pipeline.Envelope! with
+                    {
+                        TwilightDefaults = new ExposureDefaults(TimeSpan.FromSeconds(3), 4),
+                        AdjustmentFactor = 0.25
+                    }
+                }
+            }
+        };
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        model.DayExposureMilliseconds = "1500";
+        model.DayGain = "3";
+        model.NightExposureMilliseconds = "2500";
+        model.NightGain = "5";
+
+        Assert.IsTrue(model.TryApply(basis, out var applied, out var errors), string.Join(" ", errors));
+        Assert.AreEqual(new ExposureDefaults(TimeSpan.FromMilliseconds(1500), 3), applied.Rig.Pipeline.Envelope!.DayDefaults);
+        Assert.AreEqual(new ExposureDefaults(TimeSpan.FromMilliseconds(2500), 5), applied.Rig.Pipeline.Envelope.NightDefaults);
+        Assert.AreEqual(basis.Rig.Pipeline.Envelope.TwilightDefaults, applied.Rig.Pipeline.Envelope.TwilightDefaults);
+        Assert.AreEqual(basis.Rig.Pipeline.Envelope.AdjustmentFactor, applied.Rig.Pipeline.Envelope.AdjustmentFactor);
+        CollectionAssert.AreEqual(basis.Schedule.WeeklyWindows.ToArray(), applied.Schedule.WeeklyWindows.ToArray());
+    }
+
+    [TestMethod]
+    public void DayNightEdits_OutsideEnvelopeRejectWithoutChangingBasis()
+    {
+        var basis = RichProfile();
+        var model = CaptureProfileFormModel.FromProfile(basis);
+        model.DayExposureMilliseconds = "30001";
+        model.NightGain = "41";
+
+        Assert.IsFalse(model.TryApply(basis, out var applied, out var errors));
+        Assert.AreSame(basis, applied);
+        CollectionAssert.Contains(errors.ToArray(), "Day exposure must be within the exposure envelope.");
+        CollectionAssert.Contains(errors.ToArray(), "Night gain must be within the gain envelope.");
     }
 
     [TestMethod]
