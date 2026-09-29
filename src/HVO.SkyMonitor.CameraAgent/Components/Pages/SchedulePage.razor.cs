@@ -12,6 +12,12 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 {
     private CaptureScheduleOperatorState? _state;
+    private NamedRigSelection? _rigSelection;
+    private bool _rigSelectionAvailable;
+    private bool RigPendingRestart => _rigSelection?.PendingRevisionId is not null;
+    private bool PendingRigSchedule => RigPendingRestart && _state?.PendingRevision is not null &&
+        string.Equals(_rigSelection!.PendingScheduleRevisionId, _state.PendingRevision.RevisionId, StringComparison.Ordinal);
+    private bool ScheduleActionsBlocked => !_rigSelectionAvailable || RigPendingRestart;
     private CaptureSchedulePreview? _preview;
     private CaptureProcessingPlanPreview? _pipelinePlan;
     private string _editorJson = string.Empty;
@@ -49,6 +55,8 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private readonly Dictionary<string, (string Key, long ExpectedVersion)> _clearOverrideKeys = new(StringComparer.Ordinal);
 
     [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
+
+    [Inject] internal ICameraAgentNamedRigUiService NamedRigService { get; set; } = default!;
 
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
@@ -88,6 +96,16 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             }
             if (result.IsSuccess && result.Value is not null)
             {
+                _rigSelectionAvailable = false;
+                _rigSelection = null;
+                var rigResult = await NamedRigService.GetAsync(CancellationToken.None).ConfigureAwait(false);
+                if (rigResult.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    return;
+                }
+                _rigSelectionAvailable = rigResult.IsSuccess && rigResult.Value is not null;
+                _rigSelection = rigResult.Value?.Selection;
                 _state = result.Value;
                 var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
                 LoadEditor(editorRevision.Profile);
@@ -109,7 +127,10 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
                 }
                 _preview = null;
                 _overrideProfile = _state.Decision.SetpointProfileId ?? _state.ActiveRevision.Definition.SetpointProfiles[0].Id;
-                _message = null;
+                if (!_rigSelectionAvailable)
+                    SetMessage("Named rig selection is unavailable. Schedule changes are disabled until refresh succeeds.", error: true);
+                else
+                    _message = null;
             }
             else
             {
@@ -215,7 +236,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private async Task StageAsync()
     {
-        if (_state is null || _editorBasisRevisionId is null || !TryResolveEditorJson(out var editorJson))
+        if (ScheduleActionsBlocked || _state is null || _editorBasisRevisionId is null || !TryResolveEditorJson(out var editorJson))
         {
             return;
         }
@@ -245,6 +266,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private void BeginActivation(string revisionId, string triggerId, bool rollback)
     {
+        if (ScheduleActionsBlocked) return;
         _confirmRevisionId = revisionId;
         _activationTriggerId = triggerId;
         _confirmRollback = rollback;
@@ -263,7 +285,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private async Task ConfirmActivationAsync()
     {
-        if (_state is null || _confirmRevisionId is null)
+        if (ScheduleActionsBlocked || _state is null || _confirmRevisionId is null)
         {
             return;
         }

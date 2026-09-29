@@ -113,6 +113,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IOperationsQueueSnapshotRefresher>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
+        services.AddSingleton<SqliteNamedRigProfileStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
         services.AddSingleton<CalibrationArtifactPublisher>();
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
@@ -158,7 +159,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<TimeProvider>(),
             provider.GetService<IConstellationTopology>(),
             provider.GetService<IDeploymentLocationStore>(),
-            provider.GetService<ILatestFrameAccessor>()));
+            provider.GetService<ILatestFrameAccessor>(),
+            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>()));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

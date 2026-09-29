@@ -285,6 +285,7 @@ public class Program
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
+        builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
@@ -402,6 +403,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();

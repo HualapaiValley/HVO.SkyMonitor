@@ -120,7 +120,8 @@ internal sealed class SignedImageReleaseFixture : IDisposable
                 labels["io.hvo.skymonitor.configuration-contract"],
                 labels["io.hvo.skymonitor.catalog-contract"],
                 // A release built without the local replay runner publishes no runner contract at all.
-                labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replayRunner) ? replayRunner : null));
+                labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replayRunner) ? replayRunner : null,
+                labels.TryGetValue("io.hvo.skymonitor.raw-ingress-migration", out var migration) ? migration : null));
         var manifest = new DistributionReleaseManifest(
             DistributionSchemaVersions.ReleaseManifest,
             DistributionManifestKind.ImageRelease,

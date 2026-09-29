@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Security;
 using Microsoft.AspNetCore.Authorization;
@@ -222,6 +223,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
     IProcessingGraphOperations operations,
     ICaptureProcessingPipelineFactory pipelineFactory,
     ICameraAgentConfigurationAccessor configurationAccessor,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     TimeProvider timeProvider,
     ILogger<CameraAgentProcessingGraphUiService> logger) : ICameraAgentProcessingGraphUiService
 {
@@ -301,7 +303,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     {
         try
         {
-            var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var configuration = scheduleRuntime?.Snapshot?.Configuration
+                ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
             return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

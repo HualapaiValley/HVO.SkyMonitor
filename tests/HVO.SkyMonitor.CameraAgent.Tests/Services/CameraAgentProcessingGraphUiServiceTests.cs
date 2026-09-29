@@ -207,6 +207,7 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
             operations,
             factory ?? Mock.Of<ICaptureProcessingPipelineFactory>(),
             accessor,
+            null,
             new ProcessingExecutionPagesTests.FixedTimeProvider(Now),
             NullLogger<CameraAgentProcessingGraphUiService>.Instance);
     }

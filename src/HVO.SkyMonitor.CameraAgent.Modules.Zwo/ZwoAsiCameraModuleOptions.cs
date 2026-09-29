@@ -13,6 +13,8 @@ public sealed class ZwoAsiCameraModuleOptions
     [JsonRequired]
     public string ExpectedModel { get; init; } = string.Empty;
 
+    public bool UseUnvalidatedCameraAtOwnRisk { get; init; }
+
     public long Offset { get; init; } = 1;
 
     public long UsbBandwidth { get; init; } = 40;

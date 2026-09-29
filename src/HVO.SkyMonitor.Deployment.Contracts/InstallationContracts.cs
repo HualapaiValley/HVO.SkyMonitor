@@ -135,7 +135,8 @@ public sealed record ImageInstallationIdentity(
     string? MinimumCompatibleRevision = null,
     string? IdentityMigration = null,
     string? RawIngressSchema = null,
-    string? CatalogManifestVersion = null);
+    string? CatalogManifestVersion = null,
+    string? RawIngressMigration = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,

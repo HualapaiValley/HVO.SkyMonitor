@@ -37,7 +37,8 @@ internal static class CaptureLaneEnvelopeSerializer
 
         var envelope = JsonSerializer.Deserialize<CaptureLaneEnvelope>(json, SerializerOptions)
             ?? throw new InvalidDataException("Capture lane context is invalid.");
-        var configuration = envelope.Configuration;
+        var configuration = envelope.Configuration
+            ?? throw new InvalidDataException("Capture lane context configuration is missing.");
         if (configuration.ProcessingSteps is null && configuration.Pipeline is not null)
         {
             return envelope;

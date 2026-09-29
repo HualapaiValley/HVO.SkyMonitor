@@ -7,11 +7,13 @@
 .camera-card code { color: #e9c986; }
 .camera-card p { margin: .4rem 0 0; color: var(--hvo-muted-strong); font-size: .85rem; }
 .camera-card a { color: var(--hvo-info-fg); }
+.camera-card .btn { min-height: 44px; }
 .camera-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin: .6rem 0 0; }
 .camera-card dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
 .camera-card dd { margin: .1rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 .camera-form { display: grid; gap: 1rem; }
 .camera-group { margin: 0; padding: .9rem 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-card-bg); min-inline-size: 0; }
+.camera-starter { border-left: 3px solid var(--hvo-success-strong); }
 .camera-group legend { float: none; width: auto; padding: 0 .4rem; color: var(--hvo-success-fg); font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .6rem .8rem; }
 .field-grid label { display: grid; gap: .25rem; margin: 0; color: var(--hvo-muted-strong); font-size: .8rem; }
@@ -20,4 +22,37 @@
 .camera-note { margin: .6rem 0 .3rem; color: var(--hvo-muted-strong); font-size: .85rem; }
 .camera-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
 .camera-actions .btn { min-height: 44px; }
+.camera-group h2 { font-size: 1.15rem; margin: 0 0 .7rem; }
+.camera-group fieldset { display: grid; gap: .85rem; border: 0; padding: 0; min-inline-size: 0; }
+.camera-group > .form-select { max-width: 36rem; }
+.camera-group > .check { display: flex; align-items: center; gap: .5rem; margin: .8rem 0; }
+.camera-group > .btn { margin: .6rem 0; min-height: 44px; }
+.camera-group > .camera-revisions { margin: .8rem 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.camera-page, .camera-page * { min-inline-size: 0; }
+.camera-status { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.2fr) minmax(0, .8fr); }
+.camera-status .camera-card--active { border-left: 4px solid var(--hvo-success-strong); background: var(--hvo-surface-elevated); }
+.camera-status .camera-card--active h2 { font-size: clamp(1.2rem, 2vw, 1.65rem); }
+.camera-group { padding: clamp(.85rem, 2vw, 1.4rem); }
+.camera-group h2 { color: var(--hvo-success-fg); }
+.camera-group .btn, .camera-group .form-control, .camera-group .form-select, .camera-group .check { min-height: 44px; }
+.camera-group .check input { width: 20px; height: 20px; flex: none; }
+.camera-group > label { display: grid; gap: .25rem; max-width: 36rem; }
+.camera-group code { overflow-wrap: anywhere; }
+.camera-advanced, .camera-provenance { border-top: 1px solid var(--hvo-border-muted); margin-top: .5rem; }
+.camera-advanced summary, .camera-provenance summary { cursor: pointer; padding: .7rem .2rem; min-height: 44px; font-weight: 650; color: var(--hvo-info-fg); }
+.camera-advanced .field-grid { padding: .6rem 0; }
+.camera-compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.camera-compare h3 { margin: 0; font-size: 1.05rem; }
+.camera-compare h4 { margin: .85rem 0 .4rem; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--hvo-success-fg); }
+.camera-fact-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.camera-fact-columns p { overflow-wrap: anywhere; }
+.camera-provenance dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .65rem; margin: .5rem 0; }
+.camera-provenance dt { font-size: .75rem; color: var(--hvo-muted-weak); }
+.camera-provenance dd { margin: 0; overflow-wrap: anywhere; }
+.camera-history ol { padding: 0; margin: .8rem 0 0; list-style: none; max-height: 20rem; overflow-y: auto; }
+.camera-history li { display: flex; flex-wrap: wrap; gap: .35rem 1rem; padding: .65rem 0; border-top: 1px solid var(--hvo-border-muted); overflow-wrap: anywhere; }
+.camera-history li span { color: var(--hvo-muted-strong); }
+.camera-history li code { margin-inline-start: auto; }
 @media (max-width: 900px) { .camera-revisions { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .camera-group > .camera-revisions { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .camera-fact-columns { grid-template-columns: minmax(0, 1fr); } .field-grid { grid-template-columns: minmax(0, 1fr); } .camera-history li code { margin-inline-start: 0; width: 100%; } }

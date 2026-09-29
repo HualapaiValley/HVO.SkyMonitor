@@ -1,4 +1,3 @@
-using System.Collections.Frozen;
 using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
@@ -16,11 +15,6 @@ public sealed class ZwoAsiCameraModule :
     ICameraModuleConfigurationPreflight
 {
     private const string SupportedSdkMajorMinor = "1.41";
-    private static readonly FrozenDictionary<string, SupportedProfile> SupportedProfiles = new[]
-    {
-        new SupportedProfile("ASI676MC", 3552, 3552, 2.0, 12, 7104),
-        new SupportedProfile("ASI178MC", 3096, 2080, 2.4, 14, 6192)
-    }.ToFrozenDictionary(profile => profile.Model, StringComparer.Ordinal);
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
@@ -97,7 +91,7 @@ public sealed class ZwoAsiCameraModule :
                     throw new InvalidOperationException("The configured ASI SDK library could not be loaded or bound.");
                 }
                 ValidateSdkVersion(_native.GetSdkVersion());
-                var selected = SelectCamera(_native, runtime.Serial, validated.Profile.Model, cancellationToken);
+                var selected = SelectCamera(_native, runtime.Serial, validated.Options.ExpectedModel, cancellationToken);
                 _cameraId = selected.CameraId;
                 try
                 {
@@ -113,7 +107,7 @@ public sealed class ZwoAsiCameraModule :
 
                 var controls = _native.GetControlCapabilities(_cameraId)
                     .ToDictionary(control => control.Type);
-                ValidateCameraAndControls(config, validated.Options, validated.Profile, selected, validated.Readout, controls);
+                ValidateCameraAndControls(config, validated.Options, selected, validated.Readout, controls);
 
                 _configuration = config;
                 _options = validated.Options;
@@ -317,13 +311,15 @@ public sealed class ZwoAsiCameraModule :
         {
             throw new ArgumentException("The ASI SDK library-path environment-variable name is required.", nameof(configuration));
         }
-        if (string.IsNullOrWhiteSpace(options.ExpectedModel) || options.ExpectedModel.Length > 63)
+        if (string.IsNullOrWhiteSpace(options.ExpectedModel) || options.ExpectedModel.Length > 63 ||
+            !options.ExpectedModel.StartsWith("ASI", StringComparison.Ordinal) ||
+            options.ExpectedModel.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not (' ' or '-' or '_')))
         {
-            throw new ArgumentException("The expected ASI camera model is required and must fit the SDK model field.", nameof(configuration));
+            throw new ArgumentException("The expected ASI camera model must fit the SDK model field.", nameof(configuration));
         }
-        if (!SupportedProfiles.TryGetValue(options.ExpectedModel, out var supportedProfile))
+        if (options.ExpectedModel is not ("ASI676MC" or "ASI178MC") && !options.UseUnvalidatedCameraAtOwnRisk)
         {
-            throw new NotSupportedException("The configured expected ASI camera model is not supported.");
+            throw new NotSupportedException("An unvalidated ASI model requires explicit owner use-at-own-risk acknowledgement.");
         }
         if (!IsValidEnvironmentVariableName(options.CameraSerialEnvironmentVariable))
         {
@@ -343,36 +339,42 @@ public sealed class ZwoAsiCameraModule :
         var readout = configuration.Rig.Readout is { } profile
             ? SensorReadoutResolver.Resolve(configuration.Rig.Sensor, profile)
             : throw new ArgumentException("The ZWO ASI module requires an explicit physical sensor readout.", nameof(configuration));
-        ValidateConfiguredProfile(configuration.Rig.Sensor, readout, supportedProfile);
-        return new ValidatedConfiguration(options, readout, supportedProfile);
+        ValidateConfiguredProfile(configuration.Rig.Sensor, readout);
+        return new ValidatedConfiguration(options, readout);
     }
 
     private static void ValidateConfiguredProfile(
         SensorProfile sensor,
-        ResolvedSensorReadout readout,
-        SupportedProfile supportedProfile)
+        ResolvedSensorReadout readout)
     {
         var profile = readout.Profile;
-        if (sensor.WidthPixels != supportedProfile.Width || sensor.HeightPixels != supportedProfile.Height ||
-            Math.Abs(sensor.PixelSizeMicrons - supportedProfile.PixelSizeMicrons) > 0.0001 ||
-            sensor.ColorMode != SensorColorMode.Color || sensor.PixelFormat != CameraPixelFormat.BayerRggb16 ||
-            sensor.ResponseMode != SensorResponseMode.BayerRaw || sensor.SimulationResponse is not null ||
-            sensor.StrideBytes != supportedProfile.StrideBytes || sensor.ByteOrder != SampleByteOrder.LittleEndian ||
-            profile.Roi != new SensorCrop(0, 0, supportedProfile.Width, supportedProfile.Height) ||
+        var color = sensor.ColorMode == SensorColorMode.Color;
+        var pixelFormat = color ? CameraPixelFormat.BayerRggb16 : CameraPixelFormat.Mono16;
+        if (sensor.WidthPixels < 1 || sensor.HeightPixels < 1 ||
+            readout.Layout.ByteLength > int.MaxValue ||
+            !double.IsFinite(sensor.PixelSizeMicrons) || sensor.PixelSizeMicrons <= 0 ||
+            sensor.ColorMode is not (SensorColorMode.Color or SensorColorMode.Mono) ||
+            sensor.PixelFormat != pixelFormat ||
+            sensor.ResponseMode != (color ? SensorResponseMode.BayerRaw : SensorResponseMode.Monochrome) ||
+            sensor.SimulationResponse is not null ||
+            sensor.StrideBytes != readout.Layout.StrideBytes || sensor.ByteOrder != SampleByteOrder.LittleEndian ||
+            profile.Roi != new SensorCrop(0, 0, sensor.WidthPixels, sensor.HeightPixels) ||
             profile.BinX != 1 || profile.BinY != 1 ||
             profile.BinningAlgorithm != FrameBinningAlgorithm.IdentityV1 ||
-            profile.PixelFormat != CameraPixelFormat.BayerRggb16 ||
-            profile.SampleDepthBits != supportedProfile.SampleDepthBits ||
+            profile.PixelFormat != pixelFormat ||
+            profile.SampleDepthBits is < 1 or > 16 ||
             profile.ContainerDepthBits != 16 || profile.Packing != FrameSamplePacking.ByteAligned ||
-            profile.ByteOrder != SampleByteOrder.LittleEndian || profile.CfaPattern != ColorFilterArrayPattern.Rggb ||
-            profile.CfaOriginX != 0 || profile.CfaOriginY != 0 ||
-            profile.StrideBytes != supportedProfile.StrideBytes ||
+            profile.ByteOrder != SampleByteOrder.LittleEndian ||
+            profile.CfaPattern != (color ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None) ||
+            (color && (profile.CfaOriginX != 0 || profile.CfaOriginY != 0)) ||
+            (!color && (profile.CfaOriginX is not null || profile.CfaOriginY is not null)) ||
+            profile.StrideBytes is not { } stride || (long)stride != (long)sensor.WidthPixels * 2 ||
             profile.StoredCodeTransform != FrameStoredCodeTransform.OpaqueContainerV1 ||
             profile.LevelCodeSpace != FrameLevelCodeSpace.StoredContainer ||
             profile.BlackLevel != 0 || profile.WhiteLevel != 65535)
         {
             throw new NotSupportedException(
-                $"The supported {supportedProfile.Model} mode is its full-frame bin-1 RAW16 BayerRggb16 profile with an opaque stored-container mapping.");
+                "The configured ASI mode must be full-frame bin-1 RAW16 mono or RGGB with an opaque stored-container mapping.");
         }
     }
 
@@ -506,23 +508,24 @@ public sealed class ZwoAsiCameraModule :
     private static void ValidateCameraAndControls(
         CameraModuleConfig configuration,
         ZwoAsiCameraModuleOptions options,
-        SupportedProfile supportedProfile,
         AsiCameraInfo camera,
         ResolvedSensorReadout readout,
         Dictionary<AsiControlType, AsiControlCaps> controls)
     {
-        if (!string.Equals(NormalizeNativeModel(camera.Model), supportedProfile.Model, StringComparison.Ordinal))
+        if (!string.Equals(NormalizeNativeModel(camera.Model), options.ExpectedModel, StringComparison.Ordinal))
         {
             throw new InvalidOperationException("The selected ASI camera does not match the validated physical profile.");
         }
-        if (camera.MaximumWidth != supportedProfile.Width || camera.MaximumHeight != supportedProfile.Height ||
-            Math.Abs(camera.PixelSizeMicrons - supportedProfile.PixelSizeMicrons) > 0.0001 ||
-            camera.BitDepth != supportedProfile.SampleDepthBits)
+        var sensor = configuration.Rig.Sensor;
+        if (camera.MaximumWidth != sensor.WidthPixels || camera.MaximumHeight != sensor.HeightPixels ||
+            Math.Abs(camera.PixelSizeMicrons - sensor.PixelSizeMicrons) > 0.0001 ||
+            camera.BitDepth != readout.Profile.SampleDepthBits)
         {
             throw new InvalidOperationException("The selected ASI camera geometry or ADC depth does not match the configured rig.");
         }
-        if (!camera.IsColorCamera || camera.BayerPattern != AsiBayerPattern.Rg ||
-            readout.Layout.CfaPattern != ColorFilterArrayPattern.Rggb)
+        if (camera.IsColorCamera != (sensor.ColorMode == SensorColorMode.Color) ||
+            camera.IsColorCamera && (camera.BayerPattern != AsiBayerPattern.Rg ||
+                readout.Layout.CfaPattern != ColorFilterArrayPattern.Rggb))
         {
             throw new InvalidOperationException("The selected ASI camera color/CFA layout does not match the configured rig.");
         }
@@ -857,16 +860,7 @@ public sealed class ZwoAsiCameraModule :
 
     private sealed record ValidatedConfiguration(
         ZwoAsiCameraModuleOptions Options,
-        ResolvedSensorReadout Readout,
-        SupportedProfile Profile);
-
-    private sealed record SupportedProfile(
-        string Model,
-        int Width,
-        int Height,
-        double PixelSizeMicrons,
-        int SampleDepthBits,
-        int StrideBytes);
+        ResolvedSensorReadout Readout);
 
     private sealed record ResolvedRuntimeConfiguration(string LibraryPath, byte[] Serial);
 }

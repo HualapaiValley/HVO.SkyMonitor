@@ -35,7 +35,8 @@ public sealed class CameraCaptureService(
     EnvironmentalCaptureTriggerBridge? environmentalTriggers = null,
     IProjectedSceneStagingStore? projectedSceneStaging = null,
     ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
-    CaptureProjectedSceneStager? projectedSceneStager = null) : BackgroundService
+    CaptureProjectedSceneStager? projectedSceneStager = null,
+    SqliteNamedRigProfileStore? namedRigProfiles = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -64,6 +65,7 @@ public sealed class CameraCaptureService(
     {
         await WaitForApplicationStartedAsync(stoppingToken).ConfigureAwait(false);
         var fileConfiguration = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
+        var startupPending = namedRigProfiles?.StartupPendingSelection;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -79,17 +81,79 @@ public sealed class CameraCaptureService(
                 captureContext = _scheduleRuntimeCoordinator.CaptureContext;
                 config = captureContext.Value.Snapshot.Configuration;
             }
+            var pending = startupPending is not null && namedRigProfiles is not null &&
+                _scheduleRuntimeCoordinator is not null && namedRigProfiles.PendingRuntimeFailure is null &&
+                (await namedRigProfiles.GetAsync(stoppingToken).ConfigureAwait(false)).Selection is { } selection &&
+                selection.PendingRevisionId == startupPending.PendingRevisionId &&
+                selection.PendingCommandKey == startupPending.PendingCommandKey &&
+                selection.PendingScheduleRevisionId == startupPending.PendingScheduleRevisionId
+                ? startupPending.PendingRevisionId : null;
+            CaptureScheduleRuntimeSnapshot? prepared = null;
+            if (pending is not null)
+            {
+                try
+                {
+                    var revision = await namedRigProfiles!.ReconcileAtStartupAsync(fileConfiguration,
+                        _moduleFactory, stoppingToken, deferModuleInitialization: true,
+                        expectedSelection: startupPending).ConfigureAwait(false);
+                    if (revision is not null)
+                    {
+                        config = revision.Profile.ApplyTo(fileConfiguration);
+                        prepared = await _scheduleRuntimeCoordinator!.PrepareStartupAsync(revision, config,
+                            stoppingToken).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    namedRigProfiles!.ReportPendingRuntimeFailure(
+                        $"Pending rig failed startup validation ({ex.GetType().Name}); cancel it or correct the hardware and restart.");
+                    config = captureContext!.Value.Snapshot.Configuration;
+                }
+            }
             using var revisionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                stoppingToken,
-                captureContext?.RevisionChanged ?? CancellationToken.None);
+                stoppingToken, prepared is null ? captureContext?.RevisionChanged ?? CancellationToken.None : CancellationToken.None);
             var captureToken = revisionCancellation.Token;
             ICameraModule? module = null;
+            var moduleInitialized = false;
+            var activationFailed = false;
+            var retryPreparedConflict = false;
             try
             {
                 module = _moduleFactory.Create(config.ModuleType);
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
                 await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
+                if (prepared is not null)
+                {
+                    try
+                    {
+                        await _scheduleRuntimeCoordinator!.CommitPreparedStartupAsync(prepared,
+                            token => namedRigProfiles!.CommitInitializedAsync(pending!, config, token),
+                            stoppingToken).ConfigureAwait(false);
+                        captureContext = _scheduleRuntimeCoordinator.CaptureContext;
+                        startupPending = null;
+                    }
+                    catch (CaptureScheduleStoreConflictException) when (
+                        _captureAdmissionCoordinator.Snapshot.State != CaptureAdmissionState.Unavailable)
+                    {
+                        // The prepared module has not been published; dispose it and prepare again.
+                        retryPreparedConflict = true;
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        activationFailed = true;
+                        namedRigProfiles!.ReportActiveRuntimeFailure(
+                            $"Rig activation could not be published ({ex.GetType().Name}); capture unavailable; restart for recovery.");
+                        throw;
+                    }
+                }
+                moduleInitialized = true;
+                startupPending = null;
+                if (prepared is not null)
+                    namedRigProfiles!.ReportPendingRuntimeFailure(null);
+                namedRigProfiles?.ReportActiveRuntimeFailure(null);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
 
@@ -108,9 +172,11 @@ public sealed class CameraCaptureService(
                     _fleetRuntimeState,
                     _scheduleRuntimeCoordinator,
                     _environmentalTriggers);
-                await runner.RunAsync(captureToken).ConfigureAwait(false);
+                using var runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
+                await runner.RunAsync(runnerCancellation.Token).ConfigureAwait(false);
                 if (_scheduleRuntimeCoordinator is not null &&
-                    revisionCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+                    runnerCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
                 {
                     continue;
                 }
@@ -128,6 +194,16 @@ public sealed class CameraCaptureService(
             }
             catch (Exception ex)
             {
+                if (prepared is not null && !moduleInitialized && !activationFailed &&
+                    ex is not CaptureScheduleStoreConflictException)
+                {
+                    namedRigProfiles?.ReportPendingRuntimeFailure(
+                        $"Pending rig failed capture initialization ({ex.GetType().Name}); cancel it or correct the hardware and restart.");
+                }
+                if (!moduleInitialized && ex is not OperationCanceledException && !activationFailed)
+                    namedRigProfiles?.ReportActiveRuntimeFailure(
+                        prepared is null ? $"Active camera module initialization failed ({ex.GetType().Name}); capture unavailable."
+                            : null);
                 _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
                 if (ex is RawIngressConflictException or IOException or InvalidDataException or
                     UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
@@ -141,6 +217,18 @@ public sealed class CameraCaptureService(
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
+                }
+
+                if (activationFailed)
+                {
+                    try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+                    break;
+                }
+
+                if (retryPreparedConflict)
+                {
+                    continue;
                 }
 
                 try

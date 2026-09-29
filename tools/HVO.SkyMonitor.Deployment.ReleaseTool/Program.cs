@@ -787,7 +787,8 @@ internal static partial class Program
             LabelVersion(reference, "io.hvo.skymonitor.catalog-manifest-version"),
             Label(reference, "io.hvo.skymonitor.configuration-contract"),
             Label(reference, "io.hvo.skymonitor.catalog-contract"),
-            reference.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replay) ? replay : null);
+            reference.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replay) ? replay : null,
+            reference.TryGetValue("io.hvo.skymonitor.raw-ingress-migration", out var migration) ? migration : null);
     }
 
     private static string Label(IReadOnlyDictionary<string, string> labels, string name)
@@ -1132,6 +1133,8 @@ internal static partial class Program
                 Label(identity.Labels, "io.hvo.skymonitor.minimum-compatible-revision") != image.Compatibility.MinimumCompatibleRevision ||
                 Label(identity.Labels, "io.hvo.skymonitor.identity-migration") != image.Compatibility.IdentityMigration ||
                 LabelVersion(identity.Labels, "io.hvo.skymonitor.raw-ingress-schema") != image.Compatibility.RawIngressSchema ||
+                (identity.Labels.TryGetValue("io.hvo.skymonitor.raw-ingress-migration", out var migration) ? migration : null)
+                    != image.Compatibility.RawIngressMigration ||
                 LabelVersion(identity.Labels, "io.hvo.skymonitor.catalog-manifest-version") != image.Compatibility.CatalogManifestVersion ||
                 Label(identity.Labels, "io.hvo.skymonitor.configuration-contract") != image.Compatibility.ConfigurationContract ||
                 Label(identity.Labels, "io.hvo.skymonitor.catalog-contract") != image.Compatibility.CatalogContract ||

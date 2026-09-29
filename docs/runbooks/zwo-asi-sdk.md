@@ -27,7 +27,7 @@ profile below. Linux x64 was subsequently verified with the separately hashed
 V1.41 x64 library on Ubuntu 24.04. The vendor SDK remains operator-supplied and
 is not committed to or redistributed by this repository.
 
-The production adapter has exactly two supported physical modes:
+The two individually exercised physical profiles are:
 
 | Expected model | Full-frame bin-1 RAW16 | Pixel pitch | ADC depth | Stride | Stored declaration |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -35,8 +35,14 @@ The production adapter has exactly two supported physical modes:
 | `ASI178MC` | 3096 x 2080 color RGGB | 2.4 um | 14 bit | 6192 bytes | `OpaqueContainerV1`, levels 0..65535 |
 
 Both are tightly packed, little-endian, full-frame, bin-1 profiles with RGGB
-origin `(0,0)`. Other models, ROI/bin modes, mono modes, and decoded container
-mappings are not supported by this adapter release.
+origin `(0,0)`. The adapter also accepts an owner-configured ASI model with a
+full-frame bin-1 RAW16 mono or RGGB declaration; it does not infer dimensions,
+pitch, depth, color, or control limits from the model name. Initialization
+compares the declaration to the connected camera and SDK capabilities before
+acquisition. This generic path is **not per-model laboratory validation**.
+Unsupported CFA orders, ROI/bin modes, and decoded container mappings remain
+blocked. In particular, the ASI120MM Mini capability inventory above is not a
+claim of validated capture or sensor fidelity.
 
 The committed physical samples select an explicit empty v2 processing graph.
 Raw ingress and manifest lineage remain durable, but no processing recipe is
@@ -97,13 +103,19 @@ The library environment variable must resolve to an absolute V1.41 library path,
 and the serial environment variable must resolve to exactly 16 hexadecimal
 characters. The module performs no environment reads, SDK loading, USB
 enumeration, or camera opening during construction or configuration preflight.
-Preflight first resolves the exact configured `ExpectedModel` to one of the two
-profiles above and rejects unsupported or cross-paired model/layout declarations.
+Preflight rejects malformed model names and unrepresentable RAW16 declarations
+without contacting the SDK. It cannot prove the physical camera is compatible.
+Models other than the two individually exercised presets also require an explicit
+`useUnvalidatedCameraAtOwnRisk: true` configuration acknowledgement; the
+named-profile selection workflow must record its own owner acknowledgement.
 Initialization resolves the variables, loads the library with
 `NativeLibrary.Load`, resolves every required export before use, checks V1.41
 major/minor compatibility, discovers by private serial, normalizes only an exact
-native `ZWO ` model prefix when comparing against the selected profile, verifies
-the native camera against that profile, then opens and initializes it.
+native `ZWO ` model prefix when comparing against the expected model, verifies
+native geometry, ADC depth, color/CFA, bin, RAW16 and writable control bounds
+against the configured rig, then opens and initializes it. No acknowledgement
+can waive a failed runtime check. Without a matching attached camera, saving a
+definition does not establish compatibility or allow acquisition.
 
 The SDK writes RAW16 directly into CameraFrame-owned memory. The adapter does
 not transform, shift, debayer, or otherwise touch those bytes. Both physical
