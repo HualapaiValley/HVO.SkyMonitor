@@ -87,6 +87,80 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
+    public void SiteDefaults_AreValidAndKeepTheProjectionBoundAndOnlineMap()
+    {
+        var options = new CameraAgentHostOptions { RawIngressRoot = "raw-ingress" };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsTrue(valid, string.Join("; ", results.Select(static result => result.ErrorMessage)));
+        Assert.IsNull(options.DisplayName);
+        Assert.AreEqual(200, options.SkyMap.MaximumObjects);
+        Assert.IsTrue(options.SiteMap.Enabled);
+        Assert.AreEqual("https://tile.openstreetmap.org/{z}/{x}/{y}.png", options.SiteMap.TileTemplate);
+        Assert.AreEqual(13, options.SiteMap.Zoom);
+    }
+
+    [TestMethod]
+    [DataRow("display-blank", nameof(CameraAgentHostOptions.DisplayName))]
+    [DataRow("display-control", nameof(CameraAgentHostOptions.DisplayName))]
+    [DataRow("display-long", nameof(CameraAgentHostOptions.DisplayName))]
+    [DataRow("objects-zero", nameof(SkyMapOptions.MaximumObjects))]
+    [DataRow("objects-high", nameof(SkyMapOptions.MaximumObjects))]
+    [DataRow("tiles-http", nameof(SiteMapOptions.TileTemplate))]
+    [DataRow("tiles-placeholder", nameof(SiteMapOptions.TileTemplate))]
+    [DataRow("tiles-relative", nameof(SiteMapOptions.TileTemplate))]
+    [DataRow("attribution-http", nameof(SiteMapOptions.AttributionLink))]
+    [DataRow("attribution-control", nameof(SiteMapOptions.Attribution))]
+    [DataRow("zoom-zero", nameof(SiteMapOptions.Zoom))]
+    [DataRow("zoom-high", nameof(SiteMapOptions.Zoom))]
+    public void Validate_WhenASiteSettingIsOutOfBounds_NamesIt(string scenario, string member)
+    {
+        var options = scenario switch
+        {
+            "display-blank" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", DisplayName = "  " },
+            "display-control" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", DisplayName = "East\ndome" },
+            "display-long" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", DisplayName = new string('n', 81) },
+            "objects-zero" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", SkyMap = new SkyMapOptions { MaximumObjects = 0 } },
+            "objects-high" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", SkyMap = new SkyMapOptions { MaximumObjects = 5001 } },
+            "tiles-http" => WithSiteMap(new SiteMapOptions { TileTemplate = "http://tiles.example.test/{z}/{x}/{y}.png" }),
+            "tiles-placeholder" => WithSiteMap(new SiteMapOptions { TileTemplate = "https://tiles.example.test/{z}/{x}.png" }),
+            "tiles-relative" => WithSiteMap(new SiteMapOptions { TileTemplate = "/tiles/{z}/{x}/{y}.png" }),
+            "attribution-http" => WithSiteMap(new SiteMapOptions { AttributionLink = new Uri("http://tiles.example.test/terms") }),
+            "attribution-control" => WithSiteMap(new SiteMapOptions { Attribution = "Tiles\u0007" }),
+            "zoom-zero" => WithSiteMap(new SiteMapOptions { Zoom = 0 }),
+            _ => WithSiteMap(new SiteMapOptions { Zoom = 19 })
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(
+            results.Any(result => result.MemberNames.Contains(member)),
+            string.Join("; ", results.Select(static result => $"{result.ErrorMessage} [{string.Join(",", result.MemberNames)}]")));
+    }
+
+    [TestMethod]
+    public void Validate_WhenTheOnlineMapIsOff_IgnoresTheTileAddress()
+    {
+        var options = WithSiteMap(new SiteMapOptions
+        {
+            Enabled = false,
+            TileTemplate = "http://tiles.example.test/unused"
+        });
+
+        Assert.IsTrue(Validator.TryValidateObject(
+            options, new ValidationContext(options), [], validateAllProperties: true));
+    }
+
+    private static CameraAgentHostOptions WithSiteMap(SiteMapOptions siteMap)
+        => new() { RawIngressRoot = "raw-ingress", SiteMap = siteMap };
+
+    [TestMethod]
     public void CaptureLanePolicy_DisabledCentralIntegrationSuppressesConfiguredUploadLane()
     {
         var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions

@@ -484,7 +484,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     }
 
     private string HeadingEyebrow =>
-        $"{_view?.Summary.Configuration.Value.AgentId ?? "This camera"} / local authority";
+        $"{(string.IsNullOrWhiteSpace(_view?.DisplayName) ? "This camera" : _view.DisplayName)} / local authority";
 
     private string DeckClass => _errorMessage is not null || HasStaleSection || HasUnknownSection
         ? "pending"

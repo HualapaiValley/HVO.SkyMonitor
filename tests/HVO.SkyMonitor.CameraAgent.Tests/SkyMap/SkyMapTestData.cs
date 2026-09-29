@@ -31,7 +31,7 @@ internal static class SkyMapTestData
             new CameraAgentSkyMapObject("vega", "Vega", "Star", 0.03, 68.9, 47.1, 1120.6, 430.2, "91262")
         ],
         [new CameraAgentSkyMapConstellation("Lyr", 5)],
-        CameraAgentSkyMapProjection.MaximumObjects,
+        CameraAgentSkyMapProjection.DefaultMaximumObjects,
         ObjectsAtBound: false,
         CameraAgentSkyMapProjection.MaximumMagnitude,
         CameraAgentSkyMapProjection.AstronomyAlgorithmVersion,

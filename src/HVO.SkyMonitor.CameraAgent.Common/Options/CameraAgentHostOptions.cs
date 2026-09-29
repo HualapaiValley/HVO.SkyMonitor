@@ -2,6 +2,8 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Replay;
@@ -68,6 +70,19 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public int OperationsReferenceLifetimeMinutes { get; init; } = 15;
 
     public string? AgentId { get; init; }
+
+    /// <summary>
+    /// The operator-facing name of this camera. The operations workspace shows it wherever it would otherwise show
+    /// the agent identifier, and the local site profile uses it as the camera name until an operator records one.
+    /// </summary>
+    [MaxLength(SiteProfileLimits.MaximumNameLength)]
+    public string? DisplayName { get; init; }
+
+    [Required]
+    public SkyMapOptions SkyMap { get; init; } = new();
+
+    [Required]
+    public SiteMapOptions SiteMap { get; init; } = new();
 
     [Range(1, 1440)]
     public int RetentionSweepIntervalMinutes { get; init; } = 30;
@@ -272,6 +287,117 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         foreach (var result in locationResults)
         {
             yield return result;
+        }
+
+        if (DisplayName is { } displayName &&
+            (string.IsNullOrWhiteSpace(displayName) || displayName.Any(char.IsControl)))
+        {
+            yield return new ValidationResult(
+                "DisplayName must contain visible text and no control characters.",
+                [nameof(DisplayName)]);
+        }
+
+        var skyMapResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            SkyMap,
+            new ValidationContext(SkyMap),
+            skyMapResults,
+            validateAllProperties: true);
+        foreach (var result in skyMapResults)
+        {
+            yield return result;
+        }
+
+        var siteMapResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            SiteMap,
+            new ValidationContext(SiteMap),
+            siteMapResults,
+            validateAllProperties: true);
+        foreach (var result in siteMapResults)
+        {
+            yield return result;
+        }
+    }
+}
+
+/// <summary>Bounds for the operator sky-map projection shown on the Observatory &amp; location page.</summary>
+public sealed class SkyMapOptions
+{
+    /// <summary>
+    /// The largest number of catalog objects one projection returns, brightest first. The page pages through the
+    /// result, so this bounds projection cost rather than what fits on screen.
+    /// </summary>
+    [Range(1, CameraAgentSkyMapProjection.MaximumConfigurableObjects)]
+    public int MaximumObjects { get; init; } = CameraAgentSkyMapProjection.DefaultMaximumObjects;
+}
+
+/// <summary>
+/// The optional street-map backdrop on the Observatory &amp; location page. The operator's browser, not CameraAgent,
+/// fetches the tiles, so the page falls back to a schematic when the browser is offline or the provider refuses.
+/// </summary>
+public sealed class SiteMapOptions : IValidatableObject
+{
+    /// <summary>The OpenStreetMap standard tile layer, whose usage policy permits light interactive use with attribution.</summary>
+    public const string DefaultTileTemplate = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+
+    /// <summary>When false the page shows only the offline schematic and the browser makes no tile request.</summary>
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>An absolute HTTPS tile URL containing the <c>{z}</c>, <c>{x}</c> and <c>{y}</c> placeholders.</summary>
+    [Required]
+    [MaxLength(512)]
+    public string TileTemplate { get; init; } = DefaultTileTemplate;
+
+    /// <summary>The attribution the tile provider requires, shown over the map.</summary>
+    [Required]
+    [MaxLength(200)]
+    public string Attribution { get; init; } = "© OpenStreetMap contributors";
+
+    /// <summary>The page the attribution links to.</summary>
+    [Required]
+    public Uri AttributionLink { get; init; } = new("https://www.openstreetmap.org/copyright");
+
+    /// <summary>The web-mercator zoom level; 13 shows roughly the surrounding few kilometres.</summary>
+    [Range(1, 18)]
+    public int Zoom { get; init; } = 13;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enabled)
+        {
+            yield break;
+        }
+
+        if (TileTemplate is null ||
+            !TileTemplate.Contains("{z}", StringComparison.Ordinal) ||
+            !TileTemplate.Contains("{x}", StringComparison.Ordinal) ||
+            !TileTemplate.Contains("{y}", StringComparison.Ordinal) ||
+            !Uri.TryCreate(
+                TileTemplate.Replace("{z}", "0", StringComparison.Ordinal)
+                    .Replace("{x}", "0", StringComparison.Ordinal)
+                    .Replace("{y}", "0", StringComparison.Ordinal),
+                UriKind.Absolute,
+                out var tile) ||
+            tile.Scheme != Uri.UriSchemeHttps)
+        {
+            yield return new ValidationResult(
+                "SiteMap:TileTemplate must be an absolute HTTPS address containing {z}, {x} and {y}.",
+                [nameof(TileTemplate)]);
+        }
+
+        if (AttributionLink is not { IsAbsoluteUri: true } || AttributionLink.Scheme != Uri.UriSchemeHttps)
+        {
+            yield return new ValidationResult(
+                "SiteMap:AttributionLink must be an absolute HTTPS address.",
+                [nameof(AttributionLink)]);
+        }
+
+        if (string.IsNullOrWhiteSpace(Attribution) || Attribution.Any(char.IsControl))
+        {
+            yield return new ValidationResult(
+                "SiteMap:Attribution must contain visible text and no control characters.",
+                [nameof(Attribution)]);
         }
     }
 }

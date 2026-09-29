@@ -38,7 +38,7 @@ public sealed class OperatorRouteTests
             typeof(AutomationsPage),
             typeof(CameraRigPage),
             typeof(DataStoragePage),
-            typeof(SkyMapPage),
+            typeof(ObservatoryLocationPage),
             typeof(ProcessingExecutionsPage),
             typeof(ProcessingExecutionDetailPage),
             typeof(ProcessingGraphsPage),
@@ -105,6 +105,7 @@ public sealed class OperatorRouteTests
             ("/operations/schedule", "Operations"),
             ("/operations/camera", "Operations"),
             ("/operations/data", "Operations"),
+            ("/operations/site", "Operations"),
             ("/operations/sky-map", "Operations"),
             ("/operations/pipeline/executions", "Operations")
         })
@@ -136,7 +137,7 @@ public sealed class OperatorRouteTests
             (typeof(AutomationsPage), ["/operations/automations"]),
             (typeof(CameraRigPage), ["/operations/camera"]),
             (typeof(DataStoragePage), ["/operations/data"]),
-            (typeof(SkyMapPage), ["/operations/sky-map"]),
+            (typeof(ObservatoryLocationPage), ["/operations/site", "/operations/sky-map"]),
             (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),

@@ -1536,7 +1536,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         foreach (var (route, heading) in new[]
         {
             ("/operations/camera", "Camera & rig"),
-            ("/operations/sky-map", "Sky map & catalog"),
+            ("/operations/site", "Observatory & location"),
             ("/operations/pipeline", "Pipeline summary"),
             ("/operations/automations", "Automations"),
             ("/operations/data", "Data & storage"),

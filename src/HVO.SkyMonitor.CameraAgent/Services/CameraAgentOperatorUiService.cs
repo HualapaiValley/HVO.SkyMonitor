@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -81,10 +82,15 @@ internal sealed record OperatorOutboxPage(
     IReadOnlyList<OperatorOutboxItem> Items,
     string? NextCursor);
 
+/// <param name="DisplayName">
+/// The operator-facing camera name from the site profile or the installer, or null when neither names it. The
+/// workspace shows this rather than the agent identifier.
+/// </param>
 internal sealed record CameraAgentOperationsView(
     CameraAgentOperationsSummary Summary,
     IReadOnlyList<OperatorOutboxItem> ArtifactQuarantine,
-    IReadOnlyList<OperatorOutboxItem> EnvironmentalQuarantine);
+    IReadOnlyList<OperatorOutboxItem> EnvironmentalQuarantine,
+    string? DisplayName = null);
 
 internal sealed record OperatorCommandReceipt(
     string Action,
@@ -303,7 +309,8 @@ internal sealed class CameraAgentOperatorUiService(
     IOptions<CameraAgentHostOptions> hostOptions,
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
-    ILogger<CameraAgentOperatorUiService> logger) : ICameraAgentOperatorUiService
+    ILogger<CameraAgentOperatorUiService> logger,
+    ISiteProfileStore? siteProfileStore = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -328,7 +335,10 @@ internal sealed class CameraAgentOperatorUiService(
             var environmental = centralDisabled
                 ? []
                 : await ReadEnvironmentalQuarantineAsync(cancellationToken).ConfigureAwait(false);
-            return OperatorUiResult<CameraAgentOperationsView>.Success(new(summary, artifacts, environmental));
+            var displayName = await ReadDisplayNameAsync(
+                siteProfileStore, _hostOptions.DisplayName, logger, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentOperationsView>.Success(
+                new(summary, artifacts, environmental, displayName));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -338,6 +348,35 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent operations UI read failed.");
             return Unavailable<CameraAgentOperationsView>("Current operations data is unavailable.");
+        }
+    }
+
+    // The name is presentation only, so an unreadable profile degrades to the installer name rather than
+    // failing the whole operations read.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A profile read failure is logged and degrades to the configured name.")]
+    internal static async ValueTask<string?> ReadDisplayNameAsync(
+        ISiteProfileStore? siteProfileStore,
+        string? configuredName,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var configured = string.IsNullOrWhiteSpace(configuredName) ? null : configuredName.Trim();
+        if (siteProfileStore is null)
+        {
+            return configured;
+        }
+        try
+        {
+            return (await siteProfileStore.GetAsync(cancellationToken).ConfigureAwait(false)).EffectiveCameraName;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent site profile read failed; showing the configured camera name.");
+            return configured;
         }
     }
 

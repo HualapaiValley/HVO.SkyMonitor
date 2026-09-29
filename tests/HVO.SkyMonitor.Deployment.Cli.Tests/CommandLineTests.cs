@@ -30,6 +30,19 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void Parse_FriendlyNameLongerThanTheCameraAccepts_IsRejected()
+    {
+        var atBound = ValidArguments.ToArray();
+        atBound[3] = new string('n', InstallRequest.MaximumFriendlyNameLength);
+        var overBound = ValidArguments.ToArray();
+        overBound[3] = new string('n', InstallRequest.MaximumFriendlyNameLength + 1);
+
+        Assert.AreEqual(atBound[3], CommandLine.Parse(atBound).FriendlyName);
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(overBound));
+        StringAssert.Contains(exception.Message, "at most 80 characters", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Parse_LocalReplayRunnerProfile_IsExplicitlySelectable()
     {
         var request = CommandLine.Parse(ValidArguments.Concat([

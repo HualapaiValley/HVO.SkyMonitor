@@ -25,7 +25,7 @@ public sealed class CameraAgentSkyMapProjectionTests
         Assert.AreEqual(Serialize(first), Serialize(second));
         Assert.AreEqual(Instant, first.AtUtc);
         Assert.AreEqual("fixture-catalog", first.Catalog.Name);
-        Assert.AreEqual(CameraAgentSkyMapProjection.MaximumObjects, first.MaximumObjects);
+        Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, first.MaximumObjects);
         Assert.IsFalse(first.ObjectsAtBound, "a sky below the bound must not be reported as truncated");
         Assert.AreEqual(CameraAgentSkyMapProjection.AstronomyAlgorithmVersion, first.AstronomyAlgorithmVersion);
     }
@@ -36,7 +36,7 @@ public sealed class CameraAgentSkyMapProjectionTests
         var result = await Project(CreateCatalog(ZenithField(600))).ProjectAsync(Instant, CancellationToken.None)
             .ConfigureAwait(false);
 
-        Assert.HasCount(CameraAgentSkyMapProjection.MaximumObjects, result.Objects);
+        Assert.HasCount(CameraAgentSkyMapProjection.DefaultMaximumObjects, result.Objects);
         Assert.IsTrue(result.ObjectsAtBound);
         var ordered = result.Objects
             .OrderBy(static item => item.Magnitude)
@@ -46,6 +46,38 @@ public sealed class CameraAgentSkyMapProjectionTests
         CollectionAssert.AreEqual(ordered, result.Objects.Select(static item => item.Id).ToArray());
         Assert.IsTrue(result.Objects.All(static item => item.Magnitude <= CameraAgentSkyMapProjection.MaximumMagnitude));
     }
+
+    [TestMethod]
+    public async Task ProjectAsync_WithAConfiguredBound_ReturnsThatManyAndReportsItAsync()
+    {
+        var catalog = CreateCatalog(ZenithField(600));
+
+        var lower = await Project(catalog, maximumObjects: 25).ProjectAsync(Instant, CancellationToken.None)
+            .ConfigureAwait(false);
+        var higher = await Project(catalog, maximumObjects: 1_000).ProjectAsync(Instant, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.HasCount(25, lower.Objects);
+        Assert.AreEqual(25, lower.MaximumObjects);
+        Assert.IsTrue(lower.ObjectsAtBound);
+        Assert.Contains("of at most 25 catalog objects", lower.Summary, StringComparison.Ordinal);
+        // A bound above the visible sky returns every visible object, says it was not truncated, and keeps the same
+        // brightness order, so the lower result is its prefix.
+        Assert.IsGreaterThan(200, higher.Objects.Count);
+        Assert.IsLessThan(1_000, higher.Objects.Count);
+        Assert.AreEqual(1_000, higher.MaximumObjects);
+        Assert.IsFalse(higher.ObjectsAtBound);
+        CollectionAssert.AreEqual(
+            lower.Objects.Select(static item => item.Id).ToArray(),
+            higher.Objects.Take(25).Select(static item => item.Id).ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(CameraAgentSkyMapProjection.MaximumConfigurableObjects + 1)]
+    public void Constructor_WithAnOutOfRangeBound_Throws(int maximumObjects)
+        => Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => Project(CreateCatalog(BrightStars()), maximumObjects));
 
     [TestMethod]
     public async Task ProjectAsync_ReadsTheAuthoritativeLocationAndNeverOffersAnEditingContractAsync()
@@ -148,7 +180,9 @@ public sealed class CameraAgentSkyMapProjectionTests
     private static string Serialize(CameraAgentSkyMapProjectionResult result)
         => JsonSerializer.Serialize(result, SerializerOptions);
 
-    internal static CameraAgentSkyMapProjection Project(FixtureCatalog catalog)
+    internal static CameraAgentSkyMapProjection Project(
+        FixtureCatalog catalog,
+        int maximumObjects = CameraAgentSkyMapProjection.DefaultMaximumObjects)
     {
         var accessor = new CameraAgentConfigurationAccessor();
         accessor.SetConfiguration(CreateConfig());
@@ -156,7 +190,8 @@ public sealed class CameraAgentSkyMapProjectionTests
             accessor,
             catalog,
             TimeProvider.System,
-            StandardConstellationTopology.CreateD3Celestial());
+            StandardConstellationTopology.CreateD3Celestial(),
+            maximumObjects: maximumObjects);
     }
 
     internal static FixtureCatalog CreateCatalog(IEnumerable<CelestialCatalogObject> objects)

@@ -211,6 +211,17 @@ services:
             ["LifecycleControl__Token"] = lifecycleControlToken,
             ["DeviceProvisioning__StateDirectory"] = "/app/data/provisioning"
         };
+        // The friendly name becomes the camera's operator-facing name. A manifest written before the install
+        // bound existed may carry a longer one, and CameraAgent would refuse to start with it, so such a camera
+        // shows no configured name until the operator records one on the Observatory & location page.
+        if (request.FriendlyName.Trim() is { Length: > 0 and <= InstallRequest.MaximumFriendlyNameLength } displayName)
+        {
+            settings["CameraAgent__DisplayName"] = displayName;
+        }
+        else
+        {
+            File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
+        }
         settings["CameraAgent__ProcessingGraphs__ReplayProfile"] = request.ReplayProfile.ToString();
         settings["CameraAgent__ProcessingGraphs__LocalRunner__SocketPath"] = "/run/hvo-replay/runner.sock";
         settings["CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile"] =

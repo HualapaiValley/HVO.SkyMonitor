@@ -1561,23 +1561,21 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
             .ConfigureAwait(false);
 
-        await page.GotoAsync("/operations/sky-map").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Sky map & catalog", Level = 1 }))
+        await page.GotoAsync("/operations/site").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Observatory & location", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#sky-map-latitude")).ConfigureAwait(false);
 
-        // The page states which captures keep which version before anything durable is asked for.
-        var edit = page.Locator("#sky-map-edit-coordinates");
+        // The draft dialog states which captures keep which version before anything durable is asked for.
+        var edit = page.Locator("#site-create-draft");
         await VisibleAsync(edit).ConfigureAwait(false);
-        var seeded = await page.Locator("#sky-map-latitude").InputValueAsync().ConfigureAwait(false);
-        Assert.IsFalse(string.IsNullOrWhiteSpace(seeded), "The entry fields must be seeded from durable state.");
-        await page.Locator("#sky-map-latitude").FillAsync("31.500000").ConfigureAwait(false);
-
-        var dialog = page.Locator("dialog.confirmation-panel");
+        var dialog = page.Locator("dialog.site-dialog");
         await OpenDialogAsync(edit, dialog).ConfigureAwait(false);
         Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.querySelector('dialog.confirmation-panel')?.contains(document.activeElement) === true")
-            .ConfigureAwait(false), "Opening the confirmation must move focus inside it.");
+            "() => document.querySelector('dialog.site-dialog')?.contains(document.activeElement) === true")
+            .ConfigureAwait(false), "Opening the draft dialog must move focus inside it.");
+        var seeded = await page.Locator("#site-latitude").InputValueAsync().ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(seeded), "The entry fields must be seeded from durable state.");
+        await page.Locator("#site-latitude").FillAsync("31.500000").ConfigureAwait(false);
         StringAssert.Contains(
             await dialog.InnerTextAsync().ConfigureAwait(false),
             "keep version",
@@ -1588,15 +1586,15 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden })
             .ConfigureAwait(false);
         Assert.AreEqual(
-            "sky-map-edit-coordinates",
+            "site-create-draft",
             await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
 
         // Cancelling leaves the durable deployment version untouched.
         await page.ReloadAsync().ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#sky-map-latitude")).ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#site-history-heading")).ConfigureAwait(false);
         StringAssert.Contains(
-            await page.Locator("article[aria-labelledby='sky-observer-edit']").InnerTextAsync().ConfigureAwait(false),
-            "No manual coordinate change has been recorded",
+            await page.Locator("section[aria-labelledby='site-history-heading']").InnerTextAsync().ConfigureAwait(false),
+            "No local location draft has been recorded",
             StringComparison.Ordinal);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
@@ -2134,7 +2132,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/operations/pipeline", "Pipeline summary"),
             ("/operations/automations", "Automations"),
             ("/operations/data", "Data & storage"),
-            ("/operations/sky-map", "Sky map & catalog"),
+            ("/operations/site", "Observatory & location"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
             ("/operations/pipeline/graphs/new", "Draft graph"),
@@ -2207,7 +2205,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/sky-map",
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/site",
         "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
 

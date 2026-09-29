@@ -98,6 +98,7 @@ public sealed class OperationsLayoutTests
             ("/operations/pipeline/graphs/new", "pipeline"),
             ("/operations/automations", "automations"),
             ("/operations/camera", "camera"),
+            ("/operations/site", "site"),
             ("/operations/sky-map", "site"),
             ("/devices/bootstrap", "registration"),
             ("/operations/unavailable/delivery", "delivery")
@@ -141,10 +142,41 @@ public sealed class OperationsLayoutTests
         cut.WaitForAssertion(() => Assert.AreEqual("Healthy", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
         Assert.AreEqual("state-chip success", cut.Find(".operations-sidebar-head .state-chip").GetAttribute("class"));
         Assert.IsEmpty(cut.FindAll(".ops-nav-badge"));
-        Assert.AreEqual("agent-test / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim());
+        Assert.AreEqual("North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim());
+        Assert.DoesNotContain("agent-test", cut.Find(".operations-scope").TextContent);
         var registration = cut.Find(".operations-scope a");
         Assert.AreEqual("/devices/bootstrap", registration.GetAttribute("href"));
         Assert.AreEqual("View registration", registration.GetAttribute("aria-label"));
+    }
+
+    [TestMethod]
+    public void Refresh_AfterAPageRenamesTheCamera_ShowsTheNewName()
+    {
+        using var context = CreateContext(out var service);
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            "North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
+        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(
+            OperatorUiTestData.Operations() with { DisplayName = "East dome" }));
+
+        cut.Instance.Refresh();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            "East dome / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
+    }
+
+    [TestMethod]
+    public void Render_WhenNothingNamesTheCamera_SaysThisCameraRatherThanTheAgentId()
+    {
+        using var context = CreateContext(out var service);
+        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(
+            OperatorUiTestData.Operations() with { DisplayName = null }));
+
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            "This camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
+        Assert.DoesNotContain("agent-test", cut.Find(".operations-scope").TextContent);
     }
 
     [TestMethod]
@@ -197,7 +229,7 @@ public sealed class OperationsLayoutTests
         using var context = CreateContext(out var service);
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
-        cut.WaitForAssertion(() => Assert.AreEqual("agent-test / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
+        cut.WaitForAssertion(() => Assert.AreEqual("North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim()));
         var deniedReads = 0;
         service.OperationsHandler = _ =>
         {
