@@ -133,6 +133,39 @@ public sealed class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
+    public async Task CaptureTimeRig_MalformedChecksummedEnvelopeQuarantinesTarget()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-context-invalid", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            await StageVirtualFramesAsync(provider, configuration,
+                new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero)).ConfigureAwait(false);
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var update = connection.CreateCommand())
+            {
+                var malformed = Encoding.UTF8.GetBytes("{invalid-json");
+                update.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha WHERE raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence = 3);";
+                update.Parameters.AddWithValue("$json", malformed);
+                update.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(malformed)));
+                Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            for (var index = 0; index < 3; index++)
+                Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            using var verify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("transient-runtime.load-invalid", await ScalarStringAsync(verify,
+                "SELECT f.failure_reason FROM transient_worker_frames f JOIN raw_captures r USING(raw_capture_row_id) WHERE r.capture_sequence = 3;").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     public async Task CaptureTimeRig_LegacyEnvelopeNormalizesWithoutRejectingOriginalRigHash()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-legacy-rig", Guid.NewGuid().ToString("N"));

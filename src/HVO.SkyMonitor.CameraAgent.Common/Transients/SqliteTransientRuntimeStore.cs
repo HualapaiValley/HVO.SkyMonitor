@@ -547,19 +547,28 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 {
                     throw new InvalidDataException("Transient runtime source payload length differs from committed evidence.");
                 }
-                var payloadStream = OpenEvidence(payloadPath);
-                try
+                CameraModuleConfig? capturedConfiguration = null;
+                string? capturedRigSha256 = null;
+                if (contextJson is not null || contextSha256 is not null)
                 {
-                    var sidecarStream = OpenEvidence(sidecarPath);
-                    CameraModuleConfig? capturedConfiguration = null;
-                    string? capturedRigSha256 = null;
-                    if (contextJson is not null && contextSha256 is not null)
+                    if (contextJson is null || contextSha256 is null)
+                        throw new InvalidDataException("Transient capture context is incomplete.");
+                    try
                     {
                         capturedConfiguration = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256).Configuration;
                         var original = JsonSerializer.Deserialize<CaptureLaneEnvelope>(contextJson, CaptureContextJson)
                             ?? throw new InvalidDataException("Transient capture context is invalid.");
                         capturedRigSha256 = CameraRigProfileIdentity.ComputeSha256(original.Configuration.Rig);
                     }
+                    catch (JsonException exception)
+                    {
+                        throw new InvalidDataException("Transient capture context is invalid.", exception);
+                    }
+                }
+                var payloadStream = OpenEvidence(payloadPath);
+                try
+                {
+                    var sidecarStream = OpenEvidence(sidecarPath);
                     snapshots.Add(new TransientEvidenceSnapshot(
                         offset,
                         payloadLength,
