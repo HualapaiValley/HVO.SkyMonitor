@@ -194,6 +194,58 @@ public sealed class CameraRigPageTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Stage_SuccessfulCommandButRefreshFails_DoesNotClaimStagedSelection(bool failInventory)
+    {
+        using var context = new BunitContext();
+        var service = new FakeRigService();
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
+        if (failInventory) service.FailNextInventory = true;
+        else service.FailNextGet = true;
+
+        cut.Find("button.btn-primary").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(1, service.StageCount);
+            var banner = cut.Find("[role='alert'].camera-banner").TextContent;
+            StringAssert.Contains(banner, "current selection could not be verified", StringComparison.Ordinal);
+            Assert.IsFalse(banner.Contains("refreshed", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(banner.Contains("Rig staged for restart", StringComparison.Ordinal));
+            Assert.IsFalse(banner.Contains("Pending restart cancelled", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Cancel_SuccessfulCommandButRefreshFails_DoesNotClaimCancelledSelection(bool failInventory)
+    {
+        using var context = new BunitContext();
+        var service = new FakeRigService { PendingId = "rig-v1" };
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        var cut = context.Render<CameraRigPage>();
+        if (failInventory) service.FailNextInventory = true;
+        else service.FailNextGet = true;
+
+        cut.FindAll("button").Single(b => b.TextContent == "Cancel pending restart").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(1, service.CancelCount);
+            var banner = cut.Find("[role='alert'].camera-banner").TextContent;
+            StringAssert.Contains(banner, "current selection could not be verified", StringComparison.Ordinal);
+            Assert.IsFalse(banner.Contains("refreshed", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(banner.Contains("Pending restart cancelled", StringComparison.Ordinal));
+            Assert.IsFalse(banner.Contains("Rig staged for restart", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
     public void PreviewFailure_CannotBeAcknowledgedOrStaged()
     {
         using var context = new BunitContext();
@@ -787,6 +839,8 @@ public sealed class CameraRigPageTests
         internal int HistoryCalls { get; private set; }
         internal bool DeepHistory { get; set; }
         internal bool Unauthorized { get; set; }
+        internal bool FailNextGet { get; set; }
+        internal bool FailNextInventory { get; set; }
         internal bool Acknowledged { get; private set; }
         internal int StageCount { get; private set; }
         internal bool StageUnavailable { get; set; }
@@ -850,13 +904,28 @@ public sealed class CameraRigPageTests
         }
 
         public ValueTask<OperatorUiResult<NamedRigUiCatalog>> GetAsync(CancellationToken token)
-            => ValueTask.FromResult(Unauthorized
+        {
+            if (FailNextGet)
+            {
+                FailNextGet = false;
+                return ValueTask.FromResult(OperatorUiResult<NamedRigUiCatalog>.Failure(
+                    OperatorUiResultKind.Unavailable, "Catalog unavailable"));
+            }
+            return ValueTask.FromResult(Unauthorized
                 ? OperatorUiResult<NamedRigUiCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
                 : OperatorUiResult<NamedRigUiCatalog>.Success(new(new("rig-v1", PendingId, Version),
                     [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 }],
                     PendingFailure, ActiveFailure)));
+        }
         public ValueTask<OperatorUiResult<NamedRigInventory>> GetInventoryAsync(CancellationToken token)
-            => ValueTask.FromResult(OperatorUiResult<NamedRigInventory>.Success(VirtualOnly
+        {
+            if (FailNextInventory)
+            {
+                FailNextInventory = false;
+                return ValueTask.FromResult(OperatorUiResult<NamedRigInventory>.Failure(
+                    OperatorUiResultKind.Unavailable, "Inventory unavailable"));
+            }
+            return ValueTask.FromResult(OperatorUiResult<NamedRigInventory>.Success(VirtualOnly
                 ? new(_inventory.Profiles, StarterTemplate is null
                     ? [new NamedEquipmentDefinition("virtual", "camera", "Virtual camera", 1, "camera-v1", true, false),
                        .. _inventory.Equipment.Where(e => e.Kind != "camera")]
@@ -864,6 +933,7 @@ public sealed class CameraRigPageTests
                 : new(_inventory.Profiles, [.. _inventory.Equipment,
                     .. (ExistingOpticsCopy ? new[] { new NamedEquipmentDefinition("optics-copy", "optics", "Installed optics copy", 1, "optics-copy-v1") } : []),
                     .. (_savedEquipment is null ? [] : new[] { _savedEquipment })])));
+        }
         public ValueTask<OperatorUiResult<NamedRigHistoryPage>> GetHistoryAsync(string profileId, int limit,
             long? beforeRevisionNumber, long? version, CancellationToken token)
         {

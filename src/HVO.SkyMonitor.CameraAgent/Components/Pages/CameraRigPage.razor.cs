@@ -503,6 +503,11 @@ public sealed partial class CameraRigPage : ComponentBase
             if (Handle(result)) return;
             var previousCatalog = _catalog;
             await RefreshAsync();
+            if (_error)
+            {
+                _message = "Stage request was recorded, but the current selection could not be verified. Refresh before acting.";
+                return;
+            }
             _preview = null; _acknowledge = false;
             var receipt = result.Value!;
             var selection = _catalog?.Selection;
@@ -533,6 +538,11 @@ public sealed partial class CameraRigPage : ComponentBase
             if (Handle(result)) return;
             var previousCatalog = _catalog;
             await RefreshAsync();
+            if (_error)
+            {
+                _message = "Cancel request was recorded, but the current selection could not be verified. Refresh before acting.";
+                return;
+            }
             var receipt = result.Value!;
             var selection = _catalog?.Selection;
             _message = !ReferenceEquals(previousCatalog, _catalog) &&
