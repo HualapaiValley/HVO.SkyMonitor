@@ -38,6 +38,9 @@ public sealed class FileSiteProfileStore(
     private SiteProfileRecord? _record;
     private bool _loaded;
 
+    /// <summary>Flushes the record directory after the replace; tests substitute it to fail the step after publication.</summary>
+    internal Action<string> SyncPublishedDirectory { get; init; } = RawIngressFileStore.SyncDirectory;
+
     public async ValueTask<SiteProfileState> GetAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -64,9 +67,9 @@ public sealed class FileSiteProfileStore(
             var idempotencyKey = request.IdempotencyKey?.Trim() ?? string.Empty;
             var reason = string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim();
             if (request.Profile is null ||
-                actor.Length is 0 or > SiteProfileLimits.MaximumActorLength ||
-                idempotencyKey.Length is 0 or > SiteProfileLimits.MaximumIdempotencyKeyLength ||
-                reason is { Length: > SiteProfileLimits.MaximumReasonLength })
+                actor.Length == 0 || !IsBoundedText(actor, SiteProfileLimits.MaximumActorLength) ||
+                idempotencyKey.Length == 0 || !IsBoundedText(idempotencyKey, SiteProfileLimits.MaximumIdempotencyKeyLength) ||
+                !IsBoundedText(reason, SiteProfileLimits.MaximumReasonLength))
             {
                 return Outcome(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidCommandReasonCode, "command", record);
             }
@@ -122,7 +125,18 @@ public sealed class FileSiteProfileStore(
                         profile)
                 ]);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(next, SerializerOptions);
-            await WriteDurableAsync(EnsureStatePath(), bytes, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WriteDurableAsync(EnsureStatePath(), bytes, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // A step after the replace can fail once the new version is already published, so the file, not
+                // this instance, decides what is current: the next read or write loads it again.
+                _record = null;
+                _loaded = false;
+                throw;
+            }
             _record = next;
             SiteProfileLog.Recorded(logger, version);
             return Outcome(SiteProfileStatus.Applied, null, null, next);
@@ -206,30 +220,30 @@ public sealed class FileSiteProfileStore(
         var camera = Clean(profile.CameraName);
         var owner = Clean(profile.OwnerName);
         var contact = Clean(profile.OwnerContact);
-        var invalid = !Acceptable(observatory, SiteProfileLimits.MaximumNameLength) ? "observatoryName"
-            : !Acceptable(camera, SiteProfileLimits.MaximumNameLength) ? "cameraName"
-            : !Acceptable(owner, SiteProfileLimits.MaximumNameLength) ? "ownerName"
-            : !Acceptable(contact, SiteProfileLimits.MaximumContactLength) ? "ownerContact"
+        var invalid = !IsBoundedText(observatory, SiteProfileLimits.MaximumNameLength) ? "observatoryName"
+            : !IsBoundedText(camera, SiteProfileLimits.MaximumNameLength) ? "cameraName"
+            : !IsBoundedText(owner, SiteProfileLimits.MaximumNameLength) ? "ownerName"
+            : !IsBoundedText(contact, SiteProfileLimits.MaximumContactLength) ? "ownerContact"
             : null;
         return (new SiteProfileValues(observatory, camera, owner, contact), invalid);
 
         static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-        static bool Acceptable(string? value, int maximumLength)
-            => value is null || (value.Length <= maximumLength && !value.Any(char.IsControl));
     }
+
+    /// <summary>Absent, or within the length bound and free of control characters.</summary>
+    private static bool IsBoundedText(string? value, int maximumLength)
+        => value is null || (value.Length <= maximumLength && !value.Any(char.IsControl));
 
     private static void Validate(SiteProfileRecord? record)
     {
+        // Every retained revision is checked, not only the latest, because each one is shown in the history.
         if (record is null || record.SchemaVersion != CurrentSchemaVersion || record.Version < 1 ||
             record.Profile is null || record.Revisions is null || record.Revisions.Count == 0 ||
             record.Revisions.Count > SiteProfileLimits.MaximumRetainedRevisions ||
+            record.Revisions[^1] is null ||
             record.Revisions[^1].Version != record.Version ||
             record.Revisions[^1].Profile != record.Profile ||
-            Normalize(record.Profile) is not (_, null) ||
-            record.Revisions.Any(static item =>
-                item.Profile is null || string.IsNullOrWhiteSpace(item.Actor) ||
-                string.IsNullOrWhiteSpace(item.IdempotencyKey)))
+            record.Revisions.Any(static item => !IsValidRevision(item)))
         {
             throw new InvalidDataException("The site profile record has an unsupported or inconsistent schema.");
         }
@@ -242,6 +256,15 @@ public sealed class FileSiteProfileStore(
             }
         }
     }
+
+    private static bool IsValidRevision(SiteProfileRevision? revision)
+        => revision is { Version: >= 1, Profile: not null } &&
+            Normalize(revision.Profile) is (_, null) &&
+            !string.IsNullOrWhiteSpace(revision.Actor) &&
+            IsBoundedText(revision.Actor, SiteProfileLimits.MaximumActorLength) &&
+            !string.IsNullOrWhiteSpace(revision.IdempotencyKey) &&
+            IsBoundedText(revision.IdempotencyKey, SiteProfileLimits.MaximumIdempotencyKeyLength) &&
+            IsBoundedText(revision.Reason, SiteProfileLimits.MaximumReasonLength);
 
     private string EnsureStatePath()
     {
@@ -280,7 +303,7 @@ public sealed class FileSiteProfileStore(
         return path;
     }
 
-    private static async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken)
+    private async ValueTask WriteDurableAsync(string path, byte[] payload, CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path)!;
         var temporaryPath = Path.Combine(
@@ -305,8 +328,7 @@ public sealed class FileSiteProfileStore(
             }
             RestrictFile(temporaryPath);
             File.Move(temporaryPath, path, overwrite: true);
-            RestrictFile(path);
-            RawIngressFileStore.SyncDirectory(directory);
+            SyncPublishedDirectory(directory);
         }
         finally
         {

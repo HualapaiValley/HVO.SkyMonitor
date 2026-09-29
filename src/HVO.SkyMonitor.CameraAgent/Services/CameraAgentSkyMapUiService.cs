@@ -78,10 +78,14 @@ internal enum CameraAgentSiteAssignmentState
 /// The LogicHost Observatory assignment as this camera last received it. LogicHost owns every fact here; the
 /// camera only reports what it was told and when, and never lets it replace local geometry.
 /// </summary>
+/// <param name="LocationReview">
+/// LogicHost's disposition of the deployment location this camera reported. It is not Observatory membership,
+/// which LogicHost never sends to the camera.
+/// </param>
 internal sealed record CameraAgentSiteAssignment(
     CameraAgentSiteAssignmentState State,
     string? RegistrationName,
-    DeploymentLocationResolutionStatus? Membership,
+    DeploymentLocationResolutionStatus? LocationReview,
     long? AcknowledgedVersion,
     long? ProposedVersion,
     string ReconciliationOutcome,

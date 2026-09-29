@@ -102,7 +102,11 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         Azimuth
     }
 
-    internal sealed record MapTile(string Source, double Left, double Top);
+    /// <summary>
+    /// One tile of the mosaic. <see cref="Column"/> is the grid column before wrapping, so it names the position
+    /// uniquely even when a low zoom repeats one tile address across the antimeridian.
+    /// </summary>
+    internal sealed record MapTile(string Source, int Column, int Row, double Left, double Top);
 
     private sealed record SceneView(
         IReadOnlyList<CameraAgentSkyMapObject> Items,
@@ -617,7 +621,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
                     .Replace("{z}", zoom.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                     .Replace("{x}", wrapped.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                     .Replace("{y}", row.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
-                tiles.Add(new MapTile(source, column * TileSize - pixelX, row * TileSize - pixelY));
+                tiles.Add(new MapTile(source, column, row, column * TileSize - pixelX, row * TileSize - pixelY));
             }
         }
         return tiles;
@@ -643,8 +647,8 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         { State: CameraAgentSiteAssignmentState.NotRegistered } => ("warning", "Not registered"),
         { State: CameraAgentSiteAssignmentState.Unavailable } => ("warning", "Unavailable"),
         { ProposedVersion: not null } => ("warning", "Review"),
-        { Membership: DeploymentLocationResolutionStatus.Acknowledged } => ("success", "Assigned"),
-        { Membership: DeploymentLocationResolutionStatus.Rejected } => ("failure", "Rejected"),
+        { LocationReview: DeploymentLocationResolutionStatus.Acknowledged } => ("success", "Location acknowledged"),
+        { LocationReview: DeploymentLocationResolutionStatus.Rejected } => ("failure", "Location rejected"),
         _ => ("running", "Pending")
     };
 
@@ -652,12 +656,12 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
     {
         CameraAgentSiteAssignmentState.Standalone => "This camera runs without LogicHost.",
         CameraAgentSiteAssignmentState.Registered => "Received during device registration.",
-        _ => "Read-only view of the central Observatory membership."
+        _ => "Read-only view of what LogicHost has told this camera."
     };
 
-    private static string MembershipText(DeploymentLocationResolutionStatus? status) => status switch
+    private static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
     {
-        DeploymentLocationResolutionStatus.Acknowledged => "Active",
+        DeploymentLocationResolutionStatus.Acknowledged => "Acknowledged by LogicHost",
         DeploymentLocationResolutionStatus.Rejected => "Rejected by LogicHost",
         DeploymentLocationResolutionStatus.Pending => "Awaiting LogicHost review",
         _ => "Not reported"

@@ -114,6 +114,35 @@ public sealed class ObservatoryLocationPageTests
     }
 
     [TestMethod]
+    public void Render_AtLowZoomsWhereColumnsWrap_KeepsEveryTilePlacedAcrossChanges()
+    {
+        using var context = CreateContext();
+        context.JSInterop.SetupModule("./Components/Pages/ObservatoryLocationPage.razor.js");
+        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState(), site: SiteView(zoom: 1));
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement(".site-map-tiles");
+        AssertEveryPositionPlaced(10);
+
+        // A changed tile set is diffed against the previous one, which is where repeated tile addresses collide.
+        service.Site = SiteView(zoom: 2);
+        RefreshButton(cut).Click();
+        AssertEveryPositionPlaced(15);
+        service.Site = SiteView(zoom: 1);
+        RefreshButton(cut).Click();
+        AssertEveryPositionPlaced(10);
+
+        void AssertEveryPositionPlaced(int expected)
+        {
+            var tiles = cut.FindAll(".site-map-tiles img");
+            Assert.HasCount(expected, tiles);
+            // Five columns span more than the whole world at these zooms, so one tile address fills several positions.
+            Assert.IsLessThan(expected, tiles.Select(static tile => tile.GetAttribute("src")).Distinct(StringComparer.Ordinal).Count());
+            Assert.AreEqual(expected, tiles.Select(static tile => tile.GetAttribute("style")).Distinct(StringComparer.Ordinal).Count());
+        }
+    }
+
+    [TestMethod]
     public void ComputeTiles_WrapsColumnsAcrossTheAntimeridianAndSkipsRowsOffTheWorld()
     {
         var tiles = ObservatoryLocationPage.ComputeTiles(0, 179.9, "{z}/{x}/{y}", 1);
@@ -407,10 +436,26 @@ public sealed class ObservatoryLocationPageTests
         RefreshButton(cut).Click();
         assignment = cut.Find("section[aria-labelledby='site-assignment-heading']");
 
-        Assert.AreEqual("Assigned", assignment.QuerySelector(".state-chip")!.TextContent);
-        Assert.Contains("North ridge camera", assignment.TextContent, StringComparison.Ordinal);
-        Assert.Contains("Active", assignment.TextContent, StringComparison.Ordinal);
-        Assert.Contains("2026-03-01 04:00:00 UTC", assignment.TextContent, StringComparison.Ordinal);
+        // The camera holds LogicHost's review of its location, which is not an Observatory membership decision.
+        Assert.AreEqual("Location acknowledged", assignment.QuerySelector(".state-chip")!.TextContent);
+        var facts = Facts(cut, "site-assignment-heading");
+        Assert.AreEqual("North ridge camera", facts["Registered as"]);
+        Assert.AreEqual("Acknowledged by LogicHost", facts["Location review"]);
+        Assert.AreEqual("Not reported to this camera", facts["Observatory membership"]);
+        Assert.AreEqual("3", facts["Acknowledged version"]);
+        Assert.AreEqual("2026-03-01 04:00:00 UTC", facts["Last check"]);
+        Assert.DoesNotContain("Assigned", assignment.TextContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("Active", assignment.TextContent, StringComparison.Ordinal);
+
+        service.Site = SiteView(assignment: Assignment(
+            CameraAgentSiteAssignmentState.Registered,
+            "North ridge camera",
+            DeploymentLocationResolutionStatus.Rejected));
+        RefreshButton(cut).Click();
+        assignment = cut.Find("section[aria-labelledby='site-assignment-heading']");
+
+        Assert.AreEqual("Location rejected", assignment.QuerySelector(".state-chip")!.TextContent);
+        Assert.AreEqual("Rejected by LogicHost", Facts(cut, "site-assignment-heading")["Location review"]);
     }
 
     [TestMethod]
@@ -869,14 +914,15 @@ public sealed class ObservatoryLocationPageTests
     private static CameraAgentSiteAssignment Assignment(
         CameraAgentSiteAssignmentState state,
         string? name = null,
-        DeploymentLocationResolutionStatus? membership = null,
+        DeploymentLocationResolutionStatus? locationReview = null,
         long? acknowledgedVersion = null)
-        => new(state, name, membership, acknowledgedVersion, null, "none", Instant, Instant);
+        => new(state, name, locationReview, acknowledgedVersion, null, "none", Instant, Instant);
 
     private static CameraAgentSiteView SiteView(
         SiteProfileState? profile = null,
         CameraAgentSiteAssignment? assignment = null,
-        bool mapEnabled = true)
+        bool mapEnabled = true,
+        int zoom = 13)
         => new(
             profile ?? ProfileState(),
             OwnerEmail,
@@ -886,7 +932,7 @@ public sealed class ObservatoryLocationPageTests
                 TileTemplate,
                 "© OpenStreetMap contributors",
                 new Uri("https://www.openstreetmap.org/copyright"),
-                13),
+                zoom),
             new Dictionary<string, string>(StringComparer.Ordinal) { [OwnerId] = OwnerEmail });
 
     internal sealed class SiteUiService(

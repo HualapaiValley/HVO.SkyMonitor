@@ -59,7 +59,7 @@ else
                         <div class="site-map-tiles" aria-hidden="true">
                             @foreach (var tile in tiles)
                             {
-                                <img @key="tile.Source" src="@tile.Source" alt="" draggable="false" decoding="async" style="@TileStyle(tile)" />
+                                <img @key="(tile.Column, tile.Row)" src="@tile.Source" alt="" draggable="false" decoding="async" style="@TileStyle(tile)" />
                             }
                         </div>
                     }
@@ -67,7 +67,7 @@ else
                     <span class="ops-map-label">@(SiteName ?? "Deployment location")</span>
                     @if (MapTiles is { Count: > 0 } && _site?.Map is { } map)
                     {
-                        <a class="site-map-attribution" href="@map.AttributionLink" target="_blank" rel="noopener noreferrer">@map.Attribution</a>
+                        <a class="site-map-attribution" href="@map.AttributionLink" target="_blank" rel="noopener noreferrer"><span>@map.Attribution</span></a>
                     }
                 </div>
                 <p class="site-map-note">
@@ -147,12 +147,13 @@ else
             {
                 <dl class="ops-facts">
                     <div class="full"><dt>Registered as</dt><dd>@(assignment.RegistrationName ?? "Not named")</dd></div>
-                    <div><dt>Membership</dt><dd>@MembershipText(assignment.Membership)</dd></div>
+                    <div><dt>Location review</dt><dd>@LocationReviewText(assignment.LocationReview)</dd></div>
+                    <div><dt>Observatory membership</dt><dd>Not reported to this camera</dd></div>
                     <div><dt>Last check</dt><dd>@(assignment.LastAttemptUtc is { } attempt ? Timestamp(attempt) : "Not yet run")</dd></div>
                     <div><dt>Acknowledged version</dt><dd>@(assignment.AcknowledgedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "None")</dd></div>
                     <div><dt>Proposed version</dt><dd>@(assignment.ProposedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "None")</dd></div>
                 </dl>
-                <p class="site-note">LogicHost owns the Observatory record, including its name; this camera keeps only the acknowledgement it was sent.</p>
+                <p class="site-note">LogicHost owns the Observatory record, its name and this camera's membership, and does not send them to the camera. What the camera keeps is LogicHost's review of its location.</p>
             }
             else
             {

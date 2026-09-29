@@ -18,9 +18,10 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
     private static readonly byte[] TilePng = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
 
-    // The same control set and floor the operations responsive walk applies to workspace form routes.
+    // The control set and floor the operations responsive walk applies to workspace form routes, widened to every
+    // link because this page places one over the map.
     private const string UndersizedControlsScript = """
-        () => [...document.querySelectorAll('.operations-content input:not([type=checkbox]), .operations-content select, .operations-content button, .operations-content a.btn')]
+        () => [...document.querySelectorAll('.operations-content input:not([type=checkbox]), .operations-content select, .operations-content button, .operations-content a[href]')]
             .filter(element => element.getClientRects().length > 0 && element.getBoundingClientRect().height < 44)
             .slice(0, 5)
             .map(element => `${element.tagName.toLowerCase()} "${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 30)}" h=${Math.round(element.getBoundingClientRect().height)}`)
@@ -135,7 +136,9 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
         await CaptureAsync(page, "offline-1440x900").ConfigureAwait(false);
 
         // The operations walk measures narrow workspace forms with a fine pointer; touch devices get their own context,
-        // because resizing or a full-page screenshot drops Chromium's touch emulation.
+        // because resizing or a full-page screenshot drops Chromium's touch emulation. Both measure the online map, so
+        // its attribution link is on the page.
+        tilesReachable = true;
         foreach (var (width, height) in new[] { (390, 844), (320, 844) })
         {
             await page.SetViewportSizeAsync(width, height).ConfigureAwait(false);
@@ -143,6 +146,7 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
             await page.Locator("#site-scene-heading").WaitForAsync().ConfigureAwait(false);
             // Measure the interactive page, not the prerendered one it replaces.
             await page.Locator(".app-frame[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+            await page.Locator("a.site-map-attribution").WaitForAsync().ConfigureAwait(false);
             await AssertFitsAsync(page, width, height, "fine pointer").ConfigureAwait(false);
             await CaptureAsync(page, $"site-{width}x{height}").ConfigureAwait(false);
 
@@ -154,9 +158,11 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
                 HasTouch = true,
                 IsMobile = true
             }).ConfigureAwait(false);
-            await touchContext.RouteAsync($"https://{TileHost}/**", route => route.AbortAsync()).ConfigureAwait(false);
+            await touchContext.RouteAsync($"https://{TileHost}/**", route => route.FulfillAsync(
+                new RouteFulfillOptions { ContentType = "image/png", BodyBytes = TilePng })).ConfigureAwait(false);
             var touch = await touchContext.NewPageAsync().ConfigureAwait(false);
             await OpenSiteAsync(touch).ConfigureAwait(false);
+            await touch.Locator("a.site-map-attribution").WaitForAsync().ConfigureAwait(false);
             Assert.IsTrue(await touch.EvaluateAsync<bool>("() => matchMedia('(pointer: coarse)').matches").ConfigureAwait(false),
                 "Touch-target checks require a coarse-pointer device.");
             await AssertFitsAsync(touch, width, height, "touch").ConfigureAwait(false);

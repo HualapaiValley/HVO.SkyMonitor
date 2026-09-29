@@ -366,7 +366,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             case "registered":
                 Assert.AreEqual(CameraAgentSiteAssignmentState.Registered, assignment.State);
                 Assert.AreEqual("East dome", assignment.RegistrationName);
-                Assert.AreEqual(DeploymentLocationResolutionStatus.Acknowledged, assignment.Membership);
+                Assert.AreEqual(DeploymentLocationResolutionStatus.Acknowledged, assignment.LocationReview);
                 Assert.AreEqual(4L, assignment.AcknowledgedVersion);
                 Assert.AreEqual(5L, assignment.ProposedVersion);
                 break;
@@ -377,7 +377,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             default:
                 // An unreadable registration degrades that one fact; the rest of the page still renders.
                 Assert.AreEqual(CameraAgentSiteAssignmentState.Unavailable, assignment.State);
-                Assert.IsNull(assignment.Membership);
+                Assert.IsNull(assignment.LocationReview);
                 break;
         }
     }

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -217,6 +218,9 @@ public sealed class FileSiteProfileStoreTests
     [DataRow("actor")]
     [DataRow("key")]
     [DataRow("reason")]
+    [DataRow("actor control")]
+    [DataRow("key control")]
+    [DataRow("reason control")]
     public async Task ApplyAsync_WithAMalformedCommand_IsInvalid(string scenario)
     {
         using var store = CreateStore();
@@ -224,7 +228,10 @@ public sealed class FileSiteProfileStoreTests
         {
             "actor" => new SiteProfileRequest(Profile, 0, "key-1", " ", null),
             "key" => new SiteProfileRequest(Profile, 0, new string('k', SiteProfileLimits.MaximumIdempotencyKeyLength + 1), "owner-id", null),
-            _ => new SiteProfileRequest(Profile, 0, "key-1", "owner-id", new string('r', SiteProfileLimits.MaximumReasonLength + 1))
+            "reason" => new SiteProfileRequest(Profile, 0, "key-1", "owner-id", new string('r', SiteProfileLimits.MaximumReasonLength + 1)),
+            "actor control" => new SiteProfileRequest(Profile, 0, "key-1", "owner\u0007id", null),
+            "key control" => new SiteProfileRequest(Profile, 0, "key\n1", "owner-id", null),
+            _ => new SiteProfileRequest(Profile, 0, "key-1", "owner-id", "first\u0000light")
         };
 
         var result = await store.ApplyAsync(request, CancellationToken.None).ConfigureAwait(false);
@@ -272,6 +279,10 @@ public sealed class FileSiteProfileStoreTests
     [DataRow("profile mismatch")]
     [DataRow("out of order")]
     [DataRow("schema")]
+    [DataRow("older revision profile")]
+    [DataRow("older revision actor")]
+    [DataRow("older revision reason")]
+    [DataRow("missing revision")]
     public async Task GetAsync_WithADamagedRecord_RefusesToGuess(string scenario)
     {
         using (var store = CreateStore())
@@ -298,6 +309,19 @@ public sealed class FileSiteProfileStoreTests
             case "out of order":
                 revisions[0]!["version"] = 2;
                 break;
+            case "older revision profile":
+                // Only the latest revision mirrors the current profile, so every retained one is checked on its own.
+                revisions[0]!["profile"]!["ownerName"] = new string('o', SiteProfileLimits.MaximumNameLength + 1);
+                break;
+            case "older revision actor":
+                revisions[0]!["actor"] = new string('a', SiteProfileLimits.MaximumActorLength + 1);
+                break;
+            case "older revision reason":
+                revisions[0]!["reason"] = "first\u0001light";
+                break;
+            case "missing revision":
+                revisions[0] = null;
+                break;
             default:
                 record["schemaVersion"] = 2;
                 break;
@@ -311,6 +335,39 @@ public sealed class FileSiteProfileStoreTests
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await restarted.GetAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_AfterAFailureFollowingPublication_ReadsThePublishedRevisionBack()
+    {
+        var failures = 1;
+        using var store = CreateStore(syncPublishedDirectory: _ =>
+        {
+            if (failures-- > 0)
+            {
+                throw new IOException("Directory sync failed after the replace.");
+            }
+        });
+
+        // The replace lands but the directory sync after it fails, so the caller sees an error for a revision
+        // that is in fact on disk.
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await ApplyAsync(store, Profile, 0, "key-1").ConfigureAwait(false)).ConfigureAwait(false);
+
+        // A different command still holding version zero must meet the published revision, not overwrite it.
+        var stale = await ApplyAsync(store, Profile with { OwnerName = "Sam Example" }, 0, "key-2").ConfigureAwait(false);
+        Assert.AreEqual(SiteProfileStatus.Conflict, stale.Status);
+        Assert.AreEqual(SiteProfileLimits.ExpectedVersionConflictReasonCode, stale.ReasonCode);
+        Assert.AreEqual(1L, stale.State.Version);
+        // Retrying the failed command is recognised as already recorded.
+        var retried = await ApplyAsync(store, Profile, 0, "key-1").ConfigureAwait(false);
+        Assert.AreEqual(SiteProfileStatus.Replayed, retried.Status);
+
+        using var restarted = CreateStore();
+        var state = await restarted.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, state.Version);
+        Assert.AreEqual(Profile, state.Profile);
+        Assert.AreEqual("key-1", state.History.Single().IdempotencyKey);
     }
 
     [TestMethod]
@@ -332,7 +389,7 @@ public sealed class FileSiteProfileStoreTests
         Assert.IsEmpty(Directory.GetFileSystemEntries(elsewhere));
     }
 
-    private FileSiteProfileStore CreateStore(string? displayName = null)
+    private FileSiteProfileStore CreateStore(string? displayName = null, Action<string>? syncPublishedDirectory = null)
         => new(
             Options.Create(new CameraAgentHostOptions
             {
@@ -340,7 +397,10 @@ public sealed class FileSiteProfileStoreTests
                 DisplayName = displayName
             }),
             _timeProvider,
-            NullLogger<FileSiteProfileStore>.Instance);
+            NullLogger<FileSiteProfileStore>.Instance)
+        {
+            SyncPublishedDirectory = syncPublishedDirectory ?? RawIngressFileStore.SyncDirectory
+        };
 
     private static ValueTask<SiteProfileResult> ApplyAsync(
         FileSiteProfileStore store,

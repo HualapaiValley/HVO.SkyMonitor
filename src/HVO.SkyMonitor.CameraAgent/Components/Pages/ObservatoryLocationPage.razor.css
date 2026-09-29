@@ -23,7 +23,9 @@
 /* Tiles are darkened to sit inside the workspace theme; the schematic gradient stays underneath. */
 .site-map-tiles { position: absolute; z-index: 1; inset: 0; filter: invert(1) hue-rotate(180deg) brightness(.82) saturate(.7); pointer-events: none; }
 .site-map-tiles img { position: absolute; width: 256px; max-width: none; height: 256px; user-select: none; }
-.site-map-attribution { position: absolute; z-index: 3; right: 0; bottom: 0; padding: .15rem .4rem; border-top-left-radius: .3rem; color: var(--muted-strong); background: rgba(5, 8, 13, .8); font-size: .5rem; text-decoration: none; }
+/* The link is a transparent 44px target in the corner; only its label carries the backing, so the map stays visible. */
+.site-map-attribution { position: absolute; z-index: 3; right: 0; bottom: 0; display: flex; min-width: 2.75rem; min-height: 2.75rem; align-items: flex-end; justify-content: flex-end; color: var(--muted-strong); font-size: .5rem; text-decoration: none; }
+.site-map-attribution span { padding: .15rem .4rem; border-top-left-radius: .3rem; background: rgba(5, 8, 13, .8); }
 .site-map-attribution:hover, .site-map-attribution:focus-visible { color: var(--text); text-decoration: underline; }
 .site-map-note { margin: .55rem 0 0; color: var(--muted); font-size: .56rem; line-height: 1.45; }
 .site-map-offline { display: none; }
