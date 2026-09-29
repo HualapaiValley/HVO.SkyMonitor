@@ -402,6 +402,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();

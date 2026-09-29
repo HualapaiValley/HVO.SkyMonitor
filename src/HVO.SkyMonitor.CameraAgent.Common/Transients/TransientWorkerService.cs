@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
@@ -26,7 +27,8 @@ internal sealed class TransientWorkerService(
     TransientWorkerTelemetry telemetry,
     ITransientRuntimeFaultInjector faultInjector,
     TimeProvider timeProvider,
-    ILogger<TransientWorkerService> logger) : BackgroundService
+    ILogger<TransientWorkerService> logger,
+    SqliteCaptureScheduleStore? scheduleStore = null) : BackgroundService
 {
     private readonly TransientDetectionOptions _options = hostOptions.Value.TransientDetection;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
@@ -119,7 +121,8 @@ internal sealed class TransientWorkerService(
             }
             failureStage = "input";
             var sources = await detector.CreateSourcesAsync(
-                _configuration!, _options, loaded, cancellationToken).ConfigureAwait(false);
+                await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
+                _options, loaded, cancellationToken).ConfigureAwait(false);
             failureStage = "background";
             var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
                 TransientTemporalBackgroundKind.CausalProvisional,
@@ -325,7 +328,8 @@ internal sealed class TransientWorkerService(
             if (causalWindowComplete && loaded.Count == 5)
             {
                 var sources = await detector.CreateSourcesAsync(
-                    _configuration!, _options, loaded, cancellationToken).ConfigureAwait(false);
+                    await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
+                    _options, loaded, cancellationToken).ConfigureAwait(false);
                 var knownEvents = await store.ReadKnownEventEvidenceIdsAsync(
                     frame.AgentId, frame.CaptureSequence, cancellationToken).ConfigureAwait(false);
                 var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
@@ -614,6 +618,57 @@ internal sealed class TransientWorkerService(
         await store.MarkCausalCompletionAsync(
             frame.RawCaptureRowId, reason, causalSucceeded, cancellationToken).ConfigureAwait(false);
         await store.RetireBeforeAsync(frame.AgentId, frame.CaptureSequence - 1, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IReadOnlyDictionary<int, CameraModuleConfig>> ResolveConfigurationsAsync(
+        IReadOnlyDictionary<int, TransientLoadedFrame> frames, CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<int, CameraModuleConfig>(frames.Count);
+        foreach (var (offset, frame) in frames)
+        {
+            var descriptor = frame.Manifest.Descriptor;
+            var admission = descriptor.CycleEvidence?.ScheduleAdmission;
+            CameraModuleConfig configuration;
+            if (frame.CaptureConfiguration is { } captured)
+            {
+                configuration = captured with
+                {
+                    Observatory = _configuration!.Observatory,
+                    DeploymentLocation = _configuration.DeploymentLocation,
+                    DeploymentLocationRedacted = _configuration.DeploymentLocationRedacted
+                };
+            }
+            else if (admission is not null && scheduleStore is not null)
+            {
+                CaptureScheduleRevisionSnapshot revision;
+                try
+                {
+                    revision = await scheduleStore.GetRevisionAsync(admission.ScheduleRevisionId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (KeyNotFoundException exception)
+                {
+                    throw new TransientWorkerExecutionException("transient-runtime.capture-rig-unavailable", exception);
+                }
+                if (!string.Equals(revision.ProfileSha256, admission.LocalProfileSha256, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(revision.ScheduleSha256, admission.ScheduleRevisionSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new TransientWorkerExecutionException("transient-runtime.capture-rig-mismatch", retryable: false);
+                configuration = revision.Profile.ApplyTo(_configuration!);
+            }
+            else if (admission is null)
+            {
+                configuration = _configuration!;
+            }
+            else
+            {
+                throw new TransientWorkerExecutionException("transient-runtime.capture-rig-unavailable", retryable: false);
+            }
+            if (!string.Equals(frame.CapturedRigSha256 ?? CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
+                    descriptor.Profiles.Rig.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new TransientWorkerExecutionException("transient-runtime.capture-rig-mismatch", retryable: false);
+            result.Add(offset, configuration);
+        }
+        return result;
     }
 
     internal static bool IsRetryableStorageFailure(SqliteException exception)

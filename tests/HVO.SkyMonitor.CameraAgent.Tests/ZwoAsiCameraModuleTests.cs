@@ -26,6 +26,8 @@ public sealed class ZwoAsiCameraModuleTests
     private static readonly SupportedProfile Asi178Mc = new(
         "asi178mc", "ASI178MC", 3096, 2080, 2.4, 14, 6192, 10, 510,
         "5E945964BE56D5743484C8FFD4EB7B5019C1D6D746CB3C0922B3B7C73E04C7FD");
+    private static readonly SupportedProfile Asi120Mm = new(
+        "asi120mm", "ASI120MM", 1280, 960, 3.75, 12, 2560, 1, 600, "");
     private static readonly SupportedProfile[] SupportedProfiles = [Asi676Mc, Asi178Mc];
     private static readonly JsonSerializerOptions ConfigurationSerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -164,7 +166,7 @@ public sealed class ZwoAsiCameraModuleTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void PreflightRejectsCrossPairedAndUnsupportedProfilesBeforeRuntimeAccess()
+    public void PreflightAcceptsGenericProfilesButRejectsInvalidModelsBeforeRuntimeAccess()
     {
         var factoryCalls = 0;
         var resolverCalls = 0;
@@ -182,12 +184,22 @@ public sealed class ZwoAsiCameraModuleTests
             });
         var preflight = (ICameraModuleConfigurationPreflight)module;
 
+        preflight.ValidateConfiguration(CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model)));
+        preflight.ValidateConfiguration(CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model, acknowledge: true), profile: Asi120Mm, mono: true));
         Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
-            CreateConfig(OptionsJson(expectedModel: Asi178Mc.Model))));
+            CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model), profile: Asi120Mm, mono: true)));
+        Assert.ThrowsExactly<ArgumentException>(() => preflight.ValidateConfiguration(
+            CreateConfig(OptionsJson(expectedModel: "Camera?"))));
+        var oversized = CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model, acknowledge: true),
+            profile: Asi120Mm, mono: true);
+        var hugeSensor = oversized.Rig.Sensor with { WidthPixels = 50_000, HeightPixels = 50_000, StrideBytes = 100_000 };
+        var hugeReadout = oversized.Rig.Readout! with
+        {
+            Roi = new SensorCrop(0, 0, 50_000, 50_000),
+            StrideBytes = 100_000
+        };
         Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
-            CreateConfig(OptionsJson(expectedModel: Asi676Mc.Model), profile: Asi178Mc)));
-        Assert.ThrowsExactly<NotSupportedException>(() => preflight.ValidateConfiguration(
-            CreateConfig(OptionsJson(expectedModel: "ASI120MM Mini"))));
+            oversized with { Rig = oversized.Rig with { Sensor = hugeSensor, Readout = hugeReadout } }));
 
         Assert.AreEqual(0, factoryCalls);
         Assert.AreEqual(0, resolverCalls);
@@ -819,29 +831,137 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
     [TestCategory("Unit")]
-    public async Task UnsupportedCameraProfileIsRejectedBeforeRuntimeAccess()
+    public async Task GenericMonoCameraCapturesOnlyAfterNativeCapabilitiesMatch()
+    {
+        var native = new FakeAsiNativeApi(Asi120Mm);
+        native.Cameras[0] = Camera(7, "ZWO ASI120MM", PrivateSerial, color: false, profile: Asi120Mm);
+        await using var module = Module(native);
+        var config = CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model, acknowledge: true), profile: Asi120Mm, mono: true);
+
+        await module.InitializeAsync(config, CancellationToken.None);
+        var result = await module.CaptureAsync(
+            new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None);
+
+        var frame = result.Frame;
+        Assert.IsNotNull(frame);
+        Assert.AreEqual(CameraPixelFormat.Mono16, frame.PixelFormat);
+        Assert.IsNotNull(frame.Layout);
+        Assert.AreEqual(ColorFilterArrayPattern.None, frame.Layout.CfaPattern);
+        Assert.AreEqual(1280, frame.Width);
+        Assert.AreEqual(960, frame.Height);
+        Assert.AreEqual(2560 * 960, frame.PixelData.Length);
+        Assert.AreEqual(1, native.DataCalls);
+    }
+
+    [TestMethod]
+    [DataRow("color")]
+    [DataRow("geometry")]
+    [DataRow("pitch")]
+    [DataRow("depth")]
+    [DataRow("raw16")]
+    [DataRow("bin")]
+    [OSCondition(OperatingSystems.Linux)]
+    [TestCategory("Unit")]
+    public async Task GenericMonoCameraRejectsIncompatibleNativeCapabilities(string mismatch)
+    {
+        var native = new FakeAsiNativeApi(Asi120Mm);
+        var camera = Camera(7, "ZWO ASI120MM", PrivateSerial, color: false, profile: Asi120Mm);
+        native.Cameras[0] = camera with
+        {
+            Info = mismatch switch
+            {
+                "color" => camera.Info with { IsColorCamera = true },
+                "geometry" => camera.Info with { MaximumWidth = 1920 },
+                "pitch" => camera.Info with { PixelSizeMicrons = 4.0 },
+                "depth" => camera.Info with { BitDepth = 10 },
+                "raw16" => camera.Info with { SupportedImageTypes = [AsiImageType.Raw8] },
+                "bin" => camera.Info with { SupportedBins = [2] },
+                _ => throw new AssertFailedException(mismatch)
+            }
+        };
+        await using var module = Module(native);
+        var config = CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model, acknowledge: true), profile: Asi120Mm, mono: true);
+
+        if (mismatch is "raw16" or "bin")
+        {
+            await Assert.ThrowsExactlyAsync<NotSupportedException>(() => module.InitializeAsync(config, CancellationToken.None));
+        }
+        else
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => module.InitializeAsync(config, CancellationToken.None));
+        }
+        Assert.AreEqual(0, native.DataCalls);
+        Assert.DoesNotContain("StartExposure", native.Calls);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    [TestCategory("Unit")]
+    public async Task GenericCameraRequiresExplicitOptInEvenWhenNativeCapabilitiesMatch()
     {
         var factoryCalls = 0;
-        var resolverCalls = 0;
         await using var module = new ZwoAsiCameraModule(
             TimeProvider.System,
             _ =>
             {
                 factoryCalls++;
-                return new FakeAsiNativeApi();
+                return new FakeAsiNativeApi(Asi120Mm);
             },
-            _ =>
-            {
-                resolverCalls++;
-                return null;
-            });
+            ResolveEnvironmentVariable);
 
         await Assert.ThrowsExactlyAsync<NotSupportedException>(() => module.InitializeAsync(
-            CreateConfig(OptionsJson(expectedModel: "ASI120MM Mini")), CancellationToken.None));
-
+            CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model), profile: Asi120Mm, mono: true),
+            CancellationToken.None));
         Assert.AreEqual(0, factoryCalls);
-        Assert.AreEqual(0, resolverCalls);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    [TestCategory("Unit")]
+    public async Task GenericColorCameraMustActuallyAdvertiseRggb()
+    {
+        var native = new FakeAsiNativeApi();
+        var camera = native.Cameras[0];
+        native.Cameras[0] = camera with
+        {
+            Info = camera.Info with { BayerPattern = AsiBayerPattern.Bg }
+        };
+        await using var module = Module(native);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => module.InitializeAsync(
+            CreateConfig(), CancellationToken.None));
+        Assert.DoesNotContain("StartExposure", native.Calls);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task UnmatchedGenericCameraIsRejectedBeforeExposure()
+    {
+        var factoryCalls = 0;
+        var resolverCalls = 0;
+        var native = new FakeAsiNativeApi();
+        native.Cameras.Clear();
+        await using var module = new ZwoAsiCameraModule(
+            TimeProvider.System,
+            _ =>
+            {
+                factoryCalls++;
+                return native;
+            },
+            name =>
+            {
+                resolverCalls++;
+                return ResolveEnvironmentVariable(name);
+            });
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => module.InitializeAsync(
+            CreateConfig(OptionsJson(expectedModel: Asi120Mm.Model, acknowledge: true), profile: Asi120Mm, mono: true), CancellationToken.None));
+
+        Assert.AreEqual(1, factoryCalls);
+        Assert.IsGreaterThan(0, resolverCalls);
+        Assert.DoesNotContain("StartExposure", native.Calls);
     }
 
     [TestMethod]
@@ -959,7 +1079,8 @@ public sealed class ZwoAsiCameraModuleTests
     private static CameraModuleConfig CreateConfig(
         JsonElement? options = null,
         PipelineExposureProfile? pipeline = null,
-        SupportedProfile? profile = null)
+        SupportedProfile? profile = null,
+        bool mono = false)
     {
         profile ??= Asi676Mc;
         var sensor = new SensorProfile(
@@ -967,9 +1088,9 @@ public sealed class ZwoAsiCameraModuleTests
             profile.Width,
             profile.Height,
             profile.PixelSizeMicrons,
-            SensorColorMode.Color,
-            CameraPixelFormat.BayerRggb16,
-            SensorResponseMode.BayerRaw,
+            mono ? SensorColorMode.Mono : SensorColorMode.Color,
+            mono ? CameraPixelFormat.Mono16 : CameraPixelFormat.BayerRggb16,
+            mono ? SensorResponseMode.Monochrome : SensorResponseMode.BayerRaw,
             profile.StrideBytes,
             SampleByteOrder.LittleEndian,
             $"{profile.Id}-physical-provisional-v1");
@@ -978,7 +1099,7 @@ public sealed class ZwoAsiCameraModuleTests
             1,
             1,
             FrameBinningAlgorithm.IdentityV1,
-            CameraPixelFormat.BayerRggb16,
+            mono ? CameraPixelFormat.Mono16 : CameraPixelFormat.BayerRggb16,
             profile.SampleDepthBits,
             16,
             FrameSamplePacking.ByteAligned,
@@ -988,9 +1109,9 @@ public sealed class ZwoAsiCameraModuleTests
             65535,
             profile.StrideBytes,
             SampleByteOrder.LittleEndian,
-            ColorFilterArrayPattern.Rggb,
-            0,
-            0);
+            mono ? ColorFilterArrayPattern.None : ColorFilterArrayPattern.Rggb,
+            mono ? null : 0,
+            mono ? null : 0);
         return new CameraModuleConfig(
             new ObservatoryLocation(0, 0, 0, "UTC"),
             new CameraModuleDescriptor("ZwoAsi", options ?? OptionsJson()),
@@ -1015,6 +1136,7 @@ public sealed class ZwoAsiCameraModuleTests
         string expectedModel = "ASI676MC",
         long offset = 1,
         string timeoutMargin = "00:00:01",
+        bool acknowledge = false,
         string extra = "")
         => JsonDocument.Parse(
             $$"""
@@ -1027,7 +1149,8 @@ public sealed class ZwoAsiCameraModuleTests
                 "pollInterval":"00:00:00.001",
                 "captureTimeoutMargin":"{{timeoutMargin}}",
                 "monoBin":false,
-                "hardwareBin":false{{extra}}
+                "hardwareBin":false,
+                "useUnvalidatedCameraAtOwnRisk":{{(acknowledge ? "true" : "false")}}{{extra}}
               }
               """).RootElement.Clone();
 

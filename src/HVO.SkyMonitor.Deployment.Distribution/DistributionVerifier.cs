@@ -350,6 +350,7 @@ public static partial class DistributionVerifier
             !GitOidRegex().IsMatch(compatibility.MinimumCompatibleRevision) ||
             !ContractIdentityRegex().IsMatch(compatibility.IdentityMigration) ||
             compatibility.RawIngressSchema <= 0 || compatibility.CatalogManifestVersion <= 0 ||
+            compatibility.RawIngressMigration is { } migration && migration != "canonical-v13-to-v14" ||
             !ContractIdentityRegex().IsMatch(compatibility.ConfigurationContract) ||
             !ContractIdentityRegex().IsMatch(compatibility.CatalogContract) ||
             compatibility.ReplayRunnerContract is { } replay && !ContractIdentityRegex().IsMatch(replay))

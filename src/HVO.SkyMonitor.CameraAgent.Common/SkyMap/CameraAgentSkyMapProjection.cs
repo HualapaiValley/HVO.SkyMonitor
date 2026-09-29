@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 
@@ -28,7 +29,8 @@ public sealed class CameraAgentSkyMapProjection(
     TimeProvider timeProvider,
     IConstellationTopology? constellationTopology = null,
     IDeploymentLocationStore? deploymentLocationStore = null,
-    ILatestFrameAccessor? latestFrameAccessor = null) : ICameraAgentSkyMapProjection
+    ILatestFrameAccessor? latestFrameAccessor = null,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime = null) : ICameraAgentSkyMapProjection
 {
     /// <summary>The hard upper bound on projected objects returned by one query.</summary>
     public const int MaximumObjects = 200;
@@ -45,14 +47,15 @@ public sealed class CameraAgentSkyMapProjection(
         CancellationToken cancellationToken)
     {
         var instant = (atUtc ?? timeProvider.GetUtcNow()).ToUniversalTime();
-        var config = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var startupConfig = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var config = scheduleRuntime?.Snapshot?.Configuration ?? startupConfig;
         if (catalog is not ICelestialCatalogMetadataSource metadataSource)
         {
             throw new InvalidOperationException(
                 "The sky map requires an installed catalog that publishes validated provenance metadata.");
         }
 
-        var location = deploymentLocationStore?.Active ?? config.DeploymentLocation
+        var location = deploymentLocationStore?.Active ?? startupConfig.DeploymentLocation
             ?? throw new InvalidOperationException(
                 "The sky map requires authoritative deployment coordinates from the local configuration owner.");
         var sourceKind = deploymentLocationStore?.ResolveSourceKind(location) ?? DeploymentLocationSourceKind.Unspecified;

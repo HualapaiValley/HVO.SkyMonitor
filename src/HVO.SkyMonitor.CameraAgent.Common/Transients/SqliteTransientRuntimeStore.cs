@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -208,7 +209,12 @@ internal sealed record TransientLoadedFrame(
     TransientRuntimeFrame Runtime,
     ArtifactManifestV2 Manifest,
     ProcessingArtifact Artifact,
-    TransientSourceEvidenceReferenceV1 Source);
+    TransientSourceEvidenceReferenceV1 Source)
+{
+    internal CameraModuleConfig? CaptureConfiguration { get; init; }
+
+    internal string? CapturedRigSha256 { get; init; }
+}
 
 internal sealed record TransientRuntimeCandidate(
     Guid CandidateId,
@@ -230,6 +236,8 @@ internal sealed record TransientRuntimeTotals(long Frames, long Candidates, long
 
 internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement, IDisposable
 {
+    private static readonly JsonSerializerOptions CaptureContextJson = new(JsonSerializerDefaults.Web);
+
     public async ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(
         Guid captureId, CancellationToken cancellationToken)
     {
@@ -481,10 +489,12 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                     SELECT r.raw_capture_row_id, r.raw_artifact_id, r.payload_length,
                            r.payload_relative_path, r.sidecar_relative_path, r.manifest_json,
                            r.manifest_sha256, r.payload_sha256, r.state,
-                           COALESCE(f.attempt_count, 0), COALESCE(f.available_unix_ms, r.committed_unix_ms)
+                            COALESCE(f.attempt_count, 0), COALESCE(f.available_unix_ms, r.committed_unix_ms),
+                            c.context_json, c.context_sha256
                     FROM raw_captures r
                     JOIN transient_capture_work w ON w.raw_capture_row_id = r.raw_capture_row_id
                     LEFT JOIN transient_worker_frames f ON f.raw_capture_row_id = r.raw_capture_row_id
+                    LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id
                     WHERE r.agent_id = $agent AND r.capture_sequence = $sequence
                       AND w.state IN ('pending', 'candidate_persisted', 'completed');
                     """;
@@ -506,6 +516,10 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 var state = reader.GetString(8);
                 var attempt = reader.GetInt32(9);
                 var available = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(10));
+                var contextJson = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
+                var contextSha256 = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
+                    ? null : reader.GetString(12);
                 await reader.DisposeAsync().ConfigureAwait(false);
                 if (!string.Equals(state, "committed", StringComparison.Ordinal))
                 {
@@ -533,6 +547,26 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 {
                     throw new InvalidDataException("Transient runtime source payload length differs from committed evidence.");
                 }
+                CameraModuleConfig? capturedConfiguration = null;
+                string? capturedRigSha256 = null;
+                if (contextJson is not null || contextSha256 is not null)
+                {
+                    if (contextJson is null || contextSha256 is null)
+                        throw new InvalidDataException("Transient capture context is incomplete.");
+                    try
+                    {
+                        capturedConfiguration = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256).Configuration;
+                        var original = JsonSerializer.Deserialize<CaptureLaneEnvelope>(contextJson, CaptureContextJson)
+                            ?? throw new InvalidDataException("Transient capture context is invalid.");
+                        if (original.Configuration?.Rig is null)
+                            throw new InvalidDataException("Transient capture context rig is missing.");
+                        capturedRigSha256 = CameraRigProfileIdentity.ComputeSha256(original.Configuration.Rig);
+                    }
+                    catch (JsonException exception)
+                    {
+                        throw new InvalidDataException("Transient capture context is invalid.", exception);
+                    }
+                }
                 var payloadStream = OpenEvidence(payloadPath);
                 try
                 {
@@ -545,7 +579,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                         manifest,
                         payloadStream,
                         sidecarStream,
-                        new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt)));
+                        new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt),
+                        capturedConfiguration,
+                        capturedRigSha256));
                 }
                 catch
                 {
@@ -621,7 +657,11 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                     snapshot.Runtime,
                     snapshot.Manifest,
                     artifact,
-                    source));
+                    source)
+                {
+                    CaptureConfiguration = snapshot.CaptureConfiguration,
+                    CapturedRigSha256 = snapshot.CapturedRigSha256
+                });
             }
         }
         finally
@@ -2368,7 +2408,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         ArtifactManifestV2 Manifest,
         FileStream PayloadStream,
         FileStream SidecarStream,
-        TransientRuntimeFrame Runtime) : IAsyncDisposable
+        TransientRuntimeFrame Runtime,
+        CameraModuleConfig? CaptureConfiguration,
+        string? CapturedRigSha256) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {

@@ -6,10 +6,12 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
+using HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -17,6 +19,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -358,7 +361,9 @@ public sealed class CameraAgentOperatorUiServiceTests
         OutboxOperationsTokenService? tokenService = null,
         ICameraAgentLayeredPresentationService? layers = null,
         ICameraAgentGallery? gallery = null,
-        ICameraAgentCurrentImagePresentationService? presentations = null) => new(
+        ICameraAgentCurrentImagePresentationService? presentations = null,
+        ICameraAgentConfigurationAccessor? configuration = null,
+        CaptureScheduleRuntimeCoordinator? scheduleRuntime = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -374,7 +379,8 @@ public sealed class CameraAgentOperatorUiServiceTests
             null!,
             null!,
             null!,
-            null!,
+            configuration!,
+            scheduleRuntime,
             [],
             [],
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = "/unused" }),

@@ -20,6 +20,8 @@ public sealed record CaptureScheduleRuntimeSnapshot(
     CaptureLocationProvenance Location)
 {
     public CaptureScheduleDecision? CurrentDecision { get; init; }
+
+    public long? PreparedStateVersion { get; init; }
 }
 
 public sealed record CaptureScheduleGrant(
@@ -130,6 +132,65 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         {
             _gate.Release();
         }
+    }
+
+    public async Task<CaptureScheduleRuntimeSnapshot> PrepareStartupAsync(CaptureScheduleRevisionSnapshot revision,
+        CameraModuleConfig configuration, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(revision);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ValidateConfiguration(configuration);
+        var state = await _store.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        if (state.PendingRevision?.RevisionId != revision.RevisionId ||
+            Snapshot?.Revision.RevisionId != state.ActiveRevision.RevisionId)
+        {
+            throw new CaptureScheduleStoreConflictException("The pending schedule changed before startup preparation.");
+        }
+        var prepared = await CreateSnapshotAsync(revision, null, configuration, _timeProvider.GetUtcNow(),
+            cancellationToken).ConfigureAwait(false);
+        return prepared with { PreparedStateVersion = state.Version };
+    }
+
+    public async Task CommitPreparedStartupAsync(CaptureScheduleRuntimeSnapshot prepared,
+        Func<CancellationToken, Task> commit, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(prepared);
+        ArgumentNullException.ThrowIfNull(commit);
+        await _admissionCoordinator.ExecuteCaptureBoundaryAsync(async token =>
+            {
+                await _gate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    var state = await _store.GetSnapshotAsync(token).ConfigureAwait(false);
+                    if (prepared.PreparedStateVersion != state.Version ||
+                        state.PendingRevision?.RevisionId != prepared.Revision.RevisionId ||
+                        Snapshot?.Revision.RevisionId != state.ActiveRevision.RevisionId)
+                    {
+                        throw new CaptureScheduleStoreConflictException("The schedule changed before startup commit.");
+                    }
+                    try
+                    {
+                        await commit(token).ConfigureAwait(false);
+                        CancellationTokenSource previous;
+                        lock (_stateGate)
+                        {
+                            Volatile.Write(ref _snapshot, prepared);
+                            previous = Interlocked.Exchange(ref _revisionChanged, new CancellationTokenSource());
+                        }
+                        await previous.CancelAsync().ConfigureAwait(false);
+                        return true;
+                    }
+                    catch
+                    {
+                        _admissionCoordinator.FailClosed();
+                        throw;
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+            }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<CaptureScheduleGrant> WaitForGrantAsync(CancellationToken cancellationToken)
@@ -424,22 +485,28 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         bool rollback,
         CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
-            var target = await _store.GetRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
-            var targetConfiguration = target.Profile.ApplyTo(current.Configuration);
-            ValidateConfiguration(targetConfiguration);
-            var prepared = await CreateSnapshotAsync(
-                target,
-                current.PendingRevisionId,
-                targetConfiguration,
-                _timeProvider.GetUtcNow(),
-                cancellationToken).ConfigureAwait(false);
-            return await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
-                async boundaryToken =>
+        var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+        var target = await _store.GetRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
+        var targetConfiguration = target.Profile.ApplyTo(current.Configuration);
+        ValidateConfiguration(targetConfiguration);
+        var prepared = await CreateSnapshotAsync(
+            target,
+            current.PendingRevisionId,
+            targetConfiguration,
+            _timeProvider.GetUtcNow(),
+            cancellationToken).ConfigureAwait(false);
+        return await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
+            async boundaryToken =>
+            {
+                await _gate.WaitAsync(boundaryToken).ConfigureAwait(false);
+                try
                 {
+                    var latest = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+                    if (latest.Revision.RevisionId != current.Revision.RevisionId ||
+                        !ReferenceEquals(latest.Configuration, current.Configuration))
+                    {
+                        throw new CaptureScheduleStoreConflictException("The active schedule changed before activation.");
+                    }
                     var result = rollback
                         ? await _store.RollbackWithCurrentAsync(
                             revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false)
@@ -447,7 +514,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                             revisionId, idempotencyKey, expectedVersion, actor, reason, boundaryToken).ConfigureAwait(false);
                     var actual = result.Current;
                     if (string.Equals(actual.ActiveRevision.RevisionId, target.RevisionId, StringComparison.Ordinal) &&
-                        !string.Equals(current.Revision.RevisionId, target.RevisionId, StringComparison.Ordinal))
+                        !string.Equals(latest.Revision.RevisionId, target.RevisionId, StringComparison.Ordinal))
                     {
                         CancellationTokenSource priorSignal;
                         lock (_stateGate)
@@ -469,13 +536,13 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                         }
                     }
                     return result.Receipt;
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal static CaptureScheduleSafetyState ResolveSafetyState(

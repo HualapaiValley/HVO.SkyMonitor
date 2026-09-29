@@ -1002,7 +1002,8 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(13L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(SqliteRawCaptureJournal.CurrentSchemaVersion,
+            await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM pragma_table_info('transient_candidates') WHERE name = 'candidate_state';")
             .ConfigureAwait(false));

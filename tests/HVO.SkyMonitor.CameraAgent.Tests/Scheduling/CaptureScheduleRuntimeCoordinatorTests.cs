@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -10,12 +11,18 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components.Authorization;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
@@ -23,6 +30,78 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 [TestCategory("Unit")]
 public sealed class CaptureScheduleRuntimeCoordinatorTests
 {
+    [TestMethod]
+    public async Task SkyMap_AfterDistinctOpticsActivationAndRollback_FollowsActiveRig()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var accessor = new CameraAgentConfigurationAccessor();
+        accessor.SetConfiguration(fixture.Configuration);
+        var projection = new CameraAgentSkyMapProjection(
+            accessor,
+            CameraAgentSkyMapProjectionTests.CreateCatalog(CameraAgentSkyMapProjectionTests.BrightStars()),
+            fixture.TimeProvider,
+            scheduleRuntime: fixture.Runtime);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var statusService = new CameraAgentOperatorUiService(
+            new FixedAuthenticationStateProvider(principal), authorization.Object,
+            null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            accessor, fixture.Runtime, [], [], fixture.HostOptions, null!, fixture.TimeProvider,
+            NullLogger<CameraAgentOperatorUiService>.Instance);
+        var initial = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var initialStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        var original = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var replacement = fixture.Configuration with
+        {
+            Rig = fixture.Configuration.Rig with
+            {
+                Optics = fixture.Configuration.Rig.Optics with
+                {
+                    FieldOfViewDegrees = 18,
+                    CalibrationVersion = "replacement-optics-v2"
+                },
+                ProfileVersion = "replacement-rig-v2"
+            }
+        };
+        var staged = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(replacement, AlwaysOpenDefinition("initial")),
+            "stage-sky-rig", original.Version, "owner", null,
+            CancellationToken.None).ConfigureAwait(false);
+        var activated = await fixture.Runtime.ActivateAsync(
+            staged.PendingRevision!.RevisionId, "activate-sky-rig", staged.Version, "owner", null,
+            CancellationToken.None).ConfigureAwait(false);
+        var active = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var activeStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual("replacement-optics-v2", active.Geometry.ProjectionCalibrationVersion);
+        Assert.AreEqual("replacement-rig-v2", active.Geometry.RigProfileVersion);
+        Assert.AreEqual(18d, active.Geometry.FieldOfViewDegrees);
+        Assert.AreEqual(initial.Observer.LocationId, active.Observer.LocationId);
+        Assert.AreEqual("replacement-optics-v2", activeStatus.Optics.CalibrationVersion);
+        Assert.AreEqual("replacement-rig-v2", activeStatus.Sensor.ProfileVersion);
+        Assert.AreEqual(initialStatus.AgentId, activeStatus.AgentId);
+        Assert.AreEqual(initialStatus.SnapshotLabel, activeStatus.SnapshotLabel);
+        Assert.AreNotEqual(initialStatus.SnapshotIdentity, activeStatus.SnapshotIdentity);
+
+        _ = await fixture.Runtime.RollbackAsync(
+            original.ActiveRevision.RevisionId,
+            "rollback-sky-rig", activated.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var rolledBack = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var rolledBackStatus = (await statusService.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        Assert.AreEqual(initial.Geometry.ProjectionCalibrationVersion, rolledBack.Geometry.ProjectionCalibrationVersion);
+        Assert.AreEqual(initial.Geometry.RigProfileVersion, rolledBack.Geometry.RigProfileVersion);
+        Assert.AreEqual(initial.Observer.LocationId, rolledBack.Observer.LocationId);
+        Assert.AreEqual(initialStatus.SnapshotIdentity, rolledBackStatus.SnapshotIdentity);
+    }
+
+    private sealed class FixedAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
+    {
+        public override Task<AuthenticationState> GetAuthenticationStateAsync()
+            => Task.FromResult(new AuthenticationState(principal));
+    }
+
     [TestMethod]
     public async Task OperatorState_AfterFileConfigurationReload_ExposesReloadedProfileSha256()
     {
@@ -226,6 +305,131 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         Assert.AreEqual(staged.PendingRevision.RevisionId, activated.ActiveRevision.RevisionId);
         Assert.AreEqual(staged.PendingRevision.RevisionId, fixture.Runtime.Snapshot!.Revision.RevisionId);
         Assert.IsTrue(revisionChanged.IsCancellationRequested);
+    }
+
+    [TestMethod]
+    public async Task StartupCommit_DrainsLeasedExpiredPreviewBeforeTakingRuntimeGate()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var staged = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("pending", gain: 2)),
+            "startup-stage", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var prepared = await fixture.Runtime.PrepareStartupAsync(staged.PendingRevision!,
+            staged.PendingRevision!.Profile.ApplyTo(fixture.Configuration), CancellationToken.None).ConfigureAwait(false);
+        var grant = await fixture.Runtime.WaitForGrantAsync(CancellationToken.None).ConfigureAwait(false);
+        var lease = await fixture.Admission.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+        fixture.Clock.UtcNow = fixture.Runtime.Snapshot!.Preview.PreviewEndUtc.AddSeconds(1);
+        var committed = false;
+        var commit = fixture.Runtime.CommitPreparedStartupAsync(prepared, _ =>
+        {
+            committed = true;
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        Assert.IsFalse(commit.IsCompleted);
+        var confirmed = fixture.Runtime.ConfirmGrantAsync(grant, "expired-preview", CancellationToken.None);
+
+        try
+        {
+            _ = await confirmed.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsFalse(commit.IsCompleted);
+        }
+        finally
+        {
+            lease.MarkNoPublicationRequired();
+            lease.Dispose();
+        }
+        await commit.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(committed);
+        Assert.AreEqual(staged.PendingRevision.RevisionId, fixture.Runtime.Snapshot!.Revision.RevisionId);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentActivation_WaitsForNamedStartupCommitAndPreservesCommittedSnapshot()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var first = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("schedule-target", gain: 2)),
+            "stage-schedule-target", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var pending = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("named-target", gain: 3)),
+            "stage-named-target", first.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var prepared = await fixture.Runtime.PrepareStartupAsync(pending.PendingRevision!,
+            pending.PendingRevision!.Profile.ApplyTo(fixture.Configuration), CancellationToken.None).ConfigureAwait(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commit = fixture.Runtime.CommitPreparedStartupAsync(prepared, async token =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token).ConfigureAwait(false);
+            _ = await fixture.Store.ActivateAsync(pending.PendingRevision.RevisionId,
+                "commit-named-target", pending.Version, "owner", null, token).ConfigureAwait(false);
+        }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var activation = fixture.Runtime.ActivateAsync(first.PendingRevision!.RevisionId,
+            "activate-schedule-target", pending.Version, "owner", null, CancellationToken.None);
+        Assert.IsFalse(activation.IsCompleted);
+        release.TrySetResult();
+
+        await commit.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        _ = await Assert.ThrowsAsync<CaptureScheduleStoreConflictException>(() =>
+            activation.WaitAsync(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+        Assert.AreEqual(pending.PendingRevision.RevisionId, fixture.Runtime.Snapshot!.Revision.RevisionId);
+        Assert.AreEqual(pending.PendingRevision.RevisionId,
+            (await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.RevisionId);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartupCommit_RejectsChangedScheduleBeforePublishing(bool activateNewer)
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var staged = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("pending", gain: 2)),
+            "startup-race-stage", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var prepared = await fixture.Runtime.PrepareStartupAsync(staged.PendingRevision!,
+            staged.PendingRevision!.Profile.ApplyTo(fixture.Configuration), CancellationToken.None).ConfigureAwait(false);
+        var newer = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("newer", gain: 3)),
+            "startup-race-newer", staged.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        if (activateNewer)
+        {
+            _ = await fixture.Runtime.ActivateAsync(newer.PendingRevision!.RevisionId,
+                "startup-race-activate", newer.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        }
+        var published = false;
+
+        _ = await Assert.ThrowsAsync<CaptureScheduleStoreConflictException>(() =>
+            fixture.Runtime.CommitPreparedStartupAsync(prepared, _ =>
+            {
+                published = true;
+                return Task.CompletedTask;
+            }, CancellationToken.None)).ConfigureAwait(false);
+        Assert.IsFalse(published);
+        Assert.AreEqual(CaptureAdmissionState.Running, fixture.Admission.Snapshot.State);
+    }
+
+    [TestMethod]
+    public async Task StartupCommit_WhenPublicationThrows_FailsClosed()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var staged = await fixture.Runtime.StageAsync(
+            LocalCaptureProfileDefinition.CreateV2(fixture.Configuration, AlwaysOpenDefinition("pending", gain: 2)),
+            "startup-publication-stage", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+        var prepared = await fixture.Runtime.PrepareStartupAsync(staged.PendingRevision!,
+            staged.PendingRevision!.Profile.ApplyTo(fixture.Configuration), CancellationToken.None).ConfigureAwait(false);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Runtime.CommitPreparedStartupAsync(prepared, _ =>
+                throw new InvalidOperationException("Unknown publication outcome."), CancellationToken.None))
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(initial.ActiveRevision.RevisionId, fixture.Runtime.Snapshot!.Revision.RevisionId);
+        Assert.AreEqual(CaptureAdmissionState.Unavailable, fixture.Admission.Snapshot.State);
     }
 
     [TestMethod]
@@ -584,6 +788,7 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             Configuration = configuration;
             Location = location;
             TimeProvider = timeProvider;
+            Clock = (FixedTimeProvider)timeProvider;
         }
 
         internal SqliteCaptureScheduleStore Store { get; }
@@ -597,6 +802,8 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         internal DeploymentLocationSnapshot Location { get; }
 
         internal TimeProvider TimeProvider { get; }
+
+        internal FixedTimeProvider Clock { get; }
 
         internal string Root => _root;
 
@@ -878,7 +1085,9 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
 
     private sealed class FixedTimeProvider(DateTimeOffset utc) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => utc;
+        public DateTimeOffset UtcNow { get; set; } = utc;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 
     private sealed class SingleCaptureModule(TimeProvider timeProvider) : ICameraModule
