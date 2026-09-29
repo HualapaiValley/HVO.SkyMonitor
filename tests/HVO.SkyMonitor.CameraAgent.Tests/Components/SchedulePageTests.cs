@@ -23,9 +23,9 @@ public sealed class SchedulePageTests
         rig ??= new Mock<ICameraAgentNamedRigUiService>();
         rig.Setup(service => service.GetAsync(It.IsAny<CancellationToken>())).Returns(() =>
             ValueTask.FromResult(unauthorized
-                ? OperatorUiResult<NamedRigCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
-                : OperatorUiResult<NamedRigCatalog>.Success(new(
-                    selection ?? new NamedRigSelection(null, null, 1), []))));
+                ? OperatorUiResult<NamedRigUiCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+                : OperatorUiResult<NamedRigUiCatalog>.Success(new(
+                    selection ?? new NamedRigSelection(null, null, 1), [], null, null))));
         context.Services.AddSingleton(rig.Object);
         return context;
     }

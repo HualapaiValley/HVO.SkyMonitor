@@ -483,6 +483,31 @@ public sealed class CameraRigPageTests
     }
 
     [TestMethod]
+    public void UncertainStage_CommittedThenCancelled_ReplayDoesNotClaimCurrentStage()
+    {
+        using var context = new BunitContext();
+        var service = new FakeRigService { StageUnavailable = true, StageCommittedOnUnavailable = true };
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Preview against", StringComparison.Ordinal)).Click();
+        cut.Find("[aria-label='Rig preview and selection'] input[type=checkbox]").Change(true);
+        cut.Find("button.btn-primary").Click();
+        var key = service.StageKey;
+        service.PendingId = null;
+        service.Version++;
+        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        service.StageUnavailable = false;
+        cut.Find("button.btn-primary").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.StageCount));
+        Assert.AreEqual(key, service.StageKey);
+        StringAssert.Contains(cut.Find("[role='status'].camera-banner").TextContent,
+            "current selection does not match its receipt", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("[role='status'].camera-banner").TextContent.Contains("Rig staged for restart", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "No restart staged", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "Installed rig", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void UncertainCancel_Refresh_RetriesIdenticalKeyAndVersion()
     {
         using var context = new BunitContext();
@@ -505,6 +530,30 @@ public sealed class CameraRigPageTests
         cut.WaitForAssertion(() => Assert.AreEqual(3, service.CancelCount));
         Assert.AreNotEqual(key, service.CancelKey);
         Assert.AreEqual(2L, service.CancelVersion);
+    }
+
+    [TestMethod]
+    public void UncertainCancel_CommittedThenRestaged_ReplayDoesNotClaimPendingCancelled()
+    {
+        using var context = new BunitContext();
+        var service = new FakeRigService { PendingId = "rig-v1", CancelUnavailable = true, CancelCommittedOnUnavailable = true };
+        context.Services.AddSingleton<ICameraAgentNamedRigUiService>(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.FindAll("button").Single(b => b.TextContent == "Cancel pending restart").Click();
+        var key = service.CancelKey;
+        service.PendingId = "rig-v1";
+        service.Version++;
+        cut.FindAll("button").Single(b => b.TextContent == "Refresh").Click();
+        service.CancelUnavailable = false;
+        cut.FindAll("button").Single(b => b.TextContent == "Retry same cancel request").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.CancelCount));
+        Assert.AreEqual(key, service.CancelKey);
+        Assert.AreEqual(1L, service.CancelVersion);
+        StringAssert.Contains(cut.Find("[role='status'].camera-banner").TextContent,
+            "current selection does not match its receipt", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("[role='status'].camera-banner").TextContent.Contains("Pending restart cancelled", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Find("[aria-label='Rig selection']").TextContent, "Pending restart", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("[aria-label='Rig selection']").TextContent.Contains("No restart staged", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -743,6 +792,7 @@ public sealed class CameraRigPageTests
         internal bool StageUnavailable { get; set; }
         internal bool StageCommittedOnUnavailable { get; set; }
         internal bool CancelUnavailable { get; set; }
+        internal bool CancelCommittedOnUnavailable { get; set; }
         internal string? PendingId { get; set; }
         internal string? PendingFailure { get; set; }
         internal string? ActiveFailure { get; set; }
@@ -766,6 +816,8 @@ public sealed class CameraRigPageTests
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedEquipmentDetail>>>> _deferredEquipment = [];
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedRigHistoryPage>>>> _deferredHistory = [];
         private NamedEquipmentDefinition? _savedEquipment;
+        private readonly Dictionary<string, NamedRigStageReceipt> _stageReceipts = [];
+        private readonly Dictionary<string, NamedRigStageReceipt> _cancelReceipts = [];
 
         internal TaskCompletionSource<OperatorUiResult<NamedEquipmentDetail>> DeferEquipment(string revisionId)
         {
@@ -925,14 +977,24 @@ public sealed class CameraRigPageTests
             Acknowledged = acknowledgeUnvalidated;
             StagedScheduleId = expectedScheduleRevisionId;
             StagedScheduleHash = expectedScheduleProfileSha256;
+            if (_stageReceipts.TryGetValue(key, out var previous))
+                return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Success(previous));
             if (StageUnavailable)
             {
-                if (StageCommittedOnUnavailable) { PendingId = revisionId; Version = version + 1; }
+                if (StageCommittedOnUnavailable)
+                {
+                    PendingId = revisionId;
+                    Version = version + 1;
+                    _stageReceipts[key] = new("receipt", revisionId, Version, "restart_required", acknowledgeUnvalidated);
+                }
                 return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Failure(
                     OperatorUiResultKind.Unavailable, "Transport unavailable"));
             }
-            return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Success(new("receipt", revisionId,
-                version + 1, "restart_required", acknowledgeUnvalidated)));
+            PendingId = revisionId;
+            Version = version + 1;
+            var receipt = new NamedRigStageReceipt("receipt", revisionId, Version, "restart_required", acknowledgeUnvalidated);
+            _stageReceipts[key] = receipt;
+            return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Success(receipt));
         }
         public ValueTask<OperatorUiResult<NamedRigStageReceipt>> CancelAsync(string revisionId, long version, string key,
             CancellationToken token)
@@ -940,10 +1002,18 @@ public sealed class CameraRigPageTests
             CancelCount++;
             CancelKey = key;
             CancelVersion = version;
+            if (_cancelReceipts.TryGetValue(key, out var previous))
+                return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Success(previous));
+            if (CancelUnavailable && !CancelCommittedOnUnavailable)
+                return ValueTask.FromResult(OperatorUiResult<NamedRigStageReceipt>.Failure(
+                    OperatorUiResultKind.Unavailable, "Transport unavailable"));
+            PendingId = null;
+            Version = version + 1;
+            var receipt = new NamedRigStageReceipt("receipt", revisionId, Version, "cancelled", true);
+            _cancelReceipts[key] = receipt;
             return ValueTask.FromResult(CancelUnavailable
                 ? OperatorUiResult<NamedRigStageReceipt>.Failure(OperatorUiResultKind.Unavailable, "Transport unavailable")
-                : OperatorUiResult<NamedRigStageReceipt>.Success(new("receipt", revisionId,
-                    version + 1, "cancelled", true)));
+                : OperatorUiResult<NamedRigStageReceipt>.Success(receipt));
         }
     }
 }

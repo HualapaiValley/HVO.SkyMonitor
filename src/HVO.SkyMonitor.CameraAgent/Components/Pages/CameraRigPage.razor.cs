@@ -501,9 +501,19 @@ public sealed partial class CameraRigPage : ComponentBase
                 attempt.Schedule, attempt.Hash, CancellationToken.None);
             if (result.Kind != OperatorUiResultKind.Unavailable) _stageAttempt = null;
             if (Handle(result)) return;
+            var previousCatalog = _catalog;
             await RefreshAsync();
             _preview = null; _acknowledge = false;
-            _message = "Rig staged for restart. Runtime compatibility is not yet verified."; _error = false;
+            var receipt = result.Value!;
+            var selection = _catalog?.Selection;
+            _message = !ReferenceEquals(previousCatalog, _catalog) &&
+                receipt.RevisionId == attempt.Revision && receipt.Disposition == "restart_required" &&
+                receipt.Version == attempt.Version + 1 && selection?.Version == receipt.Version &&
+                selection.PendingRevisionId == attempt.Revision &&
+                selection.ActiveRevisionId == previousCatalog?.Selection.ActiveRevisionId
+                ? "Rig staged for restart. Runtime compatibility is not yet verified."
+                : "Stage request was recorded, but the current selection does not match its receipt. Review the refreshed active and pending rig before acting.";
+            _error = false;
         }
         finally { _busy = false; _staging = false; }
     }
@@ -521,8 +531,18 @@ public sealed partial class CameraRigPage : ComponentBase
             var result = await RigService.CancelAsync(attempt.Revision, attempt.Version, attempt.Key, CancellationToken.None);
             if (result.Kind != OperatorUiResultKind.Unavailable) _cancelAttempt = null;
             if (Handle(result)) return;
+            var previousCatalog = _catalog;
             await RefreshAsync();
-            _message = "Pending restart cancelled."; _error = false;
+            var receipt = result.Value!;
+            var selection = _catalog?.Selection;
+            _message = !ReferenceEquals(previousCatalog, _catalog) &&
+                receipt.RevisionId == attempt.Revision && receipt.Disposition == "cancelled" &&
+                receipt.Version == attempt.Version + 1 && selection?.Version == receipt.Version &&
+                selection.PendingRevisionId is null &&
+                selection.ActiveRevisionId == previousCatalog?.Selection.ActiveRevisionId
+                ? "Pending restart cancelled."
+                : "Cancel request was recorded, but the current selection does not match its receipt. Review the refreshed active and pending rig before acting.";
+            _error = false;
         }
         finally { _busy = false; }
     }

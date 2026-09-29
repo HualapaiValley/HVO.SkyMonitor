@@ -188,7 +188,9 @@ internal sealed class EquipmentFormModel
         {
             ProjectionModel = ProjectionModel.Trim(),
             LensKind = Choice<LensKind>(LensKind, "Lens kind", problems),
-            FocalLengthMillimeters = Number(FocalLengthMillimeters, "Focal length (mm)", double.Epsilon, double.MaxValue, problems),
+            FocalLengthMillimeters = Number(FocalLengthMillimeters, "Focal length (mm)",
+                basis.FocalLengthMillimeters == 0 && ProjectionModel.Trim() == basis.ProjectionModel ? 0 : double.Epsilon,
+                double.MaxValue, problems),
             FieldOfViewDegrees = Number(FieldOfViewDegrees, "Field of view (degrees)", double.Epsilon, 360, problems),
             RollDegrees = Number(RollDegrees, "Optics roll (degrees)", -360, 360, problems),
             HorizontalFlip = HorizontalFlip

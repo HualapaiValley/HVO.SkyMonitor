@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -10,6 +11,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class EquipmentFormModelTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions SampleJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     private static NamedCameraEquipment Camera(bool color = false) => new(
         new CameraModuleDescriptor("zwo-asi", JsonSerializer.SerializeToElement(new { secret = "serial", useUnvalidatedCameraAtOwnRisk = true })),
@@ -181,6 +186,35 @@ public sealed class EquipmentFormModelTests
         model.CfaPattern = "999";
         Assert.IsFalse(model.TryApplyCamera(basis, out _, out errors));
         Assert.IsTrue(errors.Any(e => e.Contains("CFA pattern", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void ShippedVirtualOptics_AllowUnchangedZeroFocalDuplicateButRejectInvalidFocalLengths()
+    {
+        using var sample = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json")));
+        var basis = sample.RootElement.GetProperty("rig").GetProperty("optics")
+            .Deserialize<OpticsProfile>(SampleJson)!;
+        Assert.AreEqual("EquidistantFisheye", basis.ProjectionModel);
+        Assert.AreEqual(0d, basis.FocalLengthMillimeters);
+
+        var model = EquipmentFormModel.FromOptics(basis);
+        Assert.IsTrue(model.TryApplyOptics(basis, out var duplicate, out var errors), string.Join(" ", errors));
+        Assert.AreEqual(basis, duplicate);
+
+        model.FocalLengthMillimeters = "-1";
+        Assert.IsFalse(model.TryApplyOptics(basis, out var rejected, out errors));
+        Assert.AreSame(basis, rejected);
+        Assert.IsTrue(errors.Any(e => e.Contains("Focal length (mm)", StringComparison.Ordinal)));
+
+        model.FocalLengthMillimeters = "0";
+        model.ProjectionModel = "Perspective";
+        Assert.IsFalse(model.TryApplyOptics(basis, out rejected, out errors));
+        Assert.IsTrue(errors.Any(e => e.Contains("Focal length (mm)", StringComparison.Ordinal)));
+
+        model = EquipmentFormModel.FromOptics(basis with { FocalLengthMillimeters = 2.5 });
+        model.FocalLengthMillimeters = "0";
+        Assert.IsFalse(model.TryApplyOptics(basis with { FocalLengthMillimeters = 2.5 }, out _, out errors));
+        Assert.IsTrue(errors.Any(e => e.Contains("Focal length (mm)", StringComparison.Ordinal)));
     }
 
     [TestMethod]
