@@ -112,6 +112,12 @@ body[data-theme="hvo-dark"] .btn.btn-sm {
         min-height: 44px;
     }
 
+    /* An icon-only button has no label to widen it, so it takes the floor in both dimensions. The repeated class
+       matches the specificity of the rule above, which the layouts' base control sizes sit below. */
+    body[data-theme="hvo-dark"] .icon-button.icon-button {
+        min-width: 44px;
+    }
+
     body[data-theme="hvo-dark"] .ops-field :is(input:not([type="checkbox"], [type="radio"]), select, textarea) {
         min-height: 44px;
     }

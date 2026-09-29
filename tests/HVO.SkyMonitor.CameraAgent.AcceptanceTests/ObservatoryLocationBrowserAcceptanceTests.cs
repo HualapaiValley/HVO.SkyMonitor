@@ -18,13 +18,15 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
     private static readonly byte[] TilePng = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
 
-    // The control set and floor the operations responsive walk applies to workspace form routes, widened to every
-    // link because this page places one over the map.
+    // The control set the operations responsive walk applies to workspace form routes, widened to every link because
+    // this page places one over the map, and held to the 44 px floor in both dimensions.
     private const string UndersizedControlsScript = """
         () => [...document.querySelectorAll('.operations-content input:not([type=checkbox]), .operations-content select, .operations-content button, .operations-content a[href]')]
-            .filter(element => element.getClientRects().length > 0 && element.getBoundingClientRect().height < 44)
+            .filter(element => element.getClientRects().length > 0)
+            .map(element => ({ element, box: element.getBoundingClientRect() }))
+            .filter(({ box }) => box.width < 44 || box.height < 44)
             .slice(0, 5)
-            .map(element => `${element.tagName.toLowerCase()} "${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 30)}" h=${Math.round(element.getBoundingClientRect().height)}`)
+            .map(({ element, box }) => `${element.tagName.toLowerCase()} "${(element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 30)}" w=${Math.round(box.width)} h=${Math.round(box.height)}`)
             .join(' | ')
         """;
 

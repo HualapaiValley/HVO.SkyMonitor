@@ -43,9 +43,9 @@
 .site-scene-filters .ops-field { flex: 1 1 12rem; }
 .site-scene-wrap { max-height: 32rem; overflow: auto; }
 .site-scene-wrap thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
-/* The sort control fills its header cell so the whole 44px header row is the target. */
+/* The sort control fills its header cell so the whole 44px header row is the target, and is never narrower than 44px. */
 .site-scene-wrap thead th:has(.site-sort) { padding-block: 0; }
-.site-sort { display: flex; width: 100%; min-height: 2.75rem; align-items: center; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; }
+.site-sort { display: flex; width: 100%; min-width: 2.75rem; min-height: 2.75rem; align-items: center; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; }
 .site-sort:hover, .site-sort:focus-visible { color: var(--text); }
 th[aria-sort="ascending"] .site-sort::after { content: " \2191"; }
 th[aria-sort="descending"] .site-sort::after { content: " \2193"; }
