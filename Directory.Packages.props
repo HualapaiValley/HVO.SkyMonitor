@@ -12,7 +12,7 @@
     <PackageVersion Include="Asp.Versioning.Mvc" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.OpenApi" Version="10.2.3" />
-    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
     <PackageVersion Include="bunit" Version="2.11.3" />
     <PackageVersion Include="CosineKitty.AstronomyEngine" Version="2.1.19" />
     <PackageVersion Include="FluentAssertions" Version="8.11.0" />
