@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Buffers;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Mvc;
 
@@ -26,6 +27,8 @@ internal static class CameraAgentNamedRigEndpoints
         group.MapGet("/", GetAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
         group.MapGet("/inventory", GetInventoryAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
+        group.MapGet("/profiles/{profileId}/revisions", GetHistoryAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
         group.MapGet("/equipment/{revisionId}", GetEquipmentAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
@@ -59,6 +62,9 @@ internal static class CameraAgentNamedRigEndpoints
                 catch (JsonException) { return Results.Problem(statusCode: 400, title: "Invalid equipment request."); }
                 return await next(context).ConfigureAwait(false);
             });
+        group.MapPost("/equipment/zwo-starter", SaveZwoStarterAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance);
         group.MapPost("/profiles", SaveProfileAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance);
@@ -135,7 +141,8 @@ internal static class CameraAgentNamedRigEndpoints
                 return Results.Problem(statusCode: 503, title: "The active rig is not ready for staging.");
             return Results.Ok(await store.StageAsync(request.RevisionId, request.ExpectedVersion,
                 context.Request.Headers["Idempotency-Key"].ToString(), actor,
-                request.AcknowledgeUnvalidated, token).ConfigureAwait(false));
+                request.AcknowledgeUnvalidated, request.ExpectedScheduleRevisionId,
+                request.ExpectedScheduleProfileSha256, token).ConfigureAwait(false));
         }
         catch (ArgumentException)
         {
@@ -163,7 +170,8 @@ internal static class CameraAgentNamedRigEndpoints
         }
     }
 
-    private sealed record NamedRigStageRequest(string RevisionId, long ExpectedVersion, bool AcknowledgeUnvalidated);
+    private sealed record NamedRigStageRequest(string RevisionId, long ExpectedVersion, bool AcknowledgeUnvalidated,
+        string ExpectedScheduleRevisionId, string ExpectedScheduleProfileSha256);
     private sealed record NamedRigCancelRequest(string RevisionId, long ExpectedVersion);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -192,6 +200,25 @@ internal static class CameraAgentNamedRigEndpoints
         try { return Results.Ok(await store.GetInventoryAsync(token).ConfigureAwait(false)); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception) { return Results.Problem(statusCode: 500, title: "Named rig inventory is unavailable."); }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authenticated operator boundary returns only fixed failure details.")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authenticated operator boundary returns only fixed failure details.")]
+    private static async Task<IResult> GetHistoryAsync(string profileId, [FromQuery] int? limit,
+        [FromQuery] long? beforeRevisionNumber, [FromQuery] long? version,
+        SqliteNamedRigProfileStore store, CancellationToken token)
+    {
+        try
+        {
+            return Results.Ok(await store.GetHistoryAsync(profileId, limit ?? 50, beforeRevisionNumber,
+                version, token).ConfigureAwait(false));
+        }
+        catch (ArgumentException) { return Results.Problem(statusCode: 400, title: "Invalid rig history request."); }
+        catch (KeyNotFoundException) { return Results.Problem(statusCode: 404, title: "Rig profile was not found."); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception) { return Results.Problem(statusCode: 500, title: "Rig history is unavailable."); }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -246,6 +273,35 @@ internal static class CameraAgentNamedRigEndpoints
 
     private sealed record EquipmentRequest(string? DefinitionId, string Kind, string DisplayName, JsonElement Definition,
         string? BasisRevisionId = null, string? ExpectedRevisionId = null);
+    private sealed record ZwoStarterRequest(string TemplateId, string DisplayName)
+    {
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalFields { get; init; }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The authenticated operator boundary returns only fixed failure details.")]
+    private static async Task<IResult> SaveZwoStarterAsync(HttpContext context, [FromBody] ZwoStarterRequest request,
+        SqliteNamedRigProfileStore store, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(CameraAgentCredentialAccess.GetOwnerId(context.User)))
+            return Results.Problem(statusCode: 403, title: "The equipment command is not authorized.");
+        try
+        {
+            if (request.AdditionalFields is { Count: > 0 })
+                return Results.Problem(statusCode: 400, title: "Invalid camera starter request.");
+            var camera = ZwoCameraStarter.Create(request.TemplateId);
+            var saved = await store.SaveEquipmentAsync(null, "camera", request.DisplayName,
+                JsonSerializer.SerializeToElement(camera), token).ConfigureAwait(false);
+            return Results.Ok(saved);
+        }
+        catch (ArgumentException) { return Results.Problem(statusCode: 400, title: "Invalid camera starter request."); }
+        catch (CaptureScheduleStoreConflictException) { return Results.Problem(statusCode: 409, title: "Equipment cannot be changed."); }
+        catch (Microsoft.Data.Sqlite.SqliteException exception) when (exception.SqliteErrorCode == 19)
+        { return Results.Problem(statusCode: 409, title: "Equipment name conflicts with existing inventory."); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception) { return Results.Problem(statusCode: 500, title: "Camera starter could not be saved."); }
+    }
     private sealed record ProfileRequest(string? ProfileId, string DisplayName);
     private sealed record ComposeRequest(string ProfileId, string CameraRevisionId, string OpticsRevisionId, string MountRevisionId);
 

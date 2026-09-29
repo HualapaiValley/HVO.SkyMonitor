@@ -1278,7 +1278,7 @@ public sealed class SqliteCaptureScheduleStore(
 
     private sealed record NamedRigEquipment(CameraModuleDescriptor Module, CameraRigConfig Rig);
 
-    private static async Task<CaptureScheduleStoreSnapshot?> ReadSnapshotAsync(
+    internal static async Task<CaptureScheduleStoreSnapshot?> ReadSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)

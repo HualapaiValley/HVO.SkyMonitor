@@ -70,7 +70,15 @@
                     var rollback = _state.PendingRevision.RevisionNumber < _state.ActiveRevision.RevisionNumber;
                     <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
                     <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
-                    <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
+                    @if (PendingRigSchedule)
+                    {
+                        <p role="status">Named rig awaiting restart. This revision cannot be applied as a schedule draft.</p>
+                        <a href="/operations/camera">View or cancel the pending rig</a>
+                    }
+                    else if (!ScheduleActionsBlocked)
+                    {
+                        <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
+                    }
                 }
             </article>
         </section>
@@ -108,7 +116,45 @@
                 <header><div><p class="eyebrow">Validated profile editor</p><h2 id="schedule-editor-heading">Schedule draft</h2></div><span>Basis revision @((_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber)</span></header>
                 @if (_model is not null)
                 {
-                    <p class="editor-note">Typed fields rewrite only what they show. @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), module options, and every other field carry over from the basis revision unchanged.</p>
+                    <p class="editor-note">Typed fields rewrite only what they show. @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), module options, and every other field carry over from the basis revision unchanged. Changes take effect only after saving and applying a revision.</p>
+
+                    <fieldset class="editor-group" disabled="@_busy">
+                        <legend>Exposure and cadence policy</legend>
+                        <div class="policy-fields">
+                            <label>Capture interval s<input class="form-control" inputmode="decimal" @bind="_model.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
+                            <label>Cadence mode<select class="form-select" @bind="_model.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                            <label>Day exposure ms<input class="form-control" inputmode="decimal" @bind="_model.DayExposureMilliseconds" @bind:after="FormChanged" /></label>
+                            <label>Night exposure ms<input class="form-control" inputmode="decimal" @bind="_model.NightExposureMilliseconds" @bind:after="FormChanged" /></label>
+                            <label>Day gain<input class="form-control" inputmode="decimal" @bind="_model.DayGain" @bind:after="FormChanged" /></label>
+                            <label>Night gain<input class="form-control" inputmode="decimal" @bind="_model.NightGain" @bind:after="FormChanged" /></label>
+                        </div>
+                        @if (_model.HasEnvelope)
+                        {
+                            <p class="editor-note">Metered exposure envelope</p>
+                            <div class="policy-fields">
+                                <label>Minimum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MinimumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                                <label>Maximum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MaximumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                                <label>Minimum gain<input class="form-control" inputmode="decimal" @bind="_model.MinimumGain" @bind:after="FormChanged" /></label>
+                                <label>Maximum gain<input class="form-control" inputmode="decimal" @bind="_model.MaximumGain" @bind:after="FormChanged" /></label>
+                                <label>Target ADU level<input class="form-control" inputmode="decimal" @bind="_model.TargetAduLevel" @bind:after="FormChanged" /></label>
+                                <label>Adjustment order<select class="form-select" @bind="_model.ExposurePreference" @bind:after="FormChanged">@foreach (var preference in Enum.GetNames<ExposureGainPreference>()) { <option value="@preference">@Split(preference)</option> }</select></label>
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="editor-note">This profile has no metered exposure envelope; day and night values apply directly.</p>
+                        }
+                    </fieldset>
+
+                    <fieldset class="editor-group" disabled="@_busy">
+                        <legend>Automatic control policy</legend>
+                        <div class="policy-fields">
+                            <label>Exposure control<select class="form-select" @bind="_model.ExposureControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                            <label>Gain control<select class="form-select" @bind="_model.GainControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                            <label>Temperature mode<select class="form-select" @bind="_model.TemperatureMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<TemperatureControlMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                            <label>Temperature target C<input class="form-control" inputmode="decimal" placeholder="none" @bind="_model.TemperatureTargetC" @bind:after="FormChanged" /></label>
+                        </div>
+                    </fieldset>
 
                     <fieldset class="editor-group" disabled="@_busy">
                         <legend>Setpoint profiles</legend>
@@ -203,7 +249,7 @@
                 </details>
                 <div class="editor-actions">
                     <button class="btn btn-outline-light" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button>
-                    <button class="btn btn-primary" disabled="@_busy" @onclick="StageAsync">Save immutable draft</button>
+                    <button class="btn btn-primary" disabled="@(_busy || ScheduleActionsBlocked)" @onclick="StageAsync">Save immutable draft</button>
                 </div>
             </article>
 
@@ -275,7 +321,7 @@
                 <ol>
                     @foreach (var revision in _state.History)
                     {
-                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId) { var rollback = revision.RevisionNumber < _state.ActiveRevision.RevisionNumber; <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision), rollback)">@(rollback ? "Review rollback" : "Review apply")</button> }</li>
+                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId && !ScheduleActionsBlocked && revision.RevisionId != _rigSelection?.PendingScheduleRevisionId) { var rollback = revision.RevisionNumber < _state.ActiveRevision.RevisionNumber; <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision), rollback)">@(rollback ? "Review rollback" : "Review apply")</button> }</li>
                     }
                 </ol>
             </article>

@@ -5,6 +5,9 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -15,6 +18,259 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 [TestCategory("Unit")]
 public sealed class SqliteCaptureScheduleStoreTests
 {
+    [TestMethod]
+    public async Task NamedRigPreview_RejectsModuleIncompatibilityBeforeStage()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = HostConfiguration();
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var active = await schedule.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, options, TimeProvider.System, telemetry);
+            using var runtime = new CaptureScheduleRuntimeCoordinator(schedule, admission,
+                new RawIngressState(TimeProvider.System), new CaptureLaneState(TimeProvider.System, options),
+                new EmptyPipelineFactory(), TimeProvider.System,
+                moduleConfigurationValidator: new RejectIncompatibleCamera());
+            _ = await runtime.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            var named = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule, runtime);
+            var catalog = await named.ImportActiveAsync(active.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
+            var inventory = await named.GetInventoryAsync(CancellationToken.None).ConfigureAwait(false);
+            var camera = inventory.Equipment.Single(item => item.Kind == "camera");
+            var optics = inventory.Equipment.Single(item => item.Kind == "optics");
+            var mount = inventory.Equipment.Single(item => item.Kind == "mount");
+            var incompatible = await named.SaveEquipmentAsync(null, "camera", "Incompatible camera",
+                System.Text.Json.JsonSerializer.SerializeToElement(new
+                {
+                    module = new { type = configuration.ModuleType },
+                    sensor = configuration.Rig.Sensor with { Name = "incompatible" },
+                    readout = configuration.Rig.Readout
+                }), CancellationToken.None, camera.RevisionId).ConfigureAwait(false);
+            var draft = await named.SaveProfileNameAsync(null, "Draft", CancellationToken.None).ConfigureAwait(false);
+            var revision = await named.ComposeAsync(draft.ProfileId, incompatible.RevisionId,
+                optics.RevisionId, mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            var preview = await named.PreviewAsync(revision.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(preview.Valid);
+            Assert.IsFalse(preview.RuntimeVerified);
+            Assert.IsNotNull(preview.Failure);
+            await Assert.ThrowsExactlyAsync<CaptureProfileCompatibilityException>(() => named.StageAsync(
+                revision.RevisionId, catalog.Selection.Version, "reject-incompatible", "owner", true,
+                preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None)).ConfigureAwait(false);
+            Assert.IsNull((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection.PendingRevisionId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class RejectIncompatibleCamera : ICameraModuleConfigurationValidator
+    {
+        public void Validate(CameraModuleConfig configuration)
+        {
+            if (configuration.Rig.Sensor.Name == "incompatible")
+                throw new InvalidOperationException("Incompatible physical camera configuration.");
+        }
+    }
+
+    [TestMethod]
+    public async Task ZwoCameraFromBasis_OverridesModelOnlyWithExplicitRiskAcknowledgement()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var active = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var profiles = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var sensor = active.ActiveRevision.Profile.Rig.Sensor with { Name = "ASI120MM mono" };
+            NamedEquipmentDefinition? basis = null;
+            foreach (var model in new[] { "ASI676MC", "ASI178MC" })
+            {
+                var sample = await profiles.SaveEquipmentAsync(null, "camera", $"ZWO {model} basis",
+                    System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(
+                        new CameraModuleDescriptor("ZwoAsi", System.Text.Json.JsonSerializer.SerializeToElement(new
+                        {
+                            libraryPathEnvironmentVariable = "ASI_SDK_PATH",
+                            cameraSerialEnvironmentVariable = "ASI_SERIAL",
+                            expectedModel = model,
+                            offset = 17,
+                            usbBandwidth = 45
+                        })), sensor, active.ActiveRevision.Profile.Rig.Readout)), CancellationToken.None).ConfigureAwait(false);
+                var sampleJson = System.Text.Json.JsonSerializer.Serialize(
+                    (await profiles.GetEquipmentAsync(sample.RevisionId, CancellationToken.None).ConfigureAwait(false)).Definition);
+                using var sampleDocument = System.Text.Json.JsonDocument.Parse(sampleJson);
+                Assert.AreEqual(model, sampleDocument.RootElement.GetProperty("ExpectedModel").GetString());
+                Assert.IsFalse(sampleDocument.RootElement.GetProperty("UseUnvalidatedCameraAtOwnRisk").GetBoolean());
+                Assert.IsFalse(sampleJson.Contains("ASI_SDK_PATH", StringComparison.Ordinal));
+                Assert.IsFalse(sampleJson.Contains("ASI_SERIAL", StringComparison.Ordinal));
+                basis ??= sample;
+            }
+            var copy = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                module = new { type = "ZwoAsi" },
+                sensor,
+                readout = active.ActiveRevision.Profile.Rig.Readout,
+                expectedModel = "ASI120MM",
+                useUnvalidatedCameraAtOwnRisk = true
+            });
+            var saved = await profiles.SaveEquipmentAsync(null, "camera", "ASI120MM mono", copy,
+                CancellationToken.None, basis!.RevisionId).ConfigureAwait(false);
+            var detail = await profiles.GetEquipmentAsync(saved.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            var publicJson = System.Text.Json.JsonSerializer.Serialize(detail);
+            Assert.IsFalse(publicJson.Contains("ASI_SDK_PATH", StringComparison.Ordinal));
+            Assert.IsFalse(publicJson.Contains("ASI_SERIAL", StringComparison.Ordinal));
+            using (var detailDocument = System.Text.Json.JsonDocument.Parse(publicJson))
+            {
+                var projected = detailDocument.RootElement.GetProperty("Definition");
+                Assert.AreEqual("ASI120MM", projected.GetProperty("ExpectedModel").GetString());
+                Assert.IsTrue(projected.GetProperty("UseUnvalidatedCameraAtOwnRisk").GetBoolean());
+            }
+            var draft = await profiles.SaveProfileNameAsync(null, "ZWO draft", CancellationToken.None).ConfigureAwait(false);
+            var optics = await profiles.SaveEquipmentAsync(null, "optics", "Optics",
+                System.Text.Json.JsonSerializer.SerializeToElement(active.ActiveRevision.Profile.Rig.Optics), CancellationToken.None).ConfigureAwait(false);
+            var mount = await profiles.SaveEquipmentAsync(null, "mount", "Mount",
+                System.Text.Json.JsonSerializer.SerializeToElement(active.ActiveRevision.Profile.Rig.Orientation), CancellationToken.None).ConfigureAwait(false);
+            var composed = await profiles.ComposeAsync(draft.ProfileId, saved.RevisionId, optics.RevisionId,
+                mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            var moduleOptions = composed.Module.Options!.Value;
+            Assert.AreEqual("ASI120MM", moduleOptions.GetProperty("ExpectedModel").GetString());
+            Assert.IsTrue(moduleOptions.GetProperty("UseUnvalidatedCameraAtOwnRisk").GetBoolean());
+            Assert.AreEqual("ASI_SDK_PATH", moduleOptions.GetProperty("libraryPathEnvironmentVariable").GetString());
+            Assert.AreEqual("ASI_SERIAL", moduleOptions.GetProperty("cameraSerialEnvironmentVariable").GetString());
+            Assert.AreEqual(17, moduleOptions.GetProperty("offset").GetInt32());
+            Assert.AreEqual(45, moduleOptions.GetProperty("usbBandwidth").GetInt32());
+
+            var invalidOptionCases = new[]
+            {
+                "{\"expectedModel\":\"ASI676MC\",\"ExpectedModel\":\"ASI178MC\",\"useUnvalidatedCameraAtOwnRisk\":false}",
+                "{\"expectedModel\":\"ASI676MC\",\"useUnvalidatedCameraAtOwnRisk\":false,\"UseUnvalidatedCameraAtOwnRisk\":true}",
+                "{\"expectedModel\":\"ASI676MC\",\"useUnvalidatedCameraAtOwnRisk\":\"true\"}",
+                "{\"expectedModel\":42}"
+            };
+            for (var index = 0; index < invalidOptionCases.Length; index++)
+            {
+                var invalidOptions = invalidOptionCases[index];
+                using var optionsDocument = System.Text.Json.JsonDocument.Parse(invalidOptions);
+                var malformed = await profiles.SaveEquipmentAsync(null, "camera", $"Malformed options {index}",
+                    System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(
+                        new CameraModuleDescriptor("ZwoAsi", optionsDocument.RootElement),
+                        sensor, active.ActiveRevision.Profile.Rig.Readout)), CancellationToken.None).ConfigureAwait(false);
+                var malformedJson = System.Text.Json.JsonSerializer.Serialize(
+                    (await profiles.GetEquipmentAsync(malformed.RevisionId, CancellationToken.None).ConfigureAwait(false)).Definition);
+                using var malformedDocument = System.Text.Json.JsonDocument.Parse(malformedJson);
+                Assert.AreEqual(System.Text.Json.JsonValueKind.Null,
+                    malformedDocument.RootElement.GetProperty("ExpectedModel").ValueKind);
+                Assert.AreEqual(System.Text.Json.JsonValueKind.Null,
+                    malformedDocument.RootElement.GetProperty("UseUnvalidatedCameraAtOwnRisk").ValueKind);
+            }
+
+            foreach (var invalid in new[]
+            {
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"expectedModel\":\"ASI120MM\",\"useUnvalidatedCameraAtOwnRisk\":false}",
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"expectedModel\":\"ASI120MM\"}",
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"expectedModel\":\"not ASI\",\"useUnvalidatedCameraAtOwnRisk\":true}",
+                "{\"module\":{\"type\":\"ZwoAsi\",\"options\":{}},\"expectedModel\":\"ASI120MM\",\"useUnvalidatedCameraAtOwnRisk\":true}",
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"options\":{},\"expectedModel\":\"ASI120MM\",\"useUnvalidatedCameraAtOwnRisk\":true}",
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"expectedModel\":\"ASI120MM\",\"useUnvalidatedCameraAtOwnRisk\":true,\"offset\":99}",
+                "{\"module\":{\"type\":\"ZwoAsi\"},\"expectedModel\":\"ASI120MM\",\"useUnvalidatedCameraAtOwnRisk\":true,\"ExpectedModel\":\"ASI178MC\"}"
+            })
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(invalid);
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null,
+                    "camera", "Rejected", document.RootElement, CancellationToken.None, basis.RevisionId)).ConfigureAwait(false);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task NamedRigStage_RejectsScheduleActivatedAfterPreviewAndConflictingReplay()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var initial = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var named = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
+            var id = catalog.Selection.ActiveRevisionId!;
+            var preview = await named.PreviewAsync(id, CancellationToken.None).ConfigureAwait(false);
+            var changed = initial.ActiveRevision.Profile with { Schedule = Definition("new-schedule", 2) };
+            var pending = await schedule.StageAsync(changed, "race-schedule-stage", initial.Version,
+                "owner", null, CancellationToken.None).ConfigureAwait(false);
+            var active = await schedule.ActivateAsync(pending.PendingRevision!.RevisionId, "race-schedule-activate",
+                pending.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => named.StageAsync(
+                id, catalog.Selection.Version, "race-stage", "owner", true, preview.ScheduleRevisionId,
+                preview.ScheduleProfileSha256, CancellationToken.None)).ConfigureAwait(false);
+            Assert.IsNull((await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision);
+            Assert.IsNull((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection.PendingRevisionId);
+
+            var updated = await named.PreviewAsync(id, CancellationToken.None).ConfigureAwait(false);
+            var receipt = await named.StageAsync(id, catalog.Selection.Version, "race-stage", "owner", true,
+                updated.ScheduleRevisionId, updated.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(receipt, await named.StageAsync(id, catalog.Selection.Version, "race-stage", "owner", true,
+                updated.ScheduleRevisionId, updated.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => named.StageAsync(
+                id, catalog.Selection.Version, "race-stage", "owner", true, preview.ScheduleRevisionId,
+                preview.ScheduleProfileSha256, CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual(active.ActiveRevision.ScheduleSha256,
+                (await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision!.ScheduleSha256);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task NamedRigPreview_PendingScheduleDraftIsInvalidWithoutChangingState()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var initial = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var named = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
+            var revisionId = catalog.Selection.ActiveRevisionId!;
+            var pending = await schedule.StageAsync(initial.ActiveRevision.Profile with
+            {
+                Schedule = Definition("pending-schedule", 2)
+            }, "pending-schedule-draft", initial.Version, "owner", null, CancellationToken.None).ConfigureAwait(false);
+
+            var preview = await named.PreviewAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(preview.Valid);
+            Assert.AreEqual("pending-schedule-draft", preview.Failure);
+            Assert.IsFalse(preview.RuntimeVerified);
+            Assert.AreEqual(initial.ActiveRevision.RevisionId, preview.ScheduleRevisionId);
+            Assert.AreEqual(initial.ActiveRevision.ProfileSha256, preview.ScheduleProfileSha256);
+            Assert.AreEqual(revisionId, preview.RigRevisionId);
+            var afterPreview = await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(pending.Version, afterPreview.Version);
+            Assert.AreEqual(pending.ActiveRevision.RevisionId, afterPreview.ActiveRevision.RevisionId);
+            Assert.AreEqual(pending.ActiveRevision.ProfileSha256, afterPreview.ActiveRevision.ProfileSha256);
+            Assert.AreEqual(pending.PendingRevision!.RevisionId, afterPreview.PendingRevision?.RevisionId);
+            Assert.AreEqual(pending.PendingRevision.ProfileSha256, afterPreview.PendingRevision?.ProfileSha256);
+            Assert.AreEqual(catalog.Selection, (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
+
+            await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => named.StageAsync(
+                revisionId, catalog.Selection.Version, "pending-schedule-rig-stage", "owner", true,
+                preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None)).ConfigureAwait(false);
+            var afterStage = await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(pending.Version, afterStage.Version);
+            Assert.AreEqual(pending.ActiveRevision.RevisionId, afterStage.ActiveRevision.RevisionId);
+            Assert.AreEqual(pending.PendingRevision.RevisionId, afterStage.PendingRevision?.RevisionId);
+            Assert.AreEqual(pending.PendingRevision.ProfileSha256, afterStage.PendingRevision?.ProfileSha256);
+            Assert.AreEqual(catalog.Selection, (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [TestMethod]
     public async Task PendingNamedRig_SecondModuleInitializationFailureKeepsCommittedSelection()
     {
@@ -29,7 +285,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var selected = catalog.Selection.ActiveRevisionId!;
             var staged = await named.StageAsync(selected, catalog.Selection.Version, "serial-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             var candidate = await named.ReconcileAtStartupAsync(Configuration(), new WorkingModuleFactory(),
                 CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(staged.ScheduleRevisionId, candidate?.RevisionId);
@@ -68,7 +324,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var revisionId = catalog.Selection.ActiveRevisionId!;
             var receipt = await named.StageAsync(revisionId, catalog.Selection.Version, "failed-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
 
             var accessor = new CameraAgentConfigurationAccessor();
             var initializer = new CameraAgentConfigurationInitializer(new StaticConfigurationLoader(configuration),
@@ -120,7 +376,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var imported = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var selected = imported.Selection.ActiveRevisionId!;
             var staged = await named.StageAsync(selected, imported.Selection.Version, "closed-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             var initializer = new CameraAgentConfigurationInitializer(new StaticConfigurationLoader(configuration),
                 accessor, new EmptyPipelineFactory(), NullLogger<CameraAgentConfigurationInitializer>.Instance,
@@ -158,11 +414,12 @@ public sealed class SqliteCaptureScheduleStoreTests
             var catalog = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var former = catalog.Selection.ActiveRevisionId!;
             var staged = await named.StageAsync(former, catalog.Selection.Version, "forward", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             await named.CommitInitializedAsync(former, Configuration(), CancellationToken.None).ConfigureAwait(false);
             var current = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
             var rollback = await named.StageAsync(former, current.Selection.Version, "rollback", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                staged.ScheduleRevisionId!, (await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false))
+                    .ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual("restart_required", rollback.Disposition);
             Assert.AreEqual(former, (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection.PendingRevisionId);
             var beforeRestart = await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
@@ -242,6 +499,42 @@ public sealed class SqliteCaptureScheduleStoreTests
                 }),
                 CancellationToken.None, camera.RevisionId, camera.RevisionId).ConfigureAwait(false);
             Assert.AreEqual(2, revised.RevisionNumber);
+            var copiedSensor = active.ActiveRevision.Profile.Rig.Sensor with { Name = "Copied sensor" };
+            var copyDefinition = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                module = new { type = active.ActiveRevision.Profile.Module.Type },
+                sensor = copiedSensor,
+                readout = active.ActiveRevision.Profile.Rig.Readout
+            });
+            var copied = await profiles.SaveEquipmentAsync(null, "camera", "Copied camera", copyDefinition,
+                CancellationToken.None, camera.RevisionId).ConfigureAwait(false);
+            Assert.AreNotEqual(camera.DefinitionId, copied.DefinitionId);
+            Assert.AreEqual(1, copied.RevisionNumber);
+            var copiedDetail = await profiles.GetEquipmentAsync(copied.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(System.Text.Json.JsonSerializer.Serialize(copiedDetail).Contains("private-camera-token", StringComparison.Ordinal));
+            Assert.AreEqual("Copied sensor", System.Text.Json.JsonSerializer.SerializeToElement(copiedDetail.Definition)
+                .GetProperty("Sensor").GetProperty("Name").GetString());
+            foreach (var injected in new[]
+            {
+                System.Text.Json.JsonSerializer.SerializeToElement(new
+                {
+                    module = new { type = active.ActiveRevision.Profile.Module.Type, options = new { secret = "injected" } },
+                    sensor = copiedSensor
+                }),
+                System.Text.Json.JsonSerializer.SerializeToElement(new
+                {
+                    module = new { type = active.ActiveRevision.Profile.Module.Type },
+                    options = new { secret = "injected" }, sensor = copiedSensor
+                })
+            })
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null,
+                    "camera", "Injected", injected, CancellationToken.None, camera.RevisionId)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => profiles.SaveEquipmentAsync(
+                null, "camera", "Missing basis", copyDefinition, CancellationToken.None, "missing")).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null,
+                "camera", "Wrong module", System.Text.Json.JsonSerializer.SerializeToElement(new
+                { module = new { type = "different" }, sensor = copiedSensor }), CancellationToken.None,
+                camera.RevisionId)).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => profiles.SaveEquipmentAsync(
                 camera.DefinitionId, "camera", "Stale", System.Text.Json.JsonSerializer.SerializeToElement(new
                 { module = new { type = active.ActiveRevision.Profile.Module.Type }, sensor = active.ActiveRevision.Profile.Rig.Sensor }),
@@ -253,6 +546,10 @@ public sealed class SqliteCaptureScheduleStoreTests
             var draftRig = await profiles.ComposeAsync(draft.ProfileId, revised.RevisionId,
                 optics.RevisionId, mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual("private-camera-token", draftRig.Module.Options!.Value.GetProperty("secret").GetString());
+            var copiedRig = await profiles.ComposeAsync(draft.ProfileId, copied.RevisionId,
+                optics.RevisionId, mount.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("private-camera-token", copiedRig.Module.Options!.Value.GetProperty("secret").GetString());
+            Assert.AreEqual("Copied sensor", copiedRig.Rig.Sensor.Name);
             var preview = await profiles.PreviewAsync(draftRig.RevisionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(preview.Valid);
             Assert.IsFalse(preview.RuntimeVerified);
@@ -288,11 +585,12 @@ public sealed class SqliteCaptureScheduleStoreTests
             var restoredInventory = await restarted.GetInventoryAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(restoredInventory.Profiles.Contains(draft));
             Assert.IsTrue(restoredInventory.Equipment.Contains(revised));
-            var receipt = await restarted.StageAsync(draftRig.RevisionId, 1, "stage-key", "owner", true, CancellationToken.None)
+            var receipt = await restarted.StageAsync(draftRig.RevisionId, 1, "stage-key", "owner", true,
+                activated.ActiveRevision.RevisionId, activated.ActiveRevision.ProfileSha256, CancellationToken.None)
                 .ConfigureAwait(false);
             Assert.AreEqual("restart_required", receipt.Disposition);
             Assert.AreEqual(receipt, await restarted.StageAsync(draftRig.RevisionId, 1, "stage-key", "owner", true,
-                CancellationToken.None).ConfigureAwait(false));
+                activated.ActiveRevision.RevisionId, activated.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false));
             var after = await restarted.GetAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(initial.Selection.ActiveRevisionId, after.Selection.ActiveRevisionId);
             Assert.AreEqual(draftRig.RevisionId, after.Selection.PendingRevisionId);
@@ -322,7 +620,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var repeated = await restarted.ImportActiveAsync(reconciled!, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(draftRig.RevisionId, repeated.Selection.ActiveRevisionId);
             Assert.IsNull(repeated.Selection.PendingRevisionId);
-            Assert.AreEqual(2, repeated.Revisions.Count);
+            Assert.AreEqual(3, repeated.Revisions.Count);
         }
         finally
         {
@@ -343,7 +641,8 @@ public sealed class SqliteCaptureScheduleStoreTests
             var named = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
             var imported = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var staged = await named.StageAsync(imported.Selection.ActiveRevisionId!, imported.Selection.Version,
-                "restart-stage", "owner", true, CancellationToken.None).ConfigureAwait(false);
+                "restart-stage", "owner", true, initial.ActiveRevision.RevisionId,
+                initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             _ = await named.ReconcileAtStartupAsync(Configuration(), new WorkingModuleFactory(), CancellationToken.None)
                 .ConfigureAwait(false);
             await named.CommitInitializedAsync(imported.Selection.ActiveRevisionId!, Configuration(), CancellationToken.None).ConfigureAwait(false);
@@ -395,10 +694,50 @@ public sealed class SqliteCaptureScheduleStoreTests
             }
             Assert.IsTrue((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Revisions
                 .Any(revision => revision.RevisionId == oldId));
+            var profileId = catalog.Revisions.Single().ProfileId;
+            var emptyProfile = await named.SaveProfileNameAsync(null, "Empty history", CancellationToken.None).ConfigureAwait(false);
+            var empty = await named.GetHistoryAsync(emptyProfile.ProfileId, 10, null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0L, empty.Version);
+            Assert.IsEmpty(empty.Revisions);
+            var first = await named.GetHistoryAsync(profileId, 40, null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(103L, first.Version);
+            Assert.AreEqual(40, first.Revisions.Count);
+            Assert.AreEqual(64L, first.NextBeforeRevisionNumber);
+            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO named_rig_revisions
+                    SELECT 'draft-104', profile_id, 104, camera_revision_id, optics_revision_id,
+                        mount_revision_id, rig_json, rig_sha256, NULL, created_unix_ms + 104
+                    FROM named_rig_revisions WHERE revision_id = $old;
+                    """;
+                command.Parameters.AddWithValue("$old", oldId);
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            var second = await named.GetHistoryAsync(profileId, 40, first.NextBeforeRevisionNumber,
+                first.Version, CancellationToken.None).ConfigureAwait(false);
+            var third = await named.GetHistoryAsync(profileId, 40, second.NextBeforeRevisionNumber,
+                second.Version, CancellationToken.None).ConfigureAwait(false);
+            var all = first.Revisions.Concat(second.Revisions).Concat(third.Revisions).ToArray();
+            Assert.AreEqual(103, all.Length);
+            Assert.AreEqual(103, all.Select(value => value.RevisionId).Distinct(StringComparer.Ordinal).Count());
+            Assert.AreEqual(oldId, all[^1].RevisionId);
+            Assert.IsNull(third.NextBeforeRevisionNumber);
+            Assert.IsFalse(System.Text.Json.JsonSerializer.Serialize(all).Contains("options", StringComparison.OrdinalIgnoreCase));
+            Assert.AreEqual(104L, (await named.GetHistoryAsync(profileId, 1, null, null,
+                CancellationToken.None).ConfigureAwait(false)).Version);
+            await Assert.ThrowsExactlyAsync<KeyNotFoundException>(() => named.GetHistoryAsync("missing", 1, null, null,
+                CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => named.GetHistoryAsync(profileId, 101, null, null,
+                CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => named.GetHistoryAsync(profileId, 1, null, 105,
+                CancellationToken.None)).ConfigureAwait(false);
             var preview = await named.PreviewAsync(oldId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(preview.Valid);
             var receipt = await named.StageAsync(oldId, catalog.Selection.Version, "old-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(oldId, receipt.RevisionId);
             Assert.AreEqual(receipt.ScheduleRevisionId, (await named.ReconcileAtStartupAsync(Configuration(),
                 new WorkingModuleFactory(), CancellationToken.None).ConfigureAwait(false))?.RevisionId);
@@ -421,11 +760,11 @@ public sealed class SqliteCaptureScheduleStoreTests
             var imported = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var id = imported.Selection.ActiveRevisionId!;
             var first = await named.StageAsync(id, imported.Selection.Version, "first-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             var cancelled = await named.CancelPendingAsync(id, first.Version, "cancel-stage", "owner",
                 CancellationToken.None).ConfigureAwait(false);
             var second = await named.StageAsync(id, cancelled.Version, "second-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             Assert.AreNotEqual(first.ScheduleRevisionId, second.ScheduleRevisionId);
             var pending = (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection;
             Assert.AreEqual("second-stage", pending.PendingCommandKey);
@@ -479,7 +818,8 @@ public sealed class SqliteCaptureScheduleStoreTests
             var before = await schedule.AddOverrideAsync(closed, "carry-closed-command", initial.Version, "owner", null,
                 CancellationToken.None).ConfigureAwait(false);
             var staged = await named.StageAsync(catalog.Selection.ActiveRevisionId!, catalog.Selection.Version,
-                "carry-stage", "owner", true, CancellationToken.None).ConfigureAwait(false);
+                "carry-stage", "owner", true, initial.ActiveRevision.RevisionId,
+                initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             var shot = new CaptureScheduleOverride("carry-shot", old, initial.ActiveRevision.ScheduleSha256,
                 CaptureScheduleOverrideMode.ForceOpen, now.AddMinutes(-1), now.AddMinutes(10), "initial", true);
             _ = await schedule.AddOverrideAsync(shot, "carry-shot-command", before.Version + 1, "owner", null,
@@ -560,7 +900,9 @@ public sealed class SqliteCaptureScheduleStoreTests
             foreach (var (rig, index) in new[] { rigB, rigA, rigB }.Select((rig, index) => (rig, index)))
             {
                 var selection = (await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection;
+                var activeSchedule = await schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
                 var staged = await named.StageAsync(rig, selection.Version, $"return-trip-{index}", "owner", true,
+                    activeSchedule.ActiveRevision.RevisionId, activeSchedule.ActiveRevision.ProfileSha256,
                     CancellationToken.None).ConfigureAwait(false);
                 await named.CommitInitializedAsync(rig, Configuration(), CancellationToken.None).ConfigureAwait(false);
                 using var connection = new SqliteConnection(database);
@@ -620,7 +962,8 @@ public sealed class SqliteCaptureScheduleStoreTests
                     addedBefore.Version, "owner", null, CancellationToken.None).ConfigureAwait(false)).Version);
 
                 var staged = await named.StageAsync(imported.Selection.ActiveRevisionId!, imported.Selection.Version,
-                    "stage-with-overrides", "owner", true, CancellationToken.None).ConfigureAwait(false);
+                    "stage-with-overrides", "owner", true, initial.ActiveRevision.RevisionId,
+                    initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
                 var active = Override("active", false);
                 var afterAdd = await schedule.AddOverrideAsync(active, "add-active", clearedBefore.Version + 1,
                     "owner", null, CancellationToken.None).ConfigureAwait(false);
@@ -683,7 +1026,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var imported = await named.ImportActiveAsync(initial.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
             var id = imported.Selection.ActiveRevisionId!;
             var stage = await named.StageAsync(id, imported.Selection.Version, "version-stage", "owner", true,
-                CancellationToken.None).ConfigureAwait(false);
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);

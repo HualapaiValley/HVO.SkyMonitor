@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -15,10 +16,24 @@ public sealed class SchedulePageTests
 {
     private static readonly string[] RawDependency = ["$raw"];
 
+    private static BunitContext CreateContext(NamedRigSelection? selection = null, bool unauthorized = false,
+        Mock<ICameraAgentNamedRigUiService>? rig = null)
+    {
+        var context = new BunitContext();
+        rig ??= new Mock<ICameraAgentNamedRigUiService>();
+        rig.Setup(service => service.GetAsync(It.IsAny<CancellationToken>())).Returns(() =>
+            ValueTask.FromResult(unauthorized
+                ? OperatorUiResult<NamedRigCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+                : OperatorUiResult<NamedRigCatalog>.Success(new(
+                    selection ?? new NamedRigSelection(null, null, 1), []))));
+        context.Services.AddSingleton(rig.Object);
+        return context;
+    }
+
     [TestMethod]
     public void Render_ShowsDurableStateEditorPreviewAndRollbackHistory()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State()));
 
         var cut = context.Render<SchedulePage>();
@@ -42,7 +57,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void WeeklyDayCheckbox_ExpandsCanonicalWindowsAndJsonEditsTakePrecedence()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -64,7 +79,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void NewlySelectedDay_CanSplitBeforePreviewAndEditSeparately()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -86,7 +101,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void UncheckingLastDay_ShowsValidationAndDoesNotStage()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -101,7 +116,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void RemovingGroupedWindow_NamesAndRemovesEverySelectedDay()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -204,7 +219,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void Render_WhenAuthorizationIsRevoked_NavigatesToAccessDenied()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(null));
 
         _ = context.Render<SchedulePage>();
@@ -216,7 +231,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void HistoricalRevision_UsesRollbackMutation()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new ScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
@@ -239,7 +254,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void NewerHistoricalRevision_UsesActivationMutation()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var state = State();
         var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
@@ -264,7 +279,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void OlderPendingRevision_UsesRollbackMutation()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var state = State();
         var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
@@ -281,6 +296,66 @@ public sealed class SchedulePageTests
 
         cut.WaitForAssertion(() =>
             CollectionAssert.Contains(service.RollbackRevisionIds, prior.RevisionId));
+    }
+
+    [TestMethod]
+    public void PendingNamedRig_ShowsRestartAndCancelWithoutScheduleCommands()
+    {
+        var state = State();
+        var pending = state.ActiveRevision with { RevisionId = "rig-schedule-v3", RevisionNumber = 3 };
+        var rig = new Mock<ICameraAgentNamedRigUiService>();
+        using var context = CreateContext(new NamedRigSelection("rig-v1", "rig-v2", 2,
+            PendingScheduleRevisionId: pending.RevisionId), rig: rig);
+        var service = new RetryingScheduleUiService(state with
+        {
+            PendingRevision = pending,
+            History = [pending, .. state.History]
+        });
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".schedule-card--hero").TextContent, "Open", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-card--hero").TextContent, "night", StringComparison.Ordinal);
+            StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[1].TextContent, "Revision 2", StringComparison.Ordinal);
+            StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[2].TextContent, "awaiting restart", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/camera", cut.Find("a[href='/operations/camera']").GetAttribute("href"));
+            Assert.IsEmpty(cut.FindAll("button").Where(button => button.TextContent.Contains("Review apply", StringComparison.Ordinal)
+                || button.TextContent.Contains("Review rollback", StringComparison.Ordinal)));
+            Assert.IsTrue(cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).HasAttribute("disabled"));
+            Assert.IsEmpty(service.StageCommands);
+        });
+        rig.Verify(read => read.GetAsync(It.IsAny<CancellationToken>()), Times.Once);
+        rig.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public void OrdinaryPendingDraft_StillOffersScheduleApplyAndStage()
+    {
+        var state = State();
+        var pending = state.ActiveRevision with { RevisionId = "draft-v3", RevisionNumber = 3 };
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(state with { PendingRevision = pending }));
+
+        var cut = context.Render<SchedulePage>();
+
+        Assert.IsTrue(cut.FindAll("button").Any(button => button.TextContent.Contains("Review apply", StringComparison.Ordinal)));
+        Assert.IsFalse(cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll("a[href='/operations/camera']"));
+    }
+
+    [TestMethod]
+    public void UnauthorizedNamedRigRead_NavigatesToAccessDenied()
+    {
+        using var context = CreateContext(unauthorized: true);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State()));
+
+        _ = context.Render<SchedulePage>();
+
+        Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -353,7 +428,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void StageRetry_AfterUnavailable_ReusesIdempotencyKeyAndPayload()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -372,7 +447,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public async Task ActivationCancel_WhileCommandIsPending_KeepsConfirmationOpenAsync()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new DelayedScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
@@ -399,7 +474,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void TypedSetpointEdit_StagesTheRewrittenProfile()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -417,9 +492,102 @@ public sealed class SchedulePageTests
     }
 
     [TestMethod]
+    public void OperatingPolicyEdit_StagesOnBasisWithoutChangingSchedule()
+    {
+        using var context = CreateContext();
+        var state = State();
+        var service = new RetryingScheduleUiService(state);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement(".policy-fields input");
+
+        Assert.IsEmpty(service.StageCommands);
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Day exposure ms", StringComparison.Ordinal)).QuerySelector("input")!.Change("1500");
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Night gain", StringComparison.Ordinal)).QuerySelector("input")!.Change("2.5");
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Capture interval s", StringComparison.Ordinal)).QuerySelector("input")!.Change("5");
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Cadence mode", StringComparison.Ordinal)).QuerySelector("select")!.Change(nameof(CaptureCadenceMode.MinimumStartInterval));
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Exposure control", StringComparison.Ordinal)).QuerySelector("select")!.Change(nameof(AutomaticControlOwnership.Disabled));
+        Assert.IsEmpty(service.StageCommands);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.HasCount(1, service.StageCommands);
+        var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload);
+        Assert.AreEqual(state.ActiveRevision.RevisionId, service.StageCommands[0].BasisRevisionId);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1500), staged.Rig.Pipeline.DayExposure);
+        Assert.AreEqual(2.5, staged.Rig.Pipeline.NightGain);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), staged.Rig.Pipeline.CaptureInterval);
+        Assert.AreEqual(AutomaticControlOwnership.Disabled, staged.Rig.ControlPolicy!.ExposureControl);
+        Assert.AreEqual(state.ActiveRevision.Profile.Module, staged.Module);
+        Assert.AreEqual(state.ActiveRevision.Profile.Rig.Sensor, staged.Rig.Sensor);
+        Assert.AreEqual(state.ActiveRevision.Profile.Rig.Optics, staged.Rig.Optics);
+        Assert.AreEqual(state.ActiveRevision.Profile.Rig.Orientation, staged.Rig.Orientation);
+        Assert.AreEqual(state.ActiveRevision.Profile.Rig.Readout, staged.Rig.Readout);
+        Assert.AreEqual(CaptureScheduleContract.ComputeSha256(state.ActiveRevision.Profile.Schedule),
+            CaptureScheduleContract.ComputeSha256(staged.Schedule));
+    }
+
+    [TestMethod]
+    public void InvalidOperatingPolicy_BlocksStaging()
+    {
+        using var context = CreateContext();
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement(".policy-fields input");
+
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Temperature target C", StringComparison.Ordinal)).QuerySelector("input")!.Change("cold");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        Assert.IsEmpty(service.StageCommands);
+        StringAssert.Contains(cut.Find(".schedule-banner[role='alert']").TextContent,
+            "Temperature target must be a number.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void EnvelopeAndTemperatureEdit_PreserveWeeklyWindows()
+    {
+        using var context = CreateContext();
+        var state = State();
+        var basis = state.ActiveRevision.Profile;
+        var profile = basis with
+        {
+            Rig = basis.Rig with
+            {
+                Pipeline = basis.Rig.Pipeline with
+                {
+                    Envelope = new ExposureEnvelope(
+                        TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(10), 0, 20,
+                        new ExposureDefaults(TimeSpan.FromMilliseconds(10), 0),
+                        new ExposureDefaults(TimeSpan.FromSeconds(5), 10), 1800)
+                },
+                ControlPolicy = new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.HostMetered,
+                    GainControl = AutomaticControlOwnership.HostMetered,
+                    Temperature = new TemperatureControlDirective { Mode = TemperatureControlMode.Target, TargetC = -5 }
+                }
+            }
+        };
+        state = state with { ActiveRevision = state.ActiveRevision with { Profile = profile } };
+        var service = new RetryingScheduleUiService(state);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForElement(".policy-fields input");
+
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Maximum gain", StringComparison.Ordinal)).QuerySelector("input")!.Change("25");
+        cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Temperature target C", StringComparison.Ordinal)).QuerySelector("input")!.Change("-8");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+
+        var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands.Single().Payload);
+        Assert.AreEqual(25, staged.Rig.Pipeline.Envelope!.MaxGain);
+        Assert.AreEqual(-8, staged.Rig.ControlPolicy!.Temperature.TargetC);
+        CollectionAssert.AreEqual(profile.Schedule.WeeklyWindows.ToArray(), staged.Schedule.WeeklyWindows.ToArray());
+    }
+
+    [TestMethod]
     public void InvalidTypedValue_BlocksStagingWithLabelledMessage()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -435,7 +603,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void AdvancedJsonEdit_TakesPrecedenceUntilATypedFieldChanges()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -458,7 +626,7 @@ public sealed class SchedulePageTests
     [TestMethod]
     public void AddAndRemoveRows_RewriteTheDraftLists()
     {
-        using var context = new BunitContext();
+        using var context = CreateContext();
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -659,7 +827,7 @@ public sealed class SchedulePageTests
 
     private sealed class RetryingScheduleUiService(CaptureScheduleOperatorState state) : ICameraAgentScheduleUiService
     {
-        internal List<(string Payload, string Key, long ExpectedVersion)> StageCommands { get; } = [];
+        internal List<(string Payload, string BasisRevisionId, string Key, long ExpectedVersion)> StageCommands { get; } = [];
 
         public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(OperatorUiResult<CaptureScheduleOperatorState>.Success(state));
@@ -672,7 +840,7 @@ public sealed class SchedulePageTests
             string profileJson, string basisRevisionId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
         {
-            StageCommands.Add((profileJson, idempotencyKey, expectedVersion));
+            StageCommands.Add((profileJson, basisRevisionId, idempotencyKey, expectedVersion));
             return ValueTask.FromResult(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
                 OperatorUiResultKind.Unavailable, "Response was unavailable."));
         }
