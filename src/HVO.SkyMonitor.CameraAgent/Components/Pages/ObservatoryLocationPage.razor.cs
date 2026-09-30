@@ -72,6 +72,10 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
     private SceneSort _sort = SceneSort.Magnitude;
     private bool _sortDescending;
     private int _scenePage;
+    private string? _selectedId;
+    private readonly HashSet<string> _figures = new(StringComparer.Ordinal);
+    private ElementReference _sceneWrap;
+    private int? _revealRow;
 
     private ElementReference _mapElement;
     private string? _watchedTiles;
@@ -118,6 +122,8 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
 
     private sealed record Banner(string Icon, string Title, string Text);
 
+    private sealed record ConstellationChoice(string Id, bool InImage);
+
     protected override async Task OnInitializedAsync() => await LoadAsync().ConfigureAwait(false);
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -131,6 +137,13 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         {
             _restoreFocus = false;
             await InvokeModuleAsync("focusById", _restoreFocusId, "site-heading").ConfigureAwait(false);
+        }
+        // A selection made on the plot pages the table to the object; this brings its row into view inside the
+        // table's own scroll area without moving the page.
+        if (_revealRow is { } row)
+        {
+            _revealRow = null;
+            await InvokeModuleAsync("revealRow", _sceneWrap, row).ConfigureAwait(false);
         }
         // Tiles are watched once per rendered set: a failed load flips the map to its offline schematic,
         // and a new location or zoom produces a new set that is given a fresh chance to load. Loading can
@@ -193,6 +206,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
             {
                 _state = projection.Value;
                 _message = null;
+                KeepSelectionsInScene(projection.Value);
             }
             else
             {
@@ -717,28 +731,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
     {
         get
         {
-            IEnumerable<CameraAgentSkyMapObject> query = _state?.Objects ?? [];
-            var search = _search.Trim();
-            if (search.Length > 0)
-            {
-                query = query.Where(item => item.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase));
-            }
-            if (int.TryParse(_magnitudeFilter, NumberStyles.Integer, CultureInfo.InvariantCulture, out var limit))
-            {
-                query = query.Where(item => item.Magnitude <= limit);
-            }
-            IOrderedEnumerable<CameraAgentSkyMapObject> ordered = (_sort, _sortDescending) switch
-            {
-                (SceneSort.Name, false) => query.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
-                (SceneSort.Name, true) => query.OrderByDescending(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
-                (SceneSort.Altitude, false) => query.OrderBy(item => item.AltitudeDegrees),
-                (SceneSort.Altitude, true) => query.OrderByDescending(item => item.AltitudeDegrees),
-                (SceneSort.Azimuth, false) => query.OrderBy(item => item.AzimuthDegrees),
-                (SceneSort.Azimuth, true) => query.OrderByDescending(item => item.AzimuthDegrees),
-                (_, false) => query.OrderBy(item => item.Magnitude),
-                (_, true) => query.OrderByDescending(item => item.Magnitude)
-            };
-            var matches = ordered.ThenBy(item => item.Id, StringComparer.Ordinal).ToList();
+            var matches = SceneMatches();
             var pages = (matches.Count + ScenePageSize - 1) / ScenePageSize;
             _scenePage = pages == 0 ? 0 : Math.Clamp(_scenePage, 0, pages - 1);
             var items = matches.Skip(_scenePage * ScenePageSize).Take(ScenePageSize).ToList();
@@ -751,6 +744,104 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
                 first,
                 first == 0 ? 0 : first + items.Count - 1);
         }
+    }
+
+    /// <summary>The visible objects that pass the table's search and brightness filters, in table order.</summary>
+    private List<CameraAgentSkyMapObject> SceneMatches()
+    {
+        IEnumerable<CameraAgentSkyMapObject> query = _state?.Objects ?? [];
+        var search = _search.Trim();
+        if (search.Length > 0)
+        {
+            query = query.Where(item => item.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+        if (int.TryParse(_magnitudeFilter, NumberStyles.Integer, CultureInfo.InvariantCulture, out var limit))
+        {
+            query = query.Where(item => item.Magnitude <= limit);
+        }
+        IOrderedEnumerable<CameraAgentSkyMapObject> ordered = (_sort, _sortDescending) switch
+        {
+            (SceneSort.Name, false) => query.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
+            (SceneSort.Name, true) => query.OrderByDescending(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
+            (SceneSort.Altitude, false) => query.OrderBy(item => item.AltitudeDegrees),
+            (SceneSort.Altitude, true) => query.OrderByDescending(item => item.AltitudeDegrees),
+            (SceneSort.Azimuth, false) => query.OrderBy(item => item.AzimuthDegrees),
+            (SceneSort.Azimuth, true) => query.OrderByDescending(item => item.AzimuthDegrees),
+            (_, false) => query.OrderBy(item => item.Magnitude),
+            (_, true) => query.OrderByDescending(item => item.Magnitude)
+        };
+        return ordered.ThenBy(item => item.Id, StringComparer.Ordinal).ToList();
+    }
+
+    private CameraAgentSkyMapObject? SelectedObject
+        => _selectedId is null ? null : _state?.Objects.FirstOrDefault(item => item.Id == _selectedId);
+
+    /// <summary>
+    /// Every installed constellation figure, those crossing the image first. The topology has no full names,
+    /// so figures are offered by their catalog abbreviation.
+    /// </summary>
+    private IReadOnlyList<ConstellationChoice> ConstellationChoices
+    {
+        get
+        {
+            if (_state is null)
+            {
+                return [];
+            }
+            var inImage = _state.Constellations.Select(static item => item.ConstellationId).ToHashSet(StringComparer.Ordinal);
+            return _state.InstalledConstellationIds
+                .Union(inImage, StringComparer.Ordinal)
+                .Select(id => new ConstellationChoice(id, inImage.Contains(id)))
+                .OrderBy(static choice => choice.InImage ? 0 : 1)
+                .ThenBy(static choice => choice.Id, StringComparer.Ordinal)
+                .ToList();
+        }
+    }
+
+    /// <summary>Labels an object from its table row, or clears the label when the row is already selected.</summary>
+    private void SelectObject(string id) => _selectedId = _selectedId == id ? null : id;
+
+    private void ClearSelection() => _selectedId = null;
+
+    /// <summary>
+    /// Labels an object chosen on the plot and pages the table to its row. An object the table filters hide
+    /// clears those filters first, so the chosen row is always the one shown.
+    /// </summary>
+    private void RevealObject(string id)
+    {
+        _selectedId = id;
+        var index = SceneMatches().FindIndex(item => item.Id == id);
+        if (index < 0 && (_search.Length > 0 || _magnitudeFilter.Length > 0))
+        {
+            _search = string.Empty;
+            _magnitudeFilter = string.Empty;
+            index = SceneMatches().FindIndex(item => item.Id == id);
+        }
+        if (index >= 0)
+        {
+            _scenePage = index / ScenePageSize;
+            _revealRow = index % ScenePageSize;
+        }
+    }
+
+    private void ToggleFigure(string id)
+    {
+        if (!_figures.Remove(id))
+        {
+            _figures.Add(id);
+        }
+    }
+
+    private void ClearFigures() => _figures.Clear();
+
+    /// <summary>A new projection keeps the label and the drawn figures that are still in the image.</summary>
+    private void KeepSelectionsInScene(CameraAgentSkyMapProjectionResult projection)
+    {
+        if (_selectedId is not null && !projection.Objects.Any(item => item.Id == _selectedId))
+        {
+            _selectedId = null;
+        }
+        _figures.IntersectWith(projection.Constellations.Select(static item => item.ConstellationId));
     }
 
     private void ResetScenePage() => _scenePage = 0;
@@ -826,21 +917,6 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         => value.ToString("F" + decimals.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 
     private static string Split(string value) => OperationsPage.SplitWords(value);
-
-    // The dial is a zenith-centred equidistant plot: the outer ring is the geometric horizon and the
-    // centre is the zenith, so the plotted radius is proportional to zenith distance and independent of
-    // the rig's own optics.
-    private static double DialRadiusFromAltitude(double altitudeDegrees)
-        => 92d * Math.Clamp(90d - altitudeDegrees, 0d, 90d) / 90d;
-
-    private static double DialX(double altitudeDegrees, double azimuthDegrees)
-        => 100d + DialRadiusFromAltitude(altitudeDegrees) * Math.Sin(azimuthDegrees * Math.PI / 180d);
-
-    private static double DialY(double altitudeDegrees, double azimuthDegrees)
-        => 100d - DialRadiusFromAltitude(altitudeDegrees) * Math.Cos(azimuthDegrees * Math.PI / 180d);
-
-    private static double DialRadius(double magnitude)
-        => Math.Clamp(2.6d - 0.3d * magnitude, 0.5d, 3.2d);
 
     public async ValueTask DisposeAsync()
     {

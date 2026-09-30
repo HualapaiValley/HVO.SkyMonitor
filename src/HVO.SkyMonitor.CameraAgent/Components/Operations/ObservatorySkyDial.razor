@@ -1,0 +1,72 @@
+@using HVO.SkyMonitor.CameraAgent.Common.SkyMap
+<svg class="site-dial" viewBox="0 0 200 200" role="img" aria-label="@AriaLabel">
+    @if (_frame.Cropped)
+    {
+        <defs>
+            <clipPath id="site-dial-sensor">
+                <rect x="@Number(_frame.Left)" y="@Number(_frame.Top)" width="@Number(_frame.Right - _frame.Left)" height="@Number(_frame.Bottom - _frame.Top)" />
+            </clipPath>
+        </defs>
+    }
+    @if (_frame.Circular)
+    {
+        <circle cx="100" cy="100" r="92" class="site-dial-frame" clip-path="@(_frame.Cropped ? "url(#site-dial-sensor)" : null)" />
+    }
+    else
+    {
+        <rect x="@Number(_frame.Left)" y="@Number(_frame.Top)" width="@Number(_frame.Right - _frame.Left)" height="@Number(_frame.Bottom - _frame.Top)" class="site-dial-frame" />
+    }
+    @foreach (var ring in Scene.Geometry.AltitudeRings)
+    {
+        @foreach (var line in ring.Lines)
+        {
+            <polyline points="@Points(line)" class="@(ring.AltitudeDegrees <= 0 ? "site-dial-ring horizon" : "site-dial-ring")" />
+        }
+    }
+    @foreach (var figure in DrawnFigures)
+    {
+        <g class="site-dial-figure" data-constellation="@figure.ConstellationId">
+            @foreach (var line in figure.Lines)
+            {
+                <polyline points="@Points(line)" />
+            }
+        </g>
+    }
+    @foreach (var item in _drawOrder)
+    {
+        var (x, y) = Map(item.PixelX, item.PixelY);
+        var radius = Radius(item);
+        var label = LabelFor(x, y, radius);
+        @* One line, so no whitespace text node is sent for each of thousands of objects. *@
+        <g @key="item.Id" class="site-dial-item" @onclick="SelectHandler(item.Id)"><circle cx="@Number(x)" cy="@Number(y)" r="@Number(radius)" class="@ObjectClass(item)" /><text x="@Number(label.X)" y="@Number(label.Y)" text-anchor="@label.Anchor" class="site-dial-name">@item.DisplayName</text></g>
+    }
+    @if (Selected is { } selected)
+    {
+        var (x, y) = Map(selected.PixelX, selected.PixelY);
+        var radius = Radius(selected);
+        var label = LabelFor(x, y, radius + 2.2d);
+        <g class="site-dial-selection"><circle cx="@Number(x)" cy="@Number(y)" r="@Number(radius + 2.2d)" /><text x="@Number(label.X)" y="@Number(label.Y)" text-anchor="@label.Anchor">@selected.DisplayName</text></g>
+    }
+    @foreach (var cardinal in _cardinals)
+    {
+        @* A group, because Razor reads a bare <text> in a code block as its own text directive. *@
+        <g class="site-dial-cardinal" data-cardinal="@cardinal.Name"><text x="@Number(cardinal.X)" y="@Number(cardinal.Y)" class="site-dial-label" text-anchor="middle" dominant-baseline="central">@cardinal.Letter</text></g>
+    }
+</svg>
+<ul class="site-dial-legend" aria-label="Sky plot key">
+    <li><span class="site-dial-swatch star" aria-hidden="true"></span>Star</li>
+    <li><span class="site-dial-swatch on-page" aria-hidden="true"></span>On this table page</li>
+    <li><span class="site-dial-swatch solar" aria-hidden="true"></span>Sun, Moon or planet</li>
+    <li><span class="site-dial-swatch figure" aria-hidden="true"></span>Selected figure</li>
+</ul>
+<p class="site-dial-note">@OrientationNote Rings mark the horizon and 30&deg; and 60&deg; altitude where they fall inside the image. Point at an object to name it; select one here or in the table to keep it labelled.</p>
+<p class="site-dial-note">
+    @if (Scene.EphemerisModelVersion is { } ephemeris)
+    {
+        <span>The Sun, the Moon and the planets are placed by ephemeris <code>@ephemeris</code> and are always shown when they are up, whatever the object limit or their brightness.</span>
+    }
+    else
+    {
+        <span>No planet ephemeris is installed on this camera, so the Sun, the Moon and the planets are not shown.</span>
+    }
+</p>

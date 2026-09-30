@@ -39,3 +39,19 @@ export function watchTiles(container) {
     container.dataset.tiles = "offline";
   }
 }
+
+// Scrolls the table's own frame so one body row is visible below the sticky header, leaving the page where it is.
+export function revealRow(container, index) {
+  const row = container?.querySelectorAll("tbody tr")[index];
+  if (!row) {
+    return;
+  }
+  const frame = container.getBoundingClientRect();
+  const header = container.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+  const box = row.getBoundingClientRect();
+  if (box.top < frame.top + header) {
+    container.scrollTop -= frame.top + header - box.top;
+  } else if (box.bottom > frame.bottom) {
+    container.scrollTop += box.bottom - frame.bottom;
+  }
+}
