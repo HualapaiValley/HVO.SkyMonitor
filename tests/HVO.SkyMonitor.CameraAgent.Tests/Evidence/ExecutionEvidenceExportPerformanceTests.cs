@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -14,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,6 +56,197 @@ public sealed class ExecutionEvidenceExportPerformanceTests
     };
 
     public TestContext TestContext { get; set; } = null!;
+
+    [TestMethod]
+    public async Task W6SparseCatalogDisposableCaptureReportsMetadataPayloadAndSidecarSizes()
+    {
+        using var root = new TemporaryRoot();
+        var configuration = await LoadAsync().ConfigureAwait(false);
+        using var provider = CreateProvider(root.Path);
+        var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+        var module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
+        var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+        var laneHandler = provider.GetServices<ICaptureLaneHandler>().Single(
+            static handler => handler.Lane == "standard");
+        var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+            static lane => lane.Name == "standard");
+        await RunCaptureAsync(module, configuration, ingress, laneStore, laneHandler, standard, operations, FixtureUtc)
+            .ConfigureAwait(false);
+
+        var files = Directory.EnumerateFiles(root.Path, "*", SearchOption.AllDirectories)
+            .Where(static file => file.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) ||
+                                  file.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            .Select(file => new { Path = Path.GetRelativePath(root.Path, file), Bytes = new FileInfo(file).Length })
+            .OrderBy(static file => file.Path, StringComparer.Ordinal).ToArray();
+        var metadata = files.Where(static file => file.Path.Split(Path.DirectorySeparatorChar)
+            .Contains("Metadata", StringComparer.Ordinal)).ToArray();
+        Assert.IsGreaterThan(0, metadata.Length, "W6 graph did not publish metadata files.");
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE1055_EVIDENCE_ROOT")
+            ?? Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-1055");
+        Directory.CreateDirectory(outputRoot);
+        var outputPath = Path.Combine(outputRoot, "w6-metadata-sizes.json");
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(new
+        {
+            Configuration = ConfigurationFileName,
+            FixtureUtc,
+            WidthPixels = 3552,
+            HeightPixels = 3552,
+            CaptureCount = 1,
+            MetadataFiles = metadata,
+            AllFiles = files
+        }, EvidenceOptions)).ConfigureAwait(false);
+        TestContext.WriteLine($"W6 metadata size evidence: {outputPath}; {metadata.Length} metadata files");
+    }
+
+    [TestMethod]
+    public async Task W6InstalledCatalogMultiSceneReportsMetadataPayloadAndSidecarSizes()
+    {
+        var catalogPath = Environment.GetEnvironmentVariable("HVO_ISSUE1055_CATALOG_PATH");
+        if (string.IsNullOrWhiteSpace(catalogPath))
+        {
+            Assert.Inconclusive("Set HVO_ISSUE1055_CATALOG_PATH to the verified read-only production snapshot.");
+        }
+        var catalog = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
+            catalogPath!, "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+            "2", "3", 119625, "4.2"));
+        using var root = new TemporaryRoot();
+        var configuration = await LoadAsync().ConfigureAwait(false);
+        using var provider = CreateProvider(root.Path);
+        var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+        var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+        var laneHandler = provider.GetServices<ICaptureLaneHandler>().Single(
+            static handler => handler.Lane == "standard");
+        var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+            static lane => lane.Name == "standard");
+        var scenes = new[] { FixtureUtc, FixtureUtc.AddHours(4), FixtureUtc.AddHours(8) };
+        var samples = new List<object>();
+        foreach (var sceneUtc in scenes)
+        {
+            var sceneConfiguration = WithSceneTime(configuration, sceneUtc);
+            var module = await CreateModuleAsync(provider, sceneConfiguration, catalog).ConfigureAwait(false);
+            var before = Directory.EnumerateFiles(root.Path, "*", SearchOption.AllDirectories)
+                .ToHashSet(StringComparer.Ordinal);
+            await RunCaptureAsync(module, sceneConfiguration, ingress, laneStore, laneHandler, standard, operations, sceneUtc)
+                .ConfigureAwait(false);
+            var files = Directory.EnumerateFiles(root.Path, "*", SearchOption.AllDirectories)
+                .Where(file => !before.Contains(file) && (file.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) ||
+                                                           file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
+                .Select(file => new { Path = Path.GetRelativePath(root.Path, file), Bytes = new FileInfo(file).Length })
+                .OrderBy(static file => file.Path, StringComparer.Ordinal).ToArray();
+            var metadata = files.Where(static file => file.Path.Split(Path.DirectorySeparatorChar)
+                .Contains("Metadata", StringComparer.Ordinal)).ToArray();
+            samples.Add(new { SceneUtc = sceneUtc, MetadataFiles = metadata, AllFiles = files });
+            TestContext.WriteLine($"{sceneUtc:O}: {metadata.Length} metadata files, {metadata.Sum(file => file.Bytes)} bytes");
+        }
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE1055_EVIDENCE_ROOT")
+            ?? Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-1055");
+        Directory.CreateDirectory(outputRoot);
+        var outputPath = Path.Combine(outputRoot, "w6-full-catalog-multi-scene-sizes.json");
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(new
+        {
+            Configuration = ConfigurationFileName,
+            CatalogSha256 = catalog.Metadata.Checksum,
+            CatalogRowCount = 119625,
+            CaptureCount = scenes.Length,
+            Samples = samples
+        }, EvidenceOptions)).ConfigureAwait(false);
+        TestContext.WriteLine($"W6 full-catalog size evidence: {outputPath}");
+    }
+
+    [TestMethod]
+    public async Task W6InstalledCatalogProjectedSceneReportsTypedSceneOverlaySizes()
+    {
+        var catalogPath = Environment.GetEnvironmentVariable("HVO_ISSUE1055_CATALOG_PATH");
+        if (string.IsNullOrWhiteSpace(catalogPath))
+        {
+            Assert.Inconclusive("Set HVO_ISSUE1055_CATALOG_PATH to the verified read-only production snapshot.");
+        }
+        var catalog = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
+            catalogPath!, "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+            "2", "3", 119625, "4.2"));
+        using var root = new TemporaryRoot();
+        var configuration = await LoadAsync().ConfigureAwait(false);
+        using var provider = CreateProvider(root.Path);
+        var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+        await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+        var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+        var laneHandler = provider.GetServices<ICaptureLaneHandler>().Single(
+            static handler => handler.Lane == "standard");
+        var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+            static lane => lane.Name == "standard");
+        var samples = new List<object>();
+        foreach (var sceneUtc in new[] { FixtureUtc, FixtureUtc.AddHours(4), FixtureUtc.AddHours(8) })
+        {
+            var sceneConfiguration = WithSceneTime(configuration, sceneUtc);
+            var module = await CreateModuleAsync(provider, sceneConfiguration, catalog).ConfigureAwait(false);
+            var before = Directory.EnumerateFiles(root.Path, "*.json", SearchOption.AllDirectories)
+                .ToHashSet(StringComparer.Ordinal);
+            await RunCaptureAsync(module, sceneConfiguration, ingress, laneStore, laneHandler, standard, operations, sceneUtc)
+                .ConfigureAwait(false);
+            var productPath = Directory.EnumerateFiles(root.Path, "*.json", SearchOption.AllDirectories)
+                .Single(file => !before.Contains(file) && file.Split(Path.DirectorySeparatorChar)
+                    .Contains("Metadata", StringComparer.Ordinal) && !file.EndsWith(".manifest.json", StringComparison.Ordinal));
+            var scene = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(productPath).ConfigureAwait(false)).Scene;
+            Assert.IsNotNull(scene);
+            var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+                scene, new PresentationAnnotationStyleV1(ConstellationIds: ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"]));
+            var layers = new[]
+            {
+                new { Kind = "star-annotations", Bytes = PresentationLayerPayloadJson.Serialize(groups.StarAnnotations).Length,
+                    Primitives = groups.StarAnnotations.Markers.Count + groups.StarAnnotations.TextBlocks.Count },
+                new { Kind = "cardinal-directions", Bytes = PresentationLayerPayloadJson.Serialize(groups.CardinalDirections).Length,
+                    Primitives = groups.CardinalDirections.TextBlocks.Count },
+                new { Kind = "image-circle", Bytes = PresentationLayerPayloadJson.Serialize(groups.ImageCircle).Length,
+                    Primitives = groups.ImageCircle.Ellipses.Count },
+                new { Kind = "constellations", Bytes = PresentationLayerPayloadJson.Serialize(groups.Constellations).Length,
+                    Primitives = groups.Constellations.Segments.Count }
+            };
+            samples.Add(new
+            {
+                SceneUtc = sceneUtc,
+                ProjectedSceneBytes = new FileInfo(productPath).Length,
+                ObjectCount = scene.Objects.Count,
+                SegmentCount = scene.Segments.Count,
+                Layers = layers
+            });
+        }
+        var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE1055_EVIDENCE_ROOT")
+            ?? Path.Combine(AppContext.BaseDirectory, "TestResults", "issue-1055");
+        Directory.CreateDirectory(outputRoot);
+        var outputPath = Path.Combine(outputRoot, "w6-scene-layer-sizes.json");
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(new
+        {
+            Configuration = ConfigurationFileName,
+            CatalogSha256 = catalog.Metadata.Checksum,
+            LayerSource = "Typed layer producer applied to committed projected-scene payload; not durable graph output",
+            Samples = samples
+        }, EvidenceOptions)).ConfigureAwait(false);
+        TestContext.WriteLine($"W6 typed scene layer size evidence: {outputPath}");
+    }
+
+    private static CameraModuleConfig WithSceneTime(CameraModuleConfig configuration, DateTimeOffset sceneUtc)
+    {
+        var options = JsonNode.Parse(configuration.Module.Options!.Value.GetRawText())!;
+        options["fixedSceneUtc"] = sceneUtc.ToString("O");
+        return configuration with
+        {
+            Module = configuration.Module with
+            {
+                Options = JsonSerializer.SerializeToElement(options, EvidenceOptions)
+            }
+        };
+    }
 
     [TestMethod]
     public async Task W6ExportLaneDoesNotDelayCaptureAndDrainsABoundedBacklog()
@@ -319,11 +512,12 @@ public sealed class ExecutionEvidenceExportPerformanceTests
 
     private static async Task<VirtualSkyCameraModule> CreateModuleAsync(
         IServiceProvider provider,
-        CameraModuleConfig configuration)
+        CameraModuleConfig configuration,
+        ICelestialCatalog? catalog = null)
     {
         var module = new VirtualSkyCameraModule(
             TimeProvider.System,
-            new InMemoryCelestialCatalog([
+            catalog ?? new InMemoryCelestialCatalog([
                 new CelestialCatalogObject("HIP 32349", "Sirius", 101.28715533 / 15, -16.71611586, -1.46, 0.009, "32349"),
                 new CelestialCatalogObject("HIP 24608", "Capella", 79.17232794 / 15, 45.99799147, 0.08, 0.795, "24608")
             ]),

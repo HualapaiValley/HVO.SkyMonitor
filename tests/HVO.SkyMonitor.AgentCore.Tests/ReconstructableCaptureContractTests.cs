@@ -11,6 +11,44 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 public sealed class ReconstructableCaptureContractTests
 {
     [TestMethod]
+    public void ManifestV2_CompactSceneReferencePrototypePreservesLegacyGeometryAndDescriptorIdentity()
+    {
+        var scene = new SceneProvenance(
+            "scene-1055", "rig-v1", "HYG", "4.2", new string('A', 64),
+            "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
+            Objects: [new ProjectedObjectProvenance("HIP 1", "Test Star", 12.5, 18.25, 1.5)],
+            Segments: [new ProjectedSegmentProvenance("ORI", "HIP 1", "HIP 2", 12.5, 18.25, 20, 21, 0)],
+            SceneUtc: DateTimeOffset.UnixEpoch);
+        var raw = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
+        var rawBytes = CaptureContractJson.Serialize(raw);
+        var compactJson = JsonNode.Parse(rawBytes)!.AsObject();
+        var compactScene = compactJson["scene"]!.AsObject();
+        compactScene.Remove("objects");
+        compactScene.Remove("segments");
+        var compactBytes = Encoding.UTF8.GetBytes(compactJson.ToJsonString());
+        var oldRead = CaptureContractJson.ParseManifest(rawBytes);
+        var newRead = CaptureContractJson.ParseManifest(compactBytes);
+
+        Assert.IsTrue(oldRead.IsValid);
+        Assert.IsTrue(newRead.IsValid);
+        Assert.HasCount(1, oldRead.Document!.Manifest.Scene!.Objects!);
+        Assert.HasCount(1, oldRead.Document.Manifest.Scene.Segments!);
+        Assert.IsNull(newRead.Document!.Manifest.Scene!.Objects);
+        Assert.IsNull(newRead.Document.Manifest.Scene.Segments);
+        Assert.AreEqual(scene.SceneId, newRead.Document.Manifest.Scene.SceneId);
+        Assert.AreEqual(scene.SceneUtc, newRead.Document.Manifest.Scene.SceneUtc);
+        Assert.AreEqual(raw.IdempotencyKey, oldRead.Document.Manifest.IdempotencyKey);
+        Assert.AreEqual(raw.IdempotencyKey, newRead.Document.Manifest.IdempotencyKey);
+        Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(raw.Descriptor),
+            CaptureContractJson.ComputeDescriptorSha256(newRead.Document.Manifest.Descriptor));
+        using var compactDocument = JsonDocument.Parse(compactBytes);
+        Assert.IsFalse(compactDocument.RootElement.GetProperty("scene").TryGetProperty("objects", out _));
+        Assert.IsFalse(compactDocument.RootElement.GetProperty("scene").TryGetProperty("segments", out _));
+        Assert.IsGreaterThan(compactBytes.Length, rawBytes.Length);
+        CollectionAssert.AreEqual(rawBytes, CaptureContractJson.Serialize(oldRead.Document.Manifest));
+    }
+
+    [TestMethod]
     public void SensorReadoutResolver_DerivesAsi174RoiAndRejectsImpossibleGeometry()
     {
         var sensor = new SensorProfile(
