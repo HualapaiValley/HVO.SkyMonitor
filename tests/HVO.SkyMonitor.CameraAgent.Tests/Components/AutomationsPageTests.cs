@@ -372,6 +372,88 @@ public sealed class AutomationsPageTests
     }
 
     [TestMethod]
+    public void Edit_WhenTheDefinitionWasRemoved_KeepsTheEditAndRecreatesOnlyOnRequest()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation());
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-edit-sky-temperature").Click();
+        // Another operator removes the definition while this one is editing it.
+        service.RemoveStoredDefinitions();
+        service.Kind = OperatorUiResultKind.NotFound;
+        service.Message = "The automation no longer exists.";
+
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+
+        // The re-read finds nothing, and the editor still edits: the next save is not quietly a create.
+        Assert.AreEqual("Edit sky-temperature", cut.Find("#automation-dialog-heading").TextContent.Trim());
+        Assert.IsTrue(cut.Find("#automation-id").HasAttribute("readonly"));
+        Assert.Contains("was removed", cut.Find(".automation-removed-note").TextContent, StringComparison.Ordinal);
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        Assert.Contains("nothing to edit", cut.Find(".automation-dialog-message").TextContent, StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll($"#{AutomationsPage.ConfirmId}"));
+        Assert.HasCount(1, service.SaveRequests);
+
+        // Recreating is the operator's explicit choice, and only then is the same definition sent as a create.
+        cut.Find("#automation-recreate").Click();
+        Assert.AreEqual("Define a local automation", cut.Find("#automation-dialog-heading").TextContent.Trim());
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreEqual("sky-temperature", service.SaveRequests[1].DefinitionId);
+        Assert.AreEqual(0L, service.SaveRequests[1].ExpectedVersion);
+    }
+
+    [TestMethod]
+    public void Create_AfterUnavailableAndClosing_SendsTheSamePayloadUnderANewKey()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation(definitions: [], calendar: [], runs: []));
+        service.Kind = OperatorUiResultKind.Unavailable;
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+        FillCreate(cut);
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+
+        // Stepping back to the editor keeps the retry open; closing the editor abandons it.
+        cut.Find($"#{AutomationsPage.CancelId}").Click();
+        cut.Find("#automation-editor-cancel").Click();
+        service.Kind = OperatorUiResultKind.Success;
+        OpenCreate(cut);
+        FillCreate(cut);
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreEqual(service.SaveRequests[0].DefinitionId, service.SaveRequests[1].DefinitionId);
+        Assert.AreNotEqual(service.SaveRequests[0].IdempotencyKey, service.SaveRequests[1].IdempotencyKey);
+    }
+
+    [TestMethod]
+    public void Toggle_AfterUnavailableAndClosing_SendsTheNextToggleUnderANewKey()
+    {
+        using var context = CreateContext();
+        var service = Register(context, Automation());
+        service.Kind = OperatorUiResultKind.Unavailable;
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-toggle-sky-temperature").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        cut.Find($"#{AutomationsPage.CancelId}").Click();
+
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-toggle-sky-temperature").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+
+        Assert.HasCount(2, service.SaveRequests);
+        Assert.AreEqual(service.SaveRequests[0].ExpectedVersion, service.SaveRequests[1].ExpectedVersion);
+        Assert.AreNotEqual(service.SaveRequests[0].IdempotencyKey, service.SaveRequests[1].IdempotencyKey);
+    }
+
+    [TestMethod]
     public void Remove_ConfirmsAndSendsTheStoredExpectedVersionAndReason()
     {
         using var context = CreateContext();
@@ -830,6 +912,15 @@ public sealed class AutomationsPageTests
         {
             RemoveRequests.Add(request);
             return ValueTask.FromResult(Result());
+        }
+
+        /// <summary>Removes every definition, as another operator's remove would.</summary>
+        internal void RemoveStoredDefinitions()
+        {
+            if (_state is not null)
+            {
+                _state = _state with { Definitions = [] };
+            }
         }
 
         /// <summary>Advances the durable version the way the real store does, so a stale token is visible.</summary>

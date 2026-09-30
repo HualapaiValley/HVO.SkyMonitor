@@ -1350,19 +1350,28 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
-            var unfinished = new List<CameraAgentDeliveryRecord>();
+            var queues = new List<List<CameraAgentDeliveryRecord>>();
             var finished = new List<CameraAgentDeliveryRecord>();
             foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
             {
+                var queued = new List<CameraAgentDeliveryRecord>();
                 foreach (var record in await artifactOutbox.ReadRecentDeliveryAsync(
                     location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
                 {
-                    (record.Status is ArtifactOutboxStatus.Acknowledged or ArtifactOutboxStatus.Abandoned ? finished : unfinished)
+                    (record.Status is ArtifactOutboxStatus.Acknowledged or ArtifactOutboxStatus.Abandoned ? finished : queued)
                         .Add(new CameraAgentDeliveryRecord(location.Alias, record));
                 }
+                queues.Add(queued);
+            }
+            // Each store returns its unfinished work newest queued first, but keeps no enqueue time: CreatedUtc is
+            // the artifact's capture time and the attempt times move with every retry. Nothing orders one queue
+            // against another, so the locations take the rows in turn and each keeps its own exact queue order.
+            var unfinished = new List<CameraAgentDeliveryRecord>();
+            for (var rank = 0; rank < SqliteArtifactOutbox.MaximumRecentDeliveryRecords; rank++)
+            {
+                unfinished.AddRange(queues.Where(queue => rank < queue.Count).Select(queue => queue[rank]));
             }
             IReadOnlyList<CameraAgentDeliveryRecord> merged = unfinished
-                .OrderByDescending(static item => item.Record.CreatedUtc)
                 .Concat(finished.OrderByDescending(static item => item.Record.AcknowledgedUtc ?? item.Record.UpdatedUtc))
                 .Take(SqliteArtifactOutbox.MaximumRecentDeliveryRecords)
                 .ToArray();

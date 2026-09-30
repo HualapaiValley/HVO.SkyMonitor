@@ -109,11 +109,42 @@ public sealed class StoragePageTests
         var cut = context.Render<StoragePage>();
 
         cut.WaitForElement(".storage-holds");
-        Assert.AreEqual("3", Fact(cut, ".storage-holds", "Raw ingress"));
+        Assert.AreEqual("3", Fact(cut, ".storage-holds", "Raw captures held"));
         Assert.AreEqual("10", Fact(cut, ".storage-holds", "Capture lanes"));
         Assert.AreEqual("4", Fact(cut, ".storage-holds", "Delivery"));
         Assert.AreEqual("4", Fact(cut, ".storage-holds", "Quarantine"));
         Assert.AreEqual("Jul 23, 11:40:00 UTC, Delivery", Fact(cut, ".storage-holds", "Oldest held evidence"));
+    }
+
+    [TestMethod]
+    public void Holds_WhenLaneWorkPinsRawCaptures_SayTheFiguresOverlap()
+    {
+        // Two held raw captures are pinned by the same two lane items, one of them quarantined. The rows count the
+        // same evidence from different sides, so the panel must not read as a breakdown of disjoint waiting work.
+        using var context = CreateContext(out var service);
+        var view = OperatorUiTestData.Operations();
+        var summary = view.Summary;
+        service.OperationsHandler = _ => Success(view with
+        {
+            Summary = summary with
+            {
+                RawIngress = summary.RawIngress with { Value = summary.RawIngress.Value with { PendingCount = 2, QuarantineCount = 0 } },
+                CaptureLanes = summary.CaptureLanes with { Value = summary.CaptureLanes.Value with { PendingCount = 2, QuarantineCount = 1 } },
+                ArtifactOutbox = summary.ArtifactOutbox with { Value = summary.ArtifactOutbox.Value with { PendingCount = 0, QuarantineCount = 0 } },
+            },
+        });
+
+        var cut = context.Render<StoragePage>();
+
+        cut.WaitForElement(".storage-holds");
+        Assert.AreEqual("2", Fact(cut, ".storage-holds", "Raw captures held"));
+        Assert.AreEqual("1", Fact(cut, ".storage-holds", "Capture lanes"));
+        Assert.AreEqual("1", Fact(cut, ".storage-holds", "Quarantine"));
+        Assert.IsEmpty(cut.FindAll(".storage-holds dt").Where(static term => term.TextContent == "Raw ingress"));
+        StringAssert.Contains(
+            cut.Find(".storage-holds .ops-panel-heading p").TextContent,
+            "the figures overlap and are not a total",
+            StringComparison.Ordinal);
     }
 
     [TestMethod]

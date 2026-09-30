@@ -61,10 +61,12 @@ public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
             var lanes = summary.CaptureLanes.Value;
             var outbox = summary.ArtifactOutbox.Value;
             // Lane and outbox totals include their quarantined items, which are listed once under Quarantine instead.
-            // The processing queue is the standard capture lane, so it is not listed a second time.
+            // The processing queue is the standard capture lane, so it is not listed a second time. The raw figure
+            // counts captures whose hold is set for any reason, including lane work and quarantined lane items, so
+            // it overlaps the rows below it; the page says so rather than presenting the rows as a breakdown.
             return
             [
-                new Hold("Raw ingress", ingress.PendingCount, ingress.OldestPendingUtc),
+                new Hold("Raw captures held", ingress.PendingCount, ingress.OldestPendingUtc),
                 new Hold("Capture lanes", Waiting(lanes.PendingCount, lanes.QuarantineCount), lanes.OldestPendingUtc),
                 new Hold("Delivery", Waiting(outbox.PendingCount, outbox.QuarantineCount), outbox.OldestPendingUtc),
                 new Hold("Quarantine", ingress.QuarantineCount + lanes.QuarantineCount + outbox.QuarantineCount, null),

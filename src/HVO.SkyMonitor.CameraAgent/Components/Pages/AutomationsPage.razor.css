@@ -110,3 +110,6 @@ dialog.automation-dialog footer { position: sticky; bottom: 0; z-index: 1; backg
 }
 
 .automation-tabs button, .automation-card header p, .automation-card dt, .automation-card dd, .automation-card footer > span, .automation-night, .automation-now small, .automation-run-marker strong, .automation-run-marker small, .revision-history, .automation-field-hint { font-size: .65rem; }
+
+div.operations-dialog-note.automation-removed-note { border-left-color: var(--amber); background: var(--amber-soft); }
+div.operations-dialog-note.automation-removed-note .button { justify-self: start; margin-top: .3rem; }

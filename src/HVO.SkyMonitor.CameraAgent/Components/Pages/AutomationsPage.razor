@@ -353,6 +353,10 @@ else
                 {
                     <div class="ops-note-banner automation-dialog-message" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandMessage</span></div>
                 }
+                @if (_editTargetRemoved)
+                {
+                    <div class="operations-dialog-note warning automation-removed-note"><strong>This automation was removed</strong><span>Another change removed @_idInput.Trim() while it was open here. Recreate records these fields as a new automation.</span><button type="button" id="automation-recreate" class="button secondary" disabled="@(_busy || _loading)" @onclick="RecreateRemoved">Recreate</button></div>
+                }
                 <footer>
                     <button type="button" id="automation-editor-cancel" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
                     <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSave">Review and save</button>

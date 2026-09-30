@@ -73,6 +73,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private LocalAutomationTriggerKind _triggerKindInput = LocalAutomationTriggerKind.Periodic;
     private bool _enabledInput = true;
     private long _editingVersion;
+    private bool _editTargetRemoved;
     private bool _formDirty;
 
     private DialogMode _dialog;
@@ -198,13 +199,18 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                 _error = null;
                 // A conflict re-read is only useful if the next attempt carries the version it just read.
                 // A failed read tells us nothing about the version, so it leaves the edit alone rather than
-                // silently demoting it to a create that can never succeed.
+                // silently demoting it to a create that can never succeed. A definition that is no longer
+                // there keeps its edit identity too: saving it again is a create, and that is the operator's
+                // explicit choice rather than a side effect of the re-read.
                 if (Editing)
                 {
-                    _editingVersion = state.Definitions
-                        .FirstOrDefault(candidate => string.Equals(
-                            candidate.Definition.DefinitionId, _idInput.Trim(), StringComparison.Ordinal))
-                        ?.Version ?? 0;
+                    var current = state.Definitions.FirstOrDefault(candidate => string.Equals(
+                        candidate.Definition.DefinitionId, _idInput.Trim(), StringComparison.Ordinal));
+                    _editTargetRemoved = current is null;
+                    if (current is not null)
+                    {
+                        _editingVersion = current.Version;
+                    }
                 }
             }
             else
@@ -308,6 +314,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private void ResetForm()
     {
         _editingVersion = 0;
+        _editTargetRemoved = false;
         _formDirty = false;
         _idInput = string.Empty;
         _nameInput = string.Empty;
@@ -337,6 +344,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         }
         _commandMessage = null;
         _editingVersion = definition.Version;
+        _editTargetRemoved = false;
         _idInput = definition.Definition.DefinitionId;
         _nameInput = definition.Definition.Name;
         _taskKindInput = definition.Definition.TaskKind;
@@ -353,6 +361,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private void BeginSave()
     {
         _commandMessage = null;
+        if (_editTargetRemoved)
+        {
+            SetCommandMessage(RemovedEditMessage, error: true);
+            return;
+        }
         if (!TryValidateForm())
         {
             return;
@@ -361,6 +374,28 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _pendingDefinition = null;
         _dialog = DialogMode.Confirm;
         _focusTargetId = CancelId;
+    }
+
+    private string RemovedEditMessage => string.Create(
+        Invariant,
+        $"{_idInput.Trim()} was removed by another change, so there is nothing to edit. Choose Recreate to record it as a new automation, or cancel.");
+
+    /// <summary>Turns an edit whose definition was removed elsewhere into an explicit create of the same fields.</summary>
+    private void RecreateRemoved()
+    {
+        if (_busy || !_editTargetRemoved)
+        {
+            return;
+        }
+        if (CreateUnavailableReason is { } reason)
+        {
+            SetCommandMessage(reason, error: true);
+            return;
+        }
+        _editingVersion = 0;
+        _editTargetRemoved = false;
+        _commandMessage = null;
+        _focusTargetId = SaveTriggerId;
     }
 
     private void BeginToggle(LocalAutomationDefinitionState definition)
@@ -427,6 +462,10 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         var wasEditing = _dialog == DialogMode.Editor || _pendingKind == PendingCommandKind.Save;
         _dialog = DialogMode.None;
         _pendingDefinition = null;
+        // Closing abandons an uncertain command. Its key belongs to that attempt only, so a later action with the
+        // same fields is a new command with a new key rather than a replay of the abandoned one.
+        _commandKey = null;
+        _commandPayload = null;
         if (wasEditing)
         {
             // Closing the editor discards it; a definition is only ever changed through a confirmed save.
