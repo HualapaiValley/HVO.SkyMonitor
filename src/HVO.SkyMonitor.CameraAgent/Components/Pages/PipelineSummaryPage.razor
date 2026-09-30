@@ -212,7 +212,9 @@ else
             {
                 <p class="eyebrow">No step selected</p>
                 <h2 id="pipeline-step-title">Nothing to inspect</h2>
-                <p>@(placements.Count == 0 ? "This revision configures no processing steps. Select the raw frame or a meteor detection stage to inspect it." : "Select a step to inspect it.")</p>
+                <p>@(placements.Count > 0 ? "Select a step to inspect it."
+                    : canvas.Stages.Count > 0 ? "This revision configures no processing steps. Select the raw frame or a meteor detection stage to inspect it."
+                    : "This revision configures no processing steps. Select the raw frame to inspect it.")</p>
             }
             else
             {

@@ -754,6 +754,23 @@ public sealed class PipelineSummaryPageTests
     }
 
     [TestMethod]
+    [DataRow(TransientOperatingMode.Off, DisplayName = "Off")]
+    [DataRow(TransientOperatingMode.Central, DisplayName = "Central")]
+    public void Lane_EmptyExplicitPlan_WithoutLocalStages_OffersOnlyTheRawFrame(TransientOperatingMode mode)
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
+            transients: Lane(mode));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.IsEmpty(cut.FindAll("[id^='pipeline-stage-']"));
+        var hint = cut.Find(".ops-pipeline-inspector").TextContent;
+        Assert.Contains("Select the raw frame to inspect it.", hint);
+        Assert.DoesNotContain("meteor detection stage", hint);
+    }
+
+    [TestMethod]
     public void Lane_DegradedWorker_ShowsOnlyTheStateTitleNotItsReason()
     {
         using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
