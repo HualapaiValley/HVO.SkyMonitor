@@ -232,6 +232,95 @@ public sealed class SchedulePageTests
         Assert.AreEqual(2, service.CalendarCalls);
     }
 
+    [TestMethod]
+    public void Calendar_TimerRefreshRendersWhenTheReadCompletesAsynchronously()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(23));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(TonightText(cut), "1 Oct", StringComparison.Ordinal));
+
+        service.HoldCalendarReads = true;
+        time.Now = noon.AddDays(1).AddMinutes(1);
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => Assert.HasCount(1, service.PendingCalendarReads));
+
+        // Completed from the test thread, off the renderer's context, as an I/O completion would be.
+        service.PendingCalendarReads.Dequeue().SetResult(
+            OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar("UTC", noon.AddDays(1))));
+
+        cut.WaitForAssertion(() => StringAssert.Contains(TonightText(cut), "2 Oct", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Calendar_AnOlderTimerReadNeverReplacesANewerRefresh()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(1));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-refresh").HasAttribute("disabled")));
+
+        service.HoldCalendarReads = true;
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => Assert.HasCount(1, service.PendingCalendarReads));
+        var olderPeriodicRead = service.PendingCalendarReads.Dequeue();
+
+        service.HoldCalendarReads = false;
+        service.Calendar = Calendar("America/Denver", noon.AddHours(6));
+        cut.Find("#schedule-refresh").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find(".schedule-state").TextContent, "America/Denver", StringComparison.Ordinal));
+
+        olderPeriodicRead.SetResult(OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar("UTC", noon)));
+        // Any render the older completion queued runs before this no-op on the renderer's serial dispatcher.
+        cut.InvokeAsync(() => { }).GetAwaiter().GetResult();
+
+        StringAssert.Contains(cut.Find(".schedule-state").TextContent, "America/Denver", StringComparison.Ordinal);
+        Assert.AreEqual(3, service.CalendarCalls);
+    }
+
+    [TestMethod]
+    public void OverrideDialog_AsksForAReviewWhenTheSiteTimezoneChangesWhileItIsOpen()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 18, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(1));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("America/Denver", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-override-open").HasAttribute("disabled")));
+        cut.Find("#schedule-override-open").Click();
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-10-01T15:15:00");
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-10-01T17:45:00");
+
+        service.Calendar = Calendar("America/Phoenix", noon.AddHours(1));
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find(".schedule-state").TextContent, "America/Phoenix", StringComparison.Ordinal));
+
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        Assert.IsEmpty(service.OverrideCommands);
+        StringAssert.Contains(cut.Find("dialog .schedule-message[role='alert']").TextContent,
+            "changed from America/Denver to America/Phoenix", StringComparison.Ordinal);
+
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        // Phoenix keeps UTC-7 all year, so the reviewed times convert in the new zone, not Denver's UTC-6.
+        var command = service.OverrideCommands.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 1, 22, 15, 0, TimeSpan.Zero), command.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 2, 0, 45, 0, TimeSpan.Zero), command.EndUtc);
+    }
+
+    private static string TonightText(IRenderedComponent<SchedulePage> cut)
+        => cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent;
+
     private static CameraAgentScheduleCalendar Calendar(string timeZoneId, DateTimeOffset firstNoon, DateTimeOffset? generatedUtc = null)
     {
         var nights = Enumerable.Range(0, 7).Select(index =>
@@ -979,10 +1068,20 @@ public sealed class SchedulePageTests
         internal CameraAgentScheduleCalendar? Calendar { get; set; }
         internal int CalendarCalls { get; private set; }
 
+        /// <summary>When set, calendar reads stay pending until the test completes them, as a real read can.</summary>
+        internal bool HoldCalendarReads { get; set; }
+        internal Queue<TaskCompletionSource<OperatorUiResult<CameraAgentScheduleCalendar>>> PendingCalendarReads { get; } = [];
+
         public ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>> GetCalendarAsync(
             int nightCount, CancellationToken cancellationToken)
         {
             CalendarCalls++;
+            if (HoldCalendarReads)
+            {
+                var read = new TaskCompletionSource<OperatorUiResult<CameraAgentScheduleCalendar>>();
+                PendingCalendarReads.Enqueue(read);
+                return new ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>>(read.Task);
+            }
             return ValueTask.FromResult(Calendar is null
                 ? OperatorUiResult<CameraAgentScheduleCalendar>.Failure(OperatorUiResultKind.Unavailable, "The schedule calendar is unavailable.")
                 : OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar));

@@ -33,6 +33,8 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
     private bool _siteTimeZoneKnown;
     private ITimer? _calendarTimer;
+    private readonly Lock _calendarGate = new();
+    private long _calendarGeneration;
     private bool _disposed;
     private CaptureSchedulePreview? _preview;
     private CaptureProcessingPlanPreview? _pipelinePlan;
@@ -46,6 +48,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private DateTime? _overrideStart;
     private DateTime? _overrideEnd;
     private string _overrideProfile = string.Empty;
+    private string? _overrideTimeZoneId;
     private string? _confirmRevisionId;
     private long _confirmRevisionNumber;
     private string? _editorBasisRevisionId;
@@ -235,9 +238,31 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         }
     }
 
-    private async Task LoadCalendarAsync()
+    /// <summary>
+    /// Reads the calendar and applies it unless a later read started meanwhile, so a slow periodic read never
+    /// replaces the result of a newer full load. Returns whether this read's result was applied.
+    /// </summary>
+    private async Task<bool> LoadCalendarAsync()
     {
+        long generation;
+        lock (_calendarGate)
+        {
+            generation = ++_calendarGeneration;
+        }
         var calendarResult = await ScheduleService.GetCalendarAsync(CalendarNights, CancellationToken.None).ConfigureAwait(false);
+        lock (_calendarGate)
+        {
+            if (generation != _calendarGeneration)
+            {
+                return false;
+            }
+            ApplyCalendar(calendarResult);
+            return true;
+        }
+    }
+
+    private void ApplyCalendar(OperatorUiResult<CameraAgentScheduleCalendar> calendarResult)
+    {
         var message = calendarResult.Message;
         if (calendarResult.IsSuccess && calendarResult.Value is { } calendar)
         {
@@ -301,8 +326,8 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             ScheduleCalendarRefresh();
             return;
         }
-        await LoadCalendarAsync().ConfigureAwait(false);
-        if (!_disposed)
+        // Resume on the renderer's context: the read can complete asynchronously, and the render must not run off it.
+        if (await LoadCalendarAsync().ConfigureAwait(true) && !_disposed)
         {
             StateHasChanged();
         }
@@ -330,6 +355,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         _overrideStart = now;
         _overrideEnd = now.AddHours(1);
         _overrideOneShot = false;
+        _overrideTimeZoneId = _timeZoneId;
         OpenDialog(ScheduleDialog.Override, "schedule-override-open");
     }
 
@@ -568,6 +594,15 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         if (!_siteTimeZoneKnown)
         {
             SetMessage(OverrideUnavailableReason!, error: true);
+            return;
+        }
+        if (!string.Equals(_overrideTimeZoneId, _timeZoneId, StringComparison.Ordinal))
+        {
+            // A calendar refresh changed the site timezone while the dialog was open, so the entered wall-clock
+            // times would now convert to different instants. Ask once; the next submit reads them in the new zone.
+            SetMessage($"The site timezone changed from {_overrideTimeZoneId} to {_timeZoneId} while this dialog was open. " +
+                $"The times are now read as {_timeZoneId} times; check them and create the override again.", error: true);
+            _overrideTimeZoneId = _timeZoneId;
             return;
         }
         if ((LocalTimeProblem(_overrideStart) ?? LocalTimeProblem(_overrideEnd)) is { } problem)
