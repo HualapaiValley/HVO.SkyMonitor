@@ -2,7 +2,9 @@ using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -19,6 +21,7 @@ public sealed class PipelineSummaryPageTests
     private const string ToggleReason = "operator pipeline step toggle";
     private const string RawInput = "$raw";
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+    private static readonly string[] EdgeStageKeys = ["detector-input", "frame-window", "causal-scan", "persist-candidate", "centered-window", "assess"];
 
     [TestMethod]
     public void Render_DrawsConfiguredGraphAndInspectsFirstStepWithoutOptionValues()
@@ -37,13 +40,14 @@ public sealed class PipelineSummaryPageTests
         Assert.Contains("Explicit dependencies", cut.Find(".ops-profile-banner").TextContent);
         Assert.Contains("180.00s", cut.Find(".ops-profile-banner").TextContent);
 
-        var nodes = cut.FindAll(".ops-pipeline-node");
+        var nodes = cut.FindAll(".ops-pipeline-node.step");
         Assert.HasCount(3, nodes);
         Assert.AreEqual("true", nodes[0].GetAttribute("aria-pressed"));
-        Assert.AreEqual("grid-column:1;grid-row:1", nodes[0].GetAttribute("style"));
-        Assert.AreEqual("grid-column:2;grid-row:1", nodes[2].GetAttribute("style"));
-        Assert.HasCount(1, cut.FindAll("path.pipeline-edge"), "Only a step-to-step dependency draws an edge; the raw frame does not.");
-        Assert.IsNotNull(nodes[0].QuerySelector(".node-port"));
+        Assert.AreEqual("grid-column:1;grid-row:1", cut.Find("#pipeline-source-raw").GetAttribute("style"));
+        Assert.AreEqual("grid-column:2;grid-row:1", nodes[0].GetAttribute("style"));
+        Assert.AreEqual("grid-column:3;grid-row:1", nodes[2].GetAttribute("style"));
+        Assert.HasCount(3, cut.FindAll("path.pipeline-edge"), "The raw frame feeds Preview and Telemetry; Preview feeds Thumbnail.");
+        Assert.IsEmpty(cut.FindAll("path.pipeline-edge.transient"), "Detection is off, so no lane edge is drawn.");
 
         Assert.AreEqual("Preview", cut.Find("#pipeline-step-title").TextContent.Trim());
         var facts = cut.Find(".ops-node-facts").TextContent;
@@ -77,7 +81,7 @@ public sealed class PipelineSummaryPageTests
         Assert.AreEqual("Thumbnail", cut.Find("#pipeline-step-title").TextContent.Trim());
         Assert.AreEqual("true", cut.Find("#pipeline-node-2").GetAttribute("aria-pressed"));
         Assert.AreEqual("false", cut.Find("#pipeline-node-0").GetAttribute("aria-pressed"));
-        Assert.Contains("selected", cut.Find("path.pipeline-edge").GetAttribute("class")!);
+        Assert.HasCount(1, cut.FindAll("path.pipeline-edge.selected"), "Only Preview to Thumbnail touches the selected step.");
         Assert.Contains("Optional step", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent);
         Assert.Contains("Preview", cut.Find(".ops-node-facts").TextContent);
         Assert.Contains("Module defaults", cut.Find(".ops-node-facts").TextContent);
@@ -135,8 +139,8 @@ public sealed class PipelineSummaryPageTests
         var cut = context.Render<PipelineSummaryPage>();
 
         cut.WaitForElement(".ops-pipeline-graph");
-        Assert.HasCount(2, cut.FindAll(".ops-pipeline-node"));
-        Assert.HasCount(1, cut.FindAll("path.pipeline-edge"));
+        Assert.HasCount(2, cut.FindAll(".ops-pipeline-node.step"));
+        Assert.HasCount(2, cut.FindAll("path.pipeline-edge"));
         Assert.Contains("Inferred (legacy)", cut.Find(".ops-profile-banner").TextContent);
         Assert.AreEqual("2 / 2 passed", cut.Find(".ops-panel-heading > span").TextContent.Trim());
         var neutral = cut.FindAll(".ops-validation-item.neutral").Select(static item => item.TextContent).ToArray();
@@ -587,6 +591,222 @@ public sealed class PipelineSummaryPageTests
         Assert.AreEqual(reason, cut.Find("#pipeline-step-toggle-reason").TextContent.Trim());
     }
 
+    [TestMethod]
+    public void Graph_DrawsAPortOnEverySideAnEdgeTouches()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        var raw = cut.Find("#pipeline-source-raw");
+        Assert.IsNotNull(raw.QuerySelector(".node-port.out"));
+        Assert.IsNull(raw.QuerySelector(".node-port.in"));
+        var preview = cut.Find("#pipeline-node-0");
+        Assert.IsNotNull(preview.QuerySelector(".node-port.in"), "Preview reads the raw frame.");
+        Assert.IsNotNull(preview.QuerySelector(".node-port.out"), "Thumbnail reads Preview.");
+        var telemetry = cut.Find("#pipeline-node-1");
+        Assert.IsNotNull(telemetry.QuerySelector(".node-port.in"));
+        Assert.IsNull(telemetry.QuerySelector(".node-port.out"), "Nothing reads Telemetry.");
+        Assert.IsNotNull(cut.Find("#pipeline-node-2").QuerySelector(".node-port.in"));
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Off, "Transient detection is off", DisplayName = "Off")]
+    [DataRow(TransientOperatingMode.Central, "Central detection", DisplayName = "Central")]
+    public void Lane_WithoutLocalStages_SaysWhyAndLinksToTransients(TransientOperatingMode mode, string title)
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())), transients: Lane(mode));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        var note = cut.Find(".ops-pipeline-lane-note");
+        Assert.Contains(title, note.TextContent);
+        Assert.AreEqual("/operations/transients", note.QuerySelector("a")!.GetAttribute("href"));
+        Assert.IsEmpty(cut.FindAll("[id^='pipeline-stage-']"));
+        Assert.IsEmpty(cut.FindAll("path.pipeline-edge.transient"));
+        Assert.IsNull(cut.Find("#pipeline-source-raw").QuerySelector(".node-port.in"));
+    }
+
+    [TestMethod]
+    public void Lane_Unreadable_SaysSoAndStillDrawsTheSteps()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: OperatorUiResult<TransientOperationsView>.Failure(OperatorUiResultKind.Unavailable, "Store offline at /var/lib/agent."));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.HasCount(3, cut.FindAll(".ops-pipeline-node.step"));
+        Assert.Contains("Meteor detection state could not be read.", cut.Find(".ops-pipeline-lane-note").TextContent);
+        Assert.Contains("State unavailable", cut.Find(".ops-pipeline-lane-title").TextContent);
+        Assert.DoesNotContain("/var/lib/agent", cut.Markup);
+    }
+
+    [TestMethod]
+    public void Lane_WhenUnauthorized_NavigatesToAccessDenied()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: OperatorUiResult<TransientOperationsView>.Failure(OperatorUiResultKind.Unauthorized, "Denied."));
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+
+        _ = context.Render<PipelineSummaryPage>();
+
+        Assert.EndsWith("/Account/AccessDenied", navigation.Uri);
+    }
+
+    [TestMethod]
+    public void Lane_Edge_DrawsTheLocalStagesBelowTheStepsAndInspectsOne()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: Lane(TransientOperatingMode.Edge, pendingFrames: 3, pendingCandidates: 1));
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        CollectionAssert.AreEqual(
+            EdgeStageKeys,
+            cut.FindAll("[id^='pipeline-stage-']").Select(static stage => stage.Id!["pipeline-stage-".Length..]).ToArray());
+        Assert.Contains("--pipeline-row-template:4.25rem 4.25rem 1.5rem 4.25rem 4.25rem", cut.Find(".ops-pipeline-graph").GetAttribute("style")!);
+        Assert.AreEqual("grid-column:2;grid-row:4", cut.Find("#pipeline-stage-detector-input").GetAttribute("style"));
+        Assert.AreEqual("grid-column:2;grid-row:5", cut.Find("#pipeline-stage-frame-window").GetAttribute("style"));
+        Assert.AreEqual("grid-column:3;grid-row:4", cut.Find("#pipeline-stage-causal-scan").GetAttribute("style"));
+        Assert.AreEqual("grid-column:6;grid-row:4", cut.Find("#pipeline-stage-assess").GetAttribute("style"));
+        Assert.HasCount(7, cut.FindAll("path.pipeline-edge.transient"));
+        Assert.Contains("Edge detector healthy", cut.Find(".ops-pipeline-lane-title").TextContent);
+        Assert.IsEmpty(cut.FindAll(".ops-pipeline-lane-note"));
+        Assert.IsNotNull(cut.Find("#pipeline-stage-assess").QuerySelector(".node-port.in"));
+        Assert.IsNull(cut.Find("#pipeline-stage-assess").QuerySelector(".node-port.out"), "The lane ends at the local event.");
+
+        cut.Find("#pipeline-stage-causal-scan").Click();
+
+        Assert.AreEqual("Causal candidate scan", cut.Find("#pipeline-step-title").TextContent.Trim());
+        Assert.AreEqual("Meteor detection / this agent", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent.Trim());
+        var facts = cut.Find(".ops-node-facts").TextContent;
+        Assert.Contains("Linear detector input, Durable frame window", facts);
+        Assert.Contains("3 frames waiting", facts);
+        Assert.Contains("CameraAgent transient worker", facts);
+        Assert.AreEqual("true", cut.Find("#pipeline-stage-causal-scan").GetAttribute("aria-pressed"));
+        Assert.AreEqual("false", cut.Find("#pipeline-node-0").GetAttribute("aria-pressed"));
+        Assert.HasCount(3, cut.FindAll("path.pipeline-edge.transient.selected"));
+        Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"), "A lane stage is not part of the revision and cannot be toggled here.");
+        Assert.EndsWith("stage=causal-scan", navigation.Uri);
+        Assert.DoesNotContain("step=", navigation.Uri);
+
+        cut.Find("#pipeline-stage-persist-candidate").Click();
+        Assert.Contains("1 candidate waiting", cut.Find(".ops-node-facts").TextContent);
+
+        cut.Find("#pipeline-node-2").Click();
+        Assert.AreEqual("Thumbnail", cut.Find("#pipeline-step-title").TextContent.Trim());
+        Assert.DoesNotContain("stage=", navigation.Uri);
+        Assert.IsEmpty(cut.FindAll("path.pipeline-edge.transient.selected"));
+    }
+
+    [TestMethod]
+    public void Lane_Hybrid_RelaysToCentralStagesThisAgentDoesNotMeasure()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: Lane(TransientOperatingMode.Hybrid, delivering: 2, retrying: 1));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.IsNotNull(cut.Find("#pipeline-stage-relay"));
+        Assert.IsEmpty(cut.FindAll("#pipeline-stage-assess"));
+        Assert.Contains("central", cut.Find("#pipeline-stage-central-validation").GetAttribute("class")!);
+        Assert.DoesNotContain("central", cut.Find("#pipeline-stage-relay").GetAttribute("class")!);
+
+        cut.Find("#pipeline-stage-relay").Click();
+        Assert.Contains("2 candidates waiting, 1 retrying", cut.Find(".ops-node-facts").TextContent);
+
+        cut.Find("#pipeline-stage-central-validation").Click();
+        Assert.AreEqual("Meteor detection / LogicHost", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent.Trim());
+        var facts = cut.Find(".ops-node-facts").TextContent;
+        Assert.Contains("Not measured on this agent", facts);
+        Assert.Contains("LogicHost", facts);
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Edge, "assess", DisplayName = "Edge")]
+    [DataRow(TransientOperatingMode.Hybrid, "relay", DisplayName = "Hybrid")]
+    public void Lane_EmptyExplicitPlan_StillDrawsTheRawFrameAndTheLane(TransientOperatingMode mode, string stage)
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
+            transients: Lane(mode, pendingFrames: 2));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.AreEqual("This revision configures no processing steps.", cut.Find("#pipeline-empty").TextContent.Trim());
+        Assert.AreEqual("grid-column:2 / -1;grid-row:1", cut.Find("#pipeline-empty").GetAttribute("style"));
+        Assert.IsEmpty(cut.FindAll(".ops-pipeline-node.step"));
+        Assert.IsNotNull(cut.Find($"#pipeline-stage-{stage}"));
+        Assert.IsNotEmpty(cut.FindAll("path.pipeline-edge.transient"));
+        Assert.IsNotNull(cut.Find("#pipeline-source-raw").QuerySelector(".node-port.out"), "The lane reads the raw frame.");
+        Assert.IsNotEmpty(cut.FindAll("#pipeline-lane-list li"), "The text alternative lists the lane too.");
+        Assert.Contains("Select the raw frame or a meteor detection stage", cut.Find(".ops-pipeline-inspector").TextContent);
+
+        cut.Find("#pipeline-source-raw").Click();
+
+        Assert.AreEqual("Meteor detection", cut.Find(".ops-node-facts dd").TextContent.Trim());
+    }
+
+    [TestMethod]
+    [DataRow(TransientOperatingMode.Off, DisplayName = "Off")]
+    [DataRow(TransientOperatingMode.Central, DisplayName = "Central")]
+    public void Lane_EmptyExplicitPlan_WithoutLocalStages_OffersOnlyTheRawFrame(TransientOperatingMode mode)
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
+            transients: Lane(mode));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.IsEmpty(cut.FindAll("[id^='pipeline-stage-']"));
+        var hint = cut.Find(".ops-pipeline-inspector").TextContent;
+        Assert.Contains("Select the raw frame to inspect it.", hint);
+        Assert.DoesNotContain("meteor detection stage", hint);
+    }
+
+    [TestMethod]
+    public void Lane_DegradedWorker_ShowsOnlyTheStateTitleNotItsReason()
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: Lane(TransientOperatingMode.Edge, availability: TransientWorkerAvailability.Degraded, reason: "store-at-/srv/agent/transients"));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.Contains("Edge detector degraded", cut.Find(".ops-pipeline-lane-title").TextContent);
+        Assert.DoesNotContain("/srv/agent", cut.Markup);
+    }
+
+    [TestMethod]
+    public void StageQuery_OpensTheRawFrameOrAStageTheModeDraws()
+    {
+        using var edge = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
+            transients: Lane(TransientOperatingMode.Edge));
+        edge.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline?stage=raw-frame");
+
+        var raw = edge.Render<PipelineSummaryPage>();
+
+        raw.WaitForElement(".ops-pipeline-graph");
+        Assert.AreEqual("Raw frame", raw.Find("#pipeline-step-title").TextContent.Trim());
+        Assert.AreEqual("true", raw.Find("#pipeline-source-raw").GetAttribute("aria-pressed"));
+        Assert.Contains("Preview, Telemetry, Meteor detection", raw.Find(".ops-node-facts").TextContent);
+        Assert.HasCount(4, raw.FindAll("path.pipeline-edge.selected"), "Two steps and two lane stages read the raw frame.");
+
+        using var off = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())));
+        off.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline?stage=assess");
+
+        var fallback = off.Render<PipelineSummaryPage>();
+
+        fallback.WaitForElement(".ops-pipeline-graph");
+        Assert.AreEqual("Preview", fallback.Find("#pipeline-step-title").TextContent.Trim(), "Off draws no assess stage, so the first step is shown.");
+    }
+
     private static IRenderedComponent<PipelineSummaryPage> OpenToggle(BunitContext context, string nodeSelector)
     {
         var cut = context.Render<PipelineSummaryPage>();
@@ -601,7 +821,8 @@ public sealed class PipelineSummaryPageTests
         PipelineScheduleService schedule,
         ProcessingExecutionPagesTests.GraphUiService? graphs = null,
         OperatorUiResult<NamedRigUiCatalog>? rig = null,
-        ProcessingGraphExecutionState[]? executions = null)
+        ProcessingGraphExecutionState[]? executions = null,
+        OperatorUiResult<TransientOperationsView>? transients = null)
     {
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
@@ -615,7 +836,27 @@ public sealed class PipelineSummaryPageTests
         rigService.Setup(service => service.GetAsync(It.IsAny<CancellationToken>())).Returns(() => ValueTask.FromResult(
             rig ?? OperatorUiResult<NamedRigUiCatalog>.Success(new(new NamedRigSelection(null, null, 1), [], null, null))));
         context.Services.AddSingleton(rigService.Object);
+        context.Services.AddSingleton<ICameraAgentTransientOperationsUiService>(new TransientOperationsPageTests.TestTransientOperationsUiService(
+            transients ?? OperatorUiResult<TransientOperationsView>.Success(TransientOperationsPageTests.View(TransientOperatingMode.Off))));
         return context;
+    }
+
+    private static OperatorUiResult<TransientOperationsView> Lane(
+        TransientOperatingMode mode, long pendingFrames = 0, long pendingCandidates = 0, long delivering = 0, int retrying = 0,
+        TransientWorkerAvailability availability = TransientWorkerAvailability.Healthy, string reason = "ready")
+    {
+        var view = TransientOperationsPageTests.View(mode);
+        return OperatorUiResult<TransientOperationsView>.Success(view with
+        {
+            Worker = view.Worker with
+            {
+                Availability = availability,
+                Reason = reason,
+                PendingFrames = pendingFrames,
+                PendingCandidates = pendingCandidates,
+            },
+            Delivery = view.Delivery with { PendingCount = delivering, RetryingCount = retrying },
+        });
     }
 
     private static PipelineScheduleService ToggleService()

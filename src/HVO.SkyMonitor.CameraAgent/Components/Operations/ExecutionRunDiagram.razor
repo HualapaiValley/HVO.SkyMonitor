@@ -104,6 +104,7 @@
     private List<PlacedNode> _layout = [];
     private List<GraphEdge> _edges = [];
     private List<GraphBand> _bands = [];
+    private int _rowsEnd = HeaderHeight + NodeHeight;
     private const double MinimumReadableScale = 0.85;
     private double Zoom { get; set; } = MinimumReadableScale;
     private bool _fit = true;
@@ -143,7 +144,7 @@
     private void FitGraph() { _fit = true; Zoom = MinimumReadableScale; }
     private void ZoomOut() { _fit = false; Zoom = Math.Max(0.5, Zoom - 0.25); }
     private void ZoomIn() { _fit = false; Zoom = Math.Min(2, Zoom + 0.25); }
-    private int CloudTop => (_layout.Count == 0 ? HeaderHeight + NodeHeight : _layout.Max(static item => item.Y) + NodeHeight) + 18;
+    private int CloudTop => _rowsEnd + 18;
     private int TransientTop => CloudTop + (HasCloudProduct ? 0 : 42) + 8;
     private int Height => TransientTop + (TransientLanes.Count == 0 ? 86 : 65 + TransientLanes.Count * 86);
     private int CaptureLaneY => TransientTop + 40;
@@ -224,7 +225,7 @@
             var rank = ranks[node.NodeId];
             var row = columns.GetValueOrDefault(rank);
             columns[rank] = row + 1;
-            _layout.Add(new PlacedNode(node, EdgeX + rank * (NodeWidth + ColumnGap), HeaderHeight + row * (NodeHeight + RowGap)));
+            _layout.Add(new PlacedNode(node, rank, row, EdgeX + rank * (NodeWidth + ColumnGap), HeaderHeight + row * (NodeHeight + RowGap)));
         }
         _bands =
         [
@@ -233,35 +234,42 @@
             new GraphBand(PublicationX, LogicHostX - PublicationX, "Durable publication"),
             new GraphBand(LogicHostX, SourceWidth + Margin, "LogicHost / unavailable")
         ];
+        // Column 0 is the raw capture, the last column the publication boundary; both sit on the first row. Edges are
+        // routed around every box between them.
+        var rankCount = _layout.Count == 0 ? 0 : _layout.Max(static item => item.Rank) + 1;
+        var publication = rankCount + 1;
+        var tracks = new List<GraphTrack> { new(Margin, SourceWidth) };
+        tracks.AddRange(Enumerable.Range(0, rankCount).Select(rank => new GraphTrack(EdgeX + rank * (NodeWidth + ColumnGap), NodeWidth)));
+        tracks.Add(new GraphTrack(PublicationX, SourceWidth));
+        var rows = Enumerable.Range(0, Math.Max(1, _layout.Select(static item => item.Row + 1).DefaultIfEmpty(1).Max()))
+            .Select(static row => new GraphTrack(HeaderHeight + row * (NodeHeight + RowGap), NodeHeight))
+            .ToArray();
+        var occupied = _layout.Select(static item => (item.Rank + 1, item.Row)).Append((0, 0)).Append((publication, 0));
+        var router = new PipelineEdgeRouter(tracks, rows, RowGap, occupied);
         var positions = _layout.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
         _edges = [];
         foreach (var target in _layout)
         {
             if (target.Node.Dependencies.Any(static dependency => dependency.ProducerId == "$raw"))
             {
-                var y = target.Y + NodeHeight / 2;
-                _edges.Add(new GraphEdge($"M{Margin + SourceWidth},{HeaderHeight + NodeHeight / 2} C{EdgeX - 25},{HeaderHeight + NodeHeight / 2} {EdgeX - 25},{y} {target.X},{y}", true, target.Node.NodeId == SelectedNodeId));
+                var path = PipelineEdgeRouter.Path(router.Route(0, 0, target.Rank + 1, target.Row));
+                _edges.Add(new GraphEdge(path, true, target.Node.NodeId == SelectedNodeId));
             }
             foreach (var dependency in target.Node.Dependencies)
             {
-                if (!positions.TryGetValue(dependency.ProducerId, out var source)) continue;
-                var x1 = source.X + NodeWidth;
-                var y1 = source.Y + NodeHeight / 2;
-                var x2 = target.X;
-                var y2 = target.Y + NodeHeight / 2;
-                var middle = (x1 + x2) / 2;
-                _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", dependency.Required, target.Node.NodeId == SelectedNodeId || source.Node.NodeId == SelectedNodeId));
+                // Only a cycle puts a producer in the same or a later column; an edge drawn backwards would cross the
+                // boxes between, and the description still names the dependency.
+                if (!positions.TryGetValue(dependency.ProducerId, out var source) || source.Rank >= target.Rank) continue;
+                var path = PipelineEdgeRouter.Path(router.Route(source.Rank + 1, source.Row, target.Rank + 1, target.Row));
+                _edges.Add(new GraphEdge(path, dependency.Required, target.Node.NodeId == SelectedNodeId || source.Node.NodeId == SelectedNodeId));
             }
         }
         foreach (var source in _layout.Where(static item => item.Node.Outputs.Any(static output => output.Published)))
         {
-            var x1 = source.X + NodeWidth;
-            var y1 = source.Y + NodeHeight / 2;
-            var x2 = PublicationX;
-            var y2 = HeaderHeight + NodeHeight / 2;
-            var middle = (x1 + x2) / 2;
-            _edges.Add(new GraphEdge($"M{x1},{y1} C{middle},{y1} {middle},{y2} {x2},{y2}", true, source.Node.NodeId == SelectedNodeId));
+            var path = PipelineEdgeRouter.Path(router.Route(source.Rank + 1, source.Row, publication, 0));
+            _edges.Add(new GraphEdge(path, true, source.Node.NodeId == SelectedNodeId));
         }
+        _rowsEnd = (int)Math.Ceiling(router.Rows[^1].End);
     }
 
     private string NodeClass(CameraAgentProcessingNodeView node) =>
@@ -286,7 +294,7 @@
         if (args.Key is "Enter" or " ") await NodeSelected.InvokeAsync(id);
     }
 
-    private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int X, int Y);
+    private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int Rank, int Row, int X, int Y);
     private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
     private sealed record GraphBand(int X, int Width, string Label);
     private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);
