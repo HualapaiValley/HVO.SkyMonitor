@@ -64,6 +64,20 @@ internal static class CameraAgentStateLayout
     public static string OperatorSettingsPath(string stateRoot)
         => Path.Combine(stateRoot, IdentityDirectoryName, OperatorSettingsFileName);
 
+    /// <summary>
+    /// The copy of an instance's operator settings file a state reset keeps in the product's shared operations
+    /// directory while the Identity mount is deleted; the instance id keeps one camera's copy from another's.
+    /// </summary>
+    public static string OperatorSettingsResetCopyPath(string operationsRoot, Guid instanceId, Guid operationId)
+        => Path.Combine(
+            operationsRoot,
+            $"{OperatorSettingsResetCopyPrefix(instanceId)}{operationId:D}.{OperatorSettingsFileName}");
+
+    public static string OperatorSettingsResetCopyPattern(Guid instanceId)
+        => $"{OperatorSettingsResetCopyPrefix(instanceId)}*.{OperatorSettingsFileName}";
+
+    private static string OperatorSettingsResetCopyPrefix(Guid instanceId) => $"cameraagent-{instanceId:D}.state-reset-";
+
     /// <summary>Every writable bind source the generated Compose model mounts, nested sources included.</summary>
     public static IReadOnlyList<CameraAgentBindSource> WritableBindSources(
         string stateRoot,

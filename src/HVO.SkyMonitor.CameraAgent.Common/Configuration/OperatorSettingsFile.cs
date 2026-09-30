@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -22,8 +23,11 @@ public sealed class OperatorSettingsFile : IDisposable
     /// <summary>The version of a settings file that does not exist yet.</summary>
     public const string AbsentVersion = "absent";
 
-    /// <summary>The largest settings file this host reads or writes.</summary>
-    public const int MaximumFileBytes = 256 * 1024;
+    /// <summary>
+    /// The largest settings file this host reads or writes; the same bound deployment tooling uses when it carries
+    /// the file across a state reset, so a file the tooling keeps is one this host can still edit.
+    /// </summary>
+    public const int MaximumFileBytes = 1024 * 1024;
 
     private static readonly JsonNodeOptions NodeOptions = new() { PropertyNameCaseInsensitive = true };
     private static readonly JsonDocumentOptions DocumentOptions = new()
@@ -62,6 +66,9 @@ public sealed class OperatorSettingsFile : IDisposable
 
     /// <summary>Flushes the directory after the replace; tests substitute it to fail the step after publication.</summary>
     internal Action<string> SyncPublishedDirectory { get; init; } = RawIngressFileStore.SyncDirectory;
+
+    /// <summary>Runs once the replacement is on disk and before it is published; tests edit the file here.</summary>
+    internal Action BeforePublish { get; init; } = static () => { };
 
     /// <summary>The keys a configuration source with higher precedence than this file supplies.</summary>
     public IReadOnlyList<string> FindOverriddenKeys(IEnumerable<string> keys) => _findOverriddenKeys(keys);
@@ -126,7 +133,11 @@ public sealed class OperatorSettingsFile : IDisposable
                 return new(OperatorSettingsWriteStatus.Unchanged, current);
             }
 
-            await WriteDurableAsync(next, cancellationToken).ConfigureAwait(false);
+            var changed = await WriteDurableAsync(next, current.Version, cancellationToken).ConfigureAwait(false);
+            if (changed is not null)
+            {
+                return new(OperatorSettingsWriteStatus.Conflict, changed);
+            }
             _reload();
             OperatorSettingsLog.Written(_logger, actor, string.Join(", ", values.Keys));
             return new(OperatorSettingsWriteStatus.Applied, Parse(next));
@@ -147,23 +158,31 @@ public sealed class OperatorSettingsFile : IDisposable
         }
 
         var stream = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous);
-        await using (stream.ConfigureAwait(false))
+        var buffer = ArrayPool<byte>.Shared.Rent(MaximumFileBytes + 1);
+        try
         {
-            var buffer = new byte[MaximumFileBytes + 1];
-            var length = 0;
-            int read;
-            while (length < buffer.Length &&
-                (read = await stream.ReadAsync(buffer.AsMemory(length), cancellationToken).ConfigureAwait(false)) > 0)
+            await using (stream.ConfigureAwait(false))
             {
-                length += read;
+                var length = 0;
+                int read;
+                while (length <= MaximumFileBytes &&
+                    (read = await stream.ReadAsync(buffer.AsMemory(length, MaximumFileBytes + 1 - length), cancellationToken)
+                        .ConfigureAwait(false)) > 0)
+                {
+                    length += read;
+                }
+                var bytes = buffer.AsSpan(0, length).ToArray();
+                if (length > MaximumFileBytes)
+                {
+                    return (bytes, new OperatorSettingsSnapshot(
+                        Hash(bytes), true, $"The settings file is larger than {MaximumFileBytes / (1024 * 1024)} MiB."));
+                }
+                return (bytes, Parse(bytes));
             }
-            var bytes = buffer.AsSpan(0, length).ToArray();
-            if (length > MaximumFileBytes)
-            {
-                return (bytes, new OperatorSettingsSnapshot(
-                    Hash(bytes), true, $"The settings file is larger than {MaximumFileBytes / 1024} KiB."));
-            }
-            return (bytes, Parse(bytes));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -265,17 +284,31 @@ public sealed class OperatorSettingsFile : IDisposable
 
     private void EnsureNotLink()
     {
-        if (File.Exists(FilePath) && new FileInfo(FilePath).LinkTarget is not null)
+        // LinkTarget reads the link itself, so a link whose target is missing is refused too.
+        if (new FileInfo(FilePath).LinkTarget is not null)
         {
             throw new IOException("The operator settings file must not be a symbolic link.");
         }
     }
 
-    private async ValueTask WriteDurableAsync(byte[] payload, CancellationToken cancellationToken)
+    /// <summary>
+    /// Publishes the payload unless the file has moved on from <paramref name="expectedVersion"/> while the
+    /// replacement was being written, and returns the file as it now is in that case.
+    /// </summary>
+    /// <remarks>
+    /// The version is checked again after the slow part of the write, the flush to disk, so a hand edit saved while
+    /// the replacement was being made is kept and reported as a conflict. What remains is the instant between that
+    /// check and the rename; no editor takes a lock this writer could honour, so that instant is as close as a
+    /// rename-based replace can get.
+    /// </remarks>
+    private async ValueTask<OperatorSettingsSnapshot?> WriteDurableAsync(
+        byte[] payload,
+        string expectedVersion,
+        CancellationToken cancellationToken)
     {
         if (payload.Length > MaximumFileBytes)
         {
-            throw new IOException($"The settings file would be larger than {MaximumFileBytes / 1024} KiB.");
+            throw new IOException($"The settings file would be larger than {MaximumFileBytes / (1024 * 1024)} MiB.");
         }
         var directory = Path.GetDirectoryName(FilePath)!;
         var temporaryPath = Path.Combine(
@@ -302,8 +335,15 @@ public sealed class OperatorSettingsFile : IDisposable
             {
                 File.SetUnixFileMode(temporaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
+            BeforePublish();
+            var (_, onDisk) = await LoadAsync(cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(onDisk.Version, expectedVersion, StringComparison.Ordinal))
+            {
+                return onDisk;
+            }
             File.Move(temporaryPath, FilePath, overwrite: true);
             SyncPublishedDirectory(directory);
+            return null;
         }
         finally
         {

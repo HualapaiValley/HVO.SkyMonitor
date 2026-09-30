@@ -40,6 +40,15 @@ public sealed class SettingsFileSiteProfileStoreTests
         }
     }
 
+    private const string InstallerSeed = """
+        {
+          "CameraAgent": {
+            "DisplayName": "North Camera"
+          }
+        }
+
+        """;
+
     private string SettingsPath => Path.Combine(_root, "appsettings.local.json");
 
     private string LegacyRecordPath => Path.Combine(_root, "data", ".site", "site-profile.v1.json");
@@ -299,6 +308,41 @@ public sealed class SettingsFileSiteProfileStoreTests
             state.Profile);
         Assert.IsFalse(File.Exists(LegacyRecordPath));
         Assert.IsFalse(Directory.Exists(Path.GetDirectoryName(LegacyRecordPath)));
+    }
+
+    [TestMethod]
+    public async Task GetAsync_AfterAnInstallerSeed_MovesTheSeededNameIntoTheSite()
+    {
+        // The file exactly as the installer seeds it; the host loads its name as CameraAgent:DisplayName.
+        await File.WriteAllTextAsync(SettingsPath, InstallerSeed).ConfigureAwait(false);
+        using var store = CreateStore(displayName: "North Camera");
+
+        var state = await store.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(new SiteProfileValues(null, "North Camera", null, null), state.Profile);
+        Assert.AreEqual("North Camera", ReadSetting("CameraAgent", "Site", "CameraName"));
+        Assert.IsNull(ReadSetting("CameraAgent", "DisplayName"));
+    }
+
+    [TestMethod]
+    public async Task GetAsync_AfterAnInstallerSeed_KeepsTheEarlierReleasesProfile()
+    {
+        // An instance installed before the settings file existed is reinstalled: the installer seeds a new file
+        // while the profile the operator recorded under the earlier release is still on disk.
+        await File.WriteAllTextAsync(SettingsPath, InstallerSeed).ConfigureAwait(false);
+        WriteLegacyRecord("""
+            { "profile": { "observatoryName": "Recorded earlier", "cameraName": "East dome", "ownerName": "Pat Example", "ownerContact": "owner@home.lan" } }
+            """);
+        using var store = CreateStore(displayName: "North Camera");
+
+        var state = await store.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            new SiteProfileValues("Recorded earlier", "East dome", "Pat Example", "owner@home.lan"),
+            state.Profile);
+        Assert.AreEqual("Recorded earlier", ReadSetting("CameraAgent", "Site", "ObservatoryName"));
+        Assert.IsNull(ReadSetting("CameraAgent", "DisplayName"));
+        Assert.IsFalse(File.Exists(LegacyRecordPath));
     }
 
     [TestMethod]

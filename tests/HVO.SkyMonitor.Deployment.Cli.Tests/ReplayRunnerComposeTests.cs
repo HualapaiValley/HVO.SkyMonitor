@@ -35,7 +35,7 @@ public sealed class ReplayRunnerComposeTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Write_FriendlyName_SeedsTheTrimmedCameraNameIntoTheOperatorSettingsFile()
+    public void Write_FriendlyName_SeedsTheTrimmedNameAsTheInstallerNameAndLeavesTheSiteToTheCamera()
     {
         var root = CreateRoot();
         try
@@ -50,7 +50,10 @@ public sealed class ReplayRunnerComposeTests
 
             var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
             var settings = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
-            Assert.AreEqual("North Camera", settings["CameraAgent"]!["Site"]!["CameraName"]!.GetValue<string>());
+            Assert.AreEqual("North Camera", settings["CameraAgent"]!["DisplayName"]!.GetValue<string>());
+            // The site section is CameraAgent's to create: its presence tells CameraAgent a profile is already
+            // settled, and a seeded one would stop an earlier release's recorded profile from moving in.
+            Assert.IsNull(settings["CameraAgent"]!["Site"]);
             SafeFileSystem.ValidateOwnerFile(settingsPath);
             Assert.IsFalse(File.Exists(obsolete));
         }
@@ -108,6 +111,40 @@ public sealed class ReplayRunnerComposeTests
             Write(request with { FriendlyName = "Reinstalled Name" }, paths);
 
             Assert.AreEqual(operatorEdited, File.ReadAllText(settingsPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Write_AfterAnInterruptedStateReset_RestoresTheCarriedSettingsRatherThanSeeding()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
+            // A state reset stopped after deleting the Identity mount and before writing the settings back, leaving
+            // only the copy it keeps beside its evidence. Another camera's copy shares the operations directory.
+            const string carried = """{ "CameraAgent": { "Site": { "CameraName": "East dome" } } }""";
+            var copy = Path.Combine(
+                paths.OperationsRoot,
+                $"cameraagent-{InstanceIdOf(paths):D}.state-reset-{Guid.NewGuid():D}.appsettings.local.json");
+            var otherCamera = Path.Combine(
+                paths.OperationsRoot,
+                $"cameraagent-{Guid.NewGuid():D}.state-reset-{Guid.NewGuid():D}.appsettings.local.json");
+            SafeFileSystem.WriteTextAtomic(copy, carried);
+            SafeFileSystem.WriteTextAtomic(otherCamera, """{ "CameraAgent": { "Site": { "CameraName": "Elsewhere" } } }""");
+
+            Write(request with { FriendlyName = "North Camera" }, paths);
+
+            var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
+            Assert.AreEqual(carried, File.ReadAllText(settingsPath));
+            SafeFileSystem.ValidateOwnerFile(settingsPath);
+            Assert.IsFalse(File.Exists(copy));
+            Assert.IsTrue(File.Exists(otherCamera));
         }
         finally
         {
@@ -241,7 +278,7 @@ public sealed class ReplayRunnerComposeTests
     private static ComposeFiles Write(InstallRequest request, InstallationPaths paths) => ComposeDeployment.Write(
         request,
         paths,
-        Guid.NewGuid(),
+        InstanceIdOf(paths),
         Guid.NewGuid(),
         NativeLinux.getuid(),
         NativeLinux.getgid(),
@@ -267,6 +304,8 @@ public sealed class ReplayRunnerComposeTests
         };
         return (request, InstallationPaths.Create(root, Guid.NewGuid(), "test-catalog"));
     }
+
+    private static Guid InstanceIdOf(InstallationPaths paths) => Guid.Parse(Path.GetFileName(paths.InstanceRoot));
 
     private static string CreateRoot()
     {

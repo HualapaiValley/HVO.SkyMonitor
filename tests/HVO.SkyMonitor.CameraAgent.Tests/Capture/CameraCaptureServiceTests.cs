@@ -9,10 +9,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
@@ -189,9 +191,14 @@ public sealed class CameraCaptureServiceTests
         try
         {
             var clock = new FixedClock(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            // A sensor large enough that east and west land on visibly different pixels.
             var config = CreateConfig() with
             {
                 AgentId = "rig-flip-test",
+                Rig = CreateConfig().Rig with
+                {
+                    Sensor = new SensorProfile("Test", 64, 64, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8)
+                },
                 DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
                     DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
                 Schedule = new CaptureScheduleDefinition("capture-schedule-v1",
@@ -264,7 +271,46 @@ public sealed class CameraCaptureServiceTests
                 Assert.IsTrue(RigProjectionContextFactory.Create(running.Rig).HorizontalFlip, "The rig projection is unflipped.");
                 Assert.IsTrue((await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false))
                     .ActiveRevision.Profile.Rig.Optics.HorizontalFlip);
+
+                // The capture records the flipped rig rather than the one the camera was configured with.
                 Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(running.Rig), captured.Manifest.Descriptor.Profiles.Rig.Sha256);
+                Assert.AreNotEqual(CameraRigProfileIdentity.ComputeSha256(config.Rig), captured.Manifest.Descriptor.Profiles.Rig.Sha256);
+
+                // Annotation draws with the rig carried alongside the capture, so its east and west marks are mirrored.
+                var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
+                var entry = (await journal.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+                    .Single(item => item.CaptureId == captured.Manifest.Descriptor.Capture.CaptureId);
+                var envelope = await journal.ReadRecoveredLaneEnvelopeAsync(entry, CancellationToken.None).ConfigureAwait(false);
+                var configuredMarks = RigProjectionContextFactory.CreateAnnotationLandmarks(
+                    RigProjectionContextFactory.Create(config.Rig))!;
+                var annotatedMarks = RigProjectionContextFactory.CreateAnnotationLandmarks(
+                    RigProjectionContextFactory.Create(envelope!.Configuration.Rig))!;
+                Assert.AreNotEqual(configuredMarks.East.X, annotatedMarks.East.X, 1, "The east mark sits on the centre line.");
+                AssertMirrored(configuredMarks.East.X, configuredMarks.East.Y, annotatedMarks.East.X, annotatedMarks.East.Y, "annotation east");
+                AssertMirrored(configuredMarks.West.X, configuredMarks.West.Y, annotatedMarks.West.X, annotatedMarks.West.Y, "annotation west");
+
+                // The sky map projects the running rig, so its stars and compass points are mirrored too. Orion is
+                // overhead at this instant, which puts the fixture stars inside the image.
+                var stars = CameraAgentSkyMapProjectionTests.CreateCatalog(CameraAgentSkyMapProjectionTests.BrightStars());
+                var orionOverhead = new DateTimeOffset(2026, 9, 29, 5, 0, 0, TimeSpan.Zero);
+                var configuredSky = await new CameraAgentSkyMapProjection(new ConfigurationAccessor(config), stars, clock)
+                    .ProjectAsync(orionOverhead, CancellationToken.None).ConfigureAwait(false);
+                var shownSky = await new CameraAgentSkyMapProjection(accessor, stars, clock, scheduleRuntime: runtime)
+                    .ProjectAsync(orionOverhead, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(shownSky.Geometry.HorizontalFlip, "The sky map reports an unflipped rig.");
+                Assert.IsNotEmpty(shownSky.Objects);
+                Assert.HasCount(configuredSky.Objects.Count, shownSky.Objects);
+                foreach (var shown in shownSky.Objects)
+                {
+                    var configured = configuredSky.Objects.Single(item => item.Id == shown.Id);
+                    AssertMirrored(configured.PixelX, configured.PixelY, shown.PixelX, shown.PixelY, shown.DisplayName);
+                }
+                foreach (var shown in shownSky.Geometry.Cardinals.Where(item => item.Name is "East" or "West"))
+                {
+                    var configured = configuredSky.Geometry.Cardinals.Single(item => item.Name == shown.Name);
+                    AssertMirrored(configured.PixelX!.Value, configured.PixelY!.Value, shown.PixelX!.Value, shown.PixelY!.Value,
+                        $"sky map {shown.Name}");
+                }
 
                 // The copied optics now belong only to the operator's rig, so a further edit revises them in place.
                 var active = catalog.Revisions.Single(revision => revision.RevisionId == composedId);
@@ -278,6 +324,13 @@ public sealed class CameraCaptureServiceTests
             }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    // A horizontal flip mirrors the image about its vertical centre line, x = 32 on the flip test's 64-pixel sensor.
+    private static void AssertMirrored(double configuredX, double configuredY, double shownX, double shownY, string what)
+    {
+        Assert.AreEqual(64 - configuredX, shownX, 1e-6, $"The {what} is not mirrored east to west.");
+        Assert.AreEqual(configuredY, shownY, 1e-6, $"The {what} moved vertically.");
     }
 
     private static RecordingIngress CreateDurableIngress(IOptions<CameraAgentHostOptions> options, TimeProvider clock)

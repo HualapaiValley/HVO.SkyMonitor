@@ -136,6 +136,42 @@ public sealed class OperatorSettingsFileTests
     }
 
     [TestMethod]
+    public async Task WriteAsync_WhenTheFileIsEditedBeforePublication_ConflictsAndKeepsTheEdit()
+    {
+        await File.WriteAllTextAsync(SettingsPath, """{ "CameraAgent": { "SkyMap": { "MaximumObjects": 400 } } }""").ConfigureAwait(false);
+        const string handEdit = """{ "CameraAgent": { "SkyMap": { "MaximumObjects": 700 } } }""";
+        using var file = new OperatorSettingsFile(SettingsPath, () => _reloads++, _ => [])
+        {
+            BeforePublish = () => File.WriteAllText(SettingsPath, handEdit)
+        };
+        var before = await file.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var result = await WriteAsync(file, before.Version, LimitKey, 900).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorSettingsWriteStatus.Conflict, result.Status);
+        Assert.AreEqual("700", result.Snapshot.GetValue(LimitKey));
+        Assert.AreEqual(handEdit, await File.ReadAllTextAsync(SettingsPath).ConfigureAwait(false));
+        Assert.AreEqual(0, _reloads);
+        Assert.IsEmpty(Directory.GetFiles(_root, "*.tmp"));
+    }
+
+    [TestMethod]
+    public async Task AFileLargerThanTheOldBoundButWithinTheDeploymentBound_IsEditable()
+    {
+        // Deployment tooling carries a settings file of up to 1 MiB across a reset; the editor must accept the same.
+        var padding = new string('x', 300 * 1024);
+        await File.WriteAllTextAsync(SettingsPath, $$"""{ "Padding": "{{padding}}" }""").ConfigureAwait(false);
+        using var file = CreateFile();
+        var snapshot = await file.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var result = await WriteAsync(file, snapshot.Version, LimitKey, 900).ConfigureAwait(false);
+
+        Assert.IsNull(snapshot.Problem);
+        Assert.AreEqual(OperatorSettingsWriteStatus.Applied, result.Status);
+        Assert.AreEqual(padding, result.Snapshot.GetValue("Padding"));
+    }
+
+    [TestMethod]
     [DataRow("""{ "CameraAgent": """, DisplayName = "truncated")]
     [DataRow("""[ 1, 2 ]""", DisplayName = "array root")]
     [DataRow("""{ "CameraAgent": 1, "cameraAgent": 2 }""", DisplayName = "duplicate key")]
@@ -212,6 +248,21 @@ public sealed class OperatorSettingsFileTests
 
         await Assert.ThrowsExactlyAsync<IOException>(async () =>
             await file.ReadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task WriteAsync_RefusesADanglingSymbolicLinkAndLeavesIt()
+    {
+        var missing = Path.Combine(_root, "missing.json");
+        File.CreateSymbolicLink(SettingsPath, missing);
+        using var file = CreateFile();
+
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await WriteAsync(file, OperatorSettingsFile.AbsentVersion, LimitKey, 900).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(missing, new FileInfo(SettingsPath).LinkTarget);
+        Assert.IsFalse(File.Exists(missing));
+        Assert.AreEqual(0, _reloads);
     }
 
     [TestMethod]

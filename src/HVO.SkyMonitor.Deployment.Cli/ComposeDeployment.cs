@@ -150,10 +150,13 @@ services:
 """;
 
     /// <summary>
-    /// Seeds a new instance's operator settings file with the friendly name as its camera name. An existing file
-    /// belongs to the operator and is never rewritten, so a reinstall keeps every name and setting changed since.
-    /// A manifest written before the install bound existed may carry a name longer than CameraAgent accepts; such a
-    /// camera starts unnamed until the operator names it on the Observatory &amp; location page.
+    /// Seeds a new instance's operator settings file with the friendly name as the installer-configured camera name,
+    /// <c>CameraAgent:DisplayName</c>, which CameraAgent moves into its site profile on first start. The seed leaves
+    /// the <c>CameraAgent:Site</c> section to CameraAgent because that section marks the profile as settled: seeding
+    /// it would stop a profile recorded by an earlier release from moving into the file. An existing file belongs to
+    /// the operator and is never rewritten, so a reinstall keeps every name and setting changed since. A manifest
+    /// written before the install bound existed may carry a name longer than CameraAgent accepts; such a camera
+    /// starts unnamed until the operator names it on the Observatory &amp; location page.
     /// </summary>
     internal static void SeedOperatorSettings(string path, string friendlyName)
     {
@@ -164,7 +167,7 @@ services:
         var settings = new JsonObject();
         if (friendlyName.Trim() is { Length: > 0 and <= InstallRequest.MaximumFriendlyNameLength } cameraName)
         {
-            settings["CameraAgent"] = new JsonObject { ["Site"] = new JsonObject { ["CameraName"] = cameraName } };
+            settings["CameraAgent"] = new JsonObject { ["DisplayName"] = cameraName };
         }
         SafeFileSystem.WriteTextAtomic(path, settings.ToJsonString(IndentedJson) + "\n");
     }
@@ -238,7 +241,11 @@ services:
         // The camera name is operator-editable, so it lives only in the operator settings file the camera's UI
         // writes. An earlier installer also wrote it here as a read-only setting, which is removed.
         File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
-        SeedOperatorSettings(CameraAgentStateLayout.OperatorSettingsPath(outputPaths.StateRoot), request.FriendlyName);
+        // A state reset interrupted before it wrote the operator's settings back left them only in its carried copy;
+        // they are put back before the seed, which would otherwise write a fresh file in their place.
+        var operatorSettingsPath = CameraAgentStateLayout.OperatorSettingsPath(outputPaths.StateRoot);
+        CameraAgentStateResetManager.RecoverOperatorSettings(outputPaths.OperationsRoot, instanceId, operatorSettingsPath);
+        SeedOperatorSettings(operatorSettingsPath, request.FriendlyName);
         settings["CameraAgent__ProcessingGraphs__ReplayProfile"] = request.ReplayProfile.ToString();
         settings["CameraAgent__ProcessingGraphs__LocalRunner__SocketPath"] = "/run/hvo-replay/runner.sock";
         settings["CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile"] =

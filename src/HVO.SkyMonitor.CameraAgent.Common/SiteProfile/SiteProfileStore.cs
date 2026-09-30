@@ -33,6 +33,7 @@ public sealed class SettingsFileSiteProfileStore(
     internal const string CameraNameKey = SectionKey + ":CameraName";
     internal const string OwnerNameKey = SectionKey + ":OwnerName";
     internal const string OwnerContactKey = SectionKey + ":OwnerContact";
+    internal const string InstallerNameKey = "CameraAgent:DisplayName";
     internal const string MigrationActor = "site-profile-migration";
 
     private const string NoSettingsFileProblem =
@@ -123,7 +124,8 @@ public sealed class SettingsFileSiteProfileStore(
 
     /// <summary>
     /// Moves a profile recorded by an earlier release, and an installer-configured camera name, into the settings
-    /// file once, so the file is the only place either is kept from then on.
+    /// file once, so the file is the only place either is kept from then on. The name the installer seeded into the
+    /// file is removed in the same write, leaving the site section as the one place the camera name is set.
     /// </summary>
     private async ValueTask EnsureMigratedAsync(OperatorSettingsFile file, CancellationToken cancellationToken)
     {
@@ -155,7 +157,11 @@ public sealed class SettingsFileSiteProfileStore(
                     : legacy with { CameraName = legacy.CameraName ?? configured };
                 if (seed != SiteProfileValues.Empty)
                 {
-                    var result = await file.WriteAsync(snapshot.Version, ToSettings(seed), MigrationActor, cancellationToken)
+                    var settings = new Dictionary<string, JsonNode?>(ToSettings(seed), StringComparer.Ordinal)
+                    {
+                        [InstallerNameKey] = null
+                    };
+                    var result = await file.WriteAsync(snapshot.Version, settings, MigrationActor, cancellationToken)
                         .ConfigureAwait(false);
                     if (result.Status is not (OperatorSettingsWriteStatus.Applied or OperatorSettingsWriteStatus.Unchanged))
                     {

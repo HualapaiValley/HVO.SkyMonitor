@@ -485,6 +485,7 @@ state/deployment/{installation-state.json,installation-result.json,state-preflig
 state/identity/appsettings.local.json
 operations/cameraagent-<uuid>.owner-recovery.json
 operations/state-reset-<operation-uuid>.evidence.json
+operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json   (only while a reset carries the file)
 operations/owner-recovery/<operation-uuid>/temporary-password
 ```
 
@@ -514,8 +515,13 @@ added by hand. The page names the file it writes.
 - Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
   precedence over the file. The page says when one of them sets a value it edits, because saving that value in
   the file would have no effect.
-- The installer seeds the file with the friendly name as `CameraAgent:Site:CameraName` when the file does not
+- The installer seeds the file with the friendly name as `CameraAgent:DisplayName` when the file does not
   exist, and never rewrites an existing one, so an install rerun keeps every name and setting changed since.
+  The first time CameraAgent reads the site profile it moves that name to `CameraAgent:Site:CameraName`, in the
+  same write that records the profile, unless an earlier release already recorded a profile for this camera, in
+  which case that profile is kept and the seeded name is dropped.
+- CameraAgent reads and writes a file of up to 1 MiB, the same bound the deployment tooling applies when it
+  carries the file across a state reset.
 - Each save from the page names the file content it read, so a save never overwrites a hand edit made after
   the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
   limit apply at once; most other settings take effect at the next CameraAgent start.
@@ -760,9 +766,15 @@ and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations
 
 The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
 configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is
-deleted, kept as `operations/state-reset-<operation-uuid>.appsettings.local.json` until it is written back into
-the recreated `state/identity`, and then that copy is removed. A settings file that is a symbolic link, has hard
-links, or is larger than 1 MiB stops the reset before anything is deleted.
+deleted, kept as `operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json` until it
+is written back into the recreated `state/identity`, and then that copy is removed. A settings file that is a
+symbolic link, has hard links, or is larger than 1 MiB stops the reset before anything is deleted.
+
+A reset interrupted after the deletion but before the write-back leaves the file only in that copy. The next
+install rerun or `reset-state` that is not a dry run puts the newest copy back before it seeds or deletes
+anything, and removes a copy only once the settings file holds the same content, so a rerun never seeds a fresh
+file over the operator's settings. A copy whose content differs from the settings file is left in place for the
+operator.
 
 ```bash
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>

@@ -710,6 +710,40 @@ public sealed class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_AfterAnInterruptedReset_CarriesTheSettingsThatResetKept()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        // An earlier reset stopped after deleting the Identity mount and before writing the settings back, so the
+        // only copy of the operator's settings is the one it kept beside its evidence.
+        const string settings = """{ "CameraAgent": { "Site": { "CameraName": "East dome" } } }""";
+        var copy = Path.Combine(
+            fixture.Paths.OperationsRoot,
+            $"cameraagent-{fixture.InstanceId:D}.state-reset-{Guid.NewGuid():D}.{CameraAgentStateLayout.OperatorSettingsFileName}");
+        SafeFileSystem.WriteTextAtomic(copy, settings);
+        var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot);
+        Assert.IsFalse(File.Exists(settingsPath));
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        var completed = await CameraAgentStateResetManager.ExecuteAsync(
+            request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
+
+        Assert.AreEqual("completed", completed.Outcome);
+        CollectionAssert.Contains(completed.PreservedPaths.ToArray(), settingsPath);
+        Assert.AreEqual(settings, await File.ReadAllTextAsync(settingsPath));
+        SafeFileSystem.ValidateOwnerFile(settingsPath);
+        Assert.IsEmpty(Directory.GetFiles(fixture.Paths.OperationsRoot, $"*.{CameraAgentStateLayout.OperatorSettingsFileName}"));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_RefusesALinkedOperatorSettingsFileBeforeDeletingAnything()
     {
         using var fixture = new PreflightFixture();
