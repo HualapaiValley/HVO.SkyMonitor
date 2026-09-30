@@ -182,7 +182,7 @@ else if (_view is null)
             <p id="registration-dialog-description" class="dialog-intro">Paste the envelope LogicHost issued. It is used once, sent only to LogicHost, and never stored or shown again.</p>
             @if (_view.Record is not null)
             {
-                <div class="operations-dialog-note warning"><strong>Replaces the current registration</strong><span>LogicHost accepts a new envelope only after the current registration is revoked there. The stored credentials change only if the import succeeds.</span></div>
+                <div class="operations-dialog-note warning"><strong>Replaces the current registration</strong><span>LogicHost accepts a new envelope only after the current registration is revoked there. The stored credentials change only once LogicHost's answer passes this CameraAgent's checks.</span></div>
             }
             <fieldset disabled="@_submitting">
                 <legend class="visually-hidden">Registration envelope</legend>

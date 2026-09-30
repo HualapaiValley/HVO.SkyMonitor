@@ -131,12 +131,38 @@ public sealed class RegistrationPageTests
 
         cut.WaitForAssertion(() => Assert.AreEqual("LogicHost rejected the envelope.", cut.Find("#registration-import-error").TextContent));
         Assert.AreEqual("registration-import-error", cut.Find("#registration-envelope").GetAttribute("aria-describedby"));
+        Assert.AreEqual(string.Empty, cut.Find("#registration-envelope").GetAttribute("value"));
+        Assert.IsTrue(cut.Find("#registration-dialog-import").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Markup.Contains("expired-envelope", StringComparison.Ordinal));
 
         cut.Find("#registration-envelope").Input(Envelope);
         cut.Find("#registration-dialog-import").Click();
 
         cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog.registration-dialog")));
         CollectionAssert.AreEqual(new[] { "expired-envelope", Envelope }, service.Imported);
+    }
+
+    [TestMethod]
+    public void Import_WhenSetupDoesNotFinish_WarnsThatTheRegistrationIsStored()
+    {
+        var service = new FakeRegistrationService(View(RegistrationState.NotRegistered), View(RegistrationState.Waiting));
+        service.ImportResults.Enqueue(OperatorUiResult<RegistrationImportReceipt>.Success(
+            new RegistrationImportReceipt("Roof camera", DeploymentLocationResolutionStatus.Pending, SetupIncomplete: true)));
+        using var context = CreateContext(service);
+        var cut = context.Render<RegistrationPage>();
+        cut.WaitForElement("#registration-register");
+        cut.Find("#registration-register").Click();
+        cut.Find("#registration-dialog-next").Click();
+
+        cut.Find("#registration-envelope").Input(Envelope);
+        cut.Find("#registration-dialog-import").Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            "Registered as Roof camera, but setup did not finish.", cut.Find(".registration-message strong").TextContent));
+        Assert.IsNotNull(cut.Find(".registration-message .status-icon.warning"));
+        StringAssert.Contains(cut.Find(".registration-message").TextContent, "do not paste it again", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("dialog.registration-dialog"));
+        Assert.AreEqual(2, service.Reads);
     }
 
     [TestMethod]

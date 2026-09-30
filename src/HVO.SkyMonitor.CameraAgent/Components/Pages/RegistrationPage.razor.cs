@@ -195,13 +195,18 @@ public sealed partial class RegistrationPage : ComponentBase, IAsyncDisposable
             {
                 _submitting = false;
                 CloseWizard();
-                _message = new StatusMessage(
-                    "success",
-                    receipt.FriendlyName is { } name ? $"Registered as {name}." : "Registered with LogicHost.",
-                    ImportDetail(receipt.LocationReview));
+                var registered = receipt.FriendlyName is { } name ? $"Registered as {name}" : "Registered with LogicHost";
+                _message = receipt.SetupIncomplete
+                    ? new StatusMessage(
+                        "warning",
+                        $"{registered}, but setup did not finish.",
+                        "The registration is stored, then a follow-up step failed; the host log has the detail. LogicHost has used this envelope, so do not paste it again.")
+                    : new StatusMessage("success", $"{registered}.", ImportDetail(receipt.LocationReview));
                 await LoadAsync();
                 return;
             }
+            // A retry needs a deliberate new paste, so the envelope never outlives the attempt that used it.
+            _envelopeInput = string.Empty;
             _importError = result.Message ?? "The envelope could not be imported. Nothing was stored.";
             _focusTargetId = "registration-envelope";
         }
@@ -404,6 +409,8 @@ public sealed partial class RegistrationPage : ComponentBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _envelopeInput = string.Empty;
+        _revealCode = false;
         await _lifetime.CancelAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         if (_module is not null)

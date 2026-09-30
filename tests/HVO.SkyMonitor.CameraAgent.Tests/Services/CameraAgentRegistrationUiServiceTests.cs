@@ -253,7 +253,21 @@ public sealed class CameraAgentRegistrationUiServiceTests
     }
 
     [TestMethod]
-    public async Task ImportEnvelope_WhenLogicHostFails_KeepsTheEnvelopeUsableAsync()
+    public async Task ImportEnvelope_WhenLogicHostCannotBeReached_SaysTheEnvelopeWasNotUsedAsync()
+    {
+        var harness = new Harness();
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused"));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        StringAssert.StartsWith(result.Message, "LogicHost could not be reached, so the envelope was not used", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_WhenLogicHostFailsAfterReceivingIt_SaysTheEnvelopeMayBeUsedAsync()
     {
         var harness = new Harness();
         harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -263,7 +277,9 @@ public sealed class CameraAgentRegistrationUiServiceTests
         var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
-        StringAssert.StartsWith(result.Message, "LogicHost could not be reached.", StringComparison.Ordinal);
+        StringAssert.StartsWith(result.Message, "LogicHost's answer did not arrive, and nothing was stored here.", StringComparison.Ordinal);
+        StringAssert.Contains(result.Message, "may still have used the envelope", StringComparison.Ordinal);
+        Assert.IsFalse(result.Message!.Contains("can be used until it expires", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -277,7 +293,67 @@ public sealed class CameraAgentRegistrationUiServiceTests
         var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
-        StringAssert.StartsWith(result.Message, "LogicHost did not answer in time.", StringComparison.Ordinal);
+        StringAssert.StartsWith(result.Message, "LogicHost did not answer in time, and nothing was stored here.", StringComparison.Ordinal);
+        StringAssert.Contains(result.Message, "may still have used the envelope", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_WhenAStepAfterSavingFails_ReportsTheStoredRegistrationAsync()
+    {
+        var harness = new Harness { SecretReads = [null, Secrets(Now)] };
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("staging failed"));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsTrue(result.Value!.SetupIncomplete);
+        Assert.AreEqual("Roof camera", result.Value.FriendlyName);
+        Assert.AreEqual(DeploymentLocationResolutionStatus.Acknowledged, result.Value.LocationReview);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_ReplacingAnUnreadableRegistration_ReportsTheStoredOneWhenALaterStepFailsAsync()
+    {
+        var harness = new Harness { SecretReads = [new CryptographicException("key ring lost"), Secrets(Now)] };
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("staging failed"));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsTrue(result.Value!.SetupIncomplete);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_WhenTheExistingRegistrationIsUnchanged_ReportsTheFailureAsync()
+    {
+        var harness = new Harness { SecretReads = [Secrets(Now.AddDays(-5)), Secrets(Now.AddDays(-5))] };
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Conflict", null, HttpStatusCode.Conflict));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+        StringAssert.StartsWith(result.Message, "LogicHost rejected the envelope.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_WhenTheStoreCannotBeReadAfterAFailure_SaysTheOutcomeIsUnknownAsync()
+    {
+        var harness = new Harness { SecretReads = [null, new InvalidDataException("torn write")] };
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("disk full"));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        StringAssert.StartsWith(result.Message, "The import stopped partway, and this CameraAgent could not confirm whether a registration was stored.", StringComparison.Ordinal);
+        Assert.IsFalse(result.Message!.Contains("nothing was stored", StringComparison.OrdinalIgnoreCase));
     }
 
     [TestMethod]
@@ -328,14 +404,27 @@ public sealed class CameraAgentRegistrationUiServiceTests
         if (harness.Central && harness.ReadAllowed)
         {
             identityStore.Setup(value => value.GetOrCreateAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Identity);
-            var secrets = secretStore.Setup(value => value.GetAsync(It.IsAny<CancellationToken>()));
-            if (harness.SecretFailure is { } failure)
+            if (harness.SecretReads is { } reads)
             {
-                secrets.ThrowsAsync(failure);
+                var sequence = secretStore.SetupSequence(value => value.GetAsync(It.IsAny<CancellationToken>()));
+                foreach (var read in reads)
+                {
+                    sequence = read is Exception readFailure
+                        ? sequence.ThrowsAsync(readFailure)
+                        : sequence.ReturnsAsync((DeviceSecrets?)read);
+                }
             }
             else
             {
-                secrets.ReturnsAsync(harness.Secrets);
+                var secrets = secretStore.Setup(value => value.GetAsync(It.IsAny<CancellationToken>()));
+                if (harness.SecretFailure is { } failure)
+                {
+                    secrets.ThrowsAsync(failure);
+                }
+                else
+                {
+                    secrets.ReturnsAsync(harness.Secrets);
+                }
             }
             configuration.SetConfiguration(ModuleConfig(harness.CaptureAgentId ?? Identity.DeviceId));
         }
@@ -419,6 +508,9 @@ public sealed class CameraAgentRegistrationUiServiceTests
         public DeviceSecrets? Secrets { get; init; }
 
         public Exception? SecretFailure { get; init; }
+
+        /// <summary>Successive store reads, each a <see cref="DeviceSecrets"/>, null, or an exception to throw.</summary>
+        public IReadOnlyList<object?>? SecretReads { get; init; }
 
         public string? CaptureAgentId { get; init; }
 

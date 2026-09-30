@@ -91,7 +91,11 @@ internal sealed record RegistrationView(
     bool CaptureIdentityAligned,
     bool CanImport);
 
-internal sealed record RegistrationImportReceipt(string? FriendlyName, DeploymentLocationResolutionStatus LocationReview);
+/// <param name="SetupIncomplete">The registration was stored, then a later step of the import failed.</param>
+internal sealed record RegistrationImportReceipt(
+    string? FriendlyName,
+    DeploymentLocationResolutionStatus LocationReview,
+    bool SetupIncomplete = false);
 
 internal sealed class CameraAgentRegistrationUiService(
     AuthenticationStateProvider authenticationStateProvider,
@@ -228,53 +232,107 @@ internal sealed class CameraAgentRegistrationUiService(
                 "That is longer than any envelope LogicHost issues. Copy the envelope again and paste only it.");
         }
 
+        // The workflow stores the registration before its follow-up steps, so a failure is judged against what
+        // the protected store holds afterwards rather than by where the exception came from.
+        var before = await ReadStoredRegistrationAsync(cancellationToken).ConfigureAwait(false);
+        Exception failure;
         try
         {
             var secrets = await bootstrapWorkflow.BootstrapAsync(trimmed, cancellationToken).ConfigureAwait(false);
-            return OperatorUiResult<RegistrationImportReceipt>.Success(new RegistrationImportReceipt(
-                string.IsNullOrWhiteSpace(secrets.FriendlyName) ? null : secrets.FriendlyName.Trim(),
-                secrets.DeploymentLocationAcknowledgment?.Status ?? DeploymentLocationResolutionStatus.Pending));
-        }
-        catch (HttpRequestException exception) when (exception.StatusCode is >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError)
-        {
-            logger.LogWarning("LogicHost rejected the device bootstrap envelope with status {StatusCode}.", (int)exception.StatusCode.Value);
-            return Invalid<RegistrationImportReceipt>(
-                "LogicHost rejected the envelope. It may have expired, already been used, or been issued for another device. Issue a new envelope in LogicHost and paste it here.");
-        }
-        catch (HttpRequestException exception)
-        {
-            logger.LogWarning("Device bootstrap request failed with {ExceptionType}.", exception.GetType().Name);
-            return Unavailable<RegistrationImportReceipt>(
-                "LogicHost could not be reached. Check the network connection and try again; the same envelope can be used until it expires.");
+            return OperatorUiResult<RegistrationImportReceipt>.Success(Receipt(secrets, setupIncomplete: false));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException)
+        catch (Exception exception)
         {
-            logger.LogWarning("Device bootstrap request timed out.");
+            failure = exception;
+        }
+
+        var after = await ReadStoredRegistrationAsync(cancellationToken).ConfigureAwait(false);
+        if (after.Readable && after.Secrets is { } stored && !before.Holds(stored))
+        {
+            logger.LogWarning(
+                "Device bootstrap stored the registration, then a follow-up step failed with {ExceptionType}.",
+                failure.GetType().Name);
+            return OperatorUiResult<RegistrationImportReceipt>.Success(Receipt(stored, setupIncomplete: true));
+        }
+        if (!after.Readable)
+        {
+            logger.LogWarning(
+                "Device bootstrap failed with {ExceptionType} and the registration store could not be read afterwards.",
+                failure.GetType().Name);
             return Unavailable<RegistrationImportReceipt>(
-                "LogicHost did not answer in time. Try again; the same envelope can be used until it expires.");
+                "The import stopped partway, and this CameraAgent could not confirm whether a registration was stored. Close this dialog and choose Refresh to see the registration state before trying again; LogicHost may already have used this envelope.");
         }
-        catch (CryptographicException exception)
+        return NothingStored(failure);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "An unreadable store is reported as an unknown outcome, never as a failure of the import itself.")]
+    private async Task<StoredRegistration> ReadStoredRegistrationAsync(CancellationToken cancellationToken)
+    {
+        try
         {
-            logger.LogWarning("Device bootstrap payload could not be decrypted: {ExceptionType}.", exception.GetType().Name);
-            return Invalid<RegistrationImportReceipt>(
-                "The registration LogicHost returned could not be decrypted. Check that the whole envelope was pasted, or issue a new one.");
+            return new StoredRegistration(true, await secretStore.GetAsync(cancellationToken).ConfigureAwait(false));
         }
-        catch (Exception exception) when (exception is InvalidOperationException or JsonException or InvalidDataException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(exception, "Device bootstrap response was rejected.");
-            return Invalid<RegistrationImportReceipt>(
-                "LogicHost's response did not pass this CameraAgent's checks, so nothing was stored. The host log has the detail.");
+            throw;
         }
         catch (Exception exception)
         {
-            logger.LogWarning("Device bootstrap failed with {ExceptionType}.", exception.GetType().Name);
-            return Unavailable<RegistrationImportReceipt>("The envelope could not be imported. Nothing was stored.");
+            logger.LogWarning("The device registration store could not be read: {ExceptionType}.", exception.GetType().Name);
+            return new StoredRegistration(false, null);
         }
     }
+
+    /// <summary>Maps a failed import once the store shows nothing new was saved. Only a connection that was
+    /// never made proves LogicHost did not use the envelope; LogicHost commits before it answers, so any later
+    /// failure may leave the envelope spent.</summary>
+    private OperatorUiResult<RegistrationImportReceipt> NothingStored(Exception failure)
+    {
+        const string MaybeUsed = "If LogicHost now shows the envelope as used, issue a new one; otherwise paste it again.";
+        switch (failure)
+        {
+            case HttpRequestException { StatusCode: >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError } rejected:
+                logger.LogWarning("LogicHost rejected the device bootstrap envelope with status {StatusCode}.", (int)rejected.StatusCode!.Value);
+                return Invalid<RegistrationImportReceipt>(
+                    "LogicHost rejected the envelope. It may have expired, already been used, or been issued for another device. Issue a new envelope in LogicHost and paste it here.");
+            case HttpRequestException { StatusCode: null, HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError or HttpRequestError.SecureConnectionError } unreached:
+                logger.LogWarning("Device bootstrap could not connect to LogicHost: {RequestError}.", unreached.HttpRequestError);
+                return Unavailable<RegistrationImportReceipt>(
+                    "LogicHost could not be reached, so the envelope was not used and nothing was stored. Check the network connection, then paste the envelope again.");
+            case HttpRequestException exchange:
+                logger.LogWarning(
+                    "Device bootstrap exchange failed with status {StatusCode} and {RequestError}.",
+                    (int?)exchange.StatusCode, exchange.HttpRequestError);
+                return Unavailable<RegistrationImportReceipt>(
+                    $"LogicHost's answer did not arrive, and nothing was stored here. LogicHost may still have used the envelope. {MaybeUsed}");
+            case OperationCanceledException:
+                logger.LogWarning("Device bootstrap request timed out.");
+                return Unavailable<RegistrationImportReceipt>(
+                    $"LogicHost did not answer in time, and nothing was stored here. LogicHost may still have used the envelope. {MaybeUsed}");
+            case CryptographicException:
+                logger.LogWarning("Device bootstrap payload could not be decrypted: {ExceptionType}.", failure.GetType().Name);
+                return Invalid<RegistrationImportReceipt>(
+                    "LogicHost accepted the envelope, but the registration it returned could not be decrypted, so nothing was stored here. Issue a new envelope in LogicHost and paste it here.");
+            case InvalidOperationException or JsonException or InvalidDataException:
+                logger.LogWarning(failure, "Device bootstrap was refused by this CameraAgent's checks.");
+                return Invalid<RegistrationImportReceipt>(
+                    $"The import did not pass this CameraAgent's checks, so nothing was stored here. The host log has the detail. {MaybeUsed}");
+            default:
+                logger.LogWarning("Device bootstrap failed with {ExceptionType}.", failure.GetType().Name);
+                return Unavailable<RegistrationImportReceipt>(
+                    $"The envelope could not be imported, and nothing was stored here. {MaybeUsed}");
+        }
+    }
+
+    private static RegistrationImportReceipt Receipt(DeviceSecrets secrets, bool setupIncomplete) => new(
+        string.IsNullOrWhiteSpace(secrets.FriendlyName) ? null : secrets.FriendlyName.Trim(),
+        secrets.DeploymentLocationAcknowledgment?.Status ?? DeploymentLocationResolutionStatus.Pending,
+        setupIncomplete);
 
     private RegistrationHeartbeat MapHeartbeat(FleetHeartbeatStateSnapshot snapshot, DeviceSecrets? secrets)
     {
@@ -314,4 +372,14 @@ internal sealed class CameraAgentRegistrationUiService(
 
     private static OperatorUiResult<T> Unavailable<T>(string message) =>
         OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, message);
+
+    /// <param name="Readable">False when the protected store itself could not be read.</param>
+    private readonly record struct StoredRegistration(bool Readable, DeviceSecrets? Secrets)
+    {
+        /// <summary>True when this snapshot already held <paramref name="stored"/>, so the import saved nothing new.</summary>
+        public bool Holds(DeviceSecrets stored) => Readable
+            && Secrets is { } held
+            && held.DevicePublicId == stored.DevicePublicId
+            && held.IssuedAtUtc == stored.IssuedAtUtc;
+    }
 }
