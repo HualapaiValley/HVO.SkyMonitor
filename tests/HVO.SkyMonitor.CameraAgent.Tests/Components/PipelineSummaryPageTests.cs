@@ -729,6 +729,31 @@ public sealed class PipelineSummaryPageTests
     }
 
     [TestMethod]
+    [DataRow(TransientOperatingMode.Edge, "assess", DisplayName = "Edge")]
+    [DataRow(TransientOperatingMode.Hybrid, "relay", DisplayName = "Hybrid")]
+    public void Lane_EmptyExplicitPlan_StillDrawsTheRawFrameAndTheLane(TransientOperatingMode mode, string stage)
+    {
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
+            transients: Lane(mode, pendingFrames: 2));
+
+        var cut = context.Render<PipelineSummaryPage>();
+
+        cut.WaitForElement(".ops-pipeline-graph");
+        Assert.AreEqual("This revision configures no processing steps.", cut.Find("#pipeline-empty").TextContent.Trim());
+        Assert.AreEqual("grid-column:2 / -1;grid-row:1", cut.Find("#pipeline-empty").GetAttribute("style"));
+        Assert.IsEmpty(cut.FindAll(".ops-pipeline-node.step"));
+        Assert.IsNotNull(cut.Find($"#pipeline-stage-{stage}"));
+        Assert.IsNotEmpty(cut.FindAll("path.pipeline-edge.transient"));
+        Assert.IsNotNull(cut.Find("#pipeline-source-raw").QuerySelector(".node-port.out"), "The lane reads the raw frame.");
+        Assert.IsNotEmpty(cut.FindAll("#pipeline-lane-list li"), "The text alternative lists the lane too.");
+        Assert.Contains("Select the raw frame or a meteor detection stage", cut.Find(".ops-pipeline-inspector").TextContent);
+
+        cut.Find("#pipeline-source-raw").Click();
+
+        Assert.AreEqual("Meteor detection", cut.Find(".ops-node-facts dd").TextContent.Trim());
+    }
+
+    [TestMethod]
     public void Lane_DegradedWorker_ShowsOnlyTheStateTitleNotItsReason()
     {
         using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),

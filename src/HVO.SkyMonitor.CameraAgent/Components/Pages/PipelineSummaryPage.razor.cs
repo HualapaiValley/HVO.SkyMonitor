@@ -241,15 +241,10 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private void EnsureSelection()
     {
         var nodes = ShownNodes;
-        if (nodes.Count == 0)
-        {
-            _selectedId = null;
-            _selectedStage = null;
-            return;
-        }
         // A lane stage is kept only while the current mode draws it; the lane is read after the plan, so an early
-        // pass leaves the request in place for the pass after loading.
-        if (_requestedStage is { } stage && (
+        // pass leaves the request in place for the pass after loading. The raw frame and the lane are drawn even
+        // when the revision has no steps.
+        if (_pipeline is not null && _requestedStage is { } stage && (
             string.Equals(stage, MeteorDetectionLane.RawFrameKey, StringComparison.Ordinal) ||
             LaneStages.Any(candidate => string.Equals(candidate.Key, stage, StringComparison.Ordinal))))
         {
@@ -258,6 +253,11 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             return;
         }
         _selectedStage = null;
+        if (nodes.Count == 0)
+        {
+            _selectedId = null;
+            return;
+        }
         var chosen = Find(nodes, _requestedStep) ?? Find(nodes, _selectedId) ?? nodes[0];
         _selectedId = chosen.Id;
 

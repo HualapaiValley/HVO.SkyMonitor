@@ -47,7 +47,7 @@
 .ops-pipeline-lane-state { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted-strong); font-size: .55rem; }
 .ops-pipeline-lane-note { position: relative; z-index: 2; display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .55rem .7rem; border: 1px dashed rgba(188, 140, 255, .35); border-radius: .4rem; color: var(--muted-strong); font-size: .58rem; line-height: 1.45; }
 .ops-pipeline-lane-note a { color: #cdb3ff; }
-.pipeline-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+.pipeline-empty { position: relative; z-index: 2; align-self: center; margin: 0; color: var(--muted); font-size: .65rem; }
 
 .ops-pipeline-inspector { min-width: 0; padding: .9rem; border-left: 1px solid var(--border); background: #0b121d; }
 .ops-pipeline-inspector h2 { margin: .2rem 0 .4rem; font-size: .84rem; overflow-wrap: anywhere; }
