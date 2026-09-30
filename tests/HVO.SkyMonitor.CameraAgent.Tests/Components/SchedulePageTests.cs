@@ -304,6 +304,8 @@ public sealed class SchedulePageTests
         var state = State();
         var pending = state.ActiveRevision with { RevisionId = "rig-schedule-v3", RevisionNumber = 3 };
         var rig = new Mock<ICameraAgentNamedRigUiService>();
+        rig.Setup(read => read.GetRestartStatusAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OperatorUiResult<CameraAgentRestartStatus>.Success(new(true, true, false)));
         using var context = CreateContext(new NamedRigSelection("rig-v1", "rig-v2", 2,
             PendingScheduleRevisionId: pending.RevisionId), rig: rig);
         var service = new RetryingScheduleUiService(state with
@@ -322,12 +324,14 @@ public sealed class SchedulePageTests
             StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[1].TextContent, "Revision 2", StringComparison.Ordinal);
             StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[2].TextContent, "awaiting restart", StringComparison.Ordinal);
             Assert.AreEqual("/operations/camera", cut.Find("a[href='/operations/camera']").GetAttribute("href"));
+            Assert.AreEqual("Restart now", cut.FindAll(".schedule-grid .schedule-card")[2].QuerySelector("button.restart-now")!.TextContent);
             Assert.IsEmpty(cut.FindAll("button").Where(button => button.TextContent.Contains("Review apply", StringComparison.Ordinal)
                 || button.TextContent.Contains("Review rollback", StringComparison.Ordinal)));
             Assert.IsTrue(cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).HasAttribute("disabled"));
             Assert.IsEmpty(service.StageCommands);
         });
         rig.Verify(read => read.GetAsync(It.IsAny<CancellationToken>()), Times.Once);
+        rig.Verify(read => read.GetRestartStatusAsync(It.IsAny<CancellationToken>()), Times.Once);
         rig.VerifyNoOtherCalls();
     }
 

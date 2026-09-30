@@ -72,3 +72,11 @@ dialog.action-dialog.rig-dialog { width: min(calc(100% - 2rem), 44rem); }
     dialog.action-dialog.rig-dialog { width: calc(100% - 1rem); }
     .rig-row-action { text-align: left; }
 }
+
+/* Advanced tools separator and the quick-edit step report. */
+.rig-advanced-heading { margin: 1.6rem 0 .2rem; }
+.rig-advanced-heading h2 { margin: 0; font-size: 1rem; }
+.rig-advanced-heading p { max-width: 48rem; margin: .35rem 0 0; color: var(--muted); font-size: .65rem; line-height: 1.45; }
+.rig-edit-outcome > div { display: grid; gap: .3rem; min-width: 0; }
+.rig-edit-outcome p { margin: 0; }
+.rig-edit-outcome ul { margin: 0; padding-left: 1.1rem; overflow-wrap: anywhere; }

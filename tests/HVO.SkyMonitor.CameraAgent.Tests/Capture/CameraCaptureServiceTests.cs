@@ -11,6 +11,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
@@ -174,6 +176,105 @@ public sealed class CameraCaptureServiceTests
                 Assert.AreEqual("cancelled", cancelled.Disposition);
                 Assert.IsNull((await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision);
                 Assert.AreEqual(stagedScheduleId, (await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.RevisionId);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task NamedRig_QuickEditFlipIsRespectedAfterHostedRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-named-rig-flip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new FixedClock(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            var config = CreateConfig() with
+            {
+                AgentId = "rig-flip-test",
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new CaptureScheduleDefinition("capture-schedule-v1",
+                    [new CaptureScheduleSetpointProfile("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new CaptureWeeklyScheduleWindow("monday", DayOfWeek.Monday,
+                        new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                        new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            Assert.IsFalse(config.Rig.Optics.HorizontalFlip);
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 5
+            });
+            var pipeline = new EmptyPipelineFactory();
+            string composedId;
+            using (var ingress = CreateDurableIngress(options, clock))
+            using (var store = new SqliteCaptureScheduleStore(ingress, options, clock))
+            using (var telemetry = new CaptureControlTelemetry())
+            using (var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry))
+            using (var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock))
+            {
+                var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+                await new CameraAgentConfigurationInitializer(new StaticLoader(config), new CameraAgentConfigurationAccessor(),
+                    pipeline, NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                    .StartAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await runtime.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+                var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+                var active = catalog.Revisions.Single(revision => revision.RevisionId == catalog.Selection.ActiveRevisionId);
+                var edit = await NamedRigQuickEditServiceTests.OwnerService(named, runtime).ApplyActiveRigEditAsync(
+                    new ActiveRigEditRequest(active.RevisionId, catalog.Selection.Version, HorizontalFlip: true,
+                        active.Rig.Optics.FieldOfViewDegrees, active.Rig.Optics.FocalLengthMillimeters,
+                        active.Rig.Orientation.BoresightAltitudeDegrees, active.Rig.Orientation.BoresightAzimuthDegrees,
+                        active.Rig.Orientation.RollAdjustmentDegrees), CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ActiveRigEditStatus.Staged, edit.Value?.Status, edit.Value?.Failure ?? edit.Message);
+                composedId = edit.Value!.ComposedRevisionId!;
+                Assert.IsFalse(runtime.Snapshot!.Configuration.Rig.Optics.HorizontalFlip,
+                    "A staged flip must not change the running rig before restart.");
+            }
+
+            using (var ingress = CreateDurableIngress(options, clock))
+            using (var store = new SqliteCaptureScheduleStore(ingress, options, clock))
+            using (var telemetry = new CaptureControlTelemetry())
+            using (var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry))
+            using (var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock))
+            using (var lifetime = new TestHostApplicationLifetime())
+            {
+                var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+                var accessor = new CameraAgentConfigurationAccessor();
+                await new CameraAgentConfigurationInitializer(new StaticLoader(config), accessor, pipeline,
+                    NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                    .StartAsync(CancellationToken.None).ConfigureAwait(false);
+                var module = new RigRecordingModule(clock);
+                var service = CreateHostedService(accessor, module, ingress, telemetry, admission, runtime, named, lifetime, clock);
+                await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                lifetime.NotifyStarted();
+                var captured = await ingress.Captured.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(composedId, catalog.Selection.ActiveRevisionId);
+                Assert.IsNull(catalog.Selection.PendingRevisionId);
+                Assert.IsTrue(module.InitializedConfig!.Rig.Optics.HorizontalFlip, "The camera module was initialized unflipped.");
+                var running = runtime.Snapshot!.Configuration;
+                Assert.IsTrue(running.Rig.Optics.HorizontalFlip, "The runtime configuration read by the sky map is unflipped.");
+                Assert.IsTrue(RigProjectionContextFactory.Create(running.Rig).HorizontalFlip, "The rig projection is unflipped.");
+                Assert.IsTrue((await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false))
+                    .ActiveRevision.Profile.Rig.Optics.HorizontalFlip);
+                Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(running.Rig), captured.Manifest.Descriptor.Profiles.Rig.Sha256);
+
+                // The copied optics now belong only to the operator's rig, so a further edit revises them in place.
+                var active = catalog.Revisions.Single(revision => revision.RevisionId == composedId);
+                var revise = await NamedRigQuickEditServiceTests.OwnerService(named, runtime).ApplyActiveRigEditAsync(
+                    new ActiveRigEditRequest(active.RevisionId, catalog.Selection.Version, HorizontalFlip: true, 170,
+                        active.Rig.Optics.FocalLengthMillimeters, active.Rig.Orientation.BoresightAltitudeDegrees,
+                        active.Rig.Orientation.BoresightAzimuthDegrees, active.Rig.Orientation.RollAdjustmentDegrees),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ActiveRigEditStatus.Staged, revise.Value?.Status, revise.Value?.Failure ?? revise.Message);
+                Assert.AreEqual("Saved optics \"Installed optics copy\" revision 2.", revise.Value!.Recorded[0]);
             }
         }
         finally { Directory.Delete(root, true); }

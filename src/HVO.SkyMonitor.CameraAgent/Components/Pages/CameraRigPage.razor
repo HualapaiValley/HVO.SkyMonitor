@@ -12,14 +12,37 @@
                        Description="Keep the camera implementation, native readout, and physical optics explicit while activating them as one capture-time profile.">
     <Actions>
         <button type="button" class="button secondary" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
-        <a class="button secondary" href="/operations/camera#rig-stage-heading">Compare revisions</a>
-        <a class="button primary" href="/operations/camera#rig-composer-heading">Compose revision</a>
+        <a class="button secondary" href="/operations/camera#rig-advanced-heading">Advanced</a>
+        <button type="button" id="rig-edit-active" class="button primary" disabled="@(!CanEditActive)" @onclick="OpenActiveEditDialog">Edit active rig</button>
     </Actions>
 </OperationsPageHeading>
 
 @if (_message is not null && _dialog == RigDialog.None)
 {
     <div class="ops-note-banner rig-message" role="@(_error ? "alert" : "status")"><span class="status-icon @(_error ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div>
+}
+
+@if (_editOutcome is { } editOutcome && _dialog == RigDialog.None)
+{
+    <section class="ops-note-banner rig-edit-outcome" aria-label="Active rig edit steps">
+        <span class="status-icon @(editOutcome.Status == ActiveRigEditStatus.Staged ? "success" : "warning")" aria-hidden="true"></span>
+        <div>
+            @if (editOutcome.Recorded.Count > 0)
+            {
+                <p><strong>Recorded</strong></p>
+                <ul>@foreach (var step in editOutcome.Recorded) { <li>@step</li> }</ul>
+            }
+            else
+            {
+                <p><strong>Nothing was recorded.</strong></p>
+            }
+            @if (editOutcome.NotDone.Count > 0)
+            {
+                <p><strong>Did not happen</strong></p>
+                <ul>@foreach (var step in editOutcome.NotDone) { <li>@step</li> }</ul>
+            }
+        </div>
+    </section>
 }
 
 @if (_catalog is null || _inventory is null)
@@ -79,6 +102,10 @@ else
                             ? " Camera initialization failed. Cancel the pending restart, or correct the hardware and restart."
                             : " It is unvalidated at runtime and becomes active only after restart and successful camera initialization.")
                     </p>
+                }
+                @if (pending is not null && _cancelAttempt is null)
+                {
+                    <RestartToApply Subject="the staged rig" />
                 }
                 @if (_cancelAttempt is { } cancelAttempt)
                 {
@@ -170,6 +197,11 @@ else
             </div>
         </div>
     }
+
+    <header class="rig-advanced-heading">
+        <h2 id="rig-advanced-heading">Advanced</h2>
+        <p>Compose a rig from any equipment versions, compare and stage any revision, or roll back. Edit active rig covers flip, field of view, focal length, and pointing in one step.</p>
+    </header>
 
     <section class="ops-panel rig-section" aria-label="Rig composer">
         <header class="ops-panel-heading"><div><h2 id="rig-composer-heading">Compose a rig</h2><p>Choose a named rig and one version of each building block. Every piece of equipment and every rig revision is immutable once saved, so captures keep the exact configuration they used.</p></div></header>
@@ -339,6 +371,22 @@ else
             </div>
             @switch (_dialog)
             {
+                case RigDialog.ActiveEdit:
+                    <p class="dialog-intro">Change the active rig's orientation and optics. Changed equipment is saved as new versions, composed into a new revision of @ProfileName(_editBasis?.ProfileId ?? string.Empty), previewed against the active capture schedule, and staged. Nothing changes until CameraAgent restarts; captures until then keep the current rig.</p>
+                    <fieldset disabled="@_busy">
+                        <legend class="visually-hidden">Active rig settings</legend>
+                        <label class="rig-check"><input id="rig-edit-flip" type="checkbox" aria-describedby="rig-edit-flip-help" @bind="_edit.HorizontalFlip" /> Horizontal flip (East-West)</label>
+                        <p id="rig-edit-flip-help" class="rig-note">@FlipHelp</p>
+                        <div class="rig-dialog-grid">
+                            <label class="ops-field">Field of view degrees<input id="rig-edit-fov" inputmode="decimal" @bind="_edit.FieldOfViewDegrees" /></label>
+                            <label class="ops-field">Focal length mm<input id="rig-edit-focal" inputmode="decimal" @bind="_edit.FocalLengthMillimeters" /></label>
+                            <label class="ops-field">Boresight altitude degrees<input id="rig-edit-altitude" inputmode="decimal" @bind="_edit.BoresightAltitudeDegrees" /></label>
+                            <label class="ops-field">Boresight azimuth degrees<input id="rig-edit-azimuth" inputmode="decimal" @bind="_edit.BoresightAzimuthDegrees" /></label>
+                            <label class="ops-field">Roll adjustment degrees<input id="rig-edit-roll" inputmode="decimal" @bind="_edit.RollAdjustmentDegrees" /></label>
+                        </div>
+                    </fieldset>
+                    <p class="rig-note">The camera, projection model, lens kind, optics roll, and image circle stay as they are; use Advanced on this page to change them.</p>
+                    break;
                 case RigDialog.Starter:
                     <p class="dialog-intro">Start from a checked-in physical camera definition. Review the typed settings before composing or staging a rig.</p>
                     <fieldset disabled="@_busy">
@@ -439,7 +487,8 @@ else
                                     <label class="ops-field">Field of view degrees<input inputmode="decimal" @bind="_form.FieldOfViewDegrees" /></label>
                                     <label class="ops-field">Optics roll degrees<input inputmode="decimal" @bind="_form.RollDegrees" /></label>
                                 </div>
-                                <label class="rig-check"><input type="checkbox" @bind="_form.HorizontalFlip" /> Horizontal flip</label>
+                                <label class="rig-check"><input type="checkbox" aria-describedby="rig-flip-help" @bind="_form.HorizontalFlip" /> Horizontal flip (East-West)</label>
+                                <p id="rig-flip-help" class="rig-note">@FlipHelp</p>
                             }
                             else
                             {
@@ -475,6 +524,9 @@ else
                         break;
                     case RigDialog.Profile:
                         <button type="button" class="button primary" disabled="@(_busy || ProfileNameFixed || string.IsNullOrWhiteSpace(_profileName))" @onclick="SaveProfileAsync">Save rig name</button>
+                        break;
+                    case RigDialog.ActiveEdit:
+                        <button type="button" id="rig-edit-apply" class="button primary" disabled="@(_busy || _editBasis is null)" @onclick="ApplyActiveEditAsync">Stage for restart</button>
                         break;
                     default:
                         <button type="button" class="button primary" disabled="@(_busy || _basis is null)" @onclick="SaveEquipmentAsync">@(_duplicate ? "Create duplicate equipment" : "Save equipment revision")</button>

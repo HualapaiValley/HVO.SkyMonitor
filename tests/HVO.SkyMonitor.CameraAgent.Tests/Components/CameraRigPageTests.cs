@@ -9,7 +9,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -164,6 +166,7 @@ public sealed class CameraRigPageTests
             CameraAgentAuthorizationPolicyNames.OperationsReadV1)).ReturnsAsync(AuthorizationResult.Failed());
         var service = new CameraAgentNamedRigUiService(
             new FixedAuthenticationStateProvider(principal), authorization.Object, null!, null!,
+            Mock.Of<IHostApplicationLifetime>(), new ConfigurationBuilder().Build(), TimeProvider.System,
             NullLogger<CameraAgentNamedRigUiService>.Instance);
 
         var result = await service.GetAsync(CancellationToken.None).ConfigureAwait(false);
@@ -933,6 +936,155 @@ public sealed class CameraRigPageTests
         Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void EditActiveRig_StagesTheWholeChainInOneRequestAndOffersRestart()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        Assert.AreEqual("Edit active rig", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.IsFalse(cut.Find("#rig-edit-flip").HasAttribute("checked"));
+        Assert.AreEqual("10", cut.Find("#rig-edit-fov").GetAttribute("value"));
+        Assert.AreEqual("50", cut.Find("#rig-edit-focal").GetAttribute("value"));
+        Assert.AreEqual("90", cut.Find("#rig-edit-altitude").GetAttribute("value"));
+        StringAssert.Contains(cut.Find("#rig-edit-flip-help").TextContent, "East appears on the left", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("dialog input[type=checkbox]").Where(i => i.Id != "rig-edit-flip"));
+        Assert.IsFalse(cut.Markup.Contains("libraryPathEnvironmentVariable", StringComparison.OrdinalIgnoreCase));
+
+        cut.Find("#rig-edit-flip").Change(true);
+        cut.Find("#rig-edit-azimuth").Change("180");
+        Assert.AreEqual("Stage for restart", DialogPrimary(cut).TextContent);
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        Assert.AreEqual(1, service.EditCount);
+        Assert.AreEqual(0, service.StageCount);
+        Assert.AreEqual(new ActiveRigEditRequest("rig-v1", 1, true, 10, 50, 90, 180, 0), service.EditRequest);
+        StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent,
+            "Rig change staged. It applies when CameraAgent restarts.", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("[aria-label='Active rig edit steps']").TextContent, "Staged rig revision r2 for restart.",
+            StringComparison.Ordinal);
+        Assert.AreEqual("rig-v2", cut.Find("#rig-revision-select").GetAttribute("value"));
+        Assert.AreEqual("Revision 2", SelectionFact(cut, "Pending restart"));
+        var pending = cut.Find("[aria-label='Pending restart']");
+        Assert.AreEqual("Restart now", pending.QuerySelector("button.restart-now")!.TextContent);
+        Assert.IsTrue(cut.Find("#rig-edit-active").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    public void EditActiveRig_Unchanged_ReportsThatNothingWasRecorded()
+    {
+        var service = new FakeRigService { EditOutcome = new(ActiveRigEditStatus.NoChanges, [], []) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent,
+            "Nothing changed; no revisions were recorded.", StringComparison.Ordinal));
+        Assert.AreEqual(1, service.EditCount);
+        Assert.IsEmpty(cut.FindAll("[aria-label='Active rig edit steps']"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Pending restart']"));
+        Assert.IsFalse(cut.Find("#rig-edit-active").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    public void EditActiveRig_PreviewFailure_ShowsWhatWasRecordedAndWhatDidNotHappen()
+    {
+        var service = new FakeRigService
+        {
+            EditOutcome = new(ActiveRigEditStatus.Failed,
+                ["Saved optics \"Installed optics copy\" revision 2.", "Composed rig revision r2."],
+                ["Nothing was staged; the active rig and schedule are unchanged."],
+                "Preview failed: rig.readout", "rig-v2")
+        };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        cut.Find("#rig-edit-fov").Change("120");
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        var alert = cut.Find(".rig-message[role='alert']").TextContent;
+        StringAssert.Contains(alert, "The rig edit stopped: Preview failed: rig.readout", StringComparison.Ordinal);
+        StringAssert.Contains(alert, "selected in Compare & stage", StringComparison.Ordinal);
+        var steps = cut.Find("[aria-label='Active rig edit steps']").TextContent;
+        StringAssert.Contains(steps, "Composed rig revision r2.", StringComparison.Ordinal);
+        StringAssert.Contains(steps, "Did not happen", StringComparison.Ordinal);
+        StringAssert.Contains(steps, "Nothing was staged; the active rig and schedule are unchanged.", StringComparison.Ordinal);
+        Assert.AreEqual("rig-v2", cut.Find("#rig-revision-select").GetAttribute("value"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Pending restart']"));
+        Assert.AreEqual(0, service.StageCount);
+    }
+
+    [TestMethod]
+    public void EditActiveRig_InvalidValue_StaysOpenWithoutCallingTheService()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        cut.Find("#rig-edit-fov").Change("0");
+        DialogPrimary(cut).Click();
+
+        StringAssert.Contains(cut.Find("dialog [role='alert']").TextContent, "Field of view", StringComparison.Ordinal);
+        Assert.AreEqual(0, service.EditCount);
+        Assert.AreEqual("Edit active rig", cut.Find("#rig-dialog-heading").TextContent);
+    }
+
+    [TestMethod]
+    public void PendingRig_RestartNow_ShowsRestartingState()
+    {
+        var service = new FakeRigService { PendingId = "other-v2" };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("[aria-label='Pending restart'] button.restart-now").Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Pending restart'] [role='status']").TextContent,
+            "Restarting CameraAgent", StringComparison.Ordinal));
+        Assert.AreEqual(1, service.RestartCount);
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+    }
+
+    [TestMethod]
+    public void PendingRig_UnsupervisedHost_HidesRestartAndExplainsManualRestart()
+    {
+        var service = new FakeRigService { PendingId = "other-v2", RestartStatus = new(false, true, false) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+        StringAssert.Contains(cut.Find("[aria-label='Pending restart']").TextContent, "Restart CameraAgent manually",
+            StringComparison.Ordinal);
+        Assert.AreEqual(0, service.RestartCount);
+    }
+
+    [TestMethod]
+    public void PendingRig_ReadOnlyOperator_IsNotOfferedRestart()
+    {
+        var service = new FakeRigService { PendingId = "other-v2", RestartStatus = new(true, false, false) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+        StringAssert.Contains(cut.Find("[aria-label='Pending restart']").TextContent, "change rights are required",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ComposerSelectors_DefaultToTheActiveRigsEquipment()
+    {
+        using var context = CreateContext(new FakeRigService { ActiveCameraListedSecond = true });
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.AreEqual("camera-v2", cut.FindAll("#rig-camera-select option")[0].GetAttribute("value"));
+        Assert.AreEqual("rig", cut.Find("#rig-profile-select").GetAttribute("value"));
+        Assert.AreEqual("camera-v1", cut.Find("#rig-camera-select").GetAttribute("value"));
+        Assert.AreEqual("optics-v1", cut.Find("#rig-optics-select").GetAttribute("value"));
+        Assert.AreEqual("mount-v1", cut.Find("#rig-mount-select").GetAttribute("value"));
+    }
+
     private static BunitContext CreateContext(FakeRigService service)
     {
         var context = new BunitContext();
@@ -1019,6 +1171,13 @@ public sealed class CameraRigPageTests
         internal string? SavedBasisRevisionId { get; private set; }
         internal JsonElement SavedDefinition { get; private set; }
         internal string? ComposedCameraId { get; private set; }
+        internal bool ActiveCameraListedSecond { get; set; }
+        internal int EditCount { get; private set; }
+        internal ActiveRigEditRequest? EditRequest { get; private set; }
+        internal ActiveRigEditOutcome? EditOutcome { get; set; }
+        internal CameraAgentRestartStatus RestartStatus { get; set; } = new(true, true, false);
+        internal int RestartCount { get; private set; }
+        private NamedRigRevision? _composedRig;
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedEquipmentDetail>>>> _deferredEquipment = [];
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedRigHistoryPage>>>> _deferredHistory = [];
         private NamedEquipmentDefinition? _savedEquipment;
@@ -1066,7 +1225,8 @@ public sealed class CameraRigPageTests
             return ValueTask.FromResult(Unauthorized
                 ? OperatorUiResult<NamedRigUiCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
                 : OperatorUiResult<NamedRigUiCatalog>.Success(new(new("rig-v1", PendingId, Version),
-                    [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 }],
+                    [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 },
+                     .. (_composedRig is null ? [] : new[] { _composedRig })],
                     PendingFailure, ActiveFailure)));
         }
         public ValueTask<OperatorUiResult<NamedRigInventory>> GetInventoryAsync(CancellationToken token)
@@ -1082,7 +1242,7 @@ public sealed class CameraRigPageTests
                     ? [new NamedEquipmentDefinition("virtual", "camera", "Virtual camera", 1, "camera-v1", true, false),
                        .. _inventory.Equipment.Where(e => e.Kind != "camera")]
                     : [.. _inventory.Equipment, new NamedEquipmentDefinition("starter", "camera", "ASI676MC camera", 1, "starter-v1"), .. (_savedEquipment is null ? [] : new[] { _savedEquipment })])
-                : new(_inventory.Profiles, [.. _inventory.Equipment,
+                : new(_inventory.Profiles, [.. (ActiveCameraListedSecond ? _inventory.Equipment.OrderByDescending(e => e.RevisionId == "camera-v2").ToArray() : _inventory.Equipment),
                     .. (ExistingOpticsCopy ? new[] { new NamedEquipmentDefinition("optics-copy", "optics", "Installed optics copy", 1, "optics-copy-v1") } : []),
                     .. (_savedEquipment is null ? [] : new[] { _savedEquipment })])));
         }
@@ -1243,6 +1403,42 @@ public sealed class CameraRigPageTests
             return ValueTask.FromResult(CancelUnavailable
                 ? OperatorUiResult<NamedRigStageReceipt>.Failure(OperatorUiResultKind.Unavailable, "Transport unavailable")
                 : OperatorUiResult<NamedRigStageReceipt>.Success(receipt));
+        }
+        public ValueTask<OperatorUiResult<ActiveRigEditOutcome>> ApplyActiveRigEditAsync(ActiveRigEditRequest request,
+            CancellationToken token)
+        {
+            EditCount++;
+            EditRequest = request;
+            var outcome = EditOutcome ?? new ActiveRigEditOutcome(ActiveRigEditStatus.Staged,
+                ["Created optics \"Installed optics copy\" from \"Installed optics\", which is installed and read-only.",
+                 "Composed rig revision r2.", "Staged rig revision r2 for restart."], [], ComposedRevisionId: "rig-v2");
+            if (outcome.ComposedRevisionId is { } composed)
+            {
+                _composedRig = _rig with
+                {
+                    RevisionId = composed,
+                    RevisionNumber = 2,
+                    OpticsRevisionId = "optics-copy-v1",
+                    SourceScheduleRevisionId = null,
+                    Rig = _rig.Rig with { Optics = _rig.Rig.Optics with { HorizontalFlip = request.HorizontalFlip } }
+                };
+            }
+            if (outcome.Status == ActiveRigEditStatus.Staged)
+            {
+                PendingId = outcome.ComposedRevisionId;
+                Version = request.SelectionVersion + 1;
+            }
+            return ValueTask.FromResult(OperatorUiResult<ActiveRigEditOutcome>.Success(outcome));
+        }
+        public ValueTask<OperatorUiResult<CameraAgentRestartStatus>> GetRestartStatusAsync(CancellationToken token)
+            => ValueTask.FromResult(OperatorUiResult<CameraAgentRestartStatus>.Success(RestartStatus));
+        public ValueTask<OperatorUiResult<CameraAgentRestartDisposition>> RequestRestartAsync(CancellationToken token)
+        {
+            RestartCount++;
+            return ValueTask.FromResult(RestartStatus.CanRequest
+                ? OperatorUiResult<CameraAgentRestartDisposition>.Success(RestartStatus.Supervised
+                    ? CameraAgentRestartDisposition.Scheduled : CameraAgentRestartDisposition.Unsupervised)
+                : OperatorUiResult<CameraAgentRestartDisposition>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
         }
     }
 }
