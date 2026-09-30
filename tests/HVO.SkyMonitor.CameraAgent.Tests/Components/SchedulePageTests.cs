@@ -17,11 +17,11 @@ public sealed class SchedulePageTests
     private static readonly string[] RawDependency = ["$raw"];
 
     private static BunitContext CreateContext(NamedRigSelection? selection = null, bool unauthorized = false,
-        Mock<ICameraAgentNamedRigUiService>? rig = null)
+        Mock<ICameraAgentNamedRigUiService>? rig = null, TimeProvider? time = null)
     {
         var context = new BunitContext();
         context.JSInterop.Mode = JSRuntimeMode.Loose;
-        context.Services.AddSingleton(TimeProvider.System);
+        context.Services.AddSingleton(time ?? TimeProvider.System);
         rig ??= new Mock<ICameraAgentNamedRigUiService>();
         rig.Setup(service => service.GetAsync(It.IsAny<CancellationToken>())).Returns(() =>
             ValueTask.FromResult(unauthorized
@@ -42,7 +42,10 @@ public sealed class SchedulePageTests
     public void Render_ShowsDurableStateEditorPreviewAndRollbackHistory()
     {
         using var context = CreateContext();
-        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State()));
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State())
+        {
+            Calendar = Calendar("UTC", new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero))
+        });
 
         var cut = context.Render<SchedulePage>();
 
@@ -118,7 +121,10 @@ public sealed class SchedulePageTests
     public void OverrideDialog_ConvertsLocalTimesAndRejectsAnEndBeforeTheStart()
     {
         using var context = CreateContext();
-        var service = new ScheduleUiService(State());
+        var service = new ScheduleUiService(State())
+        {
+            Calendar = Calendar("UTC", new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero))
+        };
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
 
@@ -142,6 +148,141 @@ public sealed class SchedulePageTests
         Assert.AreEqual("night", command.SetpointProfileId);
         Assert.AreEqual(State().ActiveRevision.ScheduleSha256, command.ScheduleRevisionSha256);
         Assert.HasCount(1, cut.FindAll("dialog"));
+    }
+
+    [TestMethod]
+    public void OverrideDialog_IsUnavailableUntilTheSiteTimezoneIsKnown()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var open = cut.Find("#schedule-override-open");
+            Assert.IsTrue(open.HasAttribute("disabled"));
+            StringAssert.Contains(cut.Find("#" + open.GetAttribute("aria-describedby")).TextContent,
+                "site timezone is unknown", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-state").TextContent, "UTC (site timezone unknown)", StringComparison.Ordinal);
+        });
+        Assert.IsEmpty(service.OverrideCommands);
+    }
+
+    [TestMethod]
+    public void OverrideDialog_RejectsALocalTimeThatADaylightSavingChangeRepeats()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State())
+        {
+            Calendar = Calendar("America/Denver", new DateTimeOffset(2026, 10, 31, 18, 0, 0, TimeSpan.Zero))
+        };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-override-open").HasAttribute("disabled")));
+        cut.Find("#schedule-override-open").Click();
+        // Denver falls back at 02:00 on 1 November 2026, so 01:30 occurs twice.
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-11-01T01:30:00");
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-11-01T04:00:00");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        Assert.IsEmpty(service.OverrideCommands);
+        StringAssert.Contains(cut.Find("dialog .schedule-message[role='alert']").TextContent, "occurs twice", StringComparison.Ordinal);
+
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-11-01T02:30:00");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        var command = service.OverrideCommands.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 11, 1, 9, 30, 0, TimeSpan.Zero), command.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 11, 1, 11, 0, 0, TimeSpan.Zero), command.EndUtc);
+    }
+
+    [TestMethod]
+    public void Calendar_RefreshesOnALongLivedPageSoTonightAdvancesAtTheNightBoundary()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(23).AddMinutes(58));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon, generatedUtc: time.GetUtcNow()) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent, "1 Oct", StringComparison.Ordinal));
+
+        var first = time.Timers.Single();
+        Assert.AreEqual(TimeSpan.FromMinutes(2), first.DueTime);
+        time.Now = noon.AddDays(1).AddMinutes(1);
+        service.Calendar = Calendar("UTC", noon.AddDays(1), generatedUtc: time.GetUtcNow());
+        first.Fire();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(2, service.CalendarCalls);
+            StringAssert.Contains(
+                cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent, "2 Oct", StringComparison.Ordinal);
+            Assert.IsTrue(first.Disposed);
+            Assert.AreEqual(TimeSpan.FromMinutes(5), time.Timers[^1].DueTime);
+        });
+
+        cut.Instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        Assert.IsTrue(time.Timers[^1].Disposed);
+        time.Timers[^1].Fire();
+        Assert.AreEqual(2, service.CalendarCalls);
+    }
+
+    private static CameraAgentScheduleCalendar Calendar(string timeZoneId, DateTimeOffset firstNoon, DateTimeOffset? generatedUtc = null)
+    {
+        var nights = Enumerable.Range(0, 7).Select(index =>
+        {
+            var start = firstNoon.AddDays(index);
+            CameraAgentScheduleSegment[] segments =
+                [new(start, start.AddDays(1), false, CaptureScheduleAdmissionReason.DefaultClosed, null, null)];
+            return new CameraAgentScheduleNight(DateOnly.FromDateTime(start.UtcDateTime), start, start.AddDays(1), segments);
+        }).ToArray();
+        return new CameraAgentScheduleCalendar(timeZoneId, generatedUtc ?? firstNoon, nights);
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        internal DateTimeOffset Now { get; set; } = now;
+
+        internal List<ManualTimer> Timers { get; } = [];
+
+        public override DateTimeOffset GetUtcNow() => Now;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state, dueTime);
+            Timers.Add(timer);
+            return timer;
+        }
+    }
+
+    private sealed class ManualTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+    {
+        internal TimeSpan DueTime { get; } = dueTime;
+
+        internal bool Disposed { get; private set; }
+
+        internal void Fire()
+        {
+            if (!Disposed)
+            {
+                callback(state);
+            }
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period) => false;
+
+        public void Dispose() => Disposed = true;
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 
     [TestMethod]
@@ -835,13 +976,17 @@ public sealed class SchedulePageTests
         internal List<string> RollbackRevisionIds { get; } = [];
         internal List<string> ActivationRevisionIds { get; } = [];
         internal List<CaptureScheduleOverride> OverrideCommands { get; } = [];
-        internal CameraAgentScheduleCalendar? Calendar { get; init; }
+        internal CameraAgentScheduleCalendar? Calendar { get; set; }
+        internal int CalendarCalls { get; private set; }
 
         public ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>> GetCalendarAsync(
             int nightCount, CancellationToken cancellationToken)
-            => ValueTask.FromResult(Calendar is null
+        {
+            CalendarCalls++;
+            return ValueTask.FromResult(Calendar is null
                 ? OperatorUiResult<CameraAgentScheduleCalendar>.Failure(OperatorUiResultKind.Unavailable, "The schedule calendar is unavailable.")
                 : OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar));
+        }
 
         public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(state is null

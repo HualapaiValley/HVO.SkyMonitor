@@ -18,7 +18,12 @@
         <button type="button" id="schedule-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="RefreshAsync">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
         </button>
-        <button type="button" id="schedule-override-open" class="button secondary" disabled="@(_state is null || _busy)" @onclick="OpenOverrideDialog">Temporary override</button>
+        <button type="button" id="schedule-override-open" class="button secondary" disabled="@(_state is null || _busy || OverrideUnavailableReason is not null)"
+                title="@OverrideUnavailableReason" aria-describedby="@(OverrideUnavailableReason is null ? null : "schedule-override-unavailable")" @onclick="OpenOverrideDialog">Temporary override</button>
+        @if (OverrideUnavailableReason is { } overrideUnavailable)
+        {
+            <span id="schedule-override-unavailable" class="visually-hidden">@overrideUnavailable</span>
+        }
         <button type="button" id="schedule-edit-open" class="button primary" disabled="@(_state is null || _model is null)" @onclick="OpenEditor">@(_editorDirty ? "Continue draft" : "Edit draft")</button>
     </Actions>
 </OperationsPageHeading>
@@ -48,7 +53,7 @@ else
             </span>
         </div>
         <dl>
-            <div><dt>Local timezone</dt><dd>@_timeZoneId</dd></div>
+            <div><dt>Local timezone</dt><dd>@TimeZoneText</dd></div>
             <div><dt>Next transition</dt><dd>@(decision.NextTransitionUtc is { } next ? DayClock(next) : "None scheduled")</dd></div>
             <div><dt>Active setpoint</dt><dd>@(decision.SetpointProfileId ?? "None")</dd></div>
         </dl>

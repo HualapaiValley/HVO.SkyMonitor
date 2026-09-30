@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 {
     private const int CalendarNights = 7;
+    private static readonly TimeSpan CalendarRefreshInterval = TimeSpan.FromMinutes(5);
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly EditorStep[] EditorSteps =
     [
@@ -30,6 +31,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private string? _calendarMessage;
     private string _timeZoneId = "UTC";
     private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
+    private bool _siteTimeZoneKnown;
+    private ITimer? _calendarTimer;
+    private bool _disposed;
     private CaptureSchedulePreview? _preview;
     private CaptureProcessingPlanPreview? _pipelinePlan;
     private string _editorJson = string.Empty;
@@ -105,6 +109,12 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
     private CameraAgentScheduleNight? Tonight => _calendar?.Nights.Count > 0 ? _calendar.Nights[0] : null;
+
+    private string? OverrideUnavailableReason => _siteTimeZoneKnown
+        ? null
+        : "Temporary overrides are entered in site-local time, and the site timezone is unknown until the schedule calendar loads. Refresh to try again.";
+
+    private string TimeZoneText => _siteTimeZoneKnown ? _timeZoneId : "UTC (site timezone unknown)";
 
     private string DecisionSummary
     {
@@ -235,8 +245,10 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             {
                 _timeZone = TimeZoneInfo.FindSystemTimeZoneById(calendar.TimeZoneId);
                 _timeZoneId = calendar.TimeZoneId;
+                _siteTimeZoneKnown = true;
                 _calendar = calendar;
                 _calendarMessage = null;
+                ScheduleCalendarRefresh();
                 return;
             }
             catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
@@ -244,10 +256,56 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
                 message = $"The site timezone '{calendar.TimeZoneId}' is not available on this host.";
             }
         }
+        // Times still display, labelled UTC, but override entry stays closed until the site timezone is known again.
         _calendar = null;
         _calendarMessage = message;
         _timeZone = TimeZoneInfo.Utc;
         _timeZoneId = "UTC";
+        _siteTimeZoneKnown = false;
+        ScheduleCalendarRefresh();
+    }
+
+    /// <summary>
+    /// Re-reads the calendar every few minutes, and at the night boundary, so a long-lived page moves its now
+    /// marker and advances Tonight at site-local noon rather than showing the night it was opened on.
+    /// </summary>
+    private void ScheduleCalendarRefresh()
+    {
+        _calendarTimer?.Dispose();
+        _calendarTimer = null;
+        if (_disposed)
+        {
+            return;
+        }
+        var due = CalendarRefreshInterval;
+        if (Tonight is { } night && night.EndUtc - TimeProvider.GetUtcNow() is var untilBoundary &&
+            untilBoundary > TimeSpan.Zero && untilBoundary < due)
+        {
+            due = untilBoundary;
+        }
+        _calendarTimer = TimeProvider.CreateTimer(
+            static state => ((SchedulePage)state!).OnCalendarRefreshDue(), this, due, Timeout.InfiniteTimeSpan);
+    }
+
+    private void OnCalendarRefreshDue() => _ = InvokeAsync(RefreshCalendarAsync);
+
+    private async Task RefreshCalendarAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        if (_busy)
+        {
+            // A full load in flight reads the calendar itself; check again on the next interval.
+            ScheduleCalendarRefresh();
+            return;
+        }
+        await LoadCalendarAsync().ConfigureAwait(false);
+        if (!_disposed)
+        {
+            StateHasChanged();
+        }
     }
 
     private void OpenEditor() => OpenEditorAt(_step, "schedule-edit-open");
@@ -264,7 +322,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     private void OpenOverrideDialog()
     {
-        if (_state is null)
+        if (_state is null || !_siteTimeZoneKnown)
         {
             return;
         }
@@ -507,9 +565,19 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         {
             return;
         }
+        if (!_siteTimeZoneKnown)
+        {
+            SetMessage(OverrideUnavailableReason!, error: true);
+            return;
+        }
+        if ((LocalTimeProblem(_overrideStart) ?? LocalTimeProblem(_overrideEnd)) is { } problem)
+        {
+            SetMessage(problem, error: true);
+            return;
+        }
         if (!TryParseLocal(_overrideStart, out var start) || !TryParseLocal(_overrideEnd, out var end))
         {
-            SetMessage($"Enter both override times as local {_timeZoneId} times. A time skipped by a daylight-saving change is not valid.", error: true);
+            SetMessage($"Enter both override times as local {_timeZoneId} times.", error: true);
             return;
         }
         if (end <= start)
@@ -698,7 +766,28 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         return true;
     }
 
-    /// <summary>Parses a datetime-local value in the site timezone, rejecting times a daylight-saving gap skips.</summary>
+    /// <summary>
+    /// Names a site-local time a daylight-saving change makes unusable: one the clocks skip, or one they repeat,
+    /// which a datetime-local field cannot say which occurrence of is meant.
+    /// </summary>
+    private string? LocalTimeProblem(DateTime? value)
+    {
+        if (value is not { } entered)
+        {
+            return null;
+        }
+        var local = DateTime.SpecifyKind(entered, DateTimeKind.Unspecified);
+        var text = local.ToString("d MMM HH:mm", Invariant);
+        if (_timeZone.IsInvalidTime(local))
+        {
+            return $"{text} does not exist in {_timeZoneId}; the clocks skip it for daylight saving. Choose a time outside that hour.";
+        }
+        return _timeZone.IsAmbiguousTime(local)
+            ? $"{text} occurs twice in {_timeZoneId} when daylight saving ends, so it cannot name one moment. Choose a time outside that hour."
+            : null;
+    }
+
+    /// <summary>Parses a datetime-local value in the site timezone, rejecting times a daylight-saving change skips or repeats.</summary>
     private bool TryParseLocal(DateTime? value, out DateTimeOffset utc)
     {
         utc = default;
@@ -707,7 +796,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
             return false;
         }
         var local = DateTime.SpecifyKind(entered, DateTimeKind.Unspecified);
-        if (_timeZone.IsInvalidTime(local))
+        if (_timeZone.IsInvalidTime(local) || _timeZone.IsAmbiguousTime(local))
         {
             return false;
         }
@@ -953,6 +1042,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
+        _calendarTimer?.Dispose();
+        _calendarTimer = null;
         if (_module is not null)
         {
             try
