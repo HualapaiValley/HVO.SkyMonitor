@@ -37,7 +37,9 @@
 /* Sidebar. Markup and colours are the prototype's; type sizes are fc120184's. */
 .operations-navigation-shell { position: sticky; z-index: 25; top: 4rem; min-width: 0; }
 
+/* Positioned so its visually-hidden reason spans stay inside the scroller instead of lengthening short pages. */
 .operations-sidebar {
+    position: relative;
     display: flex;
     height: calc(100dvh - 4rem);
     flex-direction: column;

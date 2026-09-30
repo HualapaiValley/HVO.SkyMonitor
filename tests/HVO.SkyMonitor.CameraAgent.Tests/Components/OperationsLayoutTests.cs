@@ -15,7 +15,7 @@ public sealed class OperationsLayoutTests
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
     private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "transients", "automations", "delivery", "storage", "health", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
-    private static readonly string[] UnavailableSlugs = ["transients", "delivery", "control", "software"];
+    private static readonly string[] UnavailableSlugs = ["delivery", "control", "software"];
 
     [TestMethod]
     public void Catalog_ListsThePrototypeSectionsOnceWithProtectedRoutes()
@@ -88,6 +88,7 @@ public sealed class OperationsLayoutTests
             ("/operations/calibration", "calibration"),
             ("/environmental", "environment"),
             ("/operations/environment", "environment"),
+            ("/operations/transients", "transients"),
             ("/system", "health"),
             ("/operations/system", "health"),
             ("/operations/quarantine?kind=Artifact", "storage"),

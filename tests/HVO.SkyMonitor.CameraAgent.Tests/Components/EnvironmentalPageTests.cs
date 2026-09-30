@@ -1,4 +1,5 @@
 using Bunit;
+using AngleSharp.Dom;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -18,26 +19,22 @@ public sealed class EnvironmentalPageTests
     public void SuccessRendersFreshSourceHistoryAttemptsAndLoadsOlderPage()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new TestEnvironmentalUiService
         {
-            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(new(
-                true,
-                Epoch,
-                2,
-                512,
-                0,
-                [new EnvironmentalUiSource(
-                    "virtual-rain", EnvironmentalObservationKind.RainState, true, true, "Fresh",
-                    EnvironmentalAcquisitionDisposition.Produced, "produced", Epoch, 2, Epoch.AddSeconds(30), 0)],
-                [new EnvironmentalAcquisitionAttemptRecord(
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("virtual-rain", EnvironmentalObservationKind.RainState, onDemand: true, freshness: "Fresh",
+                    disposition: EnvironmentalAcquisitionDisposition.Produced, ageSeconds: 2)],
+                attempts: [new EnvironmentalAcquisitionAttemptRecord(
                     1, "virtual-rain", EnvironmentalObservationKind.RainState, true,
                     EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionDisposition.Produced,
-                    "produced", Guid.NewGuid(), null, null, Epoch, Epoch.AddMilliseconds(10))])),
+                    "produced", Guid.NewGuid(), null, null, Epoch, Epoch.AddMilliseconds(10))],
+                storedCount: 2,
+                storedBytes: 512)),
             History = cursor => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
-                [new EnvironmentalUiObservation(
-                    Guid.NewGuid(), cursor is null ? "virtual-rain" : "older-rain",
-                    EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean,
-                    null, true, EnvironmentalObservationQuality.Good, null, Epoch, Epoch.AddSeconds(45))],
+                [Observation(
+                    EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, true,
+                    sourceId: cursor is null ? "virtual-rain" : "older-rain")],
                 cursor is null ? "older-cursor" : null))
         };
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
@@ -48,8 +45,8 @@ public sealed class EnvironmentalPageTests
         {
             StringAssert.Contains(cut.Markup, "virtual-rain", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Fresh", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "True", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "produced", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".environment-history-table tbody").TextContent, "Rain", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".environment-attempt-table tbody").TextContent, "produced", StringComparison.Ordinal);
         });
         cut.FindAll("button").Single(button => button.TextContent.Contains("Older", StringComparison.Ordinal)).Click();
         cut.WaitForAssertion(() =>
@@ -63,15 +60,12 @@ public sealed class EnvironmentalPageTests
     public void OnDemandRequestRendersDurableReceiptAndRefreshesHistory()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var observationId = Guid.NewGuid();
         var service = new TestEnvironmentalUiService
         {
-            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(new(
-                true, Epoch, 0, 0, 0,
-                [new EnvironmentalUiSource(
-                    "virtual-rain", EnvironmentalObservationKind.RainState, false, true, "Never observed",
-                    null, null, null, null, null, 0)],
-                [])),
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("virtual-rain", EnvironmentalObservationKind.RainState, onDemand: true)])),
             Acquire = (_, _, _, _) => ValueTask.FromResult(OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Success(new(
                 new EnvironmentalAcquisitionReceipt(
                     "virtual-rain",
@@ -87,7 +81,7 @@ public sealed class EnvironmentalPageTests
         };
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("operator verification");
+        OpenDialog(cut).Find("#environment-reason").Change("operator verification");
 
         cut.Find("form").Submit();
 
@@ -107,6 +101,7 @@ public sealed class EnvironmentalPageTests
     public void UnavailableRetryReusesIdempotencyKeyAndRendersReplayedReceipt()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var calls = 0;
         var service = CreateOnDemandService();
         service.Acquire = (_, _, _, _) => ValueTask.FromResult(++calls == 1
@@ -116,7 +111,7 @@ public sealed class EnvironmentalPageTests
                 Receipt(EnvironmentalAcquisitionDisposition.Produced, Guid.NewGuid()), Replayed: true)));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("retry verification");
+        OpenDialog(cut).Find("#environment-reason").Change("retry verification");
 
         cut.Find("form").Submit();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "already acquiring", StringComparison.Ordinal));
@@ -134,13 +129,14 @@ public sealed class EnvironmentalPageTests
     public void FailedDurableReceiptIsAnnouncedWithoutFabricatedObservation()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = CreateOnDemandService();
         service.Acquire = (_, _, _, _) => ValueTask.FromResult(
             OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Success(new(
                 Receipt(EnvironmentalAcquisitionDisposition.Failed, null), Replayed: false)));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("failure verification");
+        OpenDialog(cut).Find("#environment-reason").Change("failure verification");
 
         cut.Find("form").Submit();
 
@@ -156,6 +152,7 @@ public sealed class EnvironmentalPageTests
     public void SubmissionIsSingleFlightWhileCommandIsPending()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var service = CreateOnDemandService();
@@ -163,7 +160,7 @@ public sealed class EnvironmentalPageTests
             completion.Task);
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("single flight");
+        OpenDialog(cut).Find("#environment-reason").Change("single flight");
 
         cut.Find("form").Submit();
         cut.Find("form").Submit();
@@ -184,6 +181,7 @@ public sealed class EnvironmentalPageTests
     public void ConflictAndCapacityOutcomesRemainExplicitAndDoNotFabricateReceipts()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var calls = 0;
         var service = CreateOnDemandService();
         service.Acquire = (_, _, _, _) => ValueTask.FromResult(++calls == 1
@@ -193,7 +191,7 @@ public sealed class EnvironmentalPageTests
                 OperatorUiResultKind.Unavailable, "Environmental command capacity is unavailable."));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("outcome verification");
+        OpenDialog(cut).Find("#environment-reason").Change("outcome verification");
 
         cut.Find("form").Submit();
         cut.WaitForAssertion(() =>
@@ -215,6 +213,7 @@ public sealed class EnvironmentalPageTests
     public async Task DisposalWhileCommandIsPendingAllowsSettlementWithoutRenderingOrDuplicateExecution()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var service = CreateOnDemandService();
@@ -222,7 +221,7 @@ public sealed class EnvironmentalPageTests
             completion.Task);
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        await cut.WaitForElement("#environment-reason").ChangeAsync(
+        await OpenDialog(cut).Find("#environment-reason").ChangeAsync(
             new ChangeEventArgs { Value = "dispose verification" }).ConfigureAwait(false);
         var submit = cut.Find("form").SubmitAsync();
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.AcquireCalls));
@@ -240,6 +239,7 @@ public sealed class EnvironmentalPageTests
     public async Task DisposalWhileStatusRefreshIsPendingDoesNotReadHistoryOrDisposedLifetime()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var refreshCompletion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiStatus>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var service = CreateOnDemandService();
@@ -251,7 +251,7 @@ public sealed class EnvironmentalPageTests
                 Receipt(EnvironmentalAcquisitionDisposition.Produced, Guid.NewGuid()), Replayed: false)));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        await cut.WaitForElement("#environment-reason").ChangeAsync(
+        await OpenDialog(cut).Find("#environment-reason").ChangeAsync(
             new ChangeEventArgs { Value = "refresh disposal" }).ConfigureAwait(false);
         var submit = cut.Find("form").SubmitAsync();
         cut.WaitForAssertion(() => Assert.AreEqual(2, service.StatusCalls));
@@ -268,6 +268,7 @@ public sealed class EnvironmentalPageTests
     public async Task DisposalWhileInitialStatusIsPendingDoesNotContinueIntoHistory()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiStatus>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -287,6 +288,7 @@ public sealed class EnvironmentalPageTests
         await returned.Task.ConfigureAwait(false);
         await Task.Yield();
 
+        Assert.AreEqual(0, service.LatestCalls);
         Assert.AreEqual(0, service.HistoryCalls);
     }
 
@@ -294,6 +296,7 @@ public sealed class EnvironmentalPageTests
     public async Task DisposalWhileInitialHistoryIsPendingDoesNotApplyHistoryResult()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -310,10 +313,9 @@ public sealed class EnvironmentalPageTests
 
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
         completion.SetResult(OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
-            [new EnvironmentalUiObservation(
-                Guid.NewGuid(), "late-source", EnvironmentalObservationKind.RainState,
-                EnvironmentalObservationUnit.Boolean, null, true, EnvironmentalObservationQuality.Good,
-                null, Epoch, Epoch)], null)));
+            [Observation(
+                EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, true,
+                sourceId: "late-source")], null)));
         await returned.Task.ConfigureAwait(false);
         await Task.Yield();
 
@@ -324,10 +326,11 @@ public sealed class EnvironmentalPageTests
     public void InvalidReasonDoesNotInvokeMutationService()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = CreateOnDemandService();
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("   ");
+        OpenDialog(cut).Find("#environment-reason").Change("   ");
 
         cut.Find("form").Submit();
 
@@ -342,13 +345,14 @@ public sealed class EnvironmentalPageTests
     public void UnauthorizedMutationClearsCommandStateAndNavigatesToAccessDenied()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = CreateOnDemandService();
         service.Acquire = (_, _, _, _) => ValueTask.FromResult(
             OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
                 OperatorUiResultKind.Unauthorized, "You are not authorized for this operation."));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("authorization verification");
+        OpenDialog(cut).Find("#environment-reason").Change("authorization verification");
 
         cut.Find("form").Submit();
 
@@ -361,6 +365,7 @@ public sealed class EnvironmentalPageTests
     public void RefreshFailureDoesNotHideDurableReceipt()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var historyCalls = 0;
         var service = CreateOnDemandService();
         service.History = _ => ++historyCalls == 1
@@ -372,7 +377,7 @@ public sealed class EnvironmentalPageTests
                 Receipt(EnvironmentalAcquisitionDisposition.Produced, Guid.NewGuid()), Replayed: false)));
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
         var cut = context.Render<EnvironmentalPage>();
-        cut.WaitForElement("#environment-reason").Change("refresh verification");
+        OpenDialog(cut).Find("#environment-reason").Change("refresh verification");
 
         cut.Find("form").Submit();
 
@@ -382,26 +387,23 @@ public sealed class EnvironmentalPageTests
             StringAssert.Contains(cut.Markup, "receipt is durable", StringComparison.OrdinalIgnoreCase);
         });
 
-        cut.Find("#environment-reason").Change("   ");
+        // Reopening the dialog starts a new request: the durable receipt stays on the page until then, and
+        // a validation error for the new request is announced inside the dialog without the old warning.
+        OpenDialog(cut).Find("#environment-reason").Change("   ");
         cut.Find("form").Submit();
         cut.WaitForAssertion(() =>
         {
-            var result = cut.Find(".command-result");
+            var result = cut.Find("dialog .command-result");
             StringAssert.Contains(result.TextContent, "1 to 128 characters", StringComparison.Ordinal);
-            Assert.IsFalse(result.TextContent.Contains("receipt is durable", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(cut.Markup.Contains("receipt is durable", StringComparison.OrdinalIgnoreCase));
             Assert.AreEqual("alert", result.GetAttribute("role"));
-            Assert.AreEqual("assertive", result.GetAttribute("aria-live"));
         });
     }
 
     private static TestEnvironmentalUiService CreateOnDemandService() => new()
     {
-        Status = OperatorUiResult<EnvironmentalUiStatus>.Success(new(
-            true, Epoch, 0, 0, 0,
-            [new EnvironmentalUiSource(
-                "virtual-rain", EnvironmentalObservationKind.RainState, false, true, "Never observed",
-                null, null, null, null, null, 0)],
-            []))
+        Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+            [Source("virtual-rain", EnvironmentalObservationKind.RainState, onDemand: true)]))
     };
 
     private static EnvironmentalAcquisitionReceipt Receipt(
@@ -419,6 +421,7 @@ public sealed class EnvironmentalPageTests
     public void UnauthorizedStatusNavigatesToAccessDenied()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
         {
             Status = OperatorUiResult<EnvironmentalUiStatus>.Failure(
@@ -436,6 +439,7 @@ public sealed class EnvironmentalPageTests
     public void FailureRendersOnlySanitizedAlert()
     {
         using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
         {
             Status = OperatorUiResult<EnvironmentalUiStatus>.Failure(
@@ -452,11 +456,413 @@ public sealed class EnvironmentalPageTests
         });
     }
 
+    [TestMethod]
+    public void ReadingsShowTheNewestRecordedValueForEachSlotAndNameWhatIsMissing()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+            [
+                Source("air", EnvironmentalObservationKind.AirTemperature),
+                Source("pressure", EnvironmentalObservationKind.AtmosphericPressure),
+                Source("cloud", EnvironmentalObservationKind.CloudCover),
+                Source("rain", EnvironmentalObservationKind.RainState),
+                Source("wind", EnvironmentalObservationKind.WindSpeed),
+                Source("humidity", EnvironmentalObservationKind.RelativeHumidity),
+            ])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success(
+            [
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 12.34, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Simulated, observedAgo: TimeSpan.FromSeconds(42)),
+                Observation(EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationUnit.Pascals, 101325, null,
+                    observedAgo: TimeSpan.FromMinutes(20), staleAfter: TimeSpan.FromMinutes(10)),
+                Observation(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 0.35, null,
+                    quality: EnvironmentalObservationQuality.Suspect),
+                Observation(EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, false),
+                Observation(EnvironmentalObservationKind.WindSpeed, EnvironmentalObservationUnit.MetersPerSecond, 3.26, null),
+                Observation(EnvironmentalObservationKind.WindGust, EnvironmentalObservationUnit.MetersPerSecond, 6.8, null),
+                Observation(EnvironmentalObservationKind.WindDirection, EnvironmentalObservationUnit.DegreesTrue, 271.6, null),
+            ])
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            AssertReading(cut, "air-temperature", "12.3 C", "Fresh / 42s ago / Simulated");
+            AssertReading(cut, "pressure", "1013 hPa", "Stale / 20m ago");
+            AssertReading(cut, "cloud", "35%", "Suspect quality");
+            AssertReading(cut, "precipitation", "None", "Fresh");
+            AssertReading(cut, "wind", "3.3 m/s", "Gust 6.8 m/s / From 272 deg");
+            AssertReading(cut, "relative-humidity", "--", "No observation yet");
+            AssertReading(cut, "sky-quality", "--", "No source configured");
+            Assert.AreEqual(1, service.LatestCalls);
+            Assert.HasCount(2, cut.FindAll(".ops-reading.empty").Where(item =>
+                item.GetAttribute("data-slot") is "relative-humidity" or "sky-quality"));
+        });
+    }
+
+    [TestMethod]
+    public void SourceScheduleNamesTriggersFailuresAndTheNextPoll()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+            [
+                Source("periodic-air", EnvironmentalObservationKind.AirTemperature, freshness: "Fresh",
+                    triggers: [EnvironmentalAcquisitionTrigger.Periodic], periodSeconds: 300, nextPoll: Epoch.AddSeconds(42)),
+                Source("capture-cloud", EnvironmentalObservationKind.CloudCover, required: true, freshness: "Stale",
+                    triggers: [EnvironmentalAcquisitionTrigger.EveryNthCapture], everyNth: 3, nextPoll: Epoch.AddMinutes(5),
+                    disposition: EnvironmentalAcquisitionDisposition.TimedOut, failures: 2),
+                Source("manual-rain", EnvironmentalObservationKind.RainState, onDemand: true,
+                    triggers: [EnvironmentalAcquisitionTrigger.OnDemand]),
+            ]))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find("#environment-sources-heading").ParentElement!.ParentElement!.TextContent,
+                "Next poll 42s", StringComparison.Ordinal);
+            var air = cut.Find("tr[data-source='periodic-air']").TextContent;
+            StringAssert.Contains(air, "Every 300 seconds", StringComparison.Ordinal);
+            StringAssert.Contains(air, "Air Temperature / Optional", StringComparison.Ordinal);
+            var cloud = cut.Find("tr[data-source='capture-cloud']");
+            StringAssert.Contains(cloud.TextContent, "Every 3 captures", StringComparison.Ordinal);
+            StringAssert.Contains(cloud.TextContent, "Required", StringComparison.Ordinal);
+            Assert.AreEqual("Timed Out / 2 in a row", cloud.QuerySelector("small.failure")!.TextContent);
+            Assert.AreEqual("state-chip warning", cloud.QuerySelector(".state-chip")!.ClassName);
+            StringAssert.Contains(cut.Find("tr[data-source='manual-rain']").TextContent, "On demand", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void DeliveryPolicyShowsTheOutboxOnlyWhenExportIsEnabled(bool exportEnabled)
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var delivery = exportEnabled
+            ? new EnvironmentalUiDelivery(true, "Degraded", Epoch.AddMinutes(-2), 3, 2, 1, Epoch.AddMinutes(-7))
+            : new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null);
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("air", EnvironmentalObservationKind.AirTemperature)],
+                storedCount: 12, storedBytes: 4096, delivery: delivery))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var facts = cut.Find(".environment-delivery").TextContent;
+            var badge = cut.Find("#environment-delivery-heading").ParentElement!.NextElementSibling!.TextContent;
+            StringAssert.Contains(facts, "14 days", StringComparison.Ordinal);
+            StringAssert.Contains(facts, "12", StringComparison.Ordinal);
+            if (exportEnabled)
+            {
+                Assert.AreEqual("Degraded", badge);
+                StringAssert.Contains(facts, "3 (2 retrying), 1 quarantined", StringComparison.Ordinal);
+                Assert.IsFalse(facts.Contains("Not exported", StringComparison.Ordinal));
+            }
+            else
+            {
+                Assert.AreEqual("Local only", badge);
+                StringAssert.Contains(facts, "Not exported", StringComparison.Ordinal);
+                StringAssert.Contains(facts, "Export disabled", StringComparison.Ordinal);
+            }
+        });
+    }
+
+    [TestMethod]
+    public void DeliveryPolicyBeforeTheOutboxIsReadShowsUnknownRatherThanZero()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("air", EnvironmentalObservationKind.AirTemperature)],
+                delivery: new EnvironmentalUiDelivery(true, "Initializing", null, null, null, null, null)))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var facts = cut.Find(".environment-delivery").QuerySelectorAll("div")
+                .ToDictionary(item => item.QuerySelector("dt")!.TextContent.Trim(), item => item.QuerySelector("dd")!.TextContent.Trim());
+            Assert.AreEqual("Initializing", cut.Find("#environment-delivery-heading").ParentElement!.NextElementSibling!.TextContent);
+            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Pending"]);
+            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Oldest pending"]);
+            Assert.AreEqual("Not yet acknowledged", facts["Last acknowledgment"]);
+        });
+    }
+
+    [TestMethod]
+    public void AcquireIsDisabledWithAnAnnouncedReasonWhenNoSourceSupportsOnDemand()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("periodic-air", EnvironmentalObservationKind.AirTemperature)]))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var acquire = cut.Find("#environment-acquire");
+            Assert.IsTrue(acquire.HasAttribute("disabled"));
+            StringAssert.Contains(cut.Find("#" + acquire.GetAttribute("aria-describedby")).TextContent,
+                "No configured source supports on-demand acquisition", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("dialog"));
+        });
+    }
+
+    [TestMethod]
+    public void DisabledAcquisitionIsNamedAndHistoryStaysReadable()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([], enabled: false)),
+            History = _ => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+                [Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 4.5, null)],
+                null))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".environment-disabled").TextContent, "Environmental acquisition is disabled.", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#environment-acquire-reason").TextContent, "disabled in this agent's configuration", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".environment-history-table tbody").TextContent, "4.5 C", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "No environmental sources are configured.", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void KindFilterReadsHistoryForTheChosenKindFromTheNewestPage()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = CreateOnDemandService();
+        service.History = cursor => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([], cursor is null ? "next" : null));
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.HistoryCalls));
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Older", StringComparison.Ordinal)).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("next", service.LastCursor));
+
+        cut.Find("#environment-history-kind").Change(nameof(EnvironmentalObservationKind.CloudCover));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(3, service.HistoryCalls);
+            Assert.AreEqual(EnvironmentalObservationKind.CloudCover, service.LastKind);
+            Assert.IsNull(service.LastCursor);
+        });
+        cut.Find("#environment-history-kind").Change(string.Empty);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(4, service.HistoryCalls);
+            Assert.IsNull(service.LastKind);
+        });
+    }
+
+    [TestMethod]
+    public async Task AHistoryReadForAFormerKindThatFinishesLastDoesNotReplaceTheCurrentKind()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = CreateOnDemandService();
+        var pending = new Dictionary<EnvironmentalObservationKind, TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>>();
+        service.HistoryRead = (_, _) =>
+        {
+            if (service.LastKind is not { } kind)
+            {
+                return ValueTask.FromResult(OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([], null)));
+            }
+            var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>();
+            pending[kind] = completion;
+            return new(completion.Task);
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.HistoryCalls));
+        var former = cut.Find("#environment-history-kind").ChangeAsync(new ChangeEventArgs { Value = nameof(EnvironmentalObservationKind.CloudCover) });
+        var current = cut.Find("#environment-history-kind").ChangeAsync(new ChangeEventArgs { Value = nameof(EnvironmentalObservationKind.RainState) });
+        Assert.AreEqual(3, service.HistoryCalls);
+
+        pending[EnvironmentalObservationKind.RainState].SetResult(
+            OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+                [Observation(EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, true, sourceId: "current-rain")],
+                null)));
+        await current.ConfigureAwait(false);
+        pending[EnvironmentalObservationKind.CloudCover].SetResult(
+            OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+                [Observation(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Percent, 40, null, sourceId: "former-cloud")],
+                "former-cursor")));
+        await former.ConfigureAwait(false);
+
+        var rows = cut.Find(".environment-history-table tbody").TextContent;
+        StringAssert.Contains(rows, "current-rain", StringComparison.Ordinal);
+        Assert.IsFalse(rows.Contains("former-cloud", StringComparison.Ordinal));
+        Assert.IsTrue(cut.FindAll("button").Single(button => button.TextContent.Contains("Older", StringComparison.Ordinal)).HasAttribute("disabled"));
+        Assert.AreEqual(nameof(EnvironmentalObservationKind.RainState), cut.Find("#environment-history-kind").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void CancellingAnUncertainRetryReleasesItsKeyAndLocksOnlyWhileUncertain()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = CreateOnDemandService();
+        service.Acquire = (_, _, _, _) => ValueTask.FromResult(OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+            OperatorUiResultKind.Unavailable, "The environmental request outcome is unknown."));
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        OpenDialog(cut).Find("#environment-reason").Change("pinned verification");
+
+        cut.Find("form").Submit();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(cut.Find("dialog fieldset").HasAttribute("disabled"));
+            Assert.AreEqual("Retry request", cut.Find("#environment-acquire-confirm").TextContent);
+            StringAssert.Contains(cut.Find("dialog .dialog-note").TextContent, "Retry the same request.", StringComparison.Ordinal);
+        });
+
+        cut.FindAll("dialog footer button").Single(button => button.TextContent == "Cancel").Click();
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        OpenDialog(cut).Find("#environment-reason").Change("pinned verification");
+        Assert.IsFalse(cut.Find("dialog fieldset").HasAttribute("disabled"));
+        cut.Find("form").Submit();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(2, service.AcquireCalls);
+            Assert.AreNotEqual(service.IdempotencyKeys[0], service.IdempotencyKeys[1]);
+        });
+    }
+
+    [TestMethod]
+    public void LatestReadingFailureLeavesTheRestOfThePageReadable()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = CreateOnDemandService();
+        service.Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Failure(
+            OperatorUiResultKind.Unavailable, "Current environmental readings are unavailable.");
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Current environmental readings are unavailable.", cut.Find(".environment-inline-warning").TextContent);
+            Assert.HasCount(1, cut.FindAll("tr[data-source='virtual-rain']"));
+            Assert.AreEqual(1, service.HistoryCalls);
+            Assert.IsFalse(cut.Find("#environment-acquire").HasAttribute("disabled"));
+        });
+    }
+
+    private static IRenderedComponent<EnvironmentalPage> OpenDialog(IRenderedComponent<EnvironmentalPage> cut)
+    {
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#environment-acquire").HasAttribute("disabled")));
+        cut.Find("#environment-acquire").Click();
+        cut.WaitForElement("#environment-reason");
+        return cut;
+    }
+
+    private static void AssertReading(IRenderedComponent<EnvironmentalPage> cut, string slot, string value, string state)
+    {
+        var reading = cut.Find($".ops-reading[data-slot='{slot}']");
+        Assert.AreEqual(value, reading.QuerySelector("strong")!.TextContent, slot);
+        StringAssert.Contains(string.Join(" / ", reading.QuerySelectorAll("small").Select(item => item.TextContent)),
+            state, StringComparison.Ordinal, slot);
+    }
+
+    private static EnvironmentalUiStatus Status(
+        IReadOnlyList<EnvironmentalUiSource> sources,
+        IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>? attempts = null,
+        bool enabled = true,
+        long storedCount = 0,
+        long storedBytes = 0,
+        EnvironmentalUiDelivery? delivery = null) => new(
+            enabled,
+            Epoch,
+            storedCount,
+            storedBytes,
+            0,
+            sources,
+            attempts ?? [],
+            14,
+            delivery ?? new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null));
+
+    private static EnvironmentalUiSource Source(
+        string id,
+        EnvironmentalObservationKind kind,
+        bool required = false,
+        bool onDemand = false,
+        string freshness = "Never observed",
+        EnvironmentalAcquisitionDisposition? disposition = null,
+        double? ageSeconds = null,
+        DateTimeOffset? nextPoll = null,
+        int failures = 0,
+        EnvironmentalAcquisitionTrigger[]? triggers = null,
+        int periodSeconds = 60,
+        int everyNth = 1) => new(
+            id,
+            kind,
+            required,
+            onDemand,
+            freshness,
+            disposition,
+            disposition?.ToString(),
+            ageSeconds is null ? null : Epoch.AddSeconds(-ageSeconds.Value),
+            ageSeconds,
+            nextPoll,
+            failures,
+            triggers ?? [EnvironmentalAcquisitionTrigger.Periodic],
+            periodSeconds,
+            everyNth);
+
+    private static EnvironmentalUiObservation Observation(
+        EnvironmentalObservationKind kind,
+        EnvironmentalObservationUnit unit,
+        double? numeric,
+        bool? boolean,
+        string sourceId = "virtual-source",
+        EnvironmentalObservationSourceKind sourceKind = EnvironmentalObservationSourceKind.Measured,
+        EnvironmentalObservationQuality quality = EnvironmentalObservationQuality.Good,
+        TimeSpan? observedAgo = null,
+        TimeSpan? staleAfter = null)
+    {
+        var observed = Epoch - (observedAgo ?? TimeSpan.FromSeconds(5));
+        return new(Guid.NewGuid(), sourceId, sourceKind, kind, unit, numeric, boolean, quality, null,
+            observed, observed + (staleAfter ?? TimeSpan.FromMinutes(5)));
+    }
+
     private sealed class TestEnvironmentalUiService : ICameraAgentEnvironmentalUiService
     {
         public OperatorUiResult<EnvironmentalUiStatus> Status { get; init; } =
             OperatorUiResult<EnvironmentalUiStatus>.Failure(
                 OperatorUiResultKind.Unavailable, "Environmental status is unavailable.");
+        public Func<OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>> Latest { get; set; } =
+            () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([]);
         public Func<string?, OperatorUiResult<EnvironmentalUiHistoryPage>> History { get; set; } =
             _ => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([], null));
         public Func<CancellationToken, ValueTask<OperatorUiResult<EnvironmentalUiStatus>>>? StatusRead { get; set; }
@@ -476,6 +882,8 @@ public sealed class EnvironmentalPageTests
         public int AcquireCalls { get; private set; }
         public int StatusCalls { get; private set; }
         public int HistoryCalls { get; private set; }
+        public int LatestCalls { get; private set; }
+        public EnvironmentalObservationKind? LastKind { get; private set; }
         public List<string> IdempotencyKeys { get; } = [];
         public CancellationToken LastCancellationToken { get; private set; }
 
@@ -483,6 +891,13 @@ public sealed class EnvironmentalPageTests
         {
             StatusCalls++;
             return StatusRead?.Invoke(cancellationToken) ?? ValueTask.FromResult(Status);
+        }
+
+        public ValueTask<OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>> GetLatestReadingsAsync(
+            CancellationToken cancellationToken)
+        {
+            LatestCalls++;
+            return ValueTask.FromResult(Latest());
         }
 
         public ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(
@@ -508,6 +923,7 @@ public sealed class EnvironmentalPageTests
         {
             HistoryCalls++;
             LastCursor = cursor;
+            LastKind = kind;
             return HistoryRead?.Invoke(cursor, cancellationToken) ?? ValueTask.FromResult(History(cursor));
         }
     }

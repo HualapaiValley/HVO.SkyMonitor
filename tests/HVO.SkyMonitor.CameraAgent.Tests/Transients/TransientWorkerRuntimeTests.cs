@@ -401,6 +401,28 @@ public sealed class TransientWorkerRuntimeTests
             Assert.IsFalse(await provider.GetRequiredService<SqliteTransientRuntimeStore>()
                 .IsCausalWindowCompleteAsync(
                     "transient-runtime-agent", 3, CancellationToken.None).ConfigureAwait(false));
+
+            // The operations outcome read reports each capture newest first: the two frames without both prior
+            // frames were not assessed, and the three with a full causal window succeeded without a candidate.
+            var outcomes = await runtime.ReadRecentCaptureOutcomesAsync(
+                TransientCaptureOutcome.MaximumPageSize, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(5, outcomes);
+            var sequences = outcomes.Select(static outcome => outcome.CaptureSequence).ToArray();
+            CollectionAssert.AreEqual(sequences.OrderDescending().ToArray(), sequences);
+            Assert.IsTrue(outcomes.Take(3).All(static outcome =>
+                outcome.CausalSucceeded == true && outcome.CandidateCount == 0 &&
+                outcome.Reason == TransientCandidateExtractionReasonCodes.NoCandidate));
+            Assert.IsTrue(outcomes.Skip(3).All(static outcome =>
+                outcome.CausalSucceeded == false && outcome.Reason == "causal-context-pending"));
+            var newest = await runtime.ReadRecentCaptureOutcomesAsync(2, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(
+                outcomes.Take(2).Select(static outcome => outcome.CaptureId).ToArray(),
+                newest.Select(static outcome => outcome.CaptureId).ToArray());
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+                await runtime.ReadRecentCaptureOutcomesAsync(0, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+                await runtime.ReadRecentCaptureOutcomesAsync(
+                    TransientCaptureOutcome.MaximumPageSize + 1, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {

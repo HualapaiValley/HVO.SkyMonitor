@@ -131,6 +131,7 @@ public sealed class OperatorRouteTests
             (typeof(SchedulePage), ["/schedule", "/operations/schedule"]),
             (typeof(CalibrationPage), ["/calibration", "/operations/calibration"]),
             (typeof(EnvironmentalPage), ["/environmental", "/operations/environment"]),
+            (typeof(TransientOperationsPage), ["/operations/transients"]),
             (typeof(SystemStatusPage), ["/system", "/operations/system"]),
             (typeof(QuarantinePage), ["/operations/quarantine"]),
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
