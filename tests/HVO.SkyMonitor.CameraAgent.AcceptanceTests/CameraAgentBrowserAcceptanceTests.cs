@@ -547,9 +547,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await desktopCurrentSky.FocusAsync().ConfigureAwait(false);
         await WaitForFocusAsync(page, desktopCurrentSky).ConfigureAwait(false);
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.GetByLabel("Current schedule state")).ConfigureAwait(false);
+        await VisibleAsync(page.GetByLabel("Current admission")).ConfigureAwait(false);
         Assert.AreEqual(
             "page",
             await page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true })
@@ -1256,15 +1256,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
             CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await page.GotoAsync("/calibration").ConfigureAwait(false);
         await VisibleAsync(page.GetByText(first.BundleId!, new() { Exact = true }).First).ConfigureAwait(false);
-        var activeBundle = page.Locator(".calibration-card--active h2");
+        var activeBundle = page.Locator("#calibration-active-bundle");
         Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
-        var reviewAcquisition = page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" });
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await OpenDialogAsync(reviewAcquisition, confirmation).ConfigureAwait(false);
+        var acquireDialog = page.Locator("dialog:has(#calibration-acquire-heading)");
+        await OpenDialogAsync(page.Locator("#start-calibration-acquisition"), acquireDialog).ConfigureAwait(false);
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
-        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
-        var resultBanner = page.Locator(".calibration-banner");
+        await WaitForContainedFocusAsync(page, acquireDialog).ConfigureAwait(false);
+        await page.Locator("#calibration-acquire-confirm").ClickAsync().ConfigureAwait(false);
+        var resultBanner = page.Locator(".calibration-message");
         try
         {
             await VisibleAsync(resultBanner, 180_000).ConfigureAwait(false);
@@ -1273,34 +1272,35 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             Assert.Fail(string.Join(
                 Environment.NewLine,
-                [.. browserErrors, await page.Locator(".calibration-console").InnerTextAsync().ConfigureAwait(false)]));
+                [.. browserErrors, await page.Locator(".operations-content").InnerTextAsync().ConfigureAwait(false)]));
         }
         Assert.AreEqual(
             "Calibration acquisition published durably.",
             (await resultBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
 
-        var activate = page.GetByRole(AriaRole.Button, new() { Name = "Review activate" });
+        var confirmation = page.Locator("dialog:has(#calibration-activation-heading)");
+        var activate = page.GetByRole(AriaRole.Button, new() { Name = "Review activate" }).First;
         await VisibleAsync(activate).ConfigureAwait(false);
         await activate.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
+            "prior => document.querySelector('#calibration-active-bundle')?.textContent?.trim() !== prior",
             first.BundleId).ConfigureAwait(false);
         var secondBundleId = (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreNotEqual(first.BundleId, secondBundleId);
         await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
             .ConfigureAwait(false);
 
-        var rollback = page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" });
+        var rollback = page.Locator("#review-calibration-rollback");
         await VisibleAsync(rollback).ConfigureAwait(false);
         await rollback.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
+            "expected => document.querySelector('#calibration-active-bundle')?.textContent?.trim() === expected",
             first.BundleId).ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
             .ConfigureAwait(false);
@@ -1362,21 +1362,19 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertCalibrationAsync(IPage page)
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Calibration library", Level = 1 });
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Calibration", Level = 1 });
         await VisibleAsync(heading).ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("No active bundle", new() { Exact = true })).ConfigureAwait(false);
-        Assert.AreEqual("82", await page.GetByLabel("Gain", new() { Exact = true }).InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("1", await page.GetByLabel("Effective offset").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("-10", await page.GetByLabel("Camera temperature C").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("10", await page.GetByLabel("Dark exposure seconds").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("5", await page.GetByLabel("Exact light exposure seconds").InputValueAsync().ConfigureAwait(false));
+        await VisibleAsync(page.GetByText("No active references", new() { Exact = true })).ConfigureAwait(false);
 
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await VisibleAsync(confirmation).ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
-            .ConfigureAwait(false);
+        var start = page.Locator("#start-calibration-acquisition");
+        var confirmation = page.Locator("dialog:has(#calibration-acquire-heading)");
+        await OpenDialogAsync(start, confirmation).ConfigureAwait(false);
+        Assert.AreEqual("82", await page.Locator("#cal-gain").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("1", await page.Locator("#cal-offset").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("-10", await page.Locator("#cal-temperature").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("10", await page.Locator("#cal-dark").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("5", await page.Locator("#cal-light").InputValueAsync().ConfigureAwait(false));
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.activeElement?.id === 'start-calibration-acquisition'").ConfigureAwait(false);
     }
@@ -1384,41 +1382,42 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertSchedulePreviewAsync(IPage page)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule" })).ConfigureAwait(false);
-        var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 })).ConfigureAwait(false);
+        var activeHash = page.Locator("section[aria-labelledby='schedule-history-heading'] tr.current-row code");
         var originalActiveHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
-        var preview = page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Desired and effective graph" }))
+        var editorDialog = page.Locator("dialog.schedule-editor");
+        await OpenDialogAsync(page.Locator("#schedule-edit-open"), editorDialog).ConfigureAwait(false);
+
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Processing')").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(editorDialog.GetByRole(AriaRole.Heading, new() { Name = "Desired and effective graph" }))
             .ConfigureAwait(false);
-        var desiredGraph = page.Locator(".pipeline-columns article").First;
+        var desiredGraph = editorDialog.Locator(".pipeline-columns article").First;
         var telemetryToggle = desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Disable" });
-        var graphUpdated = page.GetByText(
-            "Desired graph updated in the editor. Save the immutable draft to persist it.",
-            new() { Exact = true });
-        await ClickAndWaitForVisibleAsync(telemetryToggle, graphUpdated).ConfigureAwait(false);
+        await ClickAndWaitForVisibleAsync(
+            telemetryToggle,
+            editorDialog.GetByText("Processing step updated in the draft. Save the draft to keep it.", new() { Exact = true }))
+            .ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Enable" }).ClickAsync().ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Calibration'))")
             .GetByRole(AriaRole.Button, new() { Name = "Disable" }).ClickAsync().ConfigureAwait(false);
-        var graphAlert = page.Locator(".schedule-banner[role='alert']");
-        await VisibleAsync(graphAlert).ConfigureAwait(false);
+        var alert = editorDialog.Locator(".schedule-message[role='alert']");
+        await VisibleAsync(alert).ConfigureAwait(false);
         StringAssert.Contains(
-            await graphAlert.InnerTextAsync().ConfigureAwait(false),
+            await alert.InnerTextAsync().ConfigureAwait(false),
             "depends on the disabled node",
             StringComparison.OrdinalIgnoreCase);
-        await preview.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText(
-            "Schedule and desired graph previews are valid. No durable state changed.",
-            new() { Exact = true }))
-            .ConfigureAwait(false);
-        var previewTimes = page.Locator(".preview-card time");
-        Assert.IsGreaterThanOrEqualTo(2, await previewTimes.CountAsync().ConfigureAwait(false));
-        Assert.IsTrue(await previewTimes.EvaluateAllAsync<bool>(
-            "elements => elements.every(element => Boolean(element.getAttribute('datetime')))").ConfigureAwait(false));
 
-        var editor = page.GetByLabel("Local profile JSON");
-        await CollapsibleSection.EnsureOpenAsync(page.Locator("details.editor-advanced"), editor)
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Review')").ClickAsync().ConfigureAwait(false);
+        var preview = editorDialog.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
+        await preview.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(editorDialog.GetByText("The draft is valid. Nothing has been saved yet.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.IsGreaterThanOrEqualTo(1, await editorDialog.Locator(".schedule-preview li").CountAsync().ConfigureAwait(false));
+
+        var editor = editorDialog.GetByLabel("Local profile JSON");
+        await CollapsibleSection.EnsureOpenAsync(editorDialog.Locator("details.editor-advanced"), editor)
             .ConfigureAwait(false);
         var candidate = await editor.EvaluateAsync<string>("""
             element => {
@@ -1428,19 +1427,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             }
             """).ConfigureAwait(false);
         await editor.FillAsync(candidate).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Draft saved.", new() { Exact = true })).ConfigureAwait(false);
-        var reviewApply = page.GetByLabel("Current schedule state")
-            .GetByRole(AriaRole.Button, new() { Name = "Review apply" });
-        await reviewApply.ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await VisibleAsync(confirmation).ConfigureAwait(false);
-        Assert.AreEqual("Apply revision?", await confirmation.GetAttributeAsync("aria-labelledby").ConfigureAwait(false) is { } labelId
-            ? await page.Locator($"#{labelId}").InnerTextAsync().ConfigureAwait(false)
-            : null);
+        await editorDialog.GetByRole(AriaRole.Button, new() { Name = "Save draft", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await editorDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        var reviewApply = page.GetByLabel("Saved draft").GetByRole(AriaRole.Button, new() { Name = "Review apply" });
         await page.WaitForFunctionAsync(
-            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
             .ConfigureAwait(false);
+        await reviewApply.ClickAsync().ConfigureAwait(false);
+        var confirmation = page.Locator("dialog:has(#apply-heading)");
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        StringAssert.StartsWith(
+            (await page.Locator("#apply-heading").InnerTextAsync().ConfigureAwait(false)).Trim(),
+            "Apply revision",
+            StringComparison.Ordinal);
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
@@ -1449,27 +1449,26 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'schedule-heading'").ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("No draft", new() { Exact = true })).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'schedule-refresh'").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Revision applied at the capture boundary.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.AreEqual(0, await page.GetByLabel("Saved draft").CountAsync().ConfigureAwait(false));
         Assert.AreNotEqual(originalActiveHash, (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim());
 
-        var overrideStart = DateTimeOffset.UtcNow.AddMinutes(10).ToString("O", CultureInfo.InvariantCulture);
-        var overrideEnd = DateTimeOffset.UtcNow.AddMinutes(20).ToString("O", CultureInfo.InvariantCulture);
-        await page.GetByLabel("Start UTC").FillAsync(overrideStart).ConfigureAwait(false);
-        await page.GetByLabel("End UTC").FillAsync(overrideEnd).ConfigureAwait(false);
-        var scheduleBanner = page.Locator(".schedule-banner");
-        var priorMessage = await scheduleBanner.InnerTextAsync().ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Create durable override" }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            """
-            previous => {
-                const banner = document.querySelector('.schedule-banner');
-                return banner && banner.textContent.trim() !== previous.trim();
-            }
-            """,
-            priorMessage).ConfigureAwait(false);
-        Assert.AreEqual("Override created.", (await scheduleBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Clear", Exact = true }).ClickAsync().ConfigureAwait(false);
+        // The override dialog takes wall-clock times in the site timezone the page reports.
+        var timeZoneId = (await page.Locator("section[aria-label='Current admission'] div:has(> dt:text-is('Local timezone')) dd")
+            .InnerTextAsync().ConfigureAwait(false)).Trim();
+        var siteNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, TimeZoneInfo.FindSystemTimeZoneById(timeZoneId));
+        var overrideDialog = page.Locator("dialog:has(#schedule-override-heading)");
+        await OpenDialogAsync(page.Locator("#schedule-override-open"), overrideDialog).ConfigureAwait(false);
+        await overrideDialog.GetByLabel("Starts").FillAsync(
+            siteNow.AddMinutes(10).ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await overrideDialog.GetByLabel("Ends").FillAsync(
+            siteNow.AddMinutes(20).ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await overrideDialog.GetByRole(AriaRole.Button, new() { Name = "Create override" }).ClickAsync().ConfigureAwait(false);
+        await overrideDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Override created.", new() { Exact = true })).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Clear override" }).First.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Override cleared.", new() { Exact = true })).ConfigureAwait(false);
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
@@ -1478,19 +1477,21 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             """
-            expected => [...document.querySelectorAll('.schedule-card')]
-                .find(card => card.textContent.includes('Active immutable profile'))
-                ?.querySelector('code')?.textContent.trim() === expected
+            expected => document.querySelector("section[aria-labelledby='schedule-history-heading'] tr.current-row code")
+                ?.textContent.trim() === expected
             """,
             originalActiveHash).ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Revision applied at the capture boundary.", new() { Exact = true }))
             .ConfigureAwait(false);
 
+        await OpenDialogAsync(page.Locator("#schedule-edit-open"), editorDialog).ConfigureAwait(false);
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Review')").ClickAsync().ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(editorDialog.Locator("details.editor-advanced"), editor)
+            .ConfigureAwait(false);
         await editor.FillAsync("{}").ConfigureAwait(false);
         await preview.ClickAsync().ConfigureAwait(false);
-        var alert = page.Locator(".schedule-banner[role='alert']");
         await VisibleAsync(alert).ConfigureAwait(false);
-        Assert.AreEqual(0, await page.Locator(".preview-card time").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(0, await editorDialog.Locator(".schedule-preview li").CountAsync().ConfigureAwait(false));
         Assert.IsTrue((await alert.InnerTextAsync().ConfigureAwait(false)).Contains(
             "invalid", StringComparison.OrdinalIgnoreCase));
     }
@@ -2125,8 +2126,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
             ("/gallery?pageSize=24", "Archive"),
             (detailUrl, $"Capture #{capture.CaptureSequence}"),
-            ("/schedule", "Capture schedule"),
-            ("/calibration", "Calibration library"),
+            ("/schedule", "Schedule"),
+            ("/calibration", "Calibration"),
             ("/system", "System snapshot"),
             ("/operations/camera", "Camera & rig"),
             ("/operations/pipeline", "Pipeline summary"),

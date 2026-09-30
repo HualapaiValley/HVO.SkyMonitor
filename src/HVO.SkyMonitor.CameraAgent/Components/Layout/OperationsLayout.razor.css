@@ -128,7 +128,7 @@
 
 .operations-content { min-width: 0; padding: clamp(1rem, 2.6vw, 2.5rem) clamp(.75rem, 2.6vw, 2.5rem) 4rem; }
 /* Pages not yet ported from the prototype still provide their own gutters; do not stack the layout gutter. */
-.operations-content:has(.system-page, .quarantine-page, .calibration-console) { padding: 0; }
+.operations-content:has(.system-page, .quarantine-page) { padding: 0; }
 .operations-page-frame { width: min(100%, 92rem); margin: 0 auto; }
 
 /* Base rules from styles.css. */

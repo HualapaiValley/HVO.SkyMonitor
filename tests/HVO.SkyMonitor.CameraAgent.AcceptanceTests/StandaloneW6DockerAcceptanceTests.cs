@@ -1732,42 +1732,40 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static async Task AcquireCalibrationAsync(IPage page)
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Calibration library", Level = 1 }).WaitForAsync().ConfigureAwait(false);
-        var activeHeading = page.Locator(".calibration-card--active h2");
-        if (!string.Equals(
-                (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim(),
-                "No active bundle",
-                StringComparison.Ordinal))
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Calibration", Level = 1 }).WaitForAsync().ConfigureAwait(false);
+        if (await ActiveCalibrationBundleAsync(page).ConfigureAwait(false) is not null)
         {
             return;
         }
-        var confirmation = page.Locator("dialog.confirmation-panel");
         await OpenDialogAsync(
-            page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
-            confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+            page.Locator("#start-calibration-acquisition"),
+            page.Locator("dialog:has(#calibration-acquire-heading)")).ConfigureAwait(false);
+        await page.Locator("#calibration-acquire-confirm").ClickAsync().ConfigureAwait(false);
         _ = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
     }
 
     private static async Task ActivateCalibrationAsync(IPage page)
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
-        var activeHeading = page.Locator(".calibration-card--active h2");
-        if (!string.Equals(
-                (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim(),
-                "No active bundle",
-                StringComparison.Ordinal))
+        if (await ActiveCalibrationBundleAsync(page).ConfigureAwait(false) is not null)
         {
             return;
         }
-        var confirmation = page.Locator("dialog.confirmation-panel");
         var activate = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
-        await OpenDialogAsync(activate, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            "() => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== 'No active bundle'",
-            null,
-            new PageWaitForFunctionOptions { Timeout = 120_000 }).ConfigureAwait(false);
+        await OpenDialogAsync(activate, page.Locator("dialog:has(#calibration-activation-heading)")).ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-active-bundle")
+            .WaitForAsync(new() { Timeout = 120_000 }).ConfigureAwait(false);
+    }
+
+    // The library panel renders either the active bundle id or the empty reference card once status loads.
+    private static async Task<string?> ActiveCalibrationBundleAsync(IPage page)
+    {
+        await page.Locator("#calibration-active-bundle, .ops-library-card.empty").First.WaitForAsync().ConfigureAwait(false);
+        var active = page.Locator("#calibration-active-bundle");
+        return await active.CountAsync().ConfigureAwait(false) == 0
+            ? null
+            : (await active.InnerTextAsync().ConfigureAwait(false)).Trim();
     }
 
     private static async Task<ILocator> WaitForCalibrationActivateAsync(IPage page)
@@ -1793,34 +1791,25 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string runtimeRoot)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
-        var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
+        var activeHash = page.Locator(ActiveScheduleHashSelector);
         var originalHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreEqual(ExpectedLocalProfileSha256[..12], originalHash);
         await ValidateSchedulePreviewAsync(page).ConfigureAwait(false);
-        Assert.IsGreaterThanOrEqualTo(2, await page.Locator(".preview-card time").CountAsync().ConfigureAwait(false));
-        var confirmation = page.Locator("dialog.confirmation-panel");
+        var confirmation = page.Locator("dialog:has(#apply-heading)");
         await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm rollback" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            """
-            expected => [...document.querySelectorAll('.schedule-card')]
-                .find(card => card.textContent.includes('Active immutable profile'))
-                ?.querySelector('code')?.textContent.trim() !== expected
-            """,
+            $"expected => document.querySelector(\"{ActiveScheduleHashSelector}\")?.textContent.trim() !== expected",
             originalHash).ConfigureAwait(false);
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Review apply" }).First.ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            """
-            expected => [...document.querySelectorAll('.schedule-card')]
-                .find(card => card.textContent.includes('Active immutable profile'))
-                ?.querySelector('code')?.textContent.trim() === expected
-            """,
+            $"expected => document.querySelector(\"{ActiveScheduleHashSelector}\")?.textContent.trim() === expected",
             originalHash).ConfigureAwait(false);
         await page.GetByText("Revision applied at the capture boundary.", new() { Exact = true })
             .WaitForAsync().ConfigureAwait(false);
@@ -1844,68 +1833,74 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string originalBundleId)
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
-        var activeHeading = page.Locator(".calibration-card--active h2");
-        await activeHeading.WaitForAsync().ConfigureAwait(false);
+        var activeBundle = page.Locator("#calibration-active-bundle");
+        await activeBundle.WaitForAsync().ConfigureAwait(false);
         await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
-        Assert.AreEqual(originalBundleId, (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim());
-        var confirmation = page.Locator("dialog.confirmation-panel");
+        Assert.AreEqual(originalBundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
         await OpenDialogAsync(
-            page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
-            confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+            page.Locator("#start-calibration-acquisition"),
+            page.Locator("dialog:has(#calibration-acquire-heading)")).ConfigureAwait(false);
+        await page.Locator("#calibration-acquire-confirm").ClickAsync().ConfigureAwait(false);
+        var confirmation = page.Locator("dialog:has(#calibration-activation-heading)");
         var activate = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
         await OpenDialogAsync(activate, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
+            "prior => document.querySelector('#calibration-active-bundle')?.textContent?.trim() !== prior",
             originalBundleId,
             new() { Timeout = 120_000 }).ConfigureAwait(false);
-        var acquiredBundleId = (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim();
+        var acquiredBundleId = (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreNotEqual(originalBundleId, acquiredBundleId);
 
-        await OpenDialogAsync(
-            page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }),
-            confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await OpenDialogAsync(page.Locator("#review-calibration-rollback"), confirmation).ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
+            "expected => document.querySelector('#calibration-active-bundle')?.textContent?.trim() === expected",
             originalBundleId,
             new() { Timeout = 120_000 }).ConfigureAwait(false);
         return new CalibrationUiEvidence(originalBundleId, acquiredBundleId, originalBundleId);
     }
 
+    private const string ActiveScheduleHashSelector =
+        "section[aria-labelledby='schedule-history-heading'] tr.current-row code";
+
     private static async Task ValidateSchedulePreviewAsync(IPage page)
     {
         await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
-        var success = page.GetByText(
-            "Schedule and desired graph previews are valid. No durable state changed.",
-            new() { Exact = true });
+        var editor = page.Locator("dialog.schedule-editor");
+        var preview = editor.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
+        var success = editor.GetByText("The draft is valid. Nothing has been saved yet.", new() { Exact = true });
         for (var attempt = 0; attempt < 10; attempt++)
         {
-            await page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" })
-                .ClickAsync().ConfigureAwait(false);
+            await page.Locator("#schedule-edit-open").ClickAsync().ConfigureAwait(false);
+            await editor.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+            await editor.Locator("nav.schedule-steps button:has-text('Review')").ClickAsync().ConfigureAwait(false);
+            await preview.ClickAsync().ConfigureAwait(false);
             try
             {
                 await success.WaitForAsync(new() { Timeout = 5_000 }).ConfigureAwait(false);
-                return;
             }
             catch (TimeoutException)
             {
                 if (attempt == 9)
                 {
-                    var banners = await page.Locator(".schedule-banner").AllTextContentsAsync().ConfigureAwait(false);
-                    var scheduleText = await page.Locator(".schedule-console").InnerTextAsync().ConfigureAwait(false);
-                    var previewDisabled = await page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" })
-                        .IsDisabledAsync().ConfigureAwait(false);
+                    var messages = await editor.Locator(".schedule-message").AllTextContentsAsync().ConfigureAwait(false);
+                    var previewText = await editor.Locator(".schedule-preview").InnerTextAsync().ConfigureAwait(false);
+                    var previewDisabled = await preview.IsDisabledAsync().ConfigureAwait(false);
                     Assert.Fail(
                         $"Schedule preview did not report success at {page.Url}; preview disabled: {previewDisabled}; " +
-                        $"banners: {string.Join(" | ", banners)}; schedule: {scheduleText}");
+                        $"messages: {string.Join(" | ", messages)}; preview: {previewText}");
                 }
                 await page.GotoAsync("/schedule").ConfigureAwait(false);
-                await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
+                await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 })
                     .WaitForAsync().ConfigureAwait(false);
                 await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
+                continue;
             }
+            Assert.IsGreaterThanOrEqualTo(1, await editor.Locator(".schedule-preview li").CountAsync().ConfigureAwait(false));
+            await editor.GetByRole(AriaRole.Button, new() { Name = "Close dialog" }).ClickAsync().ConfigureAwait(false);
+            await editor.WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+            return;
         }
     }
 
