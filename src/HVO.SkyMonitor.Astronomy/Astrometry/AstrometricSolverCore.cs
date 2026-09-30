@@ -153,10 +153,11 @@ internal static class AstrometricSolverCore
     }
     /// <summary>Trusted previous solution supplies the local seed. No triangle/index search is performed.</summary>
     public static CoreResult SolveWarm(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
-        CoreResult previous, CoreSite site, DateTimeOffset utc, double budgetMilliseconds = 500, double maximumCatalogMagnitude = 7, AstrometricWorkControl? control = null)
+        CoreResult previous, CoreSite site, DateTimeOffset utc, double budgetMilliseconds, double maximumCatalogMagnitude, double priorAbsoluteScale, double minimumAbsoluteScale, double maximumAbsoluteScale, AstrometricWorkControl? control = null)
     {
         if (!previous.Accepted || previous.Solution is not { } config) throw new ArgumentException("Warm start requires a previously accepted solution");
         if (!double.IsFinite(budgetMilliseconds) || budgetMilliseconds <= 0 || !double.IsFinite(maximumCatalogMagnitude)) throw new ArgumentException("Invalid warm budget/magnitude limit");
+        if (!double.IsFinite(priorAbsoluteScale) || priorAbsoluteScale <= 0 || !double.IsFinite(minimumAbsoluteScale) || minimumAbsoluteScale <= 0 || !double.IsFinite(maximumAbsoluteScale) || maximumAbsoluteScale < minimumAbsoluteScale) throw new ArgumentException("Invalid absolute warm focal-scale interval");
         config.Context();
         if (catalog.Count > 2500 || detections.Count > 10000 || catalog.Select(s => s.Id).Distinct().Count() != catalog.Count || detections.Select(d => d.Index).Distinct().Count() != detections.Count || detections.Any(d => !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Flux) || d.Flux < 0)) throw new ArgumentException("Invalid warm inputs");
         var watch = Stopwatch.StartNew();
@@ -166,8 +167,12 @@ internal static class AstrometricSolverCore
         var stars = catalog.Where(s => s.Magnitude <= maximumCatalogMagnitude).Select(s => new Star(s, CameraBasis.FromHorizontal(AstrometricMath.Horizontal(s, utc, site)))).Where(s => s.Ray.Up > 0).ToList();
         var training = stars.Where(s => !IsVerification(s.Catalog.Id)).ToList(); var verification = stars.Where(s => IsVerification(s.Catalog.Id)).ToList();
         var rotation = AstrometricRotation.FromPose(new(config.BoresightAltitude, config.BoresightAzimuth, config.Roll));
-        var bounds = new CoreSolverOptions(MinimumScale: Math.Max(.98, MinimumPhysicalScale(config)), MaximumScale: 1.02, MaximumCatalogMagnitude: maximumCatalogMagnitude);
-        var candidate = Refine(new(rotation, 1, []), training, new CoreDetectionGrid(detections), config, bounds, () => watch.Elapsed.TotalMilliseconds > budgetMilliseconds, control);
+        // Scale is relative to the prior optical model here, but settings describe the immutable calibration.
+        var minimumRelativeScale = Math.Max(Math.Max(.98, MinimumPhysicalScale(config)), minimumAbsoluteScale / priorAbsoluteScale);
+        var maximumRelativeScale = Math.Min(1.02, maximumAbsoluteScale / priorAbsoluteScale);
+        if (minimumRelativeScale > maximumRelativeScale) return Rejected("Warm focal-scale interval is empty; retain last good configuration and reacquire");
+        var bounds = new CoreSolverOptions(MinimumScale: minimumRelativeScale, MaximumScale: maximumRelativeScale, MaximumCatalogMagnitude: maximumCatalogMagnitude);
+        var candidate = Refine(new(rotation, Math.Clamp(1, minimumRelativeScale, maximumRelativeScale), []), training, new CoreDetectionGrid(detections), config, bounds, () => watch.Elapsed.TotalMilliseconds > budgetMilliseconds, control);
         if (watch.Elapsed.TotalMilliseconds > budgetMilliseconds) return Rejected("Warm time budget exceeded; retain last good configuration and attempt cold recovery", timeout: true);
         if (rotation.SeparationDegrees(candidate.Rotation) > 1) return Rejected("Warm correction exceeds1degree local trust region; retain last good configuration and reacquire");
         var evaluation = Evaluate(candidate, stars, training, verification, detections, config);

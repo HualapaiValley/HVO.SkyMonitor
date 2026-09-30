@@ -78,7 +78,7 @@ public sealed class AstrometricSolverTests
     public void Catalog_IncompleteOrUnsupportedEpochIsUnavailable()
     {
         var f = Accepted.Value;
-        foreach (var data in new[] { new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars, false), new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars, true, "unknown-proper-motion") })
+        foreach (var data in new[] { new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars, false, 7), new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars, true, 7, "unknown-proper-motion") })
         { var result = AstrometricSolver.Solve(f.Result.Assessment.Frame, f.Calibration, data, f.Detections); Assert.AreEqual(AstrometricAssessmentStatus.Unavailable, result.Assessment.Status); Assert.IsNull(result.Assessment.Parameters); }
     }
     [TestMethod]
@@ -101,7 +101,7 @@ public sealed class AstrometricSolverTests
     [TestMethod]
     public void InputOrdering_DoesNotChangeSemanticAssessmentIdentity()
     {
-        var f = Accepted.Value; var reverse = new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars.Reverse(), true);
+        var f = Accepted.Value; var reverse = new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars.Reverse(), true, 7);
         var result = AstrometricSolver.Solve(f.Result.Assessment.Frame, f.Calibration, reverse, f.Detections.Reverse().ToArray());
         Assert.AreEqual(f.Result.Assessment.IdentitySha256, result.Assessment.IdentitySha256);
     }
@@ -127,7 +127,7 @@ public sealed class AstrometricSolverTests
     public void WarmSolve_ChangedSelectionWithSameMetadataIsNotTrusted()
     {
         var f = Accepted.Value;
-        var changed = new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars.Select(s => s with { RightAscensionHours = (s.RightAscensionHours + .01) % 24 }), true);
+        var changed = new AstrometricCatalogData(f.Catalog.Metadata, f.Catalog.Stars.Select(s => s with { RightAscensionHours = (s.RightAscensionHours + .01) % 24 }), true, 7);
         Assert.AreEqual(f.Catalog.IdentitySha256, changed.IdentitySha256); Assert.AreNotEqual(f.Catalog.SelectionIdentitySha256, changed.SelectionIdentitySha256);
         var result = AstrometricSolver.Refine(f.Result.Assessment.Frame, f.Calibration, changed, f.Detections, f.Result.Assessment);
         Assert.AreEqual("warm-context-incompatible", result.Assessment.ReasonCode); Assert.IsNull(result.Assessment.Parameters);

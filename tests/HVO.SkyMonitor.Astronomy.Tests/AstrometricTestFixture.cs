@@ -22,7 +22,7 @@ internal static class AstrometricTestFixture
         var stars = Enumerable.Range(0, 560).Select(i => new CelestialCatalogObject($"SYN{i:0000}", $"Artificial {i}",
             random.NextDouble() * 24, Math.Asin(2 * random.NextDouble() - 1) * 180 / Math.PI, 1.8 + 3.4 * random.NextDouble())).ToArray();
         return new(new("Generated uniform test catalog", "1", new Uri("https://github.com/HualapaiValley/HVO.SkyMonitor"),
-            Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(stars))), "test-generated", "1"), stars, true);
+            Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(stars))), "test-generated", "1"), stars, true, 7);
     }
     internal static ProjectionContext Truth(double fullField = 185) => new(ProjectionModel.EquidistantFisheye, 256, 256,
         232 / (fullField * Math.PI / 360), 232 / (fullField * Math.PI / 360), 512, 512, ProjectionAperture.Circular, 232, 72, 243, 17, true);

@@ -69,7 +69,7 @@ public sealed class AstrometricAdversarialTests
     private static AstrometricCatalogData Data(IEnumerable<CelestialCatalogObject> stars)
     {
         var array = stars.ToArray(); var checksum = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(array)));
-        return new(new("Synthetic geometry", "1", new Uri("https://github.com/HualapaiValley/HVO.SkyMonitor"), checksum, "test-generated", "1"), array, true);
+        return new(new("Synthetic geometry", "1", new Uri("https://github.com/HualapaiValley/HVO.SkyMonitor"), checksum, "test-generated", "1"), array, true, 7);
     }
     private static bool Verification(string id)
     { uint hash = 2166136261; foreach (var c in id) hash = unchecked((hash ^ c) * 16777619); return hash % 5 == 0; }

@@ -61,10 +61,11 @@ public sealed record AstrometricFrameContext(Guid CaptureId, Guid SourceArtifact
 public sealed class AstrometricCatalogData
 {
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
-        bool isCompleteForRequestedMagnitude, string coordinateModel = AstrometricConventions.CoordinateModel)
+        bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel)
     {
         ArgumentNullException.ThrowIfNull(metadata); ArgumentNullException.ThrowIfNull(stars);
         AstrometricIdentity.RequireSha256(metadata.Checksum);
+        if (!double.IsFinite(completenessMagnitudeLimit)) throw new ArgumentException("Catalog completeness magnitude limit must be finite.", nameof(completenessMagnitudeLimit));
         if (string.IsNullOrWhiteSpace(metadata.Name) || string.IsNullOrWhiteSpace(metadata.Version) || string.IsNullOrWhiteSpace(metadata.License) || string.IsNullOrWhiteSpace(metadata.SchemaVersion) || metadata.SourceUrl is null || !metadata.SourceUrl.IsAbsoluteUri || metadata.Name.Length > 256 || metadata.Version.Length > 256 || metadata.SourceUrl.AbsoluteUri.Length > 2048 || metadata.License.Length > 2048 || metadata.SchemaVersion.Length > 256)
             throw new ArgumentException("Catalog metadata must identify an immutable source.", nameof(metadata));
         var values = stars.Take(2501).ToArray();
@@ -74,13 +75,15 @@ public sealed class AstrometricCatalogData
                 !double.IsFinite(star.DeclinationDegrees) || star.DeclinationDegrees is < -90 or > 90 || !double.IsFinite(star.Magnitude)) throw new ArgumentException("Invalid catalog entry.", nameof(stars));
         if (values.Select(s => s.Id).Distinct(StringComparer.Ordinal).Count() != values.Length) throw new ArgumentException("Duplicate catalog identities.", nameof(stars));
         Metadata = metadata; Stars = Array.AsReadOnly(values.OrderBy(s => s.Magnitude).ThenBy(s => s.Id, StringComparer.Ordinal).ToArray());
-        IsCompleteForRequestedMagnitude = isCompleteForRequestedMagnitude; CoordinateModel = coordinateModel;
+        IsCompleteForRequestedMagnitude = isCompleteForRequestedMagnitude; CompletenessMagnitudeLimit = completenessMagnitudeLimit; CoordinateModel = coordinateModel;
         IdentitySha256 = AstrometricIdentity.Hash(new { metadata, coordinateModel });
-        SelectionIdentitySha256 = AstrometricIdentity.Hash(Stars);
+        SelectionIdentitySha256 = AstrometricIdentity.Hash(new { schema = "astrometric-catalog-selection-v2", Stars, IsCompleteForRequestedMagnitude, CompletenessMagnitudeLimit });
     }
     public CatalogMetadata Metadata { get; }
     public ReadOnlyCollection<CelestialCatalogObject> Stars { get; }
     public bool IsCompleteForRequestedMagnitude { get; }
+    /// <summary>Faintest magnitude through which the adapter declares complete coverage; still unavailable when the completeness flag is false.</summary>
+    public double CompletenessMagnitudeLimit { get; }
     public string CoordinateModel { get; }
     public string IdentitySha256 { get; }
     public string SelectionIdentitySha256 { get; }

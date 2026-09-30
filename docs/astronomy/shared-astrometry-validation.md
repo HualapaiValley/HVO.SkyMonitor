@@ -41,3 +41,9 @@ There was no previous production solver to compare. Cold and warm paths are comp
 ## Required candidate gates
 
 The issue requires classifier-selected evidence and independent exact-range review. All local results and any blocked gates must be recorded against the final candidate. Docker CLI/socket are absent in this cloud executor, so Docker-dependent integration gates cannot be declared passed. This limitation prevents a full Tier C merge-ready claim. No publication/PR/merge/deployment or application registration is part of the current local checkpoint.
+
+## PR1093 review corrections
+
+- Warm absolute focal bounds now survive local refinement and successive accepted updates; the relative2% trust interval is intersected with the immutable-calibration bounds and projection domain. Fixed-scale, upper/lower drift and out-of-range-prior regressions cover this contract
+- Catalog completeness now declares a finite magnitude limit and binds both that limit and incomplete/truncated status into selection provenance. Sync, async-provider and warm paths reject insufficient requested coverage; matching-ceiling controls still solve
+- Nine focused regression cases were added. The repository Astronomy inventory is216 Unit cases; full solution inventory is4631 Unit cases. These are category inventories, not claims that environment-blocked host tests passed

@@ -45,13 +45,13 @@ public static class AstrometricSolver
         var control = new AstrometricWorkControl(previous is null ? options.ColdBudgetMilliseconds : options.WarmBudgetMilliseconds, cancellationToken);
         AstrometricSolveResult Failure(AstrometricAssessmentStatus status, string code, string reason) =>
             Create(frame, calibration, catalog, options, mode, status, code, reason, null, null, [], new(control.ElapsedMilliseconds, 0, 0, 0, 0, 0, status == AstrometricAssessmentStatus.BudgetExceeded), previous?.IdentitySha256);
-        if (!catalog.IsCompleteForRequestedMagnitude) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-incomplete", "Catalog source reported incomplete requested coverage; no fit was attempted.");
+        if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < options.MaximumCatalogMagnitude) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.");
         if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel) return Failure(AstrometricAssessmentStatus.Unavailable, "coordinate-model-unsupported", "Only explicitly declared fixed-position J2000 precession is supported.");
         if (copy.Length < 12) return Failure(AstrometricAssessmentStatus.Rejected, "insufficient-detections", "At least12 measured sources are required.");
         if (previous is not null)
         {
             AstrometricEvidenceJson.Validate(previous);
-            if (!previous.HasMeasuredMapping || previous.CalibrationIdentitySha256 != calibration.IdentitySha256 ||
+            if (!previous.HasMeasuredMapping || previous.Parameters!.FocalScale < options.MinimumFocalScale || previous.Parameters.FocalScale > options.MaximumFocalScale || previous.CalibrationIdentitySha256 != calibration.IdentitySha256 ||
                 previous.CatalogIdentitySha256 != catalog.IdentitySha256 || previous.CatalogSelectionIdentitySha256 != catalog.SelectionIdentitySha256 || previous.SettingsIdentitySha256 != options.IdentitySha256 ||
                 previous.SolverVersion != AstrometricConventions.SolverVersion || previous.Frame.Observer != frame.Observer ||
                 previous.Frame.ObserverIdentitySha256 != frame.ObserverIdentitySha256 || previous.Frame.MidpointUtc > frame.MidpointUtc ||
@@ -73,7 +73,7 @@ public static class AstrometricSolver
             else
             {
                 var prior = new CoreResult(true, "accepted", "trusted-prior", SolverOptics.From(AstrometricMapping.Projection(calibration, previous)), 1, null, [], 0, 0, 0, 0, 0, false, 0, "warm");
-                core = AstrometricSolverCore.SolveWarm(measured, catalog.Stars, prior, site, frame.MidpointUtc, options.WarmBudgetMilliseconds, options.MaximumCatalogMagnitude, control);
+                core = AstrometricSolverCore.SolveWarm(measured, catalog.Stars, prior, site, frame.MidpointUtc, options.WarmBudgetMilliseconds, options.MaximumCatalogMagnitude, previous.Parameters!.FocalScale, options.MinimumFocalScale, options.MaximumFocalScale, control);
             }
             control.Check();
             AstrometricFitParameters? parameters = null;
@@ -81,7 +81,7 @@ public static class AstrometricSolver
             {
                 var equatorial = CoordinateTransforms.HorizontalToEquatorial(new(solution.BoresightAltitude, solution.BoresightAzimuth), frame.MidpointUtc, site.Latitude, site.Longitude);
                 parameters = new(solution.BoresightAltitude, solution.BoresightAzimuth, solution.Roll,
-                    solution.FocalX / calibration.Projection.FocalLengthXPixels, equatorial.RightAscensionHours, equatorial.DeclinationDegrees);
+                    Math.Clamp((previous?.Parameters?.FocalScale ?? 1) * core.FocalScale!.Value, options.MinimumFocalScale, options.MaximumFocalScale), equatorial.RightAscensionHours, equatorial.DeclinationDegrees);
             }
             var quality = core.Quality is { } q ? new AstrometricFitQuality(q.Score0To100, q.FittingStars, q.VerificationStars, q.ExpectedFittingStars,
                 q.FittingRmsPixels, q.VerificationRmsPixels, q.WidthCoverage, q.HeightCoverage) : null;

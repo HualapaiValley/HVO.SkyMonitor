@@ -63,12 +63,12 @@ The production algorithms contain no synthetic catalog. They consume supplied im
 - Default28 bright image detections,192 sampled triangles per scale,200000 hypotheses,32 retained candidates
 - Focal multiplier0.90–1.10 in0.01 steps; valid radial-domain floors enforced;20 local iterations
 - Cooperative numerical-work budgets:15s cold,500ms warm; cancellation checked during index/search/refinement
-- Warm correction limited to1degree and±2% relative focal scale; default prior maximum age600s; observer/calibration/catalog/actual-selection/settings mismatch rejects
+- Warm correction limited to1degree and±2% relative focal scale, intersected with the original absolute MinimumFocalScale/MaximumFocalScale interval and physical projection domain; default prior maximum age600s; observer/calibration/catalog/actual-selection/settings mismatch rejects
 - Image processing bounds:16M pixels and4096 detector candidates; candidate exhaustion is explicit
 
 Catalog materialization is outside the numerical-work timer and is governed by the injected adapter/caller cancellation. Timers are cooperative, not hard real-time termination. Limits reject or return unavailable/budget outcomes; there is no silent full-catalog completeness claim.
 
-No default production HYG adapter is wired here. The existing `ICelestialCatalog`/`Catalog.Sqlite` remain read-only catalog owners. An adapter must request a declared magnitude ceiling, use authoritative snapshot metadata, detect limit exhaustion and report incomplete coverage. A fixed `MaximumResults` truncation must not be passed as complete. A dense global/narrow-field index that exceeds this implementation's bounds requires a separately qualified index/candidate strategy; a synthetic narrow-field success does not fill absent catalog stars. No `CatalogSnapshotResult` shape changes or new catalog installation occur.
+No default production HYG adapter is wired here. The existing `ICelestialCatalog`/`Catalog.Sqlite` remain read-only catalog owners. An adapter must request a declared magnitude ceiling, use authoritative snapshot metadata, detect limit exhaustion and report incomplete coverage. AstrometricCatalogData requires a finite CompletenessMagnitudeLimit; all synchronous, asynchronous-provider and warm calls refuse a selection whose declared limit is below MaximumCatalogMagnitude, or whose completeness flag is false. The declaration and flag are included with the rows in SelectionIdentitySha256, so a coverage change invalidates warm reuse. The constructor has no implicit/default completeness ceiling. A fixed `MaximumResults` truncation must not be passed as complete. A dense global/narrow-field index that exceeds this implementation's bounds requires a separately qualified index/candidate strategy; a synthetic narrow-field success does not fill absent catalog stars. No `CatalogSnapshotResult` shape changes or new catalog installation occur.
 
 ## Quality
 
