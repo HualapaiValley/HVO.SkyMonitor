@@ -199,7 +199,12 @@ keeps the flip it was generated with. To change it on an installed instance,
 use **Operations > Camera & rig > Edit active rig** in the CameraAgent UI: that
 records new optics and rig revisions, stages them, and applies them when
 CameraAgent next restarts. It does not rewrite the installed rig in place, and
-previously captured frames and layers are not changed.
+previously captured frames and layers are not changed. In the installed
+container, whose `restart: unless-stopped` policy starts CameraAgent again, the
+pending-rig banner offers **Restart now** to operators with Operations change
+rights. On a host with no supervisor, restart CameraAgent manually;
+`CameraAgent:Restart:Supervised` (`true` or `false`) overrides the container
+detection.
 
 `cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
