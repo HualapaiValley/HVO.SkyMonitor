@@ -24,7 +24,6 @@ public sealed partial class ApiKeys
     private List<ObservatoryScopeItem> observatoryScopes = new();
     private string? statusMessage;
     private string? generatedPlaintextKey;
-    private string? _busyKeyId;
     private bool createInProgress;
 
     [Inject]
@@ -50,9 +49,14 @@ public sealed partial class ApiKeys
     [SupplyParameterFromForm]
     private CreateApiKeyInput Input { get; set; } = default!;
 
+    // Posted by the row buttons: the clicked button alone submits its name, the action, and its value, the key.
+    [SupplyParameterFromForm(FormName = "api-key-action")]
+    private KeyActionInput KeyAction { get; set; } = default!;
+
     protected override async Task OnInitializedAsync()
     {
         Input ??= new();
+        KeyAction ??= new();
         user = await UserManager.GetUserAsync(HttpContext.User);
         if (user is null)
         {
@@ -78,6 +82,14 @@ public sealed partial class ApiKeys
 
         try
         {
+            // The list offers only the observatories this user belongs to. A post naming any other (a stale page, or
+            // a membership removed since) is refused here rather than by the lifecycle service's exception.
+            if (model.ObservatoryId is not { } observatoryId || observatoryScopes.All(scope => scope.Id != observatoryId))
+            {
+                statusMessage = "Error: Choose an observatory you are a member of.";
+                return;
+            }
+
             var now = DateTimeOffset.UtcNow;
             DateTimeOffset? expiresUtc = null;
             if (model.ExpiresOnUtc.HasValue)
@@ -119,6 +131,27 @@ public sealed partial class ApiKeys
         }
     }
 
+    private Task OnKeyActionAsync()
+    {
+        if (!string.IsNullOrEmpty(KeyAction.Delete))
+        {
+            return DeleteKeyAsync(KeyAction.Delete);
+        }
+
+        if (!string.IsNullOrEmpty(KeyAction.Deactivate))
+        {
+            return ToggleKeyAsync(KeyAction.Deactivate, desiredState: false);
+        }
+
+        if (!string.IsNullOrEmpty(KeyAction.Activate))
+        {
+            return ToggleKeyAsync(KeyAction.Activate, desiredState: true);
+        }
+
+        statusMessage = "Error: Choose an action for an API key.";
+        return Task.CompletedTask;
+    }
+
     private async Task DeleteKeyAsync(string keyId)
     {
         if (user is null)
@@ -127,7 +160,6 @@ public sealed partial class ApiKeys
             return;
         }
 
-        _busyKeyId = keyId;
         statusMessage = null;
         generatedPlaintextKey = null;
 
@@ -147,10 +179,6 @@ public sealed partial class ApiKeys
             Logger.LogError(ex, "Failed to delete API key {ApiKeyId} for user {UserId}.", keyId, user.Id);
             statusMessage = "Error: Unable to delete API key. Please try again.";
         }
-        finally
-        {
-            _busyKeyId = null;
-        }
     }
 
     private async Task ToggleKeyAsync(string keyId, bool desiredState)
@@ -161,7 +189,6 @@ public sealed partial class ApiKeys
             return;
         }
 
-        _busyKeyId = keyId;
         statusMessage = null;
         generatedPlaintextKey = null;
 
@@ -193,10 +220,6 @@ public sealed partial class ApiKeys
         {
             Logger.LogError(ex, "Failed to toggle API key {ApiKeyId} for user {UserId}.", keyId, user.Id);
             statusMessage = "Error: Unable to update API key. Please try again.";
-        }
-        finally
-        {
-            _busyKeyId = null;
         }
     }
 
@@ -282,4 +305,13 @@ public sealed partial class ApiKeys
     }
 
     private sealed record ObservatoryScopeItem(Guid Id, string Name);
+
+    private sealed class KeyActionInput
+    {
+        public string? Activate { get; set; }
+
+        public string? Deactivate { get; set; }
+
+        public string? Delete { get; set; }
+    }
 }

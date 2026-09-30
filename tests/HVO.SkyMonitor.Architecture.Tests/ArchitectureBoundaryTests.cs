@@ -318,19 +318,21 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void CameraAgentAccountFormsBindTheirFormSuppliedModel()
-        => AssertAccountFormsBindTheirFormSuppliedModel("HVO.SkyMonitor.CameraAgent");
+    public void CameraAgentAccountFormsReachTheirHandlers()
+        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.CameraAgent");
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void LogicHostAccountFormsBindTheirFormSuppliedModel()
-        => AssertAccountFormsBindTheirFormSuppliedModel("HVO.SkyMonitor.LogicHost");
+    public void LogicHostAccountFormsReachTheirHandlers()
+        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.LogicHost");
 
-    // The account pages render statically, so a posted input reaches the page only through a
-    // [SupplyParameterFromForm] property, and Blazor names each input after its binding
-    // expression. An input bound through any other member (such as a lazily created wrapper over
-    // the supplied property) posts a name nothing maps back, and the form silently submits empty.
-    private static void AssertAccountFormsBindTheirFormSuppliedModel(string projectDirectoryName)
+    // The account pages render statically, so only a form post reaches them. A posted input
+    // reaches the page only through a [SupplyParameterFromForm] property, and Blazor names each
+    // input after its binding expression: an input bound through any other member (such as a
+    // lazily created wrapper over the supplied property) posts a name nothing maps back, and the
+    // form silently submits empty. A browser event handler other than a form's @onsubmit never
+    // runs, so a control wired through one does nothing.
+    private static void AssertAccountFormsReachTheirHandlers(string projectDirectoryName)
     {
         var root = RepositoryGraph.FindRepositoryRoot();
         var accountRoot = Path.Combine(root, "src", projectDirectoryName, "Components", "Account");
@@ -339,6 +341,9 @@ public sealed class ArchitectureBoundaryTests
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         var bindPattern = new System.Text.RegularExpressions.Regex(
             @"@bind-Value(?::get)?=""(?<expression>[^""]+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var eventPattern = new System.Text.RegularExpressions.Regex(
+            @"@on(?<event>[a-z]+)\b",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         var violations = new List<string>();
         var bindings = 0;
@@ -356,6 +361,14 @@ public sealed class ArchitectureBoundaryTests
                 if (!supplied.Contains(expression.Split('.')[0]))
                 {
                     violations.Add($"{Path.GetRelativePath(root, page)} binds {expression}; form-supplied: [{string.Join(", ", supplied.Order(StringComparer.Ordinal))}]");
+                }
+            }
+
+            foreach (System.Text.RegularExpressions.Match match in eventPattern.Matches(markup))
+            {
+                if (match.Groups["event"].Value != "submit")
+                {
+                    violations.Add($"{Path.GetRelativePath(root, page)} handles @on{match.Groups["event"].Value}, which a static page never receives");
                 }
             }
         }

@@ -25,60 +25,65 @@
             }
             else
             {
-                <div class="table-responsive api-key-table-wrapper">
-                    <table class="table table-striped align-middle mb-0 api-key-table">
-                        <thead>
-                            <tr>
-                                <th scope="col">Name</th>
-                                 <th scope="col">Access</th>
-                                <th scope="col">Observatory</th>
-                                <th scope="col">Created</th>
-                                <th scope="col">Expires</th>
-                                <th scope="col">Status</th>
-                                <th scope="col" class="text-end">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach (var key in apiKeys)
-                            {
+                @* One form for every row: a static page receives only form posts, so each action button posts the
+                   key it acts on under the action's name, and form names must be unique on the page. *@
+                <form method="post" @formname="api-key-action" @onsubmit="OnKeyActionAsync">
+                    <AntiforgeryToken />
+                    <div class="table-responsive api-key-table-wrapper">
+                        <table class="table table-striped align-middle mb-0 api-key-table">
+                            <thead>
                                 <tr>
-                                    <td>
-                                        <div class="fw-semibold">@key.DisplayName</div>
-                                    </td>
-                                    <td>
-                                        <span class="badge api-key-access-badge">@GetAccessLevelLabel(key.AccessLevel)</span>
-                                    </td>
-                                    <td>@GetObservatoryLabel(key.ObservatoryId)</td>
-                                    <td>@FormatTimestamp(key.CreatedAtUtc)</td>
-                                    <td>@FormatExpiration(key.ExpiresAtUtc)</td>
-                                    <td>
-                                        @if (key.IsActive)
-                                        {
-                                            <span class="badge api-key-status-badge api-key-status-badge--active">Active</span>
-                                        }
-                                        else
-                                        {
-                                            <span class="badge api-key-status-badge api-key-status-badge--inactive">Inactive</span>
-                                        }
-                                    </td>
-                                    <td class="text-end">
-                                        <div class="btn-group" role="group" aria-label="API key actions">
-                                            <button type="button" class="btn btn-sm btn-outline-secondary"
-                                                disabled="@(_busyKeyId == key.Id)"
-                                                @onclick="() => ToggleKeyAsync(key.Id, !key.IsActive)">
-                                                @(key.IsActive ? "Deactivate" : "Activate")
-                                            </button>
-                                            <button type="button" class="btn btn-sm btn-outline-danger"
-                                                disabled="@(_busyKeyId == key.Id)" @onclick="() => DeleteKeyAsync(key.Id)">
-                                                Delete
-                                            </button>
-                                        </div>
-                                    </td>
+                                    <th scope="col">Name</th>
+                                     <th scope="col">Access</th>
+                                    <th scope="col">Observatory</th>
+                                    <th scope="col">Created</th>
+                                    <th scope="col">Expires</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col" class="text-end">Actions</th>
                                 </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
+                            </thead>
+                            <tbody>
+                                @foreach (var key in apiKeys)
+                                {
+                                    <tr>
+                                        <td>
+                                            <div class="fw-semibold">@key.DisplayName</div>
+                                        </td>
+                                        <td>
+                                            <span class="badge api-key-access-badge">@GetAccessLevelLabel(key.AccessLevel)</span>
+                                        </td>
+                                        <td>@GetObservatoryLabel(key.ObservatoryId)</td>
+                                        <td>@FormatTimestamp(key.CreatedAtUtc)</td>
+                                        <td>@FormatExpiration(key.ExpiresAtUtc)</td>
+                                        <td>
+                                            @if (key.IsActive)
+                                            {
+                                                <span class="badge api-key-status-badge api-key-status-badge--active">Active</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge api-key-status-badge api-key-status-badge--inactive">Inactive</span>
+                                            }
+                                        </td>
+                                        <td class="text-end">
+                                            <div class="btn-group" role="group" aria-label="API key actions">
+                                                <button type="submit" class="btn btn-sm btn-outline-secondary"
+                                                    name="@(key.IsActive ? "KeyAction.Deactivate" : "KeyAction.Activate")"
+                                                    value="@key.Id">
+                                                    @(key.IsActive ? "Deactivate" : "Activate")
+                                                </button>
+                                                <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                    name="KeyAction.Delete" value="@key.Id">
+                                                    Delete
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </form>
             }
         </div>
     </div>
