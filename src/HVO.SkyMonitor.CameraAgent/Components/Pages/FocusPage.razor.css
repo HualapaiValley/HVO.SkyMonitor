@@ -53,4 +53,8 @@
     .focus-image { min-height: 22rem; }
     .ops-step-list { grid-template-columns: 1fr; }
     .focus-controls { grid-template-columns: 1fr; }
+    /* Five column headings fit a 320px phone without scrolling the empty table. The wrapper and both table
+       classes outrank the shared .operations-layout ::deep .ops-table rules. */
+    .ops-table-wrap .ops-table.focus-history-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
+    .ops-table-wrap .ops-table.focus-history-table td { padding-inline: .3rem; }
 }

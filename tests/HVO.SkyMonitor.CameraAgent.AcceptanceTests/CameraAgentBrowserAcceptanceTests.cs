@@ -93,15 +93,40 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await WaitForFocusAsync(page, toggle).ConfigureAwait(false);
         }
         // Focus is routable but has no session capability: every control is disabled and nothing is measured.
-        await page.GotoAsync("/operations/focus").ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await page.GotoAsync("/operations/focus").ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+            await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus", Level = 1, Exact = true }))
+                .ConfigureAwait(false);
+            Assert.AreEqual("page", await page.Locator("nav.operations-navigation a[href='/operations/focus']")
+                .GetAttributeAsync("aria-current").ConfigureAwait(false));
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                "() => [...document.querySelectorAll('.operations-content button, .operations-content input, .operations-content select')].every(control => control.disabled)")
+                .ConfigureAwait(false));
+            Assert.AreEqual(0, await page.Locator(".operations-content img").CountAsync().ConfigureAwait(false));
+            Assert.IsFalse(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
+                .ConfigureAwait(false), $"Focus overflows horizontally at {width}px.");
+            Assert.IsTrue(await page.Locator(".focus-history-table").EvaluateAsync<bool>(
+                "table => table.parentElement.scrollWidth <= table.parentElement.clientWidth + 1")
+                .ConfigureAwait(false), $"The empty focus history scrolls at {width}px.");
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"focus-{width}.png"), FullPage = true })
+                .ConfigureAwait(false);
+        }
+        // On a phone the drawer reaches Focus by keyboard and closes on arrival.
+        await page.GotoAsync("/operations").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === true")
+            .ConfigureAwait(false);
+        await page.Locator("#operations-sections a[href='/operations/focus']").FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus", Level = 1, Exact = true }))
             .ConfigureAwait(false);
-        Assert.AreEqual("page", await page.Locator("nav.operations-navigation a[href='/operations/focus']")
-            .GetAttributeAsync("aria-current").ConfigureAwait(false));
-        Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => [...document.querySelectorAll('.operations-content button, .operations-content input, .operations-content select')].every(control => control.disabled)")
-            .ConfigureAwait(false));
-        Assert.AreEqual(0, await page.Locator(".operations-content img").CountAsync().ConfigureAwait(false));
+        await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === false")
+            .ConfigureAwait(false);
         await page.GotoAsync("/operations/unavailable/delivery").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Delivery", Level = 1, Exact = true }))
             .ConfigureAwait(false);
@@ -745,12 +770,50 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailUrl = await AssertGalleryAsync(page, context, host).ConfigureAwait(false);
         await AssertQuarantineAsync(page).ConfigureAwait(false);
         await AssertSystemNavigationAsync(page).ConfigureAwait(false);
-        await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
-        await AssertCalibrationAsync(page).ConfigureAwait(false);
         await AssertResponsiveAndAccessibleAsync(page, detailUrl).ConfigureAwait(false);
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    [DoNotParallelize]
+    public async Task OwnerScheduleAndCalibrationAcceptanceAsync()
+    {
+        // Schedule and Calibration own their editors and apply flows, so they run apart from the gallery chain
+        // and one stale page cannot hide a regression in another. Reference acquisition needs the agent ID and the
+        // explicit native readout, so the host enables both.
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            useCalibrationLibrary: true,
+            enableCentralIntegration: true).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        context.SetDefaultTimeout(DefaultTimeoutMilliseconds);
+        context.SetDefaultNavigationTimeout(DefaultTimeoutMilliseconds);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+
+        await LoginAsync(
+            page,
+            CameraAgentKestrelFixture.OwnerEmail,
+            CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
+        await AssertCalibrationAsync(page).ConfigureAwait(false);
+
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
@@ -1944,23 +2007,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture details" })).ConfigureAwait(false);
 
+        // The full screen control puts the sky figure itself into browser full screen, and leaving full screen
+        // returns focus to the control.
         var trigger = page.Locator("#current-sky-view-large");
-        var dialog = page.Locator("dialog.large-viewer");
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await trigger.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(dialog).ConfigureAwait(false);
-        Assert.IsTrue(await dialog.Locator("img").EvaluateAsync<bool>(
-            "element => element.complete && element.naturalWidth > 0").ConfigureAwait(false));
-        var nativeSize = dialog.GetByRole(AriaRole.Button, new() { Name = "100%" });
-        await nativeSize.ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "element => element.getAttribute('aria-pressed') === 'true'",
-            await nativeSize.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(
-            "current-sky-view-large",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
+            """
+            () => document.fullscreenElement?.matches('figure.sky-figure') === true &&
+                document.fullscreenElement.querySelector('img')?.naturalWidth > 0
+            """).ConfigureAwait(false);
+        await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "() => document.fullscreenElement === null && document.activeElement?.id === 'current-sky-view-large'")
+            .ConfigureAwait(false);
     }
 
     private static async Task<string> AssertGalleryAsync(
