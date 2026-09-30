@@ -51,7 +51,8 @@ else
 
     protected override void OnParametersSet()
     {
-        _layout = PipelineGraphLayout.Arrange(Nodes)
+        // Named graphs compile with ordinal step ids (ProcessingGraphCompiler), so draw them the same way.
+        _layout = PipelineGraphLayout.Arrange(Nodes, StringComparer.Ordinal)
             .Select(static placement => new LaidOutNode(
                 placement.Node.Id,
                 placement.Node.Enabled,
@@ -60,7 +61,7 @@ else
                 Margin + placement.Rank * (NodeWidth + ColumnGap),
                 Margin + placement.Row * (NodeHeight + RowGap)))
             .ToList();
-        var positions = new Dictionary<string, LaidOutNode>(StringComparer.OrdinalIgnoreCase);
+        var positions = new Dictionary<string, LaidOutNode>(StringComparer.Ordinal);
         foreach (var node in _layout)
         {
             positions.TryAdd(node.Id, node);

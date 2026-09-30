@@ -12,21 +12,23 @@ internal sealed record PipelineGraphPlacement(
 /// <summary>
 /// The column layout both graph views draw. A step's rank is the longest dependency chain back to a source, so every
 /// dependency sits in an earlier column; steps keep their configured order within a column. The raw frame and
-/// dependencies on unknown steps do not add a column, and a cycle stops ranking rather than recursing forever.
+/// dependencies on unknown steps do not add a column, and a cycle stops ranking rather than recursing forever. Step ids
+/// are matched with the comparer of whichever compiler validates the graph being drawn.
 /// </summary>
 internal static class PipelineGraphLayout
 {
     internal const string RawInput = "$raw";
 
-    internal static IReadOnlyList<PipelineGraphPlacement> Arrange(IReadOnlyList<CaptureProcessingPlanNode> nodes)
+    internal static IReadOnlyList<PipelineGraphPlacement> Arrange(IReadOnlyList<CaptureProcessingPlanNode> nodes, IEqualityComparer<string> idComparer)
     {
         ArgumentNullException.ThrowIfNull(nodes);
-        var byId = new Dictionary<string, CaptureProcessingPlanNode>(StringComparer.OrdinalIgnoreCase);
+        ArgumentNullException.ThrowIfNull(idComparer);
+        var byId = new Dictionary<string, CaptureProcessingPlanNode>(idComparer);
         foreach (var node in nodes)
         {
             byId.TryAdd(node.Id, node);
         }
-        var ranks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var ranks = new Dictionary<string, int>(idComparer);
         int Rank(string id, int depth)
         {
             if (ranks.TryGetValue(id, out var known))

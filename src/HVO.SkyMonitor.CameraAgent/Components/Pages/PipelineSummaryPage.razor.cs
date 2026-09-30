@@ -512,7 +512,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
                 ? node with { Dependencies = effective.Dependencies }
                 : node)
             .ToArray();
-        return PipelineGraphLayout.Arrange(nodes);
+        // Profile step ids are case-insensitive in CaptureProcessingPipelineFactory.
+        return PipelineGraphLayout.Arrange(nodes, StringComparer.OrdinalIgnoreCase);
     }
 
     internal static CaptureProcessingPlanNode? Effective(CaptureProcessingPlanPreview plan, string id)
