@@ -251,22 +251,28 @@ internal sealed class CameraAgentRegistrationUiService(
         }
 
         var after = await ReadStoredRegistrationAsync(cancellationToken).ConfigureAwait(false);
-        if (after.Readable && after.Secrets is { } stored && !before.Holds(stored))
+        if (before.Readable && after.Readable)
         {
-            logger.LogWarning(
-                "Device bootstrap stored the registration, then a follow-up step failed with {ExceptionType}.",
-                failure.GetType().Name);
-            return OperatorUiResult<RegistrationImportReceipt>.Success(Receipt(stored, setupIncomplete: true));
+            if (after.Secrets is { } stored && !before.Holds(stored))
+            {
+                logger.LogWarning(
+                    "Device bootstrap stored the registration, then a follow-up step failed with {ExceptionType}.",
+                    failure.GetType().Name);
+                return OperatorUiResult<RegistrationImportReceipt>.Success(Receipt(stored, setupIncomplete: true));
+            }
+            return NothingStored(failure);
         }
-        if (!after.Readable)
+        // Without two readable snapshots only the exchange itself failing proves nothing was stored: the workflow
+        // saves only what LogicHost returns, and the rig seeder swallows its own HTTP failures.
+        if (failure is HttpRequestException)
         {
-            logger.LogWarning(
-                "Device bootstrap failed with {ExceptionType} and the registration store could not be read afterwards.",
-                failure.GetType().Name);
-            return Unavailable<RegistrationImportReceipt>(
-                "The import stopped partway, and this CameraAgent could not confirm whether a registration was stored. Close this dialog and choose Refresh to see the registration state before trying again; LogicHost may already have used this envelope.");
+            return NothingStored(failure);
         }
-        return NothingStored(failure);
+        logger.LogWarning(
+            "Device bootstrap failed with {ExceptionType} and the registration store could not be compared.",
+            failure.GetType().Name);
+        return Unavailable<RegistrationImportReceipt>(
+            "The import stopped partway, and this CameraAgent could not confirm whether a registration was stored. Close this dialog and choose Refresh to see the registration state before trying again; LogicHost may already have used this envelope.");
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -288,9 +294,8 @@ internal sealed class CameraAgentRegistrationUiService(
         }
     }
 
-    /// <summary>Maps a failed import once the store shows nothing new was saved. Only a connection that was
-    /// never made proves LogicHost did not use the envelope; LogicHost commits before it answers, so any later
-    /// failure may leave the envelope spent.</summary>
+    /// <summary>Maps a failed import once nothing new was saved. LogicHost commits before it answers, and the
+    /// handler can resend on a fresh connection, so no transport failure proves the envelope is still unused.</summary>
     private OperatorUiResult<RegistrationImportReceipt> NothingStored(Exception failure)
     {
         const string MaybeUsed = "If LogicHost now shows the envelope as used, issue a new one; otherwise paste it again.";
@@ -303,7 +308,7 @@ internal sealed class CameraAgentRegistrationUiService(
             case HttpRequestException { StatusCode: null, HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError or HttpRequestError.SecureConnectionError } unreached:
                 logger.LogWarning("Device bootstrap could not connect to LogicHost: {RequestError}.", unreached.HttpRequestError);
                 return Unavailable<RegistrationImportReceipt>(
-                    "LogicHost could not be reached, so the envelope was not used and nothing was stored. Check the network connection, then paste the envelope again.");
+                    $"LogicHost could not be reached, and nothing was stored here. Check the network connection. {MaybeUsed}");
             case HttpRequestException exchange:
                 logger.LogWarning(
                     "Device bootstrap exchange failed with status {StatusCode} and {RequestError}.",
@@ -377,8 +382,7 @@ internal sealed class CameraAgentRegistrationUiService(
     private readonly record struct StoredRegistration(bool Readable, DeviceSecrets? Secrets)
     {
         /// <summary>True when this snapshot already held <paramref name="stored"/>, so the import saved nothing new.</summary>
-        public bool Holds(DeviceSecrets stored) => Readable
-            && Secrets is { } held
+        public bool Holds(DeviceSecrets stored) => Secrets is { } held
             && held.DevicePublicId == stored.DevicePublicId
             && held.IssuedAtUtc == stored.IssuedAtUtc;
     }

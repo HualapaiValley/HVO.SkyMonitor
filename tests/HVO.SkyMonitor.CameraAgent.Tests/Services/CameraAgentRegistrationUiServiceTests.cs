@@ -253,17 +253,22 @@ public sealed class CameraAgentRegistrationUiServiceTests
     }
 
     [TestMethod]
-    public async Task ImportEnvelope_WhenLogicHostCannotBeReached_SaysTheEnvelopeWasNotUsedAsync()
+    [DataRow(HttpRequestError.NameResolutionError, DisplayName = "Name resolution")]
+    [DataRow(HttpRequestError.ConnectionError, DisplayName = "Connection")]
+    [DataRow(HttpRequestError.SecureConnectionError, DisplayName = "TLS")]
+    public async Task ImportEnvelope_WhenLogicHostCannotBeReached_NeverPromisesTheEnvelopeIsUnusedAsync(HttpRequestError error)
     {
         var harness = new Harness();
         harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused"));
+            .ThrowsAsync(new HttpRequestException(error, "Connection failed"));
         var service = CreateService(harness);
 
         var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
-        StringAssert.StartsWith(result.Message, "LogicHost could not be reached, so the envelope was not used", StringComparison.Ordinal);
+        StringAssert.StartsWith(result.Message, "LogicHost could not be reached, and nothing was stored here.", StringComparison.Ordinal);
+        StringAssert.Contains(result.Message, "If LogicHost now shows the envelope as used, issue a new one", StringComparison.Ordinal);
+        Assert.IsFalse(result.Message!.Contains("was not used", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -314,17 +319,32 @@ public sealed class CameraAgentRegistrationUiServiceTests
     }
 
     [TestMethod]
-    public async Task ImportEnvelope_ReplacingAnUnreadableRegistration_ReportsTheStoredOneWhenALaterStepFailsAsync()
+    public async Task ImportEnvelope_WhenTheEarlierReadFailed_DoesNotCreditTheImportWithTheStoredRecordAsync()
     {
-        var harness = new Harness { SecretReads = [new CryptographicException("key ring lost"), Secrets(Now)] };
+        var harness = new Harness { SecretReads = [new IOException("file busy"), Secrets(Now.AddDays(-5))] };
         harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new IOException("staging failed"));
+            .ThrowsAsync(new InvalidOperationException("Deployment location is not initialized."));
         var service = CreateService(harness);
 
         var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
 
-        Assert.IsTrue(result.IsSuccess);
-        Assert.IsTrue(result.Value!.SetupIncomplete);
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        StringAssert.StartsWith(result.Message, "The import stopped partway, and this CameraAgent could not confirm whether a registration was stored.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ImportEnvelope_WithAnUnreadableRecordAndLogicHostUnreachable_ReportsTheConnectionFailureAsync()
+    {
+        var harness = new Harness { SecretReads = [new CryptographicException("key ring lost"), new CryptographicException("key ring lost")] };
+        harness.Workflow.Setup(value => value.BootstrapAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused"));
+        var service = CreateService(harness);
+
+        var result = await service.ImportEnvelopeAsync("envelope", CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        StringAssert.StartsWith(result.Message, "LogicHost could not be reached, and nothing was stored here.", StringComparison.Ordinal);
     }
 
     [TestMethod]
