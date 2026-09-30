@@ -92,6 +92,7 @@
 .ops-nav-group { margin: 1.1rem .6rem .4rem; color: var(--muted); font-size: .69rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
 .ops-nav-badge { padding: .15rem .4rem; border-radius: 999px; font: 700 .62rem ui-monospace, monospace; }
 .ops-nav-badge.attention { color: #f1c96f; background: var(--amber-soft); }
+.ops-nav-badge.neutral { color: var(--muted); background: var(--surface-raised); }
 
 .operations-scope {
     display: grid;

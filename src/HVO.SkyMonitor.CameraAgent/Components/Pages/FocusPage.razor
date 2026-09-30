@@ -1,0 +1,87 @@
+@page "/operations/focus"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+
+<PageTitle>Focus | Operations</PageTitle>
+
+<OperationsPageHeading Eyebrow="@Section.Eyebrow" Title="@Section.Label" HeadingId="focus-heading" Description="@Section.Description">
+    <Actions>
+        <a class="button secondary" href="/">Current sky</a>
+        <button type="button" id="focus-start" class="button primary" disabled aria-describedby="focus-unavailable-reason"
+                title="@Section.CapabilityNote">Start focus session</button>
+    </Actions>
+</OperationsPageHeading>
+
+<div class="focus-boundary" role="note">
+    <strong>Manual focus only.</strong> Loosen, adjust, and secure the lens at the camera. CameraAgent does not move hardware
+    and does not measure sharpness yet, so judge each adjustment from the next capture in Current sky.
+</div>
+
+<section class="focus-workspace" aria-label="Focus workspace">
+    <div class="focus-viewer">
+        <div class="focus-image" role="img" aria-label="No focus preview. Temporary focus previews are not available on this CameraAgent.">
+            <span class="focus-reticle" aria-hidden="true"></span>
+            <span class="focus-target-label" aria-hidden="true">No preview / no target region</span>
+        </div>
+        <footer class="focus-viewer-toolbar">
+            <span>No preview. Temporary focus previews are not available, so nothing here is admitted to the capture pipeline.</span>
+            <button type="button" id="focus-select-region" class="button secondary small" disabled
+                    aria-describedby="focus-unavailable-reason" title="@Section.CapabilityNote">Select region</button>
+        </footer>
+    </div>
+
+    <aside class="focus-inspector" aria-labelledby="focus-session-status">
+        <div class="focus-session-state">
+            <span><strong id="focus-session-status">Session unavailable</strong><small>No focus session can be started.</small></span>
+            <span class="state-chip pending">Unavailable</span>
+        </div>
+        <p id="focus-unavailable-reason" class="focus-reason">@Section.CapabilityNote</p>
+        <div class="focus-score">
+            <span>Focus metric / no session</span>
+            <strong id="focus-metric">&mdash; <small>no measurement</small></strong>
+            <svg class="focus-trend" viewBox="0 0 240 90" role="img" aria-label="No focus samples recorded">
+                <path class="grid" d="M0 20H240M0 45H240M0 70H240"></path>
+            </svg>
+        </div>
+        <div class="focus-controls">
+            <label>Preview exposure<input id="focus-exposure" type="text" placeholder="Unavailable" disabled aria-describedby="focus-unavailable-reason"></label>
+            <label>Preview gain<input id="focus-gain" type="number" placeholder="Unavailable" disabled aria-describedby="focus-unavailable-reason"></label>
+            <label>Interval<select id="focus-interval" disabled aria-describedby="focus-unavailable-reason"><option>Unavailable</option></select></label>
+            <label>Metric<select id="focus-metric-kind" disabled aria-describedby="focus-unavailable-reason"><option>Unavailable</option></select></label>
+        </div>
+        <button type="button" id="focus-sample" class="button secondary" disabled aria-describedby="focus-unavailable-reason"
+                title="@Section.CapabilityNote">Record next sample</button>
+    </aside>
+</section>
+
+<section class="ops-panel ops-grid" aria-labelledby="focus-procedure-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="focus-procedure-heading">Manual focusing procedure</h2><p>Keep the exposure setup fixed while comparing adjustments.</p></div>
+        <span>No motor control</span>
+    </header>
+    <div class="ops-step-list">
+        <article class="ops-step"><strong>Choose a field</strong><span>Pick a stable, star-rich region away from the horizon and bright obstructions.</span></article>
+        <article class="ops-step"><strong>Hold the exposure</strong><span>Keep exposure and gain unchanged between comparisons, and avoid clipping the target stars.</span></article>
+        <article class="ops-step"><strong>Adjust by hand</strong><span>Move the lens in small increments and wait for the next capture before judging the change.</span></article>
+        <article class="ops-step"><strong>Secure &amp; verify</strong><span>Tighten the lens, then confirm small, round stars across several captures in Current sky.</span></article>
+    </div>
+</section>
+
+<section class="ops-panel ops-grid" aria-labelledby="focus-history-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="focus-history-heading">Focus session history</h2><p>Retained sessions would document optical setup; they never alter active camera profiles.</p></div>
+        <button type="button" id="focus-export" class="button secondary small" disabled aria-describedby="focus-unavailable-reason"
+                title="@Section.CapabilityNote">Export evidence</button>
+    </header>
+    <div class="ops-table-wrap">
+        <table class="ops-table">
+            <thead><tr><th scope="col">Session</th><th scope="col">Best metric</th><th scope="col">Target</th><th scope="col">Conditions</th><th scope="col">Result</th></tr></thead>
+            <tbody>
+                <tr class="focus-history-empty"><td colspan="5">No focus sessions are retained on this CameraAgent.</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>

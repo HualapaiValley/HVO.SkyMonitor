@@ -15,7 +15,7 @@ public sealed class OperationsLayoutTests
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
     private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "transients", "automations", "delivery", "storage", "health", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
-    private static readonly string[] UnavailableSlugs = ["focus", "transients", "delivery", "control", "software"];
+    private static readonly string[] UnavailableSlugs = ["transients", "delivery", "control", "software"];
 
     [TestMethod]
     public void Catalog_ListsThePrototypeSectionsOnceWithProtectedRoutes()
@@ -40,7 +40,8 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("storage", OperationsSectionCatalog.Resolve("/operations/quarantine")!.Slug);
         Assert.AreEqual("schedule", OperationsSectionCatalog.Resolve("/schedule")!.Slug);
         Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices/bootstrap")!.Slug);
-        Assert.AreEqual("focus", OperationsSectionCatalog.Resolve("/operations/unavailable/focus")?.Slug);
+        Assert.AreEqual("focus", OperationsSectionCatalog.Resolve("/operations/focus")?.Slug);
+        Assert.IsNull(OperationsSectionCatalog.Resolve("/operations/unavailable/focus"));
     }
 
     [TestMethod]
@@ -82,6 +83,7 @@ public sealed class OperationsLayoutTests
             ("/operations", "overview"),
             ("/schedule", "schedule"),
             ("/operations/schedule", "schedule"),
+            ("/operations/focus", "focus"),
             ("/calibration", "calibration"),
             ("/operations/calibration", "calibration"),
             ("/environmental", "environment"),
@@ -134,6 +136,22 @@ public sealed class OperationsLayoutTests
     }
 
     [TestMethod]
+    public void Render_ManualFocusLinksToItsPageWithABadgeAndDescribedGap()
+    {
+        using var context = CreateContext(out _);
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+        var focus = OperationsSectionCatalog.Get("focus");
+
+        var link = cut.Find("a[href='/operations/focus']");
+        Assert.AreEqual(string.Empty, link.GetAttribute("class"));
+        Assert.AreEqual("Manual", link.QuerySelector(".ops-nav-badge.neutral")!.TextContent.Trim());
+        Assert.AreEqual("operations-unavailable-focus", link.GetAttribute("aria-describedby"));
+        Assert.AreEqual(focus.CapabilityNote, link.GetAttribute("title"));
+        Assert.AreEqual(focus.CapabilityNote, cut.Find("#operations-unavailable-focus").TextContent);
+        Assert.HasCount(1, cut.FindAll(".ops-nav-badge.neutral"));
+    }
+
+    [TestMethod]
     public void Render_HealthyReadShowsHealthyChipScopeAndNoBadges()
     {
         using var context = CreateContext(out _);
@@ -141,7 +159,7 @@ public sealed class OperationsLayoutTests
 
         cut.WaitForAssertion(() => Assert.AreEqual("Healthy", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
         Assert.AreEqual("state-chip success", cut.Find(".operations-sidebar-head .state-chip").GetAttribute("class"));
-        Assert.IsEmpty(cut.FindAll(".ops-nav-badge"));
+        Assert.IsEmpty(cut.FindAll(".ops-nav-badge.attention"));
         Assert.AreEqual("North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim());
         Assert.DoesNotContain("agent-test", cut.Find(".operations-scope").TextContent);
         var registration = cut.Find(".operations-scope a");
@@ -208,7 +226,7 @@ public sealed class OperationsLayoutTests
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
         cut.WaitForAssertion(() => Assert.AreEqual("Unknown", cut.Find(".operations-sidebar-head .state-chip").TextContent.Trim()));
         Assert.AreEqual("state-chip pending", cut.Find(".operations-sidebar-head .state-chip").GetAttribute("class"));
-        Assert.IsEmpty(cut.FindAll(".ops-nav-badge"));
+        Assert.IsEmpty(cut.FindAll(".ops-nav-badge.attention"));
         Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
 
         using var denied = CreateContext(out var deniedService);
@@ -238,7 +256,7 @@ public sealed class OperationsLayoutTests
         };
 
         // An unavailable section makes no read of its own, so only the layout can notice the revocation.
-        navigation.NavigateTo("/operations/unavailable/focus");
+        navigation.NavigateTo("/operations/unavailable/delivery");
 
         cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
@@ -280,9 +298,9 @@ public sealed class OperationsLayoutTests
     public void UnavailableSection_ExplainsTheGapWithoutActionControls()
     {
         using var context = new BunitContext();
-        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "focus"));
-        var section = OperationsSectionCatalog.Get("focus");
-        Assert.AreEqual("Focus", cut.Find(".ops-page-heading h1").TextContent.Trim());
+        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "delivery"));
+        var section = OperationsSectionCatalog.Get("delivery");
+        Assert.AreEqual(section.Label, cut.Find(".ops-page-heading h1").TextContent.Trim());
         Assert.AreEqual(section.Eyebrow, cut.Find(".ops-page-heading .eyebrow").TextContent.Trim());
         StringAssert.Contains(cut.Find(".ops-note-banner").TextContent, section.UnavailableReason!, StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".ops-note-banner").TextContent, "Not implemented on this CameraAgent.", StringComparison.Ordinal);
@@ -291,10 +309,13 @@ public sealed class OperationsLayoutTests
     }
 
     [TestMethod]
-    public void UnavailableSection_ImplementedOrUnknownSlugSaysTheSectionDoesNotExist()
+    [DataRow("camera")]
+    [DataRow("focus")]
+    [DataRow("no-such-section")]
+    public void UnavailableSection_ImplementedOrUnknownSlugSaysTheSectionDoesNotExist(string slug)
     {
         using var context = new BunitContext();
-        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "camera"));
+        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, slug));
         Assert.AreEqual("Section unavailable", cut.Find(".ops-page-heading h1").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".ops-note-banner"));
     }

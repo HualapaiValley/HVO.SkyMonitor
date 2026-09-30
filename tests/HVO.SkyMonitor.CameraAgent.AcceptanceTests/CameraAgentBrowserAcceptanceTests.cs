@@ -92,8 +92,18 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
             await WaitForFocusAsync(page, toggle).ConfigureAwait(false);
         }
-        await page.GotoAsync("/operations/unavailable/focus").ConfigureAwait(false);
+        // Focus is routable but has no session capability: every control is disabled and nothing is measured.
+        await page.GotoAsync("/operations/focus").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus", Level = 1, Exact = true }))
+            .ConfigureAwait(false);
+        Assert.AreEqual("page", await page.Locator("nav.operations-navigation a[href='/operations/focus']")
+            .GetAttributeAsync("aria-current").ConfigureAwait(false));
+        Assert.IsTrue(await page.EvaluateAsync<bool>(
+            "() => [...document.querySelectorAll('.operations-content button, .operations-content input, .operations-content select')].every(control => control.disabled)")
+            .ConfigureAwait(false));
+        Assert.AreEqual(0, await page.Locator(".operations-content img").CountAsync().ConfigureAwait(false));
+        await page.GotoAsync("/operations/unavailable/delivery").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Delivery", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         StringAssert.Contains(await page.Locator(".unavailable-section .ops-note-banner").InnerTextAsync().ConfigureAwait(false),
             "Not implemented on this CameraAgent.", StringComparison.Ordinal);
@@ -2128,6 +2138,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             (detailUrl, $"Capture #{capture.CaptureSequence}"),
             ("/schedule", "Schedule"),
             ("/calibration", "Calibration"),
+            ("/operations/focus", "Focus"),
             ("/system", "System snapshot"),
             ("/operations/camera", "Camera & rig"),
             ("/operations/pipeline", "Pipeline summary"),

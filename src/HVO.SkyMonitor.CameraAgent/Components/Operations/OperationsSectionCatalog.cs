@@ -16,6 +16,15 @@ public sealed record OperationsSection(
     /// <summary>Why the section has no local capability yet; null when it is implemented.</summary>
     public string? UnavailableReason { get; init; }
 
+    /// <summary>A short neutral sidebar badge, such as "Manual"; null for none.</summary>
+    public string? Badge { get; init; }
+
+    /// <summary>
+    /// What an implemented page cannot do yet on this CameraAgent. Unlike <see cref="UnavailableReason"/>
+    /// the page stays routable; the sidebar describes its link with this note.
+    /// </summary>
+    public string? CapabilityNote { get; init; }
+
     /// <summary>The address the sidebar links to: the section route, or its unavailable notice.</summary>
     public string NavigationHref => UnavailableReason is null ? Href : $"/operations/unavailable/{Slug}";
 
@@ -93,11 +102,12 @@ public static class OperationsSectionCatalog
         new("schedule", "Schedule", "Capture", "/operations/schedule",
             "Capture / deterministic admission",
             "Define when capture may start, then apply day, twilight, and night exposure policies without catch-up captures.", ["/schedule"]),
-        new("focus", "Focus", "Capture", "",
+        new("focus", "Focus", "Capture", "/operations/focus",
             "Capture / manual optical setup",
-            "Use repeatable preview evidence to adjust the lens by hand. This page does not imply a motorized focuser or autofocus capability.", [])
+            "Adjust the lens by hand at the camera. This page does not imply a motorized focuser or autofocus capability.", [])
         {
-            UnavailableReason = "Manual focus sessions and image-derived sharpness measurements are not implemented on this CameraAgent."
+            Badge = "Manual",
+            CapabilityNote = "Focus sessions, temporary previews and image-derived sharpness measurements are not implemented on this CameraAgent."
         },
         new("calibration", "Calibration", "Capture", "/operations/calibration",
             "Capture / immutable references",
