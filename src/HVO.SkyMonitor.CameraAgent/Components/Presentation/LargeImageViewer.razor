@@ -6,7 +6,7 @@
             <p>Protected local image</p>
             <h2 id="large-viewer-title">@Title</h2>
         </div>
-        <button @ref="_closeButton" type="button" class="large-viewer__close" aria-label="Close large image" @onclick="CloseAsync">
+        <button @ref="_closeButton" type="button" class="btn btn-outline-secondary large-viewer__close" aria-label="Close large image" @onclick="CloseAsync">
             <i class="bi bi-x-lg" aria-hidden="true"></i>
         </button>
     </header>
@@ -17,9 +17,9 @@
         }
     </div>
     <footer>
-        <div class="large-viewer__modes" role="group" aria-label="Image size">
-            <button type="button" aria-pressed="@((!_nativeSize).ToString().ToLowerInvariant())" @onclick="() => _nativeSize = false">Fit image</button>
-            <button type="button" aria-pressed="@_nativeSize.ToString().ToLowerInvariant()" @onclick="() => _nativeSize = true">100%</button>
+        <div class="large-viewer__modes hvo-segmented" role="group" aria-label="Image size">
+            <button type="button" class="hvo-segmented__option" aria-pressed="@((!_nativeSize).ToString().ToLowerInvariant())" @onclick="() => _nativeSize = false">Fit image</button>
+            <button type="button" class="hvo-segmented__option" aria-pressed="@_nativeSize.ToString().ToLowerInvariant()" @onclick="() => _nativeSize = true">100%</button>
         </div>
         <span>Use 100% for deliberate pan and scroll. Escape closes this viewer.</span>
     </footer>

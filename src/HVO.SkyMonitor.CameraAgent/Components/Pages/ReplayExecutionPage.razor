@@ -23,7 +23,7 @@
         <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)"
                          Title="@(_notFound ? "Replay execution not found" : "Replay execution unavailable")"
                          Message="@(_message ?? "The requested replay execution was not found.")">
-            @if (!_notFound) { <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Try again</button> }
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Try again</button> }
             <a class="btn btn-outline-light" href="/gallery">Return to archive</a>
         </PageStateNotice>
     }
@@ -62,7 +62,7 @@
                 <div class="wide"><dt>Local plan identity SHA-256</dt><dd><code>@_execution.LocalPlanIdentitySha256</code></dd></div>
             </dl>
             <div class="execution-actions">
-                <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+                <button type="button" class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
                 @if (!_execution.IsTerminal)
                 {
                     <button type="button" id="replay-cancel-trigger" class="btn btn-outline-warning" disabled="@_busy" @onclick="BeginCancel">Request cancellation</button>

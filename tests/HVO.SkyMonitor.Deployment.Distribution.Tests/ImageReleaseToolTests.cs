@@ -73,7 +73,8 @@ public sealed class ImageReleaseToolTests
         Assert.AreEqual(IndexDigest, image.ManifestDigest);
         Assert.AreEqual("cameraagent-state-v2", image.Compatibility.StateContract);
         Assert.AreEqual(MinimumRevision, image.Compatibility.MinimumCompatibleRevision);
-        Assert.AreEqual(12, image.Compatibility.RawIngressSchema);
+        Assert.AreEqual(14, image.Compatibility.RawIngressSchema);
+        Assert.AreEqual("canonical-v13-to-v14", image.Compatibility.RawIngressMigration);
         Assert.AreEqual(2, image.Compatibility.CatalogManifestVersion);
         Assert.AreEqual("local-replay-runner-v1", image.Compatibility.ReplayRunnerContract);
         CollectionAssert.AreEqual(
@@ -139,6 +140,19 @@ public sealed class ImageReleaseToolTests
         var labels = ImageReleaseFixture.DefaultLabels(Revision);
         labels["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s3";
         var divergent = fixture.WriteArchive("divergent-arm64", "arm64", labels);
+        var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
+        arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = divergent;
+
+        await AssertRejectedAsync(arguments, "declares different labels than");
+    }
+
+    [TestMethod]
+    public async Task CreateImage_PlatformsThatDeclareDifferentRawIngressMigrations_AreRejected()
+    {
+        using var fixture = ImageReleaseFixture.Create();
+        var labels = ImageReleaseFixture.DefaultLabels(Revision);
+        labels.Remove("io.hvo.skymonitor.raw-ingress-migration");
+        var divergent = fixture.WriteArchive("divergent-arm64-migration", "arm64", labels);
         var arguments = fixture.CreateArguments(Path.Combine(fixture.Root, "release"));
         arguments[Array.IndexOf(arguments, "--linux-arm64") + 1] = divergent;
 

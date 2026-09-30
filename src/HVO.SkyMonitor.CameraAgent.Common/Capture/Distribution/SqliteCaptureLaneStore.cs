@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
@@ -19,6 +20,7 @@ internal sealed class SqliteCaptureLaneStore(
     ICaptureLaneFaultInjector faultInjector,
     Action<TimeSpan>? lockWaitRecorder = null) : ICaptureLaneStore
 {
+    private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
     private readonly string _databasePath = Path.Combine(Path.GetFullPath(root), "journal", "raw-ingress.db");
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
@@ -143,6 +145,15 @@ internal sealed class SqliteCaptureLaneStore(
                 var envelope = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? CaptureLaneEnvelopeSerializer.Deserialize(candidate.ContextJson, candidate.ContextSha256)
                     : CreateFallbackEnvelope(fallbackConfiguration, manifest.Descriptor);
+                var capturedRig = candidate.ContextJson is not null && candidate.ContextSha256 is not null
+                    ? JsonSerializer.Deserialize<CaptureLaneEnvelope>(candidate.ContextJson,
+                        EnvelopeJsonOptions)?.Configuration.Rig
+                    : envelope.Configuration.Rig;
+                if (capturedRig is null || !string.Equals(CameraRigProfileIdentity.ComputeSha256(capturedRig),
+                        manifest.Descriptor.Profiles.Rig.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException("Capture lane rig differs from the committed manifest.");
+                }
                 var absolutePath = Resolve(candidate.PayloadRelativePath);
                 if (!File.Exists(absolutePath) || !File.Exists(Path.ChangeExtension(absolutePath, ".json")))
                 {

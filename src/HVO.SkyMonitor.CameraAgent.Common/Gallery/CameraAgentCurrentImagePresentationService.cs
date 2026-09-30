@@ -5,9 +5,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Fleet.Contracts;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using System.Globalization;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -194,16 +196,29 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             display is null && historyBoundReached);
     }
 
+    public async ValueTask<CameraAgentCapturePresentation> ProjectCaptureAsync(
+        CameraAgentGalleryCapture capture,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        cancellationToken.ThrowIfCancellationRequested();
+        var validation = await ValidatePresentationAsync(
+            capture, MaximumPreviewValidationAttempts, cancellationToken).ConfigureAwait(false);
+        return validation.Presentation;
+    }
+
     private async ValueTask<ValidatedPresentation> ValidatePresentationAsync(
         CameraAgentGalleryCapture capture,
         int maximumAttempts,
         CancellationToken cancellationToken)
     {
-        var projection = capturePresentation.Project(capture);
+        var projection = capturePresentation.ProjectWithRetainedDisplay(capture);
         CameraAgentPresentationStage? selectedStage = null;
         var stages = new CameraAgentPresentationSlot[projection.Stages.Count];
         var attempts = 0;
         var boundReached = false;
+        var excluded = new HashSet<Guid>();
+        var useRetainedDisplay = projection.Stages.Any(static slot => slot.DisplayReferenceId is not null);
         for (var index = 0; index < projection.Stages.Count; index++)
         {
             var slot = projection.Stages[index];
@@ -212,9 +227,11 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                 stages[index] = slot;
                 continue;
             }
-            var excluded = new HashSet<Guid>();
             while (slot.ArtifactId is { } artifactId)
             {
+                // The preview served for a slot is its display artifact; a retained display derivative that
+                // fails validation is excluded so the stage falls back to its own linear artifact.
+                var displayArtifactId = slot.DisplayArtifactId ?? artifactId;
                 if (attempts >= maximumAttempts)
                 {
                     stages[index] = Unavailable(slot, "ValidationBoundReached");
@@ -222,26 +239,59 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                     break;
                 }
                 attempts++;
-                var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                var preview = await artifacts.GetPreviewAsync(displayArtifactId, cancellationToken, slot.DisplayReferenceId).ConfigureAwait(false);
                 if (preview.Status == CameraAgentArtifactReadStatus.Found)
                 {
                     selectedStage ??= slot.Stage;
-                    stages[index] = slot;
+                    slot = slot with { DisplayOperation = preview.Operation };
+                    stages[index] = preview.DisplayPolicy is { } policy
+                        ? slot with
+                        {
+                            DisplayPolicy = slot.DisplayPolicy?.StartsWith(CameraAgentCapturePresentationProjector.CalibrationNonePolicy, StringComparison.Ordinal) == true
+                            ? CameraAgentCapturePresentationProjector.CalibrationNonePolicy + policy : policy
+                        }
+                        : slot;
                     break;
                 }
                 var failed = Unavailable(slot, preview.Status.ToString());
-                excluded.Add(artifactId);
+                if (slot.DisplayReferenceId is not null)
+                {
+                    // A rejected reference invalidates the comparison policy for every stage, including those
+                    // already validated. Restart with own-artifact previews, never a partial mixed policy.
+                    useRetainedDisplay = false;
+                    var fallbackCapture = capture with
+                    {
+                        Artifacts = capture.Artifacts.Where(artifact => !excluded.Contains(artifact.ArtifactId)).ToArray()
+                    };
+                    projection = capturePresentation.Project(fallbackCapture);
+                    projection = projection with
+                    {
+                        Stages = projection.Stages.Select(static candidate => candidate with
+                        {
+                            DisplayPolicy = candidate.DisplayPolicy is null ? null : candidate.DisplayPolicy + " Capture-bound comparison reference failed validation; all stages use their own-artifact preview policy."
+                        }).ToArray()
+                    };
+                    stages = new CameraAgentPresentationSlot[projection.Stages.Count];
+                    selectedStage = null;
+                    index = -1;
+                    break;
+                }
+                excluded.Add(displayArtifactId);
                 var remaining = capture with
                 {
                     Artifacts = capture.Artifacts.Where(artifact => !excluded.Contains(artifact.ArtifactId)).ToArray()
                 };
-                slot = capturePresentation.Project(remaining).Stages.Single(candidate => candidate.Stage == slot.Stage);
+                projection = useRetainedDisplay
+                    ? capturePresentation.ProjectWithRetainedDisplay(remaining)
+                    : capturePresentation.Project(remaining);
+                slot = projection.Stages.Single(candidate => candidate.Stage == slot.Stage);
                 if (slot.Availability != CameraAgentPresentationSlotAvailability.Available)
                 {
                     stages[index] = failed;
                     break;
                 }
             }
+            if (index < 0) continue;
             if (stages[index] is null)
             {
                 stages[index] = slot;
@@ -259,7 +309,12 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             ArtifactRole = null,
             Variant = null,
             MediaType = null,
-            PreviewUrl = null
+            PreviewUrl = null,
+            DisplayArtifactId = null,
+            DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact,
+            DisplayPolicy = null,
+            DisplayReferenceId = null,
+            DisplayOperation = CameraAgentPreviewOperation.Unknown
         };
 
     private static CameraAgentPresentationImageFreshness GetFreshness(
@@ -313,6 +368,11 @@ internal sealed class CameraAgentCapturePresentationProjector(
 {
     private readonly ArtifactReadOptions _artifactRead = options.Value.ArtifactRead;
 
+    // The on-demand preview path stretches Mono16/Bayer sources with the library defaults; naming them here
+    // keeps the shown policy bound to the code that applies it rather than to a copied literal.
+    internal static readonly string OnDemandStretchPolicy = CreateOnDemandStretchPolicy();
+    internal const string CalibrationNonePolicy = "Calibration None: no correction applied; pixels equal the Raw frame. ";
+
     private static readonly CameraAgentPresentationStage[] StageOrder =
     [
         CameraAgentPresentationStage.Annotated,
@@ -330,10 +390,35 @@ internal sealed class CameraAgentCapturePresentationProjector(
     ];
 
     public CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture)
+        => Project(capture, retainedDisplay: false);
+
+    public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture)
+        => Project(capture, retainedDisplay: true);
+
+    private CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture, bool retainedDisplay)
     {
         var stages = StageOrder.Select(stage => capture is null
             ? Unavailable(stage, CameraAgentPresentationSlotAvailability.Missing, "NoCapture")
-            : ProjectSlot(capture, stage)).ToArray();
+            : ProjectSlot(capture, stage, retainedDisplay)).ToArray();
+        var combined = stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        if (combined.DisplayBasis == CameraAgentPresentationDisplayBasis.RetainedDerivative && combined.DisplayArtifactId is { } referenceId)
+        {
+            for (var index = 0; index < stages.Length; index++)
+            {
+                var slot = stages[index];
+                if (slot.Stage is not (CameraAgentPresentationStage.Raw or CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Combined) ||
+                    slot.Availability != CameraAgentPresentationSlotAvailability.Available || slot.DisplayArtifactId is not { } displayId)
+                    continue;
+                stages[index] = slot with
+                {
+                    DisplayReferenceId = referenceId,
+                    PreviewUrl = new Uri(FormattableString.Invariant($"/api/v1/operations/artifacts/{displayId:D}/preview?displayReference={referenceId:D}"), UriKind.Relative),
+                    DisplayPolicy = slot.Stage == CameraAgentPresentationStage.Combined ? slot.DisplayPolicy
+                        : (slot.DisplayPolicy?.StartsWith(CalibrationNonePolicy, StringComparison.Ordinal) == true ? CalibrationNonePolicy : string.Empty) +
+                            $"Capture-bound comparison policy from retained artifact {referenceId:D}; own pixels, same percentile settings with per-image histogram normalization, not a locked transfer curve and not calibration."
+                };
+            }
+        }
         var selected = SelectionOrder
             .Select(stage => stages.Single(slot => slot.Stage == stage))
             .FirstOrDefault(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available);
@@ -342,7 +427,8 @@ internal sealed class CameraAgentCapturePresentationProjector(
 
     private CameraAgentPresentationSlot ProjectSlot(
         CameraAgentGalleryCapture capture,
-        CameraAgentPresentationStage stage)
+        CameraAgentPresentationStage stage,
+        bool retainedDisplay)
     {
         var roles = RolesFor(stage);
         var matching = capture.Artifacts.Where(artifact => roles.Contains(artifact.Role)).ToArray();
@@ -385,6 +471,10 @@ internal sealed class CameraAgentCapturePresentationProjector(
             .FirstOrDefault();
         if (available is not null)
         {
+            var retained = retainedDisplay && stage == CameraAgentPresentationStage.Combined
+                ? ResolveRetainedDisplayDerivative(capture, available)
+                : null;
+            var display = retained ?? available;
             return new CameraAgentPresentationSlot(
                 stage,
                 LabelFor(stage),
@@ -394,8 +484,16 @@ internal sealed class CameraAgentCapturePresentationProjector(
                 available.Role,
                 available.Variant,
                 available.MediaType,
-                new Uri(FormattableString.Invariant(
-                    $"/api/v1/operations/artifacts/{available.ArtifactId:D}/preview"), UriKind.Relative));
+                PreviewUri(display.ArtifactId),
+                display.ArtifactId,
+                retained is null
+                    ? CameraAgentPresentationDisplayBasis.OwnArtifact
+                    : CameraAgentPresentationDisplayBasis.RetainedDerivative,
+                retained is null ? DescribeOwnArtifactPolicy(stage, available, retainedDisplay, capture.ArtifactsTruncated) : DescribeRetainedPolicy(retained),
+                DisplayOperation: CameraAgentPreviewEligibilityPolicy.IsEncodedJpeg(display.Role, display.MediaType)
+                    ? CameraAgentPreviewOperation.EncodedPassthrough
+                    : display.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
+                        ? CameraAgentPreviewOperation.PerImageStretch : CameraAgentPreviewOperation.EncodeOnly);
         }
         var producingNodes = capture.ProcessingNodes.Where(node =>
             node.OutputRole is { } role && roles.Contains(role)).ToArray();
@@ -434,6 +532,77 @@ internal sealed class CameraAgentCapturePresentationProjector(
         }
         return Unavailable(stage, CameraAgentPresentationSlotAvailability.Missing, "NotProduced");
     }
+
+    /// <summary>
+    /// Finds the one retained encoded-preview product whose complete lineage is exactly the stage artifact. Any
+    /// candidate with a different or wider lineage, another role or recipe, or that is not itself displayable is
+    /// not a substitute, and two distinct matches are ambiguous; every rejection falls back to the stage artifact.
+    /// A bounded artifact list cannot prove uniqueness (a second match may be hidden), so it also falls back.
+    /// </summary>
+    private CameraAgentGalleryArtifact? ResolveRetainedDisplayDerivative(
+        CameraAgentGalleryCapture capture,
+        CameraAgentGalleryArtifact source)
+    {
+        if (capture.ArtifactsTruncated)
+        {
+            return null;
+        }
+        var matches = capture.Artifacts
+            .Where(artifact => artifact.Role == FrameArtifactRole.Preview &&
+                artifact.ArtifactId != source.ArtifactId &&
+                string.Equals(artifact.Recipe?.Name, BuiltInProcessingRecipes.EncodedPreview, StringComparison.Ordinal) &&
+                artifact.SourceArtifactIds.Count == 1 &&
+                artifact.SourceArtifactIds[0] == source.ArtifactId)
+            .DistinctBy(static artifact => artifact.ArtifactId)
+            .Take(2)
+            .ToArray();
+        if (matches.Length != 1) return null;
+        var candidate = matches[0];
+        return candidate.Availability == "Available" && CameraAgentPreviewEligibilityPolicy.Evaluate(
+            candidate.Role, candidate.MediaType, candidate.ByteLength, candidate.PixelFormat,
+            candidate.PreviewReconstructionSupported, candidate.EncodedWidth, candidate.EncodedHeight, _artifactRead)
+            == CameraAgentPreviewEligibility.Available ? candidate : null;
+    }
+
+    private static string DescribeRetainedPolicy(CameraAgentGalleryArtifact derivative)
+        => FormattableString.Invariant(
+            $"Retained {BuiltInProcessingRecipes.EncodedPreview} derivative {derivative.ArtifactId:D} (recipe identity {derivative.Recipe!.IdentitySha256}); one configured display stretch applied when it was produced. Stage identity and download remain the linear source frame.");
+
+    private static string DescribeOwnArtifactPolicy(
+        CameraAgentPresentationStage stage,
+        CameraAgentGalleryArtifact artifact,
+        bool retainedDisplay,
+        bool artifactsTruncated)
+    {
+        var calibration = stage == CameraAgentPresentationStage.Calibrated &&
+            string.Equals(artifact.Recipe?.Name, BuiltInProcessingRecipes.LinearNormalization, StringComparison.Ordinal)
+                ? CalibrationNonePolicy
+                : string.Empty;
+        var fallback = stage == CameraAgentPresentationStage.Combined
+            ? !retainedDisplay
+                ? " This view previews the linear stage artifact directly; no retained derivative is substituted."
+                : artifactsTruncated
+                    ? " The bounded artifact list cannot prove a unique retained display derivative, so none is substituted."
+                    : " No retained lineage-matched display derivative was available."
+            : string.Empty;
+        if (CameraAgentPreviewEligibilityPolicy.IsEncodedJpeg(artifact.Role, artifact.MediaType))
+        {
+            return calibration + "Retained encoded bytes shown as produced; no display stretch applied here." + fallback;
+        }
+        return artifact.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
+            ? calibration + OnDemandStretchPolicy + fallback
+            : calibration + "Retained 8-bit pixels shown as produced; no display stretch applied here." + fallback;
+    }
+
+    private static string CreateOnDemandStretchPolicy()
+    {
+        var defaults = new Mono16DisplayStretchOptions();
+        return string.Create(CultureInfo.InvariantCulture,
+            $"On-demand per-image percentile normalization ({Mono16DisplayStretch.AlgorithmVersion} black={defaults.BlackPercentile} white={defaults.WhitePercentile} asinh={defaults.AsinhStrength}, global default): each image is normalized to its own histogram, so this is not a locked transfer curve and not a calibration.");
+    }
+
+    private static Uri PreviewUri(Guid artifactId)
+        => new(FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview"), UriKind.Relative);
 
     private static int MediaRank(CameraAgentGalleryArtifact artifact)
     {

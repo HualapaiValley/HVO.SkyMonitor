@@ -114,7 +114,8 @@ public sealed record DistributionImageCompatibility(
     int CatalogManifestVersion,
     string ConfigurationContract,
     string CatalogContract,
-    string? ReplayRunnerContract);
+    string? ReplayRunnerContract,
+    string? RawIngressMigration = null);
 
 public sealed record DistributionImageIdentity(
     string Component,

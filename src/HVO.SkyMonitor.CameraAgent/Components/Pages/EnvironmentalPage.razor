@@ -9,7 +9,7 @@
 <PageTitle>Environment</PageTitle>
 
 <div class="environment-page">
-    <header><div><p class="eyebrow">Standalone local evidence</p><h1>Environmental acquisition</h1><p>Source health, durable attempts, and targetless observation history remain available without central services.</p></div><button class="btn btn-outline-light" @onclick="LoadAsync" disabled="@(_loading || _submitting)">Refresh</button></header>
+    <header><div><p class="eyebrow">Standalone local evidence</p><h1>Environmental acquisition</h1><p>Source health, durable attempts, and targetless observation history remain available without central services.</p></div><button class="btn btn-outline-light btn-sm" @onclick="LoadAsync" disabled="@(_loading || _submitting)">Refresh</button></header>
     @if (_loading)
     {
         <section class="state" role="status">Loading environmental history</section>

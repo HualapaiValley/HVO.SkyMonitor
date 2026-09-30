@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -115,6 +116,10 @@ public sealed record TransientRuntimeOperationReceipt(
 
 public interface ITransientRuntimeManagement
 {
+    /// <summary>Reads the separate transient lane's retained state for one capture, if any.</summary>
+    ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(Guid captureId, CancellationToken cancellationToken);
+    ValueTask<IReadOnlyList<TransientStageEvent>> ReadCaptureStageEventsAsync(Guid captureId, CancellationToken cancellationToken);
+
     ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
         int pageSize,
         TransientRuntimeQuarantineCursor? cursor,
@@ -132,6 +137,20 @@ internal sealed class TransientRuntimeManagement(
     IRawCaptureIngress rawIngress,
     SqliteTransientRuntimeStore store) : ITransientRuntimeManagement
 {
+    public async ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await store.ReadCaptureRunAsync(captureId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<TransientStageEvent>> ReadCaptureStageEventsAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await store.ReadCaptureStageEventsAsync(captureId, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
         int pageSize,
         TransientRuntimeQuarantineCursor? cursor,
@@ -156,6 +175,28 @@ internal sealed class TransientRuntimeManagement(
     }
 }
 
+/// <summary>Durable frame/work/candidate counts for the independent transient lane.</summary>
+public sealed record TransientCaptureRunState(
+    string WorkState,
+    string? FrameState,
+    bool? CausalSucceeded,
+    int FrameAttempts,
+    int CandidateCount,
+    int CompletedCandidates,
+    int QuarantinedCandidates,
+    DateTimeOffset UpdatedUtc);
+
+public sealed record TransientStageEvent(
+    string StageKey,
+    Guid? CandidateId,
+    string State,
+    string Source,
+    DateTimeOffset RecordedUtc)
+{
+    /// <summary>Durable allocation slot; null for capture-wide or unmapped milestones.</summary>
+    public int? SlotOrdinal { get; init; }
+}
+
 internal sealed record TransientRuntimeFrame(
     long RawCaptureRowId,
     string AgentId,
@@ -168,7 +209,12 @@ internal sealed record TransientLoadedFrame(
     TransientRuntimeFrame Runtime,
     ArtifactManifestV2 Manifest,
     ProcessingArtifact Artifact,
-    TransientSourceEvidenceReferenceV1 Source);
+    TransientSourceEvidenceReferenceV1 Source)
+{
+    internal CameraModuleConfig? CaptureConfiguration { get; init; }
+
+    internal string? CapturedRigSha256 { get; init; }
+}
 
 internal sealed record TransientRuntimeCandidate(
     Guid CandidateId,
@@ -190,6 +236,78 @@ internal sealed record TransientRuntimeTotals(long Frames, long Candidates, long
 
 internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement, IDisposable
 {
+    private static readonly JsonSerializerOptions CaptureContextJson = new(JsonSerializerDefaults.Web);
+
+    public async ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT work.state, frame.state, frame.causal_succeeded,
+                   COALESCE(frame.attempt_count, 0),
+                   (SELECT COUNT(*) FROM transient_worker_candidates candidate
+                    WHERE candidate.target_raw_capture_row_id = raw.raw_capture_row_id),
+                   (SELECT COUNT(*) FROM transient_worker_candidates candidate
+                    WHERE candidate.target_raw_capture_row_id = raw.raw_capture_row_id AND candidate.state = 'completed'),
+                   (SELECT COUNT(*) FROM transient_worker_candidates candidate
+                    WHERE candidate.target_raw_capture_row_id = raw.raw_capture_row_id AND candidate.state = 'quarantined'),
+                   work.updated_unix_ms
+            FROM raw_captures raw
+            JOIN transient_capture_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+            LEFT JOIN transient_worker_frames frame ON frame.raw_capture_row_id = raw.raw_capture_row_id
+            WHERE raw.capture_id = $capture
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        return new TransientCaptureRunState(
+            reader.GetString(0),
+            await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
+            await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(2) != 0,
+            reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5), reader.GetInt32(6),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)));
+    }
+
+    public async ValueTask<IReadOnlyList<TransientStageEvent>> ReadCaptureStageEventsAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT event.stage_key, event.candidate_id, event.state, event.source, event.event_unix_ms,
+                   candidate.slot_ordinal
+            FROM raw_captures raw
+            JOIN raw_capture_stage_events event ON event.raw_capture_row_id = raw.raw_capture_row_id
+            LEFT JOIN transient_worker_candidates candidate
+              ON candidate.candidate_id = event.candidate_id
+             AND candidate.target_raw_capture_row_id = raw.raw_capture_row_id
+            WHERE raw.capture_id = $capture
+            ORDER BY event.event_unix_ms, event.stage_key, event.candidate_id;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        var events = new List<TransientStageEvent>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var candidate = reader.GetString(1);
+            events.Add(new(reader.GetString(0), candidate.Length == 0 ? null : Guid.ParseExact(candidate, "N"),
+                reader.GetString(2), reader.GetString(3), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)))
+            {
+                SlotOrdinal = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(5)
+            });
+        }
+        return events;
+    }
+
     private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalRuntimeSchemaDefinitions =
         new(CreateCanonicalRuntimeSchemaDefinitions);
     private readonly string _root;
@@ -371,10 +489,12 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                     SELECT r.raw_capture_row_id, r.raw_artifact_id, r.payload_length,
                            r.payload_relative_path, r.sidecar_relative_path, r.manifest_json,
                            r.manifest_sha256, r.payload_sha256, r.state,
-                           COALESCE(f.attempt_count, 0), COALESCE(f.available_unix_ms, r.committed_unix_ms)
+                            COALESCE(f.attempt_count, 0), COALESCE(f.available_unix_ms, r.committed_unix_ms),
+                            c.context_json, c.context_sha256
                     FROM raw_captures r
                     JOIN transient_capture_work w ON w.raw_capture_row_id = r.raw_capture_row_id
                     LEFT JOIN transient_worker_frames f ON f.raw_capture_row_id = r.raw_capture_row_id
+                    LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id
                     WHERE r.agent_id = $agent AND r.capture_sequence = $sequence
                       AND w.state IN ('pending', 'candidate_persisted', 'completed');
                     """;
@@ -396,6 +516,10 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 var state = reader.GetString(8);
                 var attempt = reader.GetInt32(9);
                 var available = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(10));
+                var contextJson = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
+                var contextSha256 = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
+                    ? null : reader.GetString(12);
                 await reader.DisposeAsync().ConfigureAwait(false);
                 if (!string.Equals(state, "committed", StringComparison.Ordinal))
                 {
@@ -423,6 +547,26 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 {
                     throw new InvalidDataException("Transient runtime source payload length differs from committed evidence.");
                 }
+                CameraModuleConfig? capturedConfiguration = null;
+                string? capturedRigSha256 = null;
+                if (contextJson is not null || contextSha256 is not null)
+                {
+                    if (contextJson is null || contextSha256 is null)
+                        throw new InvalidDataException("Transient capture context is incomplete.");
+                    try
+                    {
+                        capturedConfiguration = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256).Configuration;
+                        var original = JsonSerializer.Deserialize<CaptureLaneEnvelope>(contextJson, CaptureContextJson)
+                            ?? throw new InvalidDataException("Transient capture context is invalid.");
+                        if (original.Configuration?.Rig is null)
+                            throw new InvalidDataException("Transient capture context rig is missing.");
+                        capturedRigSha256 = CameraRigProfileIdentity.ComputeSha256(original.Configuration.Rig);
+                    }
+                    catch (JsonException exception)
+                    {
+                        throw new InvalidDataException("Transient capture context is invalid.", exception);
+                    }
+                }
                 var payloadStream = OpenEvidence(payloadPath);
                 try
                 {
@@ -435,7 +579,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                         manifest,
                         payloadStream,
                         sidecarStream,
-                        new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt)));
+                        new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt),
+                        capturedConfiguration,
+                        capturedRigSha256));
                 }
                 catch
                 {
@@ -511,7 +657,11 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                     snapshot.Runtime,
                     snapshot.Manifest,
                     artifact,
-                    source));
+                    source)
+                {
+                    CaptureConfiguration = snapshot.CaptureConfiguration,
+                    CapturedRigSha256 = snapshot.CapturedRigSha256
+                });
             }
         }
         finally
@@ -678,6 +828,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             command.Parameters.AddWithValue("$attempt", candidate.AttemptCount);
             command.Parameters.AddWithValue("$available", candidate.AvailableUtc.ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await TransientStageEventWriter.RecordAsync(
+                connection, transaction, targetRawCaptureRowId, "candidate-allocated", candidate.CandidateId,
+                "pending", "transient_worker_candidates", candidate.AllocatedUtc, cancellationToken).ConfigureAwait(false);
         }
         _faultInjector.Inject(TransientRuntimeFaultPoint.BeforeIdentityBatchCommit);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1231,6 +1384,13 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             await quarantine.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (state == "history" && causalSucceeded.HasValue)
+        {
+            await TransientStageEventWriter.RecordAsync(
+                connection, transaction, rawCaptureRowId, "causal-scan", null,
+                causalSucceeded.Value ? "succeeded" : "not-succeeded", "transient_worker_frames",
+                _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        }
         if (beforeCommit.HasValue)
         {
             _faultInjector.Inject(beforeCommit.Value);
@@ -1661,6 +1821,28 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     private async ValueTask ReconcileAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         using var transaction = BeginImmediate(connection);
+        var recovered = new List<long>();
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT frame.raw_capture_row_id
+                FROM transient_worker_frames frame
+                WHERE frame.state IN ('queued', 'retry_wait')
+                  AND EXISTS (SELECT 1 FROM transient_worker_candidates c
+                              WHERE c.target_raw_capture_row_id = frame.raw_capture_row_id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transient_worker_candidates c
+                      LEFT JOIN transient_candidates j ON j.candidate_id = c.candidate_id
+                      WHERE c.target_raw_capture_row_id = frame.raw_capture_row_id
+                        AND (c.causal_extraction_json IS NULL OR j.candidate_payload IS NULL));
+                """;
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                recovered.Add(reader.GetInt64(0));
+            }
+        }
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
@@ -1686,6 +1868,12 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             """;
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var rawCaptureRowId in recovered)
+        {
+            await TransientStageEventWriter.RecordAsync(
+                connection, transaction, rawCaptureRowId, "causal-scan", null, "succeeded",
+                "transient_worker_frames", _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -2220,7 +2408,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         ArtifactManifestV2 Manifest,
         FileStream PayloadStream,
         FileStream SidecarStream,
-        TransientRuntimeFrame Runtime) : IAsyncDisposable
+        TransientRuntimeFrame Runtime,
+        CameraModuleConfig? CaptureConfiguration,
+        string? CapturedRigSha256) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {

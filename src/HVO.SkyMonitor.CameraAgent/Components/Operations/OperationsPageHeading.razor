@@ -1,0 +1,14 @@
+<header class="ops-page-heading">
+    <div>
+        <p class="eyebrow">@Eyebrow</p>
+        <h1 id="@HeadingId">@Title</h1>
+        @if (!string.IsNullOrWhiteSpace(Description))
+        {
+            <p>@Description</p>
+        }
+    </div>
+    <div class="ops-page-actions">
+        <span class="ops-authority"><i aria-hidden="true"></i>CameraAgent local authority</span>
+        @Actions
+    </div>
+</header>

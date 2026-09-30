@@ -340,7 +340,15 @@ public sealed class CaptureAdmissionCoordinatorTests
                 Assert.AreEqual(CaptureAdmissionState.Unavailable, fixture.Coordinator.Snapshot.State);
                 Assert.AreEqual(FleetAvailability.Unavailable, fixture.RuntimeState.Snapshot.Capture.Availability);
 
+                _ = await Assert.ThrowsExactlyAsync<CaptureAdmissionUnavailableException>(() =>
+                    fixture.Coordinator.ResumeAsync("resume-after-failed-publication", null, "owner-1", null,
+                        CancellationToken.None)).ConfigureAwait(false);
+                Assert.AreEqual(CaptureAdmissionState.Unavailable, fixture.Coordinator.Snapshot.State);
+
                 using var verify = await OpenAsync(root).ConfigureAwait(false);
+                Assert.AreEqual(0L, await ScalarLongAsync(verify,
+                    "SELECT COUNT(*) FROM capture_control_commands WHERE idempotency_key = 'resume-after-failed-publication';")
+                    .ConfigureAwait(false));
                 Assert.AreEqual("pause_requested", await ScalarStringAsync(
                     verify, "SELECT state FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
                 Assert.AreEqual("pending", await ScalarStringAsync(

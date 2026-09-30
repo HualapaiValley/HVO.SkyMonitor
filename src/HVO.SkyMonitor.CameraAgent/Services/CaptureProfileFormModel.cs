@@ -126,14 +126,23 @@ internal sealed class CaptureProfileFormModel
         }
         foreach (var window in profile.Schedule.WeeklyWindows)
         {
-            model.WeeklyWindows.Add(new WeeklyWindowRow
+            var last = model.WeeklyWindows.LastOrDefault();
+            if (last is not null && last.SourceStart == window.Start && last.SourceEnd == window.End &&
+                last.SetpointProfileId == window.SetpointProfileId && !last.Days.Contains(window.Day))
             {
-                Id = window.Id,
-                Day = window.Day.ToString(),
+                last.AddDay(window.Day, window.Id, model.WeeklyWindows.Sum(static row => row.Days.Count));
+                continue;
+            }
+            var row = new WeeklyWindowRow
+            {
                 Start = BoundaryRow.From(window.Start),
                 End = BoundaryRow.From(window.End),
-                SetpointProfileId = window.SetpointProfileId
-            });
+                SetpointProfileId = window.SetpointProfileId,
+                SourceStart = window.Start,
+                SourceEnd = window.End
+            };
+            row.AddDay(window.Day, window.Id, model.WeeklyWindows.Sum(static item => item.Days.Count));
+            model.WeeklyWindows.Add(row);
         }
         foreach (var blackout in profile.Schedule.Blackouts ?? [])
         {
@@ -156,14 +165,52 @@ internal sealed class CaptureProfileFormModel
         CadenceMode = nameof(CaptureCadenceMode.MinimumStartInterval)
     });
 
-    public void AddWeeklyWindow() => WeeklyWindows.Add(new WeeklyWindowRow
+    public void AddWeeklyWindow()
     {
-        Id = UniqueId("window", WeeklyWindows.Select(static row => row.Id)),
-        Day = nameof(DayOfWeek.Monday),
-        Start = new BoundaryRow { Kind = nameof(CaptureScheduleBoundaryKind.Sunset) },
-        End = new BoundaryRow { Kind = nameof(CaptureScheduleBoundaryKind.Sunrise), DayOffset = "1" },
-        SetpointProfileId = Setpoints.Count > 0 ? Setpoints[0].Id : string.Empty
-    });
+        var row = new WeeklyWindowRow
+        {
+            Start = new BoundaryRow { Kind = nameof(CaptureScheduleBoundaryKind.Sunset) },
+            End = new BoundaryRow { Kind = nameof(CaptureScheduleBoundaryKind.Sunrise), DayOffset = "1" },
+            SetpointProfileId = Setpoints.Count > 0 ? Setpoints[0].Id : string.Empty
+        };
+        row.AddDay(DayOfWeek.Monday, UniqueId("window", WeeklyWindows.SelectMany(static item => item.DayIds.Values)), int.MaxValue);
+        WeeklyWindows.Add(row);
+    }
+
+    public void SplitWeeklyWindow(WeeklyWindowRow row, DayOfWeek day)
+    {
+        if (!row.Days.Contains(day) || row.Days.Count < 2)
+        {
+            return;
+        }
+        var split = new WeeklyWindowRow
+        {
+            Start = row.Start.Copy(),
+            End = row.End.Copy(),
+            SetpointProfileId = row.SetpointProfileId,
+            SourceStart = row.SourceStart,
+            SourceEnd = row.SourceEnd
+        };
+        split.AddDay(day, row.DayIds[day], row.DayOrder[day]);
+        row.RemoveDay(day);
+        WeeklyWindows.Insert(WeeklyWindows.IndexOf(row) + 1, split);
+    }
+
+    public void SetWeeklyWindowDay(WeeklyWindowRow row, DayOfWeek day, bool selected)
+    {
+        if (!selected)
+        {
+            row.Days.Remove(day);
+            return;
+        }
+        row.Days.Add(day);
+        if (!row.DayIds.ContainsKey(day))
+        {
+            var taken = WeeklyWindows.SelectMany(static window => window.DayIds.Values);
+            row.DayIds[day] = UniqueId($"{row.Id.Trim()}-{day}", taken);
+            row.DayOrder[day] = int.MaxValue;
+        }
+    }
 
     public void AddBlackout() => Blackouts.Add(new BlackoutRow
     {
@@ -197,6 +244,10 @@ internal sealed class CaptureProfileFormModel
             ParseDouble(BoresightAltitudeDegrees, "Boresight altitude", problems),
             ParseDouble(BoresightAzimuthDegrees, "Boresight azimuth", problems),
             ParseDouble(RollAdjustmentDegrees, "Roll adjustment", problems));
+        var dayExposure = Milliseconds(DayExposureMilliseconds, "Day exposure", problems);
+        var nightExposure = Milliseconds(NightExposureMilliseconds, "Night exposure", problems);
+        var dayGain = ParseDouble(DayGain, "Day gain", problems);
+        var nightGain = ParseDouble(NightGain, "Night gain", problems);
         var envelope = rig.Pipeline.Envelope;
         if (envelope is not null)
         {
@@ -206,17 +257,41 @@ internal sealed class CaptureProfileFormModel
                 MaxExposure = Milliseconds(MaximumExposureMilliseconds, "Maximum exposure", problems),
                 MinGain = ParseDouble(MinimumGain, "Minimum gain", problems),
                 MaxGain = ParseDouble(MaximumGain, "Maximum gain", problems),
+                DayDefaults = envelope.DayDefaults with
+                {
+                    Exposure = dayExposure != rig.Pipeline.DayExposure ? dayExposure : envelope.DayDefaults.Exposure,
+                    Gain = dayGain != rig.Pipeline.DayGain ? dayGain : envelope.DayDefaults.Gain
+                },
+                NightDefaults = envelope.NightDefaults with
+                {
+                    Exposure = nightExposure != rig.Pipeline.NightExposure ? nightExposure : envelope.NightDefaults.Exposure,
+                    Gain = nightGain != rig.Pipeline.NightGain ? nightGain : envelope.NightDefaults.Gain
+                },
                 TargetAduLevel = ParseDouble(TargetAduLevel, "Target ADU level", problems),
                 Preference = ParseEnum<ExposureGainPreference>(ExposurePreference, "Adjustment order", problems)
             };
+            if (problems.Count == 0)
+            {
+                foreach (var (label, defaults) in new[] { ("Day", envelope.DayDefaults), ("Night", envelope.NightDefaults) })
+                {
+                    if (defaults.Exposure < envelope.MinExposure || defaults.Exposure > envelope.MaxExposure)
+                    {
+                        problems.Add($"{label} exposure must be within the exposure envelope.");
+                    }
+                    if (defaults.Gain < envelope.MinGain || defaults.Gain > envelope.MaxGain)
+                    {
+                        problems.Add($"{label} gain must be within the gain envelope.");
+                    }
+                }
+            }
         }
         var pipeline = rig.Pipeline with
         {
             CaptureInterval = Seconds(CaptureIntervalSeconds, "Capture interval", problems),
-            DayExposure = Milliseconds(DayExposureMilliseconds, "Day exposure", problems),
-            NightExposure = Milliseconds(NightExposureMilliseconds, "Night exposure", problems),
-            DayGain = ParseDouble(DayGain, "Day gain", problems),
-            NightGain = ParseDouble(NightGain, "Night gain", problems),
+            DayExposure = dayExposure,
+            NightExposure = nightExposure,
+            DayGain = dayGain,
+            NightGain = nightGain,
             CadenceMode = ParseEnum<CaptureCadenceMode>(CadenceMode, "Cadence mode", problems),
             Envelope = envelope
         };
@@ -248,12 +323,21 @@ internal sealed class CaptureProfileFormModel
             Seconds(row.CaptureIntervalSeconds, $"Setpoint '{row.Id}' capture interval", problems),
             ParseEnum<CaptureCadenceMode>(row.CadenceMode, $"Setpoint '{row.Id}' cadence mode", problems),
             string.IsNullOrWhiteSpace(row.TargetFps) ? null : ParseDouble(row.TargetFps, $"Setpoint '{row.Id}' target FPS", problems))).ToArray();
-        var windows = WeeklyWindows.Select(row => new CaptureWeeklyScheduleWindow(
-            row.Id.Trim(),
-            ParseEnum<DayOfWeek>(row.Day, $"Window '{row.Id}' day", problems),
-            row.Start.ToBoundary($"Window '{row.Id}' start", problems),
-            row.End.ToBoundary($"Window '{row.Id}' end", problems),
-            row.SetpointProfileId.Trim())).ToArray();
+        var windows = WeeklyWindows.SelectMany(row =>
+        {
+            if (row.Days.Count == 0)
+            {
+                problems.Add($"Window '{row.Id}' needs at least one day.");
+            }
+            var start = row.Start.ToBoundary($"Window '{row.Id}' start", problems);
+            var end = row.End.ToBoundary($"Window '{row.Id}' end", problems);
+            return row.Days.OrderBy(static day => day).Select(day =>
+            {
+                var id = row.DayIds[day];
+                return (Order: row.DayOrder.GetValueOrDefault(day, int.MaxValue),
+                    Window: new CaptureWeeklyScheduleWindow(id.Trim(), day, start, end, row.SetpointProfileId.Trim()));
+            }).ToArray();
+        }).OrderBy(static item => item.Order).Select(static item => item.Window).ToArray();
         var blackouts = Blackouts.Select(row => new CaptureScheduleBlackout(
             row.Id.Trim(),
             ParseUtc(row.StartUtc, $"Blackout '{row.Id}' start", problems),
@@ -262,9 +346,13 @@ internal sealed class CaptureProfileFormModel
         {
             problems.Add("Every setpoint profile needs an identifier.");
         }
-        foreach (var row in WeeklyWindows.Where(static row => string.IsNullOrWhiteSpace(row.Id)))
+        foreach (var row in windows.Where(static row => string.IsNullOrWhiteSpace(row.Id)))
         {
             problems.Add("Every weekly window needs an identifier.");
+        }
+        if (windows.Select(static row => row.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != windows.Length)
+        {
+            problems.Add("Weekly window identifiers must be unique.");
         }
         foreach (var row in Blackouts.Where(static row => string.IsNullOrWhiteSpace(row.Id)))
         {
@@ -416,8 +504,24 @@ internal sealed class CaptureProfileFormModel
 
     internal sealed class WeeklyWindowRow
     {
-        public string Id { get; set; } = string.Empty;
-        public string Day { get; set; } = nameof(DayOfWeek.Monday);
+        public HashSet<DayOfWeek> Days { get; } = [];
+        public Dictionary<DayOfWeek, string> DayIds { get; } = [];
+        public Dictionary<DayOfWeek, int> DayOrder { get; } = [];
+        public string Id => DayIds.Count == 0 ? string.Empty : DayIds[DayOrder.MinBy(static entry => entry.Value).Key];
+        public CaptureScheduleBoundary? SourceStart { get; set; }
+        public CaptureScheduleBoundary? SourceEnd { get; set; }
+        public void AddDay(DayOfWeek day, string id, int order)
+        {
+            Days.Add(day);
+            DayIds[day] = id;
+            DayOrder[day] = order;
+        }
+        public void RemoveDay(DayOfWeek day)
+        {
+            Days.Remove(day);
+            DayIds.Remove(day);
+            DayOrder.Remove(day);
+        }
         public BoundaryRow Start { get; set; } = new();
         public BoundaryRow End { get; set; } = new();
         public string SetpointProfileId { get; set; } = string.Empty;
@@ -425,6 +529,14 @@ internal sealed class CaptureProfileFormModel
 
     internal sealed class BoundaryRow
     {
+        public BoundaryRow Copy() => new()
+        {
+            Kind = Kind,
+            LocalTime = LocalTime,
+            OffsetMinutes = OffsetMinutes,
+            DayOffset = DayOffset,
+            NoEventFallbackLocalTime = NoEventFallbackLocalTime
+        };
         public string Kind { get; set; } = nameof(CaptureScheduleBoundaryKind.FixedLocalTime);
         public string LocalTime { get; set; } = string.Empty;
         public string OffsetMinutes { get; set; } = string.Empty;

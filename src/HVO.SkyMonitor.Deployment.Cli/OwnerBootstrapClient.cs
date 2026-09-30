@@ -30,8 +30,19 @@ internal sealed record InstallationVerificationExpectation(
     HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog,
     bool AllowCompletedPasswordReplacement = false);
 
-internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapClient
+internal sealed class OwnerBootstrapClient(
+    Uri baseAddress,
+    HttpMessageHandler? handler = null,
+    TimeSpan? protectedReadTimeout = null) : IOwnerBootstrapClient
 {
+    internal static readonly TimeSpan ProtectedReadTimeout = TimeSpan.FromSeconds(120);
+
+    private readonly TimeSpan _protectedReadTimeout = protectedReadTimeout is null
+        ? ProtectedReadTimeout
+        : protectedReadTimeout >= TimeSpan.FromMilliseconds(1) && protectedReadTimeout <= ProtectedReadTimeout
+            ? protectedReadTimeout.Value
+            : throw new ArgumentOutOfRangeException(nameof(protectedReadTimeout));
+
     private static readonly Regex AntiforgeryToken = new(
         "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
         RegexOptions.CultureInvariant | RegexOptions.Compiled,
@@ -103,23 +114,7 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken)
     {
-        using var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = false,
-            UseProxy = false,
-            CheckCertificateRevocationList = true
-        };
-        using var client = new HttpClient(handler, disposeHandler: false)
-        {
-            BaseAddress = baseAddress,
-            Timeout = TimeSpan.FromSeconds(15)
-        };
-        client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
-        using var response = await client.GetAsync(
-            new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), cancellationToken)
-            .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
+        using var json = await ReadInstallationVerificationAsync(verificationToken, cancellationToken).ConfigureAwait(false);
         var value = json.RootElement;
         var ownerBootstrapState = value.GetProperty("ownerBootstrapState").GetString();
         var replayProfileMatches = value.TryGetProperty("replayProfile", out var replayProfile)
@@ -157,25 +152,45 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         string verificationToken,
         CancellationToken cancellationToken)
     {
-        using var handler = new HttpClientHandler
+        using var json = await ReadInstallationVerificationAsync(verificationToken, cancellationToken).ConfigureAwait(false);
+        return json.RootElement.GetProperty("ownerBootstrapState").GetString()
+            ?? throw new InstallerException("CameraAgent installation verification omitted its owner bootstrap state.");
+    }
+
+    private async Task<JsonDocument> ReadInstallationVerificationAsync(
+        string verificationToken,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_protectedReadTimeout);
+        using var ownedHandler = handler is null ? new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseProxy = false,
             CheckCertificateRevocationList = true
-        };
-        using var client = new HttpClient(handler, disposeHandler: false)
+        } : null;
+        using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
         {
             BaseAddress = baseAddress,
-            Timeout = TimeSpan.FromSeconds(15)
+            // One finite deadline covers both the request and response body, not just the headers.
+            Timeout = Timeout.InfiniteTimeSpan
         };
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
-        using var response = await client.GetAsync(
-            new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), cancellationToken)
-            .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
-        return json.RootElement.GetProperty("ownerBootstrapState").GetString()
-            ?? throw new InstallerException("CameraAgent installation verification omitted its owner bootstrap state.");
+        try
+        {
+            using var response = await client.GetAsync(
+                new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), deadline.Token)
+                .ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var body = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
+            return JsonDocument.Parse(body);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new InstallerException("CameraAgent installation verification request timed out.");
+        }
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned HttpClient owns the handler and the caller disposes the client.")]

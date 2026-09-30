@@ -1,7 +1,10 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -13,31 +16,55 @@ public sealed record OperatorOutboxActionRequest(
     OutboxOperationAction Action,
     string TriggerId);
 
+/// <summary>
+/// The Operations overview: the prototype <c>renderOverview()</c> composition bound to the durable
+/// and runtime sources this CameraAgent reports. Facts no source reports (next-capture countdown,
+/// sensor temperature, cloud estimate) are stated as not reported rather than filled in.
+/// </summary>
 public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
-    private const int MaximumQuarantineDisplay = 8;
+    private static readonly TimeSpan ConfigurationRefreshInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan ToastDuration = TimeSpan.FromSeconds(4);
+    private const int MaximumRecentChanges = 4;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private CancellationTokenSource? _lifetime;
+    private CancellationTokenSource? _toastLifetime;
     private PeriodicTimer? _timer;
     private Task? _pollTask;
     private Task? _commandTask;
+    private Task? _toastTask;
     private CameraAgentOperationsView? _view;
+    private CaptureScheduleOperatorState? _schedule;
+    private long? _scheduleReadControlVersion;
+    private CameraAgentPipelineOperatorState? _pipeline;
+    private CalibrationUiStatus? _calibration;
+    private NamedRigUiCatalog? _rigCatalog;
+    private NamedRigInventory? _rigInventory;
+    private DateTimeOffset? _configurationReadUtc;
+    private CameraAgentProcessingExecutionSummary? _latestRun;
     private PendingOperatorCommand? _pendingCommand;
-    private string? _pendingReasonCode;
+    private ToastMessage? _toast;
     private string? _errorMessage;
     private string? _commandError;
-    private string? _statusMessage;
     private bool _isInitialLoading = true;
     private bool _isSubmitting;
     private bool _showConfirmation;
+    private bool _unauthorized;
     private IJSObjectReference? _module;
     private ElementReference _confirmationDialog;
     private int _disposeStarted;
     private int _refreshRequested;
+    private int _configurationRequested = 1;
+
+    [CascadingParameter] internal OperationsLayout? Layout { get; set; }
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+    [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
+    [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
+    [Inject] internal ICameraAgentCalibrationUiService CalibrationService { get; set; } = default!;
+    [Inject] internal ICameraAgentNamedRigUiService RigService { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -46,6 +73,10 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     {
         _lifetime = new CancellationTokenSource();
         await RequestRefreshAsync(_lifetime.Token);
+        if (_unauthorized)
+        {
+            return;
+        }
         _timer = new PeriodicTimer(RefreshInterval, TimeProvider);
         _pollTask = PollAsync(_lifetime.Token);
     }
@@ -82,7 +113,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            while (Interlocked.Exchange(ref _refreshRequested, 0) != 0)
+            while (!_unauthorized && Interlocked.Exchange(ref _refreshRequested, 0) != 0)
             {
                 await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -93,10 +124,20 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Reads the operations summary and the latest live run on every tick. The configuration
+    /// sources change only through their own pages, so they are read when the page opens, on a
+    /// retry and then once a minute; the schedule decision is also re-read when capture control
+    /// changes or its next transition has passed, so the admission fact follows pause, resume and
+    /// the timetable.
+    /// </summary>
     private async Task RefreshCoreAsync(CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RefreshTimeout);
+        var readConfiguration = Interlocked.Exchange(ref _configurationRequested, 0) != 0 ||
+            _configurationReadUtc is not { } configurationRead ||
+            TimeProvider.GetUtcNow() - configurationRead >= ConfigurationRefreshInterval;
         try
         {
             var result = await OperatorService.GetOperationsAsync(timeout.Token).ConfigureAwait(false);
@@ -105,38 +146,88 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
                 await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
                 return;
             }
+            var view = result.IsSuccess ? result.Value : null;
+            var controlVersion = (view ?? _view)?.Summary.CaptureControl.Value.Version;
+            var readSchedule = readConfiguration || _schedule is null ||
+                _scheduleReadControlVersion != controlVersion ||
+                _schedule.Decision.NextTransitionUtc <= TimeProvider.GetUtcNow();
+
+            var schedule = readSchedule ? await ScheduleService.GetAsync(timeout.Token).ConfigureAwait(false) : null;
+            var pipeline = readConfiguration ? await ScheduleService.GetPipelineAsync(timeout.Token).ConfigureAwait(false) : null;
+            var calibration = readConfiguration ? await CalibrationService.GetStatusAsync(timeout.Token).ConfigureAwait(false) : null;
+            var rigCatalog = readConfiguration ? await RigService.GetAsync(timeout.Token).ConfigureAwait(false) : null;
+            var rigInventory = readConfiguration ? await RigService.GetInventoryAsync(timeout.Token).ConfigureAwait(false) : null;
+            var executions = await GraphService.GetExecutionsAsync(1, timeout.Token).ConfigureAwait(false);
+            if (schedule?.Kind == OperatorUiResultKind.Unauthorized ||
+                pipeline?.Kind == OperatorUiResultKind.Unauthorized ||
+                calibration?.Kind == OperatorUiResultKind.Unauthorized ||
+                rigCatalog?.Kind == OperatorUiResultKind.Unauthorized ||
+                rigInventory?.Kind == OperatorUiResultKind.Unauthorized ||
+                executions.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
+                return;
+            }
+
             await InvokeAsync(() =>
             {
-                if (result.IsSuccess && result.Value is not null)
+                if (view is not null)
                 {
-                    _view = result.Value;
+                    _view = view;
                     _errorMessage = null;
                 }
                 else
                 {
                     _errorMessage = result.Message ?? "Current operations data is unavailable.";
                 }
+                if (schedule is not null)
+                {
+                    _schedule = schedule.IsSuccess ? schedule.Value : null;
+                    _scheduleReadControlVersion = controlVersion;
+                }
+                if (readConfiguration)
+                {
+                    _pipeline = pipeline!.IsSuccess ? pipeline.Value : null;
+                    _calibration = calibration!.IsSuccess ? calibration.Value : null;
+                    _rigCatalog = rigCatalog!.IsSuccess ? rigCatalog.Value : null;
+                    _rigInventory = rigInventory!.IsSuccess ? rigInventory.Value : null;
+                    _configurationReadUtc = TimeProvider.GetUtcNow();
+                }
+                _latestRun = executions.IsSuccess && executions.Value?.Live is { Count: > 0 } live ? live[0] : null;
                 _isInitialLoading = false;
+                if (_view is not null)
+                {
+                    Layout?.Publish(_view, _errorMessage is not null);
+                }
                 StateHasChanged();
             }).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            if (readConfiguration)
+            {
+                Interlocked.Exchange(ref _configurationRequested, 1);
+            }
             await InvokeAsync(() =>
             {
                 _errorMessage = "The latest refresh exceeded its five-second deadline.";
                 _isInitialLoading = false;
+                if (_view is not null)
+                {
+                    Layout?.Publish(_view, refreshFailed: true);
+                }
                 StateHasChanged();
             }).ConfigureAwait(false);
         }
     }
 
-    private async Task RefreshNowAsync()
+    internal async Task RefreshNowAsync()
     {
         if (_lifetime is null)
         {
             return;
         }
+        Interlocked.Exchange(ref _configurationRequested, 1);
         await RequestRefreshAsync(_lifetime.Token).ConfigureAwait(false);
     }
 
@@ -155,64 +246,22 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
             paused
                 ? "The current exposure will finish through durable ingress before another exposure is blocked. Processing and delivery continue."
                 : "Capture admission will reopen using the current startup-validated configuration.",
-            paused ? "Pause capture" : "Resume capture",
-            paused ? "Paused" : "Running",
-            _view.Summary.CaptureControl.Value.Version,
             paused,
-            false,
-            false,
-            null,
-            null,
+            _view.Summary.CaptureControl.Value.Version,
             "capture-action",
-            null,
             CreateIdempotencyKey());
-        OpenConfirmation();
-    }
-
-    private void BeginOutboxAction(OperatorOutboxActionRequest request)
-    {
-        if (_isSubmitting)
-        {
-            return;
-        }
-        var abandon = request.Action == OutboxOperationAction.Abandon;
-        _pendingCommand = new PendingOperatorCommand(
-            string.Equals(request.Item.Kind, "Artifact", StringComparison.Ordinal)
-                ? $"{request.Action} artifact item?"
-                : $"{request.Action} environmental item?",
-            abandon
-                ? "Abandonment releases the durable delivery hold. The evidence will not be delivered by this outbox."
-                : "Replay returns the item to bounded delivery using its existing durable evidence.",
-            string.Equals(request.Item.Kind, "Artifact", StringComparison.Ordinal)
-                ? $"{request.Action} artifact item"
-                : $"{request.Action} environmental item",
-            abandon ? "Abandoned" : "Pending",
-            null,
-            false,
-            true,
-            abandon,
-            request.Item.Kind,
-            request.Action,
-            request.TriggerId,
-            request.Action == OutboxOperationAction.Replay ? request.Item.ReplayToken : request.Item.AbandonToken,
-            CreateIdempotencyKey());
-        _pendingReasonCode = PendingReasonCodes[0].Code;
-        OpenConfirmation();
-    }
-
-    private void OpenConfirmation()
-    {
         _commandError = null;
-        _statusMessage = null;
         _showConfirmation = true;
     }
 
     private async Task CancelConfirmationAsync()
     {
-        var triggerId = _pendingCommand?.TriggerId;
-        await CloseDialogAsync(triggerId);
+        if (_isSubmitting)
+        {
+            return;
+        }
+        await CloseDialogAsync(_pendingCommand?.TriggerId);
         _pendingCommand = null;
-        _pendingReasonCode = null;
         _commandError = null;
     }
 
@@ -225,11 +274,16 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         var command = _pendingCommand;
         _isSubmitting = true;
         _commandError = null;
-        _statusMessage = null;
         _commandTask = ExecuteCommandAsync(command, _lifetime.Token);
         return _commandTask;
     }
 
+    /// <summary>
+    /// Submits the pending pause or resume. A failed attempt keeps the pending command, so
+    /// confirming again retries with the same idempotency key and cannot apply the change twice.
+    /// A version conflict is the exception: the same request can never succeed, so the page
+    /// reads the current state and the operator reviews a new command against it.
+    /// </summary>
     private async Task ExecuteCommandAsync(PendingOperatorCommand command, CancellationToken cancellationToken)
     {
         try
@@ -237,47 +291,40 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
             await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                OperatorUiResult<OperatorCommandReceipt> result;
-                if (command.IsOutbox)
-                {
-                    result = await OperatorService.ResolveOutboxAsync(
-                        command.OutboxKind!,
-                        command.OutboxAction!.Value,
-                        command.ActionToken!,
-                        _pendingReasonCode!,
-                        command.IdempotencyKey,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    result = await OperatorService.SetCapturePausedAsync(
-                        command.PauseCapture,
-                        command.ExpectedVersion!.Value,
-                        command.IdempotencyKey,
-                        cancellationToken).ConfigureAwait(false);
-                }
+                var result = await OperatorService.SetCapturePausedAsync(
+                    command.PauseCapture,
+                    command.ExpectedVersion,
+                    command.IdempotencyKey,
+                    cancellationToken).ConfigureAwait(false);
                 if (result.IsSuccess && result.Value is not null)
                 {
-                    var statusMessage = $"{result.Value.Action}: {result.Value.Disposition}. Current state: {result.Value.State}.";
+                    var receipt = result.Value;
                     await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
+                    if (_unauthorized)
+                    {
+                        return;
+                    }
                     await CloseDialogAsync(command.TriggerId).ConfigureAwait(false);
                     await InvokeAsync(() =>
                     {
-                        _statusMessage = statusMessage;
                         _pendingCommand = null;
-                        _pendingReasonCode = null;
                         _commandError = null;
+                        ShowToast(new ToastMessage($"{receipt.Action}: {receipt.Disposition}", $"Current state: {receipt.State}."));
                     }).ConfigureAwait(false);
                 }
                 else if (result.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     await InvokeAsync(HandleUnauthorized).ConfigureAwait(false);
                 }
+                else if (result.Kind == OperatorUiResultKind.Conflict)
+                {
+                    await ReviewAfterConflictAsync(command, cancellationToken).ConfigureAwait(false);
+                }
                 else
                 {
                     await InvokeAsync(() =>
                     {
-                        _commandError = result.Message ?? "The command could not be completed.";
+                        _commandError = $"{result.Message ?? "The command could not be completed."} Confirming again retries the same request.";
                     }).ConfigureAwait(false);
                 }
             }
@@ -292,6 +339,83 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         finally
         {
             await InvokeAsync(() => _isSubmitting = false).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Replaces a command whose expected state version went stale. When the fresh read shows the
+    /// command still applies, the dialog stays open with a new expected version and idempotency
+    /// key for the operator to confirm; otherwise it closes without sending anything again.
+    /// </summary>
+    private async Task ReviewAfterConflictAsync(PendingOperatorCommand command, CancellationToken cancellationToken)
+    {
+        await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
+        if (_unauthorized)
+        {
+            return;
+        }
+        OperationsCaptureControlState? current = null;
+        var stillApplies = false;
+        await InvokeAsync(() =>
+        {
+            current = _errorMessage is null ? _view?.Summary.CaptureControl.Value : null;
+            stillApplies = current is not null && current.State == (command.PauseCapture ? "Running" : "Paused");
+            if (stillApplies)
+            {
+                _pendingCommand = command with
+                {
+                    ExpectedVersion = current!.Version,
+                    IdempotencyKey = CreateIdempotencyKey()
+                };
+                _commandError = $"Capture state changed while this was open. Capture is still {current.State}; review the new expected state version and confirm again.";
+            }
+        }).ConfigureAwait(false);
+        if (stillApplies)
+        {
+            return;
+        }
+        await CloseDialogAsync(command.TriggerId).ConfigureAwait(false);
+        await InvokeAsync(() =>
+        {
+            _pendingCommand = null;
+            _commandError = null;
+            ShowToast(new ToastMessage(
+                "Capture state changed",
+                current is null
+                    ? "The current capture state could not be read, so the command was not sent again."
+                    : $"Current state: {current.State}. The command was not sent again.",
+                "warning"));
+        }).ConfigureAwait(false);
+    }
+
+    private void ShowToast(ToastMessage toast)
+    {
+        _toastLifetime?.Cancel();
+        _toastLifetime?.Dispose();
+        _toastLifetime = _lifetime is null ? null : CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _toast = toast;
+        if (_toastLifetime is not null)
+        {
+            _toastTask = HideToastAsync(toast, _toastLifetime.Token);
+        }
+    }
+
+    private async Task HideToastAsync(ToastMessage toast, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(ToastDuration, TimeProvider, cancellationToken).ConfigureAwait(false);
+            await InvokeAsync(() =>
+            {
+                if (ReferenceEquals(_toast, toast))
+                {
+                    _toast = null;
+                    StateHasChanged();
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
     }
 
@@ -315,84 +439,253 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
 
     private void HandleUnauthorized()
     {
+        _unauthorized = true;
+        _isInitialLoading = false;
         _view = null;
         _pendingCommand = null;
-        _pendingReasonCode = null;
         _errorMessage = null;
         _commandError = null;
-        _statusMessage = null;
+        _toast = null;
         _showConfirmation = false;
+        StateHasChanged();
         NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
-    private bool CanPause => _view?.Summary.CaptureControl.Value.State == "Running";
-    private bool CanResume => _view?.Summary.CaptureControl.Value.State == "Paused";
+    private string CaptureState => _view?.Summary.CaptureControl.Value.State ?? string.Empty;
+    private bool CanPause => CaptureState == "Running";
+    private bool CanResume => CaptureState == "Paused";
     private bool IsCentralIntegrationDisabled =>
         _view?.Summary.Configuration.Value.CentralIntegration == "Disabled";
-    private bool IsDisconnected => !IsCentralIntegrationDisabled &&
-        _view?.Summary.Heartbeat.Value.Availability is not "Available";
-    private bool HasPressure => _view is not null && (
-        _view.Summary.Storage.Value.Any(static item => item.IsUnderPressure) ||
-        _view.Summary.CaptureLanes.Value.Lanes.Any(static lane => lane.PressureLevel > 0));
-    private bool IsEmpty => _view is not null &&
-        _view.Summary.CaptureTelemetry.Value.SampleCount == 0 &&
-        _view.Summary.RawIngress.Value.PendingCount == 0 &&
-        _view.Summary.CaptureProcessing.Value.PendingCount == 0 &&
-        _view.Summary.ArtifactOutbox.Value.PendingCount == 0;
-    private bool HasStaleSection => _view is not null && new[]
-    {
-        _view.Summary.CaptureControl.Freshness,
-        _view.Summary.RawIngress.Freshness,
-        _view.Summary.CaptureLanes.Freshness,
-        _view.Summary.CaptureProcessing.Freshness,
-        _view.Summary.ArtifactOutbox.Freshness,
-        _view.Summary.Storage.Freshness,
-        _view.Summary.CaptureRuntime.Freshness,
-        _view.Summary.Heartbeat.Freshness,
-        _view.Summary.EnvironmentalDelivery.Freshness,
-        _view.Summary.TransientWorker.Freshness,
-        _view.Summary.CaptureTelemetry.Freshness,
-        _view.Summary.Configuration.Freshness
-    }.Any(static freshness => string.Equals(freshness, "stale", StringComparison.OrdinalIgnoreCase));
+    private bool HasStaleSection => HasFreshness("stale");
+    private bool HasUnknownSection => HasFreshness("unknown");
 
-    private string OverallStateText => _isInitialLoading
-        ? "Loading"
-        : _view is null
-            ? "Error"
-            : _errorMessage is not null || HasStaleSection
-                ? "Stale"
-                : IsDisconnected
-                    ? "Disconnected"
-                    : HasPressure
-                        ? "Pressure"
-                        : "Current";
-
-    private string OverallStateClass => OverallStateText switch
+    private bool HasFreshness(string freshness)
     {
-        "Loading" => "state-chip--loading",
-        "Error" => "state-chip--error",
-        "Stale" => "state-chip--stale",
-        "Disconnected" => "state-chip--disconnected",
-        "Pressure" => "state-chip--pressure",
-        _ => "state-chip--current"
+        if (_view is null)
+        {
+            return false;
+        }
+        var summary = _view.Summary;
+        return new[]
+        {
+            summary.CaptureControl.Freshness,
+            summary.RawIngress.Freshness,
+            summary.CaptureLanes.Freshness,
+            summary.CaptureProcessing.Freshness,
+            summary.ArtifactOutbox.Freshness,
+            summary.Storage.Freshness,
+            summary.CaptureRuntime.Freshness,
+            summary.Heartbeat.Freshness,
+            summary.EnvironmentalDelivery.Freshness,
+            summary.TransientWorker.Freshness,
+            summary.CaptureTelemetry.Freshness,
+            summary.Configuration.Freshness
+        }.Any(value => string.Equals(value, freshness, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string HeadingEyebrow =>
+        $"{(string.IsNullOrWhiteSpace(_view?.DisplayName) ? "This camera" : _view.DisplayName)} / local authority";
+
+    private string DeckClass => _errorMessage is not null || HasStaleSection || HasUnknownSection
+        ? "pending"
+        : CanPause ? string.Empty : "warning";
+
+    private string CaptureHeadline => CaptureState switch
+    {
+        "Running" => "Capture loop running",
+        "Paused" => "Capture paused",
+        "PauseRequested" => "Capture pausing",
+        "Initializing" => "Capture initializing",
+        "Unavailable" => "Capture unavailable",
+        _ => $"Capture state: {SplitWords(CaptureState)}"
     };
 
-    private static IReadOnlyList<(string Code, string Label)> ReplayReasons { get; } =
-    [
-        ("configuration-corrected", "Configuration corrected"),
-        ("evidence-restored", "Evidence restored"),
-        ("upstream-recovered", "Upstream recovered")
-    ];
+    private string CaptureDetail
+    {
+        get
+        {
+            var telemetry = _view!.Summary.CaptureTelemetry.Value;
+            var detail = _errorMessage is not null || HasStaleSection
+                ? "Last observed state; some facts need a fresh reading"
+                : telemetry.SampleCount == 0
+                    ? "No capture activity yet"
+                    : string.Join(" / ", new[]
+                    {
+                        telemetry.LatestMode is null ? null : $"{SplitWords(telemetry.LatestMode)} mode",
+                        _schedule?.Decision.SetpointProfileId is { } setpoint ? $"setpoint {setpoint}" : null
+                    }.OfType<string>().DefaultIfEmpty("Capture recorded"));
+            return CanPause || CanResume ? detail : $"{detail}; pause and resume are unavailable in this state";
+        }
+    }
 
-    private static IReadOnlyList<(string Code, string Label)> AbandonReasons { get; } =
-    [
-        ("invalid-source", "Invalid source"),
-        ("irrecoverable-evidence", "Irrecoverable evidence"),
-        ("operator-approved-loss", "Operator-approved loss")
-    ];
+    private string AdmissionText => _schedule?.Decision switch
+    {
+        null => "Unavailable",
+        { Admitted: true, Reason: CaptureScheduleAdmissionReason.ForceOpenOverride } => "Open by override",
+        { Admitted: true } => "Schedule open",
+        { Reason: CaptureScheduleAdmissionReason.ManualPause } => "Paused by operator",
+        { Reason: CaptureScheduleAdmissionReason.SafetyUnavailable } => "Safety hold",
+        { Reason: CaptureScheduleAdmissionReason.Blackout } => "Blackout",
+        { Reason: CaptureScheduleAdmissionReason.ForceClosedOverride } => "Closed by override",
+        _ => "Schedule closed"
+    };
 
-    private IReadOnlyList<(string Code, string Label)> PendingReasonCodes =>
-        _pendingCommand?.IsAbandon == true ? AbandonReasons : ReplayReasons;
+    private NamedRigRevision? ActiveRig => _rigCatalog?.Revisions.FirstOrDefault(
+        revision => revision.RevisionId == _rigCatalog.Selection.ActiveRevisionId);
+
+    private NamedRigRevision? PendingRig => _rigCatalog?.Revisions.FirstOrDefault(
+        revision => revision.RevisionId == _rigCatalog.Selection.PendingRevisionId);
+
+    private string? RigName(NamedRigRevision revision) =>
+        _rigInventory?.Profiles.FirstOrDefault(profile => profile.ProfileId == revision.ProfileId)?.DisplayName;
+
+    private string ActiveProfileText => ActiveRig is { } rig && RigName(rig) is { } name
+        ? name
+        : _schedule is not null
+            ? $"Capture profile r{_schedule.ActiveRevision.RevisionNumber}"
+            : "Unavailable";
+
+    private string RigTitle => _rigCatalog is null
+        ? "Rig catalog unavailable"
+        : ActiveRig is { } rig
+            ? $"{RigName(rig) ?? "Named rig"} / r{rig.RevisionNumber}"
+            : "No named rig active";
+
+    private string RigDetail => _rigCatalog is null
+        ? "Open Camera & rig to load the inventory"
+        : PendingRig is { } pending
+            ? $"Revision r{pending.RevisionNumber} pending restart"
+            : _view?.Summary.Configuration.Value.ModuleType is { } module
+                ? $"Module {SplitWords(module)}"
+                : "No restart pending";
+
+    private string ScheduleDetail => _schedule is null
+        ? "Open Schedule to load the revision"
+        : _schedule.PendingRevision is { } pending
+            ? $"Revision r{pending.RevisionNumber} pending"
+            : _schedule.Decision.NextTransitionUtc is { } next
+                ? $"Next transition {next.UtcDateTime.ToString("HH:mm", CultureInfo.InvariantCulture)} UTC"
+                : "No transition scheduled";
+
+    private string PipelineDetail => _pipeline is null
+        ? "Open Pipeline to load the plan"
+        : _pipeline.Pending is { } pending
+            ? $"Revision r{pending.RevisionNumber} pending"
+            : _pipeline.Active.Plan.EffectiveNodes.Count == 1
+                ? "1 configured step"
+                : $"{_pipeline.Active.Plan.EffectiveNodes.Count.ToString(CultureInfo.InvariantCulture)} configured steps";
+
+    private string CalibrationTitle => _calibration is null
+        ? "Calibration unavailable"
+        : _calibration.ActiveBundle?.BundleId ?? "No active bundle";
+
+    private string CalibrationDetail => _calibration is null
+        ? "Open Calibration to load the library"
+        : _calibration.ActiveBundle is { } bundle
+            ? Count(bundle.MasterCount, "master frame", "master frames")
+            : Count(_calibration.PublishedBundleCount, "published bundle", "published bundles");
+
+    private string ProcessingLaneText
+    {
+        get
+        {
+            var queue = _view!.Summary.CaptureProcessing.Value;
+            return queue.LeasedCount > 0 ? CountText(queue.LeasedCount, "active") : CountText(queue.PendingCount, "pending");
+        }
+    }
+
+    private string DeliveryLaneText
+    {
+        get
+        {
+            var queue = _view!.Summary.ArtifactOutbox.Value;
+            return IsCentralIntegrationDisabled
+                ? "Disabled"
+                : queue.RetryCount > 0 ? CountText(queue.RetryCount, "retry") : CountText(queue.PendingCount, "pending");
+        }
+    }
+
+    /// <summary>The storage root nearest to full; only a successful probe with a capacity counts.</summary>
+    private OperationsStorageState? FullestStorage => _view?.Summary.Storage.Value
+        .Where(static storage => storage.ProbeSucceeded && storage.TotalBytes > 0)
+        .OrderByDescending(static storage => UsedPercent(storage))
+        .FirstOrDefault();
+
+    private static int UsedPercent(OperationsStorageState storage) =>
+        (int)Math.Clamp(Math.Round((storage.TotalBytes - storage.AvailableBytes) * 100d / storage.TotalBytes), 0, 100);
+
+    private string BacklogText(OperationsQueueState queue) =>
+        !string.Equals(queue.Availability, "Available", StringComparison.Ordinal)
+            ? SplitWords(queue.Availability)
+            : queue.OldestPendingUtc is { } oldest ? $"Oldest pending {FormatAge(oldest)}" : "No backlog";
+
+    private string LastProcessingValue => _latestRun is { } run
+        ? run.Duration is { } duration ? FormatSeconds(duration.TotalMilliseconds) : SplitWords(run.Status.ToString())
+        : _view!.Summary.CaptureTelemetry.Value is { SampleCount: > 0 } telemetry
+            ? FormatSeconds(telemetry.AverageProcessingMilliseconds)
+            : "None";
+
+    private string LastProcessingDetail => _latestRun is { } run
+        ? run.Duration is null ? "Latest run has not finished" : $"{SplitWords(run.Status.ToString())} run"
+        : _view!.Summary.CaptureTelemetry.Value.SampleCount > 0
+            ? "Average of recent captures"
+            : "No processing recorded";
+
+    /// <summary>
+    /// Recorded configuration history: capture-profile revisions (which carry the schedule and
+    /// pipeline) and the last calibration activation, newest first.
+    /// </summary>
+    private IReadOnlyList<RecentChange> RecentChanges
+    {
+        get
+        {
+            var changes = new List<RecentChange>();
+            if (_schedule is not null)
+            {
+                foreach (var revision in _schedule.History)
+                {
+                    var status = revision.RevisionId == _schedule.ActiveRevision.RevisionId
+                        ? "; active"
+                        : revision.RevisionId == _schedule.PendingRevision?.RevisionId ? "; pending" : string.Empty;
+                    changes.Add(new RecentChange(
+                        revision.CreatedUtc,
+                        "Profile",
+                        $"Revision r{revision.RevisionNumber} saved from {SourceText(revision.Source)}{status}."));
+                }
+            }
+            if (_calibration?.LastActivation is { } activation)
+            {
+                changes.Add(new RecentChange(
+                    activation.ActivatedUtc,
+                    "Calibration",
+                    $"{SplitWords(activation.CommandKind)}: bundle {activation.ToBundleId} active."));
+            }
+            return changes
+                .OrderByDescending(static change => change.Utc)
+                .Take(MaximumRecentChanges)
+                .ToArray();
+        }
+    }
+
+    private static string SourceText(string source) => source switch
+    {
+        "operator-draft" => "an operator draft",
+        "file-draft" => "a configuration file draft",
+        "file-bootstrap" => "the startup configuration file",
+        "legacy-bootstrap" => "the legacy configuration",
+        _ => $"the {source} source"
+    };
+
+    private string FormatChangeTime(DateTimeOffset value) =>
+        value.UtcDateTime.Date == TimeProvider.GetUtcNow().UtcDateTime.Date
+            ? FormatClock(value)
+            : value.UtcDateTime.ToString("MMM d", CultureInfo.InvariantCulture);
+
+    private static string FormatClock(DateTimeOffset value) =>
+        value.UtcDateTime.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+
+    private static string FormatIso(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
     internal static string FormatBytes(long? bytes)
     {
@@ -415,21 +708,36 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         ? "Never"
         : value.Value.ToLocalTime().ToString("MMM d, HH:mm:ss", CultureInfo.InvariantCulture);
 
+    /// <summary>The compact elapsed time since <paramref name="value"/>: 4s, 12 min, 3 h, 2 d.</summary>
     private string FormatAge(DateTimeOffset value)
     {
         var age = TimeProvider.GetUtcNow() - value;
-        return age < TimeSpan.FromSeconds(2)
-            ? "just now"
-            : FormattableString.Invariant($"{Math.Max(0, age.TotalSeconds):F0}s ago");
+        if (age < TimeSpan.Zero)
+        {
+            age = TimeSpan.Zero;
+        }
+        return age.TotalSeconds < 90
+            ? FormattableString.Invariant($"{age.TotalSeconds:F0}s")
+            : age.TotalMinutes < 90
+                ? FormattableString.Invariant($"{age.TotalMinutes:F0} min")
+                : age.TotalHours < 48
+                    ? FormattableString.Invariant($"{age.TotalHours:F0} h")
+                    : FormattableString.Invariant($"{age.TotalDays:F0} d");
     }
 
-    private static string FormatMilliseconds(double? value) => value is null || !double.IsFinite(value.Value)
+    private static string FormatSeconds(double milliseconds) => !double.IsFinite(milliseconds)
         ? "Unavailable"
-        : FormattableString.Invariant($"{value.Value:F1} ms");
+        : milliseconds < 1000
+            ? FormattableString.Invariant($"{milliseconds:F0}ms")
+            : milliseconds < 60_000
+                ? FormattableString.Invariant($"{milliseconds / 1000:F2}s")
+                : FormattableString.Invariant($"{milliseconds / 60_000:F1} min");
 
-    private static string FormatNumber(double? value) => value is null || !double.IsFinite(value.Value)
-        ? "Unavailable"
-        : value.Value.ToString("F1", CultureInfo.InvariantCulture);
+    private static string CountText(long count, string label) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} {label}";
+
+    private static string Count(long count, string singular, string plural) =>
+        count == 1 ? $"1 {singular}" : CountText(count, plural);
 
     internal static string SplitWords(string value)
     {
@@ -450,18 +758,6 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         return char.ToUpperInvariant(builder[0]) + builder.ToString(1, builder.Length - 1);
     }
 
-    private static string StateClass(string value) => value switch
-    {
-        "Running" or "Accepting" or "Available" or "Healthy" => "state-chip--current",
-        "Paused" or "Initializing" => "state-chip--stale",
-        "Unavailable" or "Unhealthy" => "state-chip--error",
-        _ => "state-chip--pressure"
-    };
-
-
-
-    private static string YesNo(bool value) => value ? "Yes" : "No";
-
     private static string CreateIdempotencyKey() =>
         $"ui-{Convert.ToHexString(RandomNumberGenerator.GetBytes(32))}";
 
@@ -473,21 +769,15 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         }
         await _lifetime.CancelAsync().ConfigureAwait(false);
         _timer?.Dispose();
-        if (_pollTask is not null)
+        foreach (var task in new[] { _pollTask, _commandTask, _toastTask })
         {
+            if (task is null)
+            {
+                continue;
+            }
             try
             {
-                await _pollTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-        }
-        if (_commandTask is not null)
-        {
-            try
-            {
-                await _commandTask.ConfigureAwait(false);
+                await task.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -495,6 +785,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         }
         await _operationGate.WaitAsync().ConfigureAwait(false);
         _operationGate.Release();
+        _toastLifetime?.Dispose();
         _lifetime.Dispose();
         if (_module is not null)
         {
@@ -512,15 +803,12 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
     private sealed record PendingOperatorCommand(
         string Heading,
         string Description,
-        string ActionLabel,
-        string ExpectedState,
-        long? ExpectedVersion,
         bool PauseCapture,
-        bool IsOutbox,
-        bool IsAbandon,
-        string? OutboxKind,
-        OutboxOperationAction? OutboxAction,
+        long ExpectedVersion,
         string TriggerId,
-        string? ActionToken,
         string IdempotencyKey);
+
+    private sealed record ToastMessage(string Title, string Detail, string Tone = "success");
+
+    private sealed record RecentChange(DateTimeOffset Utc, string Area, string Text);
 }

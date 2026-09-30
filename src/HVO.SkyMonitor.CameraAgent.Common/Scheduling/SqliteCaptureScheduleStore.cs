@@ -109,6 +109,8 @@ public sealed class SqliteCaptureScheduleStore(
             using var transaction = BeginImmediate(connection);
             await ValidatePersistedRevisionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (snapshot is not null)
+                await VerifyNamedRigAsync(connection, transaction, snapshot.ActiveRevision.Profile, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
                 var source = configuration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
@@ -142,12 +144,21 @@ public sealed class SqliteCaptureScheduleStore(
                 {
                     snapshot = snapshot with { PendingRevision = null };
                 }
-                if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
+                var namedRigPending = await ScalarLongAsync(connection, transaction,
+                    "SELECT COUNT(*) FROM named_rig_selection WHERE pending_revision_id IS NOT NULL;",
+                    cancellationToken).ConfigureAwait(false) != 0;
+                string? lastFileSha256;
+                using (var command = connection.CreateCommand())
+                {
+                    command.Transaction = transaction;
+                    command.CommandText = "SELECT profile_sha256 FROM capture_schedule_revisions WHERE source IN ('file-bootstrap', 'legacy-bootstrap', 'file-draft') ORDER BY revision_number DESC LIMIT 1;";
+                    lastFileSha256 = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+                }
+                if (!namedRigPending && !string.Equals(fileSha256, lastFileSha256, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
                 {
-                    var pending = await FindRevisionBySha256Async(
-                        connection, transaction, fileSha256, cancellationToken).ConfigureAwait(false) ??
-                        await InsertRevisionAsync(
+                    var pending = await InsertRevisionAsync(
                             connection, transaction, fileProfile, "file-draft", "system",
                             "configuration file differs from active revision", cancellationToken).ConfigureAwait(false);
                     var now = Now();
@@ -165,7 +176,7 @@ public sealed class SqliteCaptureScheduleStore(
                         UpdatedUtc = now
                     };
                 }
-                else if (hasRedundantPending)
+                else if (hasRedundantPending && !namedRigPending)
                 {
                     var now = Now();
                     await ExecuteAsync(connection, transaction, """
@@ -260,6 +271,7 @@ public sealed class SqliteCaptureScheduleStore(
                         nameof(profile));
                 }
                 validateNewProfile?.Invoke();
+                await VerifyNamedRigAsync(connection, transaction, profile, token).ConfigureAwait(false);
                 if (basisRevisionId is not null &&
                     !string.Equals(snapshot.ActiveRevision.RevisionId, basisRevisionId, StringComparison.Ordinal) &&
                     !string.Equals(snapshot.PendingRevision?.RevisionId, basisRevisionId, StringComparison.Ordinal))
@@ -478,7 +490,8 @@ public sealed class SqliteCaptureScheduleStore(
             async (connection, transaction, snapshot, now, token) =>
             {
                 var target = await ReadRevisionAsync(connection, transaction, revisionId, token).ConfigureAwait(false)
-                    ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
+                   ?? throw new KeyNotFoundException("The capture schedule revision was not found.");
+                await VerifyNamedRigAsync(connection, transaction, target.Profile, token).ConfigureAwait(false);
                 if (rollback && target.RevisionNumber >= snapshot.ActiveRevision.RevisionNumber)
                 {
                     throw new CaptureScheduleStoreConflictException(
@@ -862,6 +875,7 @@ public sealed class SqliteCaptureScheduleStore(
                     ("$event", $"admission:{admissionId}"),
                     ("$override", oneShotOverrideId),
                     ("$occurred", decisionUtc.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                await RebasePendingRigScheduleVersionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return true;
@@ -1039,6 +1053,7 @@ public sealed class SqliteCaptureScheduleStore(
                 SET version = version + 1, updated_unix_ms = $updated
                 WHERE state_key = 1;
                 """, token, ("$updated", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                await RebasePendingRigScheduleVersionAsync(connection, transaction, token).ConfigureAwait(false);
                 return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
             },
             cancellationToken);
@@ -1093,12 +1108,30 @@ public sealed class SqliteCaptureScheduleStore(
                 SET version = version + 1, updated_unix_ms = $updated
                 WHERE state_key = 1;
                 """, token, ("$updated", occurred)).ConfigureAwait(false);
+                await RebasePendingRigScheduleVersionAsync(connection, transaction, token).ConfigureAwait(false);
                 return snapshot with { Version = snapshot.Version + 1, UpdatedUtc = now };
             },
             cancellationToken);
     }
 
     public void Dispose() => _gate.Dispose();
+
+    private static async Task RebasePendingRigScheduleVersionAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken token)
+    {
+        var pending = await ScalarLongAsync(connection, transaction,
+            "SELECT COUNT(*) FROM named_rig_selection WHERE pending_revision_id IS NOT NULL;", token).ConfigureAwait(false);
+        if (pending == 0) return;
+        var changed = await ExecuteAsync(connection, transaction, """
+            UPDATE named_rig_selection SET pending_schedule_version =
+                (SELECT version FROM capture_schedule_state WHERE state_key = 1)
+            WHERE state_key = 1 AND pending_revision_id IS NOT NULL
+                AND pending_schedule_revision_id = (SELECT pending_revision_id FROM capture_schedule_state WHERE state_key = 1)
+                AND pending_schedule_version = (SELECT version - 1 FROM capture_schedule_state WHERE state_key = 1);
+            """, token).ConfigureAwait(false);
+        if (changed != 1)
+            throw new CaptureScheduleStoreConflictException("The pending named rig schedule changed during override mutation.");
+    }
 
     private async Task<CaptureScheduleStoreSnapshot> MutateAsync<TPayload>(
         string idempotencyKey,
@@ -1176,6 +1209,13 @@ public sealed class SqliteCaptureScheduleStore(
 
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
+            if (commandKind is "stage" or "activate" or "rollback" &&
+                await ScalarLongAsync(connection, transaction,
+                    "SELECT COUNT(*) FROM named_rig_selection WHERE pending_revision_id IS NOT NULL;",
+                    cancellationToken).ConfigureAwait(false) != 0)
+            {
+                throw new CaptureScheduleStoreConflictException("A named rig is awaiting restart.");
+            }
             if (expectedVersion.HasValue && expectedVersion.Value != snapshot.Version)
             {
                 throw new CaptureScheduleStoreConflictException("The capture schedule state version has changed.");
@@ -1210,7 +1250,35 @@ public sealed class SqliteCaptureScheduleStore(
         }
     }
 
-    private static async Task<CaptureScheduleStoreSnapshot?> ReadSnapshotAsync(
+    private static async Task VerifyNamedRigAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LocalCaptureProfileDefinition profile, CancellationToken token)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT r.rig_json, r.rig_sha256 FROM named_rig_selection s
+            JOIN named_rig_revisions r ON r.revision_id = s.active_revision_id WHERE s.state_key = 1;
+            """;
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        if (!await reader.ReadAsync(token).ConfigureAwait(false)) return;
+        var bytes = await reader.GetFieldValueAsync<byte[]>(0, token).ConfigureAwait(false);
+        if (!string.Equals(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)),
+            reader.GetString(1), StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Named rig checksum mismatch.");
+        var rig = JsonSerializer.Deserialize<NamedRigEquipment>(bytes)
+            ?? throw new InvalidDataException("Named rig content is invalid.");
+        if (!SameEquipment(profile, rig.Module, rig.Rig))
+            throw new CaptureScheduleStoreConflictException("The schedule equipment differs from the selected named rig.");
+    }
+
+    internal static bool SameEquipment(LocalCaptureProfileDefinition profile, CameraModuleDescriptor module, CameraRigConfig rig)
+        => string.Equals(CaptureContractJson.ComputeCanonicalJsonSha256(new
+        { profile.Module, profile.Rig.Sensor, profile.Rig.Readout, profile.Rig.Optics, profile.Rig.Orientation }),
+        CaptureContractJson.ComputeCanonicalJsonSha256(new
+        { Module = module, rig.Sensor, rig.Readout, rig.Optics, rig.Orientation }), StringComparison.OrdinalIgnoreCase);
+
+    private sealed record NamedRigEquipment(CameraModuleDescriptor Module, CameraRigConfig Rig);
+
+    internal static async Task<CaptureScheduleStoreSnapshot?> ReadSnapshotAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)

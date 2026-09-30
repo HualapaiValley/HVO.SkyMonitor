@@ -247,7 +247,7 @@ internal static class CommandLine
             {
                 throw new InstallUsageException("Unexpected positional argument.");
             }
-            if (option is "--dry-run" or "--resume" or "--json" or "--no-download" or "--migration-backward-compatible")
+            if (option is "--dry-run" or "--resume" or "--restore-only" or "--json" or "--no-download" or "--migration-backward-compatible")
             {
                 if (!flags.Add(option)) throw new InstallUsageException($"Duplicate option '{option}'.");
                 continue;
@@ -260,7 +260,7 @@ internal static class CommandLine
         }
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--instance-id", "--confirm-instance-id", "--product-root", "--image-ref", "--image-archive",
+            "--instance-id", "--confirm-instance-id", "--operation-id", "--product-root", "--image-ref", "--image-archive",
             "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
             "--catalog-bundle", "--catalog-manifest", "--catalog-index",
             "--catalog-version", "--asset-base-url", "--channel"
@@ -276,6 +276,8 @@ internal static class CommandLine
             flags.Contains("--json"))
         {
             AllowTestProductRoot = allowTestProductRoot,
+            RestoreOnly = flags.Contains("--restore-only"),
+            RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),

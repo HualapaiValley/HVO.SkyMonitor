@@ -30,6 +30,19 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void Parse_FriendlyNameLongerThanTheCameraAccepts_IsRejected()
+    {
+        var atBound = ValidArguments.ToArray();
+        atBound[3] = new string('n', InstallRequest.MaximumFriendlyNameLength);
+        var overBound = ValidArguments.ToArray();
+        overBound[3] = new string('n', InstallRequest.MaximumFriendlyNameLength + 1);
+
+        Assert.AreEqual(atBound[3], CommandLine.Parse(atBound).FriendlyName);
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(overBound));
+        StringAssert.Contains(exception.Message, "at most 80 characters", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Parse_LocalReplayRunnerProfile_IsExplicitlySelectable()
     {
         var request = CommandLine.Parse(ValidArguments.Concat([
@@ -233,6 +246,50 @@ public sealed class CommandLineTests
             "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
             "--image-ref", "cameraagent:latest"
         ]));
+    }
+
+    [TestMethod]
+    public void ParseCommand_RestoreOnlyBindsRecoveryWithoutChangingOriginalRequestHash()
+    {
+        string[] original = ["cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--image-ref", $"sha256:{new string('a', 64)}", "--no-download", "--migration-backward-compatible"];
+        var operationId = Guid.NewGuid();
+        var request = (LifecycleRequest)CommandLine.ParseCommand(original);
+        var recovery = (LifecycleRequest)CommandLine.ParseCommand([.. original, "--resume", "--restore-only", "--operation-id", operationId.ToString("D")]);
+
+        Assert.IsTrue(recovery.RestoreOnly);
+        Assert.IsTrue(recovery.Resume);
+        Assert.AreEqual(operationId, recovery.RecoveryOperationId);
+        Assert.AreEqual(request.ComputeRequestSha256(), recovery.ComputeRequestSha256());
+    }
+
+    [TestMethod]
+    [DataRow("missing-resume")]
+    [DataRow("missing-operation")]
+    [DataRow("missing-restore")]
+    [DataRow("dry-run")]
+    [DataRow("rollback")]
+    [DataRow("signed")]
+    public void ParseCommand_RestoreOnlyRejectsUnsupportedOptions(string fault)
+    {
+        var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, Guid.NewGuid(), InstallRequest.DefaultProductRoot,
+            dryRun: false, resume: true, json: false)
+        {
+            ImageReference = $"sha256:{new string('a', 64)}",
+            RestoreOnly = true,
+            RecoveryOperationId = Guid.NewGuid()
+        };
+        request = fault switch
+        {
+            "missing-resume" => request with { Resume = false },
+            "missing-operation" => request with { RecoveryOperationId = null },
+            "missing-restore" => request with { RestoreOnly = false },
+            "dry-run" => request with { DryRun = true },
+            "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
+            "signed" => request with { ImageReference = null, ImageManifest = "/srv/release/image-manifest.json" },
+            _ => throw new InvalidOperationException()
+        };
+        Assert.ThrowsExactly<InstallUsageException>(request.Validate);
     }
 
     [TestMethod]

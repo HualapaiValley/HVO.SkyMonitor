@@ -328,6 +328,7 @@ public sealed class InstallerFlowTests
             var result = await CameraAgentInstaller.InstallAsync(
                 request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer, probe.Probe);
 
+            Assert.AreEqual(InstallationOutcome.Installed, result.Outcome);
             Assert.AreEqual(imageId, result.Image.ImageId);
             Assert.AreEqual("archive", result.Image.Source);
             Assert.AreEqual("cameraagent-state-v2", result.Image.UpgradeCompatibility);
@@ -373,7 +374,7 @@ public sealed class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
         {
-            ["io.hvo.skymonitor.raw-ingress-schema"] = "13"
+            ["io.hvo.skymonitor.raw-ingress-schema"] = "12"
         };
         using var release = SignedImageReleaseFixture.Create(root, imageId, drifted);
         var instanceId = Guid.Parse("6c1de0b2-3a48-4f7d-8e5b-91c0f2a7d640");
@@ -531,7 +532,7 @@ public sealed class InstallerFlowTests
                                 ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
                                 ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
                                 ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-                                ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+                                ["io.hvo.skymonitor.raw-ingress-schema"] = SignedImageReleaseFixture.ContractLabels["io.hvo.skymonitor.raw-ingress-schema"],
                                 ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
                                 ["io.hvo.skymonitor.component"] = "CameraAgent",
                                 ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",

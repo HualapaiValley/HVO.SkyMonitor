@@ -951,6 +951,21 @@ internal sealed partial class SqliteCaptureProcessingStore
         return await ReadExecutionAsync(connection, null, executionId, cancellationToken).ConfigureAwait(false);
     }
 
+    internal async ValueTask<Guid?> ReadLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT execution_id FROM processing_executions INDEXED BY ix_processing_executions_live_capture
+            WHERE capture_id = $capture AND execution_class = 'Live';
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is string text ? Guid.ParseExact(text, "N") : null;
+    }
+
     internal async ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
         Guid executionId,
         CancellationToken cancellationToken)
@@ -964,14 +979,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var nodeCommand = connection.CreateCommand();
         nodeCommand.CommandText = """
             SELECT node_id, required, plan_sha256, status, reason, attempt_count,
-                   started_unix_ms, completed_unix_ms
+                   started_unix_ms, completed_unix_ms, dependencies_json, outputs_json
             FROM processing_execution_nodes
             WHERE execution_id = $execution
             ORDER BY rowid;
             """;
         nodeCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         var rows = new List<(string NodeId, bool Required, string Plan, string Status, string? Reason,
-            int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed)>();
+            int AttemptCount, DateTimeOffset? Started, DateTimeOffset? Completed, string DependenciesJson, string OutputsJson)>();
         using (var reader = await nodeCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -986,7 +1001,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                     await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
                         ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
                     await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
-                        ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7))));
+                        ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
+                    reader.GetString(8), reader.GetString(9)));
             }
         }
         foreach (var row in rows)
@@ -1038,9 +1054,17 @@ internal sealed partial class SqliteCaptureProcessingStore
                 output.AvailabilityState,
                 output.AvailabilityReason,
                 published.TryGetValue(output.OutputIdentitySha256, out var flag) && flag)).ToArray();
-            nodes.Add(new(
+            nodes.Add(new ProcessingGraphExecutionNodeState(
                 row.NodeId, row.Required, row.Plan, row.Status, row.Reason, row.AttemptCount,
-                row.Started, row.Completed, inputs, attempts, outputs));
+                row.Started, row.Completed, inputs, attempts, outputs)
+            {
+                Dependencies = JsonSerializer.Deserialize<ProcessingGraphDependencyDefinition[]>(
+                    row.DependenciesJson, ExecutionSerializerOptions)
+                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution dependencies are missing."),
+                OutputContracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(
+                    row.OutputsJson, ExecutionSerializerOptions)
+                    ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.")
+            });
         }
         return new(execution, nodes);
     }

@@ -10,7 +10,7 @@
 
 <div class="pipeline-page">
     <PageHeader Eyebrow="Versioned processing authority" Title="Pipeline summary" Lead="The desired and effective processing graph of the active revision and, when one is staged, the pending revision. Nodes are enabled or disabled from the capture schedule editor; nothing here changes durable state.">
-        <button class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
+        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
     </PageHeader>
 
     @if (_loading)
@@ -20,7 +20,7 @@
     else if (_state is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Pipeline summary unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="LoadAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
         </PageStateNotice>
     }
     else

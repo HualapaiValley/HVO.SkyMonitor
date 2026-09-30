@@ -1,0 +1,11 @@
+@if (IsArchive)
+{
+    <div class="archive-navigation">
+        <nav class="archive-subnav" aria-label="Archive navigation">
+            @foreach (var (href, label) in Links)
+            {
+                <a href="@href" aria-current="@(Current == href ? "page" : null)">@label</a>
+            }
+        </nav>
+    </div>
+}

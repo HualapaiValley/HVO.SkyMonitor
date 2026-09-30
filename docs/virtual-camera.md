@@ -528,6 +528,15 @@ north maps toward negative image Y and east toward positive image X. The full
 profile's expected horizon cardinals are north `(968,12.16)`, east
 `(1563.84,608)`, south `(968,1203.84)`, and west `(372.16,608)`.
 
+That unflipped zenith basis is the mirrored, map-style view (East on the right
+with North up), which is how this conformance fixture is pinned. It is not what
+an upward-looking camera physically records. For a real upward-looking all-sky
+camera, `horizontalFlip: true` is the physical setting: with North up, East
+appears on the left, as seen when looking up at the sky, and the east and west
+cardinals above swap sides. New installer-generated rigs use
+`horizontalFlip: true` from profile `installer-virtualsky-v4`; see
+`docs/runbooks/deployment-installer.md`.
+
 The coordinates come from the commit-pinned V5 persisted fixture described in
 `docs/reference-code.md`. Do not substitute current host coordinates without a
 new sourced fixture/version. The synthetic lens is a geometry conformance model,

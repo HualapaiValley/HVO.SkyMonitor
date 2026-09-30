@@ -1389,7 +1389,7 @@ if [[ "$url" == */api/v1/operations/summary* ]]; then
      heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}} |
      .captureControl.freshness=$controlFreshness |
      .captureControl.observedUtc=(if $controlFreshness == "stale" then "2026-08-01T00:00:00Z" else $capturedUtc end) |
-     .transientWorker.freshness=$workerFreshness |
+     .transientWorker.freshness=(if ($hybrid | not) and $workerFreshness == "fresh" then "disabled" else $workerFreshness end) |
      .transientWorker.observedUtc=(if $workerFreshness == "stale" then "2026-08-01T00:00:00Z" else $capturedUtc end) |
      .configuration.value.centralIntegration=(if $tailMode == "changing-then-stable" and $summaryRead >= 2 then "EnabledStable" else "Enabled" end) |
      if $prePauseSections == "raw-lane" then .rawIngress.observedUtc="2026-08-06T23:59:59Z" | .captureLanes.observedUtc="2026-08-06T23:59:59Z"

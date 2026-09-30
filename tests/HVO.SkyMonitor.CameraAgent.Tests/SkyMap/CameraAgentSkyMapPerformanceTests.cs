@@ -42,7 +42,7 @@ public sealed class CameraAgentSkyMapPerformanceTests
             elapsed[index] = stopwatch.Elapsed.TotalMilliseconds;
             allocated[index] = GC.GetTotalAllocatedBytes(precise: true) - before;
             maximumObjects = Math.Max(maximumObjects, result.Objects.Count);
-            Assert.IsTrue(result.Objects.Count <= CameraAgentSkyMapProjection.MaximumObjects);
+            Assert.IsTrue(result.Objects.Count <= CameraAgentSkyMapProjection.DefaultMaximumObjects);
         }
 
         Array.Sort(elapsed);
@@ -52,7 +52,7 @@ public sealed class CameraAgentSkyMapPerformanceTests
         Console.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
             $"sky-map projection: iterations={Iterations} median={elapsed[Iterations / 2]:F2}ms p95={p95:F2}ms max={elapsed[^1]:F2}ms allocated-p95={p95Allocated} bytes objects-max={maximumObjects}"));
-        Assert.AreEqual(CameraAgentSkyMapProjection.MaximumObjects, maximumObjects, "The dense synthetic sky must reach the object bound.");
+        Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, maximumObjects, "The dense synthetic sky must reach the object bound.");
         Assert.IsTrue(p95 <= P95BudgetMilliseconds, $"p95 {p95:F2} ms exceeded the {P95BudgetMilliseconds} ms budget.");
         Assert.IsTrue(p95Allocated <= AllocationBudgetBytes, $"p95 allocation {p95Allocated} bytes exceeded the {AllocationBudgetBytes} byte budget.");
     }

@@ -13,7 +13,7 @@
     <PageHeader Eyebrow="Durable execution journal" Title="Processing executions" Lead="Live runs stay on the ordered in-process path; replays run separately against retained evidence. This page reads the durable journal at a bounded size and never touches the live slot.">
         <span class="executions-refresh" aria-live="polite">
             @if (_view is not null) { <span>Read <time datetime="@_view.ReadUtc.ToString("O")">@_view.ReadUtc.ToString("HH:mm:ss")</time> UTC@(_polling ? ", refreshing every 5 s while work is active" : "")</span> }
-            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshNowAsync">Refresh</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshNowAsync">Refresh</button>
         </span>
     </PageHeader>
 
@@ -29,7 +29,7 @@
     else if (_view is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Executions unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" disabled="@_loading" @onclick="RefreshNowAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshNowAsync">Try again</button>
         </PageStateNotice>
     }
     else

@@ -121,6 +121,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var minimumCompatibleRevision = Label(labels, "io.hvo.skymonitor.minimum-compatible-revision");
         var identityMigration = Label(labels, "io.hvo.skymonitor.identity-migration");
         var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
+        var rawIngressMigration = Label(labels, "io.hvo.skymonitor.raw-ingress-migration");
         var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
 
         var installationIdentity = new ImageInstallationIdentity(
@@ -138,7 +139,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             MinimumCompatibleRevision: minimumCompatibleRevision,
             IdentityMigration: identityMigration,
             RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion);
+            CatalogManifestVersion: catalogManifestVersion,
+            RawIngressMigration: rawIngressMigration);
         if (signedImage is not null)
         {
             EnsureSignedImageAgreement(signedImage, installationIdentity);
@@ -168,6 +170,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         Compare(mismatches, "state compatibility", signed.Compatibility.StateContract, actual.UpgradeCompatibility);
         Compare(mismatches, "minimum compatible revision", signed.Compatibility.MinimumCompatibleRevision, actual.MinimumCompatibleRevision);
         Compare(mismatches, "identity migration", signed.Compatibility.IdentityMigration, actual.IdentityMigration);
+        Compare(mismatches, "raw ingress migration", signed.Compatibility.RawIngressMigration, actual.RawIngressMigration);
         Compare(
             mismatches,
             "raw ingress schema",
@@ -313,6 +316,32 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         if (failed.Length > 0)
             throw new InstallerException(
                 $"The selected CameraAgent container does not match the installation manifest: {string.Join(", ", failed)}.");
+    }
+
+    public async Task VerifyRecoveryContainerAsync(
+        ComposeFiles compose, InstallationPaths paths, InstanceManifest manifest, CancellationToken cancellationToken)
+    {
+        var result = await RunDockerAsync(["container", "inspect", compose.ContainerName], cancellationToken).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var container = document.RootElement[0];
+        var host = container.GetProperty("HostConfig");
+        var mounts = container.GetProperty("Mounts").EnumerateArray().ToArray();
+        var ports = host.GetProperty("PortBindings").EnumerateObject().ToArray();
+        var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
+        {
+            ["capabilities-dropped"] = host.GetProperty("CapDrop").EnumerateArray().Any(static item => item.GetString() == "ALL"),
+            ["no-added-capabilities"] = !host.TryGetProperty("CapAdd", out var added) || added.ValueKind == JsonValueKind.Null || added.GetArrayLength() == 0,
+            ["no-new-privileges"] = host.GetProperty("SecurityOpt").EnumerateArray().Any(static item => item.GetString() == "no-new-privileges:true"),
+            ["ports"] = ports.Length == 1 && ports[0].Name == "8080/tcp" && ports[0].Value.GetArrayLength() == 1 &&
+                        ports[0].Value[0].GetProperty("HostIp").GetString() == manifest.BindAddress &&
+                        ports[0].Value[0].GetProperty("HostPort").GetString() == manifest.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["secrets-mount"] = mounts.Any(mount => MountMatches(mount, Path.Combine(paths.ConfigRoot, "secrets"), "/run/hvo-secrets", writable: false))
+        };
+        foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, manifest.ReplayProfile))
+            checks[source.ContainerPath] = mounts.Any(mount => MountMatches(mount, source.HostPath, source.ContainerPath, writable: true));
+        var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
+        if (failed.Length > 0)
+            throw new InstallerException($"Restore-only runtime authority differs from the original instance: {string.Join(", ", failed)}.");
     }
 
     public async Task VerifyContainerAsync(

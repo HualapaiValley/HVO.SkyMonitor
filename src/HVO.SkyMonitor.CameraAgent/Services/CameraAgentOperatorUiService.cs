@@ -13,6 +13,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -80,10 +82,15 @@ internal sealed record OperatorOutboxPage(
     IReadOnlyList<OperatorOutboxItem> Items,
     string? NextCursor);
 
+/// <param name="DisplayName">
+/// The operator-facing camera name from the site profile or the installer, or null when neither names it. The
+/// workspace shows this rather than the agent identifier.
+/// </param>
 internal sealed record CameraAgentOperationsView(
     CameraAgentOperationsSummary Summary,
     IReadOnlyList<OperatorOutboxItem> ArtifactQuarantine,
-    IReadOnlyList<OperatorOutboxItem> EnvironmentalQuarantine);
+    IReadOnlyList<OperatorOutboxItem> EnvironmentalQuarantine,
+    string? DisplayName = null);
 
 internal sealed record OperatorCommandReceipt(
     string Action,
@@ -189,9 +196,10 @@ internal sealed record CameraAgentTransientPolicyStatus(
     int MaximumAdjacentStartIntervalSeconds,
     int StarMaximumResults);
 
-internal sealed record CameraAgentCaptureDetailView(
+public sealed record CameraAgentCaptureDetailView(
     CameraAgentGalleryCapture Capture,
-    CameraAgentCapturePresentation Presentation);
+    CameraAgentCapturePresentation Presentation,
+    CameraAgentCurrentSkyFacts? Facts = null);
 
 // Current Sky reads the presentation and the durable facts of the displayed
 // capture together; facts may be unavailable while the image still shows.
@@ -285,7 +293,6 @@ internal sealed class CameraAgentOperatorUiService(
     ICameraAgentGallery gallery,
     ICameraAgentArchive archive,
     IObservingDayCalendarProvider observingDays,
-    ICameraAgentCapturePresentationProjector capturePresentation,
     ICameraAgentCurrentImagePresentationService currentImagePresentation,
     ICameraAgentLayeredPresentationService layeredPresentations,
     ICameraAgentPresentationMaterializer presentationMaterializer,
@@ -296,12 +303,14 @@ internal sealed class CameraAgentOperatorUiService(
     EnvironmentalObservationDeliveryWakeup environmentalWakeup,
     ITransientRuntimeManagement transientRuntime,
     ICameraAgentConfigurationAccessor configurationAccessor,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     IEnumerable<CaptureProcessingStepRegistration> processingRegistrations,
     IEnumerable<CameraModuleRegistration> moduleRegistrations,
     IOptions<CameraAgentHostOptions> hostOptions,
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
-    ILogger<CameraAgentOperatorUiService> logger) : ICameraAgentOperatorUiService
+    ILogger<CameraAgentOperatorUiService> logger,
+    ISiteProfileStore? siteProfileStore = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -326,7 +335,10 @@ internal sealed class CameraAgentOperatorUiService(
             var environmental = centralDisabled
                 ? []
                 : await ReadEnvironmentalQuarantineAsync(cancellationToken).ConfigureAwait(false);
-            return OperatorUiResult<CameraAgentOperationsView>.Success(new(summary, artifacts, environmental));
+            var displayName = await ReadDisplayNameAsync(
+                siteProfileStore, _hostOptions.DisplayName, logger, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentOperationsView>.Success(
+                new(summary, artifacts, environmental, displayName));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -336,6 +348,35 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent operations UI read failed.");
             return Unavailable<CameraAgentOperationsView>("Current operations data is unavailable.");
+        }
+    }
+
+    // The name is presentation only, so an unreadable profile degrades to the installer name rather than
+    // failing the whole operations read.
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A profile read failure is logged and degrades to the configured name.")]
+    internal static async ValueTask<string?> ReadDisplayNameAsync(
+        ISiteProfileStore? siteProfileStore,
+        string? configuredName,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var configured = string.IsNullOrWhiteSpace(configuredName) ? null : configuredName.Trim();
+        if (siteProfileStore is null)
+        {
+            return configured;
+        }
+        try
+        {
+            return (await siteProfileStore.GetAsync(cancellationToken).ConfigureAwait(false)).EffectiveCameraName;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent site profile read failed; showing the configured camera name.");
+            return configured;
         }
     }
 
@@ -639,13 +680,31 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
-            return capture is null
-                ? OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
+            if (capture is null || capture.CaptureId != captureId)
+            {
+                return OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
                     OperatorUiResultKind.NotFound,
-                    "The requested capture was not found.")
-                : OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
-                    capture,
-                    ProjectCaptureDetailPresentation(capturePresentation.Project(capture))));
+                    "The requested capture was not found.");
+            }
+
+            var presentation = ProjectCaptureDetailPresentation(
+                await currentImagePresentation.ProjectCaptureAsync(capture, cancellationToken).ConfigureAwait(false));
+            var combined = presentation.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+            var combinedArtifactId = combined.Availability == CameraAgentPresentationSlotAvailability.Available
+                ? combined.ArtifactId
+                : null;
+            var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
+            if (combinedArtifactId is null)
+            {
+                // The facts projector's default selects the newest Combined artifact; an exact view must not
+                // describe that unrelated artifact when no Combined preview survived validation.
+                facts = facts with
+                {
+                    CombinedLineage = null,
+                    CombinedLineageUnavailable = combined.Availability != CameraAgentPresentationSlotAvailability.Missing
+                };
+            }
+            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -882,7 +941,7 @@ internal sealed class CameraAgentOperatorUiService(
             return result.Status == CameraAgentLayeredPresentationStatus.Found && result.Presentation is { } presentation
                 ? OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)
                 : OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
-                    result.Status == CameraAgentLayeredPresentationStatus.Unavailable
+                    result.Status == CameraAgentLayeredPresentationStatus.NotRetained
                         ? OperatorUiResultKind.NotFound
                         : OperatorUiResultKind.Unavailable,
                     result.Reason ?? "Structured layers are unavailable for this capture.");
@@ -946,7 +1005,8 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
-            var config = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var startupConfig = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var config = scheduleRuntime?.Snapshot?.Configuration ?? startupConfig;
             var pipeline = config.Pipeline.Steps
                 .Select((step, index) => new CameraAgentPipelineNodeStatus(
                     string.IsNullOrWhiteSpace(step.Id) ? $"node-{index + 1}" : step.Id,
@@ -968,13 +1028,13 @@ internal sealed class CameraAgentOperatorUiService(
             var centralEnabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
 
             var status = new CameraAgentSystemStatus(
-                config.DeploymentLocation is { } deploymentLocation
+                startupConfig.DeploymentLocation is { } deploymentLocation
                     ? $"Deployment location {deploymentLocation.LocationId} v{deploymentLocation.Version}"
                     : "Legacy location unknown",
                 string.Empty,
                 "Validated at startup",
-                config.AgentId ?? "Unavailable",
-                ResolveModuleAlias(config.ModuleType, moduleRegistrations),
+                startupConfig.AgentId ?? "Unavailable",
+                ResolveModuleAlias(startupConfig.ModuleType, moduleRegistrations),
                 _hostOptions.CentralIntegration.Mode.ToString(),
                 new CameraAgentSensorStatus(
                     sensor.Name,

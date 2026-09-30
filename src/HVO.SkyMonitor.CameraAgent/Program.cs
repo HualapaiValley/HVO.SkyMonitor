@@ -70,7 +70,16 @@ public class Program
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+        var localSettings = DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+        if (localSettings is not null)
+        {
+            builder.Services.AddSingleton(provider => new OperatorSettingsFile(
+                localSettings.FilePath,
+                localSettings.Reload,
+                localSettings.FindOverriddenKeys,
+                provider.GetRequiredService<ILogger<OperatorSettingsFile>>()));
+        }
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -285,10 +294,12 @@ public class Program
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
+        builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
+        builder.Services.AddScoped<ICameraAgentObservingDayUiService, CameraAgentObservingDayUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddCameraAgentReplayFlow();
@@ -401,6 +412,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();

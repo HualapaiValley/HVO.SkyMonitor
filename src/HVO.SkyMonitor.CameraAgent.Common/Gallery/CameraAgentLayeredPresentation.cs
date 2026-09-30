@@ -14,7 +14,8 @@ public enum CameraAgentLayeredPresentationStatus
     Found,
     Unavailable,
     Malformed,
-    TooLarge
+    TooLarge,
+    NotRetained
 }
 
 public sealed record CameraAgentPresentationLayer(
@@ -96,7 +97,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                 captureId, OverlayManifestV1.CurrentSchemaVersion, 2, CancellationToken.None).ConfigureAwait(false);
             if (manifests.Count == 0)
             {
-                return Unavailable("Structured layers were not retained for this capture.");
+                return new(CameraAgentLayeredPresentationStatus.NotRetained, Reason: "Structured layers were not retained for this capture.");
             }
             if (manifests.Count != 1 || manifests[0].AvailabilityState != "Available")
             {

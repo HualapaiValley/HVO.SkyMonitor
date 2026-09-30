@@ -98,6 +98,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private int _gateState;
     private int _inFlight;
     private int _failedPublicationDuringDrain;
+    private int _failClosed;
     private bool _disposed;
 
     public CaptureAdmissionCoordinator(
@@ -226,12 +227,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             await WaitForDrainAsync(cancellationToken).ConfigureAwait(false);
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
-                var current = Snapshot;
-                SetSnapshot(current with
-                {
-                    State = CaptureAdmissionState.Unavailable,
-                    UpdatedUtc = DateTimeOffset.UtcNow
-                });
+                FailClosed();
                 _fleetRuntimeState?.CaptureFailed("activation-publication-failed");
                 throw new CaptureAdmissionUnavailableException();
             }
@@ -247,6 +243,13 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         }
     }
 
+    internal void FailClosed()
+    {
+        Interlocked.Exchange(ref _failClosed, 1);
+        CloseGate();
+        SetSnapshot(Snapshot with { State = CaptureAdmissionState.Unavailable, UpdatedUtc = DateTimeOffset.UtcNow });
+    }
+
     private async Task<CaptureControlCommandResult> ExecuteCommandAsync(
         CaptureControlTarget target,
         string idempotencyKey,
@@ -260,6 +263,10 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (Volatile.Read(ref _failClosed) != 0)
+            {
+                throw new CaptureAdmissionUnavailableException("Capture admission requires verified restart recovery.");
+            }
             var prior = Snapshot;
             if (target == CaptureControlTarget.Paused)
             {
@@ -306,12 +313,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
-                var unavailable = started.Snapshot with
-                {
-                    State = CaptureAdmissionState.Unavailable,
-                    UpdatedUtc = DateTimeOffset.UtcNow
-                };
-                SetSnapshot(unavailable);
+                FailClosed();
                 _fleetRuntimeState?.CaptureFailed("pause-publication-failed");
                 _telemetry.RecordAdmissionCommand("Paused", "unavailable");
                 throw new CaptureAdmissionUnavailableException();
@@ -387,6 +389,10 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
     private void OpenGate()
     {
+        if (Volatile.Read(ref _failClosed) != 0)
+        {
+            return;
+        }
         // Callers open admission only after Running has committed durably.
         Volatile.Write(ref _gateState, GateRunning);
         Volatile.Read(ref _runningSignal).TrySetResult();

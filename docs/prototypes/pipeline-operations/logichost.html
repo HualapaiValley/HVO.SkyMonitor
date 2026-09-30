@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="hvo-dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Network Home | HVO SkyMonitor Prototype</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="logichost-pages.css">
+</head>
+<body data-page="logichost">
+    <a class="skip-link" href="#main-content">Skip to network workspace</a>
+
+    <header id="logicHeader" class="app-header logic-header" aria-label="LogicHost site header">
+        <a class="brand" href="logichost.html" aria-label="HVO SkyMonitor network home">
+            <span class="brand-mark logic-brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"></circle><path d="M9 23c5-8 15-12 23-8M13 29c4-6 11-10 19-9"></path><circle cx="14" cy="13" r="1.8"></circle><circle cx="25" cy="10" r="1.3"></circle><path d="M29 25h7m-3.5-3.5v7"></path></svg>
+            </span>
+            <span><strong>HVO SkyMonitor</strong><small>LogicHost network</small></span>
+        </a>
+        <nav id="logicPrimaryNavigation" aria-label="Primary navigation">
+            <a href="logichost.html" data-logic-nav="welcome">Home</a>
+            <a href="logichost.html?view=observatories" data-logic-nav="observatories">Observatories</a>
+            <a href="logichost.html?view=public" data-logic-nav="public">Public sky</a>
+            <a href="logichost.html?view=events" data-logic-nav="events">Events</a>
+            <a href="logichost.html?view=operations" data-logic-nav="operations">LogicHost operations</a>
+        </nav>
+        <button id="logicHeaderToggle" class="icon-button agent-menu" type="button" aria-label="LogicHost status; opens navigation on small screens" aria-controls="logicPrimaryNavigation" aria-expanded="false">
+            <span class="agent-dot" aria-hidden="true"></span>
+            <span>Owner / central healthy</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+        </button>
+    </header>
+
+    <div class="logic-layout">
+        <aside id="logicSidebar" class="logic-sidebar" aria-label="Network scope">
+            <header class="logic-sidebar-head">
+                <div><p class="eyebrow">Protected owner workspace</p><h2>Network scope</h2></div>
+                <button id="logicSidebarClose" class="icon-button logic-sidebar-close" type="button" aria-label="Close network scope"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg></button>
+            </header>
+            <nav id="logicScopeNavigation" class="logic-scope-navigation" aria-label="Observatory and camera selection"></nav>
+            <footer class="logic-sidebar-foot">
+                <span class="logic-platform-glyph" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 15h14M5 15V9h4v6m2 0V5h4v10M3 5h6"></path></svg></span>
+                <span><strong>LogicHost authority</strong><small>Central trust, ingest, processing, archive, and publication</small></span>
+            </footer>
+        </aside>
+
+        <button id="logicSidebarBackdrop" class="logic-sidebar-backdrop" type="button" aria-label="Close network scope" tabindex="-1" hidden></button>
+
+        <main id="main-content" class="logic-main">
+            <button id="logicScopeToggle" class="logic-scope-toggle button secondary" type="button" aria-controls="logicSidebar" aria-expanded="false">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"></path></svg>
+                Choose network scope
+            </button>
+            <div id="logicPage" aria-live="polite"></div>
+        </main>
+    </div>
+
+    <div id="logicToast" class="toast logic-toast" role="status" aria-live="polite" hidden>
+        <span class="status-icon success" aria-hidden="true"></span>
+        <div><strong>Prototype navigation</strong><p id="logicToastText">This area will be detailed in a later prototype slice.</p></div>
+    </div>
+
+    <script src="logichost-pages.js"></script>
+</body>
+</html>

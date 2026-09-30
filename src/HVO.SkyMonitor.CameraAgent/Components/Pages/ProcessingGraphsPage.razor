@@ -11,7 +11,7 @@
 
 <div class="graphs-page">
     <PageHeader Eyebrow="Immutable graph registry" Title="Named graphs" Lead="Every processing graph revision this CameraAgent knows, its lifecycle, and its immutable identities. Exactly one revision is live at a time; activation, rollback, and retirement are confirmed against the registry version you saw.">
-        <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+        <button type="button" class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
     </PageHeader>
 
     <nav class="graphs-links" aria-label="Pipeline sections">
@@ -27,7 +27,7 @@
     else if (_registry is null)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Graph registry unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light" disabled="@_busy" @onclick="RefreshAsync">Try again</button>
+            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Try again</button>
         </PageStateNotice>
     }
     else

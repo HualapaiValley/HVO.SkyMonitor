@@ -57,7 +57,8 @@ public sealed class CameraAgentLayeredPresentationTests
         Assert.AreEqual("12", pixel.Attribute("x")?.Value);
         Assert.AreEqual("23", pixel.Attribute("y")?.Value);
         Assert.AreEqual("#010203", pixel.Attribute("fill")?.Value);
-        Assert.AreEqual("<script>alert(1)</script>", AssertSingle(group.Elements(svg + "text")).Value);
+        Assert.IsNotEmpty(group.Elements(svg + "path"));
+        Assert.IsFalse(text.Contains("<script>alert(1)</script>", StringComparison.Ordinal));
         Assert.IsEmpty(document.Descendants(svg + "script"));
     }
 
@@ -109,6 +110,33 @@ public sealed class CameraAgentLayeredPresentationTests
 
         Assert.Throws<ArgumentException>(() =>
             GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('E', 64)));
+    }
+
+    [TestMethod]
+    public void ScalableSvgTextUsesDeterministicEmbeddedOutlinesAndDarkHalo()
+    {
+        var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 800, 600,
+            textBlocks: [new(PresentationTextAnchor.Point, new(40, 40), ["Étoile"], 8, 0, 0, new(255, 255, 255))]);
+        var compatibility = new PresentationCompatibilityDescriptor(800, 600, new string('A', 64), new string('B', 64));
+        var layer = LayeredPresentationJson.CreateLayer("scene-annotation",
+            new(Guid.NewGuid(), payload.ContentIdentitySha256, PresentationLayerPayloadJson.MediaType, compatibility),
+            new string('C', 64), PresentationCoordinateSpace.ScenePixels, "renderer-v1", "style-v2", 1,
+            PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { }));
+        var manifest = LayeredPresentationJson.CreateManifest(
+            new(Guid.NewGuid(), new string('D', 64), "application/x-hvo-packed-image", compatibility),
+            new string('C', 64), [layer]);
+        var first = GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('E', 64));
+        var repeat = GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('E', 64));
+        XNamespace svg = "http://www.w3.org/2000/svg";
+        var glyphs = AssertSingle(XDocument.Parse(Encoding.UTF8.GetString(first.Svg.Span)).Descendants(svg + "path"));
+
+        StringAssert.Contains(glyphs.Attribute("d")!.Value, "M", StringComparison.Ordinal);
+        Assert.AreEqual("#000000", glyphs.Attribute("stroke")?.Value);
+        Assert.AreEqual("4", glyphs.Attribute("stroke-width")?.Value);
+        Assert.AreEqual("stroke fill", glyphs.Attribute("paint-order")?.Value);
+        Assert.AreEqual(first.SvgChecksumSha256, repeat.SvgChecksumSha256);
+        Assert.IsFalse(Encoding.UTF8.GetString(first.Svg.Span).Contains("<text", StringComparison.Ordinal));
+        Assert.IsLessThan(GroupedSvgPresentationRenderer.MaximumSvgBytes, first.Svg.Length);
     }
 
     private static T AssertSingle<T>(IEnumerable<T> values)

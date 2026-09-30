@@ -328,6 +328,9 @@ public sealed class CameraAgentReplayUiServiceTests
             => ValueTask.FromResult<ProcessingGraphExecutionState?>(
                 Execution(ProcessingGraphExecutionStatus.Running));
 
+        public ValueTask<Guid?> ReadLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult<Guid?>(null);
+
         public ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
             Guid executionId,
             CancellationToken cancellationToken)

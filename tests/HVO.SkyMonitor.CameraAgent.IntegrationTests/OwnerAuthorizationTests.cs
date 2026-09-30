@@ -156,6 +156,57 @@ public sealed class OwnerAuthorizationTests
     }
 
     [TestMethod]
+    public async Task EquipmentInspectionAndSizeBoundaryRequireOwnerAndAntiforgeryAsync()
+    {
+        string ownerId;
+        string nonOwnerId;
+        using (var scope = AssemblyHooks.Fixture.CreateCameraAgentScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            ownerId = (await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!.Id;
+            var nonOwner = await users.FindByEmailAsync("equipment-non-owner@cameraagent.integration").ConfigureAwait(false);
+            if (nonOwner is null)
+            {
+                nonOwner = new ApplicationUser
+                {
+                    UserName = "equipment-non-owner@cameraagent.integration",
+                    Email = "equipment-non-owner@cameraagent.integration",
+                    EmailConfirmed = true
+                };
+                Assert.IsTrue((await users.CreateAsync(nonOwner, "EquipmentNonOwner!123").ConfigureAwait(false)).Succeeded);
+            }
+            nonOwnerId = nonOwner.Id;
+        }
+        var path = new Uri("/api/v1/operations/rig-profiles/equipment/missing", UriKind.Relative);
+        var postPath = new Uri("/api/v1/operations/rig-profiles/equipment", UriKind.Relative);
+        using var anonymous = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var anonymousGet = await anonymous.GetAsync(path).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousGet.StatusCode);
+        using var anonymousPost = await anonymous.PostAsJsonAsync(postPath, new { }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousPost.StatusCode);
+        using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+        using var forbidden = await nonOwnerClient.GetAsync(path).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        using var forbiddenPost = await nonOwnerClient.PostAsJsonAsync(postPath, new { }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, forbiddenPost.StatusCode);
+        using var owner = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        owner.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var missing = await owner.GetAsync(path).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missing.StatusCode);
+        using var unprotected = await owner.PostAsJsonAsync(postPath, new { }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, unprotected.StatusCode);
+        var token = await GetAntiforgeryTokenAsync(owner).ConfigureAwait(false);
+        using var oversized = new HttpRequestMessage(HttpMethod.Post, postPath)
+        {
+            Content = new StringContent(new string('x', 1048577), System.Text.Encoding.UTF8, "application/json")
+        };
+        oversized.Headers.Add("RequestVerificationToken", token);
+        using var rejected = await owner.SendAsync(oversized).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, rejected.StatusCode);
+    }
+
+    [TestMethod]
     public async Task RegistrationPagesDoNotEnumerateAccountsAsync()
     {
         using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
@@ -492,6 +543,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousSchedule = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousSchedule.StatusCode);
+        using var anonymousRigProfiles = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/rig-profiles/", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousRigProfiles.StatusCode);
         using var anonymousPipeline = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousPipeline.StatusCode);
@@ -519,6 +573,13 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerSchedule = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/schedule", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerSchedule.StatusCode);
+        using var nonOwnerRigProfiles = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/rig-profiles/", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerRigProfiles.StatusCode);
+        using var nonOwnerRigMutation = await nonOwnerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/rig-profiles/profiles", UriKind.Relative),
+            new { displayName = "Unauthorized rig" }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerRigMutation.StatusCode);
         using var nonOwnerPipeline = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerPipeline.StatusCode);
@@ -576,6 +637,13 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerSchedule.StatusCode);
         var scheduleJson = await ownerSchedule.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(scheduleJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerRigProfiles = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/rig-profiles/", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerRigProfiles.StatusCode);
+        var rigProfilesJson = await ownerRigProfiles.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(rigProfilesJson, "activeRevisionId", StringComparison.Ordinal);
+        Assert.IsFalse(rigProfilesJson.Contains("moduleOptions", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(rigProfilesJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
         using var ownerSkyMap = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/sky-map", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerSkyMap.StatusCode);
@@ -639,6 +707,10 @@ public sealed class OwnerAuthorizationTests
             new Uri("/api/v1/operations/schedule/stage", UriKind.Relative),
             new { }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingScheduleAntiforgery.StatusCode);
+        using var missingRigAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/rig-profiles/profiles", UriKind.Relative),
+            new { displayName = "Unprotected rig" }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingRigAntiforgery.StatusCode);
         using var missingCalibrationAntiforgery = await ownerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/calibration/acquisitions", UriKind.Relative),
             new { }).ConfigureAwait(false);
@@ -668,6 +740,14 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.BadRequest, missingAutomationAntiforgery.StatusCode);
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using (var authorizedRigRequest = new HttpRequestMessage(
+            HttpMethod.Post, new Uri("/api/v1/operations/rig-profiles/profiles", UriKind.Relative)))
+        {
+            authorizedRigRequest.Headers.Add("RequestVerificationToken", token);
+            authorizedRigRequest.Content = JsonContent.Create(new { displayName = "Authorized draft rig" });
+            using var authorizedRig = await ownerClient.SendAsync(authorizedRigRequest).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, authorizedRig.StatusCode);
+        }
         using (var missingEnvironmentalRequest = new HttpRequestMessage(
             HttpMethod.Post,
             new Uri("/api/v1/operations/environmental/sources/missing/acquisitions", UriKind.Relative)))
@@ -901,7 +981,7 @@ public sealed class OwnerAuthorizationTests
         foreach (var page in new[]
         {
             (Path: "/", Expected: "Current sky"),
-            (Path: "/operations", Expected: "Operations overview"),
+            (Path: "/operations", Expected: "Configure and operate this camera"),
             (Path: "/gallery", Expected: "Archive"),
             (Path: "/schedule", Expected: "Capture schedule"),
             (Path: "/calibration", Expected: "Calibration library"),
@@ -912,7 +992,8 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/pipeline", Expected: "Pipeline summary"),
             (Path: "/operations/automations", Expected: "Automations"),
             (Path: "/operations/data", Expected: "Data &amp; storage"),
-            (Path: "/operations/sky-map", Expected: "Sky map &amp; catalog"),
+            (Path: "/operations/site", Expected: "Observatory &amp; location"),
+            (Path: "/operations/sky-map", Expected: "Observatory &amp; location"),
             (Path: "/operations/pipeline/executions", Expected: "Processing executions"),
             (Path: "/operations/pipeline/graphs", Expected: "Named graphs"),
             (Path: "/operations/pipeline/graphs/new", Expected: "Draft graph"),

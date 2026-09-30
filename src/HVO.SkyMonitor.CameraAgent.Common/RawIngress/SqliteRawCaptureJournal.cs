@@ -24,9 +24,12 @@ internal sealed class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null)
 {
-    internal const int CurrentSchemaVersion = 12;
+    internal const int CurrentSchemaVersion = 14;
+    private const int PreviousSchemaVersion = 13;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
-        new(CreateCanonicalSchemaDefinitions);
+        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
+    private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
+        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: false));
     private static readonly JsonSerializerOptions ProcessingSerializerOptions = CreateProcessingSerializerOptions();
     private static readonly HashSet<string> SharedSchemaObjectNames = new(StringComparer.Ordinal)
     {
@@ -125,7 +128,7 @@ internal sealed class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -140,7 +143,7 @@ internal sealed class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -152,6 +155,7 @@ internal sealed class SqliteRawCaptureJournal(
                 using var transaction = BeginImmediate(connection);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, StageEventSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, TransientRuntimeOperationsSchemaSql, cancellationToken).ConfigureAwait(false);
@@ -159,6 +163,8 @@ internal sealed class SqliteRawCaptureJournal(
                     connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, CalibrationLibrarySchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
+                    connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
@@ -174,7 +180,29 @@ internal sealed class SqliteRawCaptureJournal(
                 throw;
             }
         }
-
+        else if (writableVersion == PreviousSchemaVersion)
+        {
+            try
+            {
+                using var transaction = BeginImmediate(connection);
+                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != PreviousSchemaVersion)
+                {
+                    throw new InvalidOperationException("Raw ingress schema changed before migration.");
+                }
+                await VerifyMigrationSourceAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
+                await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
+                _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                _transactionRecorder?.Invoke("schema-migration", true);
+            }
+            catch
+            {
+                _transactionRecorder?.Invoke("schema-migration", false);
+                throw;
+            }
+        }
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
         await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -200,7 +228,7 @@ internal sealed class SqliteRawCaptureJournal(
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
             SELECT COUNT(*) FROM sqlite_master
             WHERE name IN (
-                'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_ingress_reconciliation',
+                'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_capture_stage_events', 'raw_ingress_reconciliation',
                  'ix_raw_captures_discovery', 'ix_raw_captures_backlog', 'ix_raw_captures_retention',
                  'ix_raw_captures_gallery_time', 'ix_raw_captures_gallery_sequence',
                  'ix_raw_captures_gallery_state', 'ix_raw_captures_gallery_origin',
@@ -227,13 +255,19 @@ internal sealed class SqliteRawCaptureJournal(
                  'ix_calibration_library_bundles_selection', 'ix_calibration_library_bundles_created',
                  'ix_calibration_library_artifacts_role', 'ix_calibration_library_activations_history',
                   'ix_calibration_acquisition_jobs_camera', 'ux_calibration_acquisition_jobs_camera_nonterminal',
-                  'ix_calibration_library_reconciliation_state');
+                   'ix_calibration_library_reconciliation_state',
+                   'named_rig_profiles', 'named_equipment_definitions', 'named_equipment_revisions',
+                   'named_rig_revisions', 'named_rig_selection', 'named_rig_selection_commands',
+                   'named_rig_selection_receipts', 'tr_named_equipment_revisions_immutable',
+                   'tr_named_equipment_revisions_no_delete', 'tr_named_rig_revisions_immutable',
+                   'tr_named_rig_revisions_no_delete');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 63)
+        if (schemaObjectCount != 75)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
         await VerifyColumnsAsync(connection, "raw_captures", RawCaptureColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "raw_capture_stage_events", StageEventColumns, cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_time", "exposure_started_unix_ms,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_sequence", "capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_raw_captures_gallery_state", "state,capture_sequence,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
@@ -268,6 +302,13 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "calibration_library_commands", CalibrationLibraryCommandColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "calibration_acquisition_jobs", CalibrationAcquisitionJobColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "calibration_library_reconciliation", CalibrationLibraryReconciliationColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_rig_profiles", "profile_id,display_name,created_unix_ms,updated_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_equipment_definitions", "definition_id,kind,display_name,created_unix_ms,updated_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_equipment_revisions", "revision_id,definition_id,revision_number,definition_json,definition_sha256,created_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_rig_revisions", "revision_id,profile_id,revision_number,camera_revision_id,optics_revision_id,mount_revision_id,rig_json,rig_sha256,source_schedule_revision_id,created_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_rig_selection", "state_key,active_revision_id,pending_revision_id,pending_command_key,pending_schedule_revision_id,pending_schedule_version,version,updated_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_rig_selection_commands", "idempotency_key,command_kind,expected_version,target_revision_id,actor,request_sha256,acknowledged_unvalidated,result_json,created_unix_ms,completed_unix_ms", cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "named_rig_selection_receipts", "receipt_id,idempotency_key,from_revision_id,to_revision_id,disposition,state_version,created_unix_ms,stage_command_key", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_revisions_created", "created_unix_ms,revision_number", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_overrides_active", "cleared_unix_ms,end_unix_ms,mode,override_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_capture_schedule_expansions_lookup", "revision_id,deployment_location_id,deployment_location_version,preview_start_unix_ms,preview_end_unix_ms", cancellationToken).ConfigureAwait(false);
@@ -1775,13 +1816,14 @@ internal sealed class SqliteRawCaptureJournal(
         => Convert.ToString(await ExecuteScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statements are executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
         foreach (var sql in new[]
                  {
                      SchemaSql,
+                     StageEventSchemaSql,
                      TransientSchemaSql,
                      TransientRuntimeOperationsSchemaSql,
                      CaptureScheduleSchemaSql,
@@ -1792,24 +1834,51 @@ internal sealed class SqliteRawCaptureJournal(
             command.CommandText = sql;
             command.ExecuteNonQuery();
         }
+        if (includeProfiles)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = NamedProfileSchemaSql;
+            command.ExecuteNonQuery();
+        }
         return ReadSchemaDefinitions(connection);
+    }
+
+    private static async Task VerifyMigrationSourceAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (!string.Equals(await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false), "ok", StringComparison.Ordinal) ||
+            await ExecuteScalarLongAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
+        {
+            throw new InvalidDataException("Raw ingress v13 migration source failed integrity or foreign-key validation.");
+        }
+        await ValidateCanonicalSchemaDefinitionsAsync(
+            connection, transaction, PreviousSchemaDefinitions.Value, PreviousSchemaVersion, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task ValidateCanonicalSchemaDefinitionsAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
+        => await ValidateCanonicalSchemaDefinitionsAsync(
+            connection, transaction, CanonicalSchemaDefinitions.Value, CurrentSchemaVersion, cancellationToken).ConfigureAwait(false);
+
+    private static async Task ValidateCanonicalSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        Dictionary<string, string> expectedDefinitions,
+        int version,
+        CancellationToken cancellationToken)
     {
         var actualSchemaDefinitions = await ReadSchemaDefinitionsAsync(
             connection, transaction, cancellationToken).ConfigureAwait(false);
-        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+        if (expectedDefinitions.Any(expected =>
                 !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
                 !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
             actualSchemaDefinitions.Keys.Any(name =>
-                !CanonicalSchemaDefinitions.Value.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
+                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
         {
             throw new InvalidDataException(
-                $"Raw ingress SQLite schema is not the canonical schema {CurrentSchemaVersion} definition.");
+                $"Raw ingress SQLite schema is not the canonical schema {version} definition.");
         }
     }
 
@@ -2106,6 +2175,8 @@ internal sealed class SqliteRawCaptureJournal(
 
     private const string RawCaptureColumns =
         "raw_capture_row_id,capture_id,raw_artifact_id,agent_id,capture_sequence,descriptor_sha256,manifest_sha256,payload_sha256,payload_length,payload_relative_path,sidecar_relative_path,manifest_json,exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,retention_hold,failure_reason,evidence_origin";
+    private const string StageEventColumns =
+        "raw_capture_row_id,stage_key,candidate_id,state,source,event_unix_ms";
     private const string LaneDefinitionColumns =
         "lane_name,enabled,required,ordered,policy_sha256,pressure_state,created_unix_ms,updated_unix_ms";
     private const string LaneContextColumns =
@@ -2300,6 +2371,19 @@ internal sealed class SqliteRawCaptureJournal(
         ) STRICT;
         """;
 
+    private const string StageEventSchemaSql = """
+        CREATE TABLE raw_capture_stage_events (
+            raw_capture_row_id INTEGER NOT NULL,
+            stage_key TEXT NOT NULL CHECK (length(stage_key) BETWEEN 1 AND 128),
+            candidate_id TEXT NOT NULL DEFAULT '' CHECK (candidate_id = '' OR length(candidate_id) = 32),
+            state TEXT NOT NULL CHECK (length(state) BETWEEN 1 AND 128),
+            source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 128),
+            event_unix_ms INTEGER NOT NULL,
+            PRIMARY KEY (raw_capture_row_id, candidate_id, stage_key),
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE
+        ) STRICT;
+        """;
+
     private const string CaptureScheduleSchemaSql = """
         CREATE TABLE IF NOT EXISTS capture_schedule_revisions (
             revision_id TEXT PRIMARY KEY CHECK (length(revision_id) BETWEEN 1 AND 128),
@@ -2439,6 +2523,108 @@ internal sealed class SqliteRawCaptureJournal(
             reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
             occurred_unix_ms INTEGER NOT NULL,
             FOREIGN KEY (override_id) REFERENCES capture_schedule_overrides(override_id)
+        ) STRICT;
+        """;
+
+    private const string NamedProfileSchemaSql = """
+        CREATE TABLE named_rig_profiles (
+            profile_id TEXT PRIMARY KEY CHECK (length(profile_id) BETWEEN 1 AND 128),
+            display_name TEXT COLLATE NOCASE NOT NULL UNIQUE CHECK (length(display_name) BETWEEN 1 AND 128),
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE named_equipment_definitions (
+            definition_id TEXT PRIMARY KEY CHECK (length(definition_id) BETWEEN 1 AND 128),
+            kind TEXT NOT NULL CHECK (kind IN ('camera', 'optics', 'mount')),
+            display_name TEXT COLLATE NOCASE NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128),
+            created_unix_ms INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            UNIQUE (kind, display_name),
+            UNIQUE (definition_id, kind)
+        ) STRICT;
+        CREATE TABLE named_equipment_revisions (
+            revision_id TEXT PRIMARY KEY CHECK (length(revision_id) BETWEEN 1 AND 128),
+            definition_id TEXT NOT NULL,
+            revision_number INTEGER NOT NULL CHECK (revision_number > 0),
+            definition_json BLOB NOT NULL CHECK (length(definition_json) BETWEEN 1 AND 1048576),
+            definition_sha256 TEXT NOT NULL CHECK (length(definition_sha256) = 64),
+            created_unix_ms INTEGER NOT NULL,
+            UNIQUE (definition_id, revision_number),
+            FOREIGN KEY (definition_id) REFERENCES named_equipment_definitions(definition_id)
+        ) STRICT;
+        CREATE TRIGGER tr_named_equipment_revisions_immutable
+        BEFORE UPDATE ON named_equipment_revisions
+        BEGIN SELECT RAISE(ABORT, 'equipment revisions are immutable'); END;
+        CREATE TRIGGER tr_named_equipment_revisions_no_delete
+        BEFORE DELETE ON named_equipment_revisions
+        BEGIN SELECT RAISE(ABORT, 'equipment revisions are immutable'); END;
+        CREATE TABLE named_rig_revisions (
+            revision_id TEXT PRIMARY KEY CHECK (length(revision_id) BETWEEN 1 AND 128),
+            profile_id TEXT NOT NULL,
+            revision_number INTEGER NOT NULL CHECK (revision_number > 0),
+            camera_revision_id TEXT NOT NULL,
+            optics_revision_id TEXT NOT NULL,
+            mount_revision_id TEXT NOT NULL,
+            rig_json BLOB NOT NULL CHECK (length(rig_json) BETWEEN 1 AND 1048576),
+            rig_sha256 TEXT NOT NULL CHECK (length(rig_sha256) = 64),
+            source_schedule_revision_id TEXT,
+            created_unix_ms INTEGER NOT NULL,
+            UNIQUE (profile_id, revision_number),
+            FOREIGN KEY (profile_id) REFERENCES named_rig_profiles(profile_id),
+            FOREIGN KEY (camera_revision_id) REFERENCES named_equipment_revisions(revision_id),
+            FOREIGN KEY (optics_revision_id) REFERENCES named_equipment_revisions(revision_id),
+            FOREIGN KEY (mount_revision_id) REFERENCES named_equipment_revisions(revision_id),
+            FOREIGN KEY (source_schedule_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        CREATE TRIGGER tr_named_rig_revisions_immutable
+        BEFORE UPDATE ON named_rig_revisions
+        BEGIN SELECT RAISE(ABORT, 'rig revisions are immutable'); END;
+        CREATE TRIGGER tr_named_rig_revisions_no_delete
+        BEFORE DELETE ON named_rig_revisions
+        BEGIN SELECT RAISE(ABORT, 'rig revisions are immutable'); END;
+        CREATE TABLE named_rig_selection (
+            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+            active_revision_id TEXT,
+            pending_revision_id TEXT,
+            pending_command_key TEXT CHECK (pending_command_key IS NULL OR length(pending_command_key) BETWEEN 1 AND 128),
+            pending_schedule_revision_id TEXT,
+            pending_schedule_version INTEGER CHECK (pending_schedule_version >= 0),
+            version INTEGER NOT NULL CHECK (version >= 0),
+            updated_unix_ms INTEGER NOT NULL,
+            CHECK ((pending_revision_id IS NULL AND pending_command_key IS NULL AND pending_schedule_revision_id IS NULL AND pending_schedule_version IS NULL)
+                OR (pending_revision_id IS NOT NULL AND pending_command_key IS NOT NULL AND pending_schedule_revision_id IS NOT NULL AND pending_schedule_version IS NOT NULL)),
+            FOREIGN KEY (active_revision_id) REFERENCES named_rig_revisions(revision_id),
+            FOREIGN KEY (pending_revision_id) REFERENCES named_rig_revisions(revision_id),
+            FOREIGN KEY (pending_schedule_revision_id) REFERENCES capture_schedule_revisions(revision_id)
+        ) STRICT;
+        INSERT INTO named_rig_selection(state_key, active_revision_id, pending_revision_id, version, updated_unix_ms)
+        VALUES (1, NULL, NULL, 0, unixepoch('subsec') * 1000);
+        CREATE TABLE named_rig_selection_commands (
+            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            command_kind TEXT NOT NULL CHECK (command_kind IN ('stage', 'activate', 'cancel', 'rollback')),
+            expected_version INTEGER NOT NULL CHECK (expected_version >= 0),
+            target_revision_id TEXT,
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+            acknowledged_unvalidated INTEGER NOT NULL CHECK (acknowledged_unvalidated IN (0, 1)),
+            result_json BLOB NOT NULL CHECK (length(result_json) BETWEEN 1 AND 1048576),
+            created_unix_ms INTEGER NOT NULL,
+            completed_unix_ms INTEGER,
+            FOREIGN KEY (target_revision_id) REFERENCES named_rig_revisions(revision_id)
+        ) STRICT;
+        CREATE TABLE named_rig_selection_receipts (
+            receipt_id TEXT PRIMARY KEY CHECK (length(receipt_id) BETWEEN 1 AND 128),
+            idempotency_key TEXT NOT NULL UNIQUE,
+            from_revision_id TEXT,
+            to_revision_id TEXT,
+            disposition TEXT NOT NULL CHECK (disposition IN ('staged', 'active', 'restart_required', 'cancelled', 'rolled_back')),
+            state_version INTEGER NOT NULL CHECK (state_version > 0),
+            created_unix_ms INTEGER NOT NULL,
+            stage_command_key TEXT,
+            FOREIGN KEY (idempotency_key) REFERENCES named_rig_selection_commands(idempotency_key),
+            FOREIGN KEY (stage_command_key) REFERENCES named_rig_selection_commands(idempotency_key),
+            FOREIGN KEY (from_revision_id) REFERENCES named_rig_revisions(revision_id),
+            FOREIGN KEY (to_revision_id) REFERENCES named_rig_revisions(revision_id)
         ) STRICT;
         """;
 

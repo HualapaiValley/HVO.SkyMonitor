@@ -47,6 +47,10 @@ public sealed class CurrentImagePresentationEndpointTests
 
         internal TaskCompletionSource Canceled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public ValueTask<CameraAgentCapturePresentation> ProjectCaptureAsync(
+            CameraAgentGalleryCapture capture, CancellationToken cancellationToken)
+            => throw new NotSupportedException("This endpoint fixture only exercises the live projection.");
+
         public async ValueTask<CameraAgentCurrentImagePresentation> GetAsync(CancellationToken cancellationToken)
         {
             Entered.TrySetResult();

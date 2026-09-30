@@ -157,7 +157,7 @@ deploy_down_safe_observation() {
             (.transientWorker | type) == "object" and
             ((.transientWorker.observedUtc | utc_epoch) <= $epochs[0]) and
             (($expectedMode == "Off" and ($transient | length) == 0 and
-                (.transientWorker.freshness == "fresh" or .transientWorker.freshness == "stale")) or
+                (.transientWorker.freshness == "disabled" or .transientWorker.freshness == "fresh" or .transientWorker.freshness == "stale")) or
               ($expectedMode == "Hybrid" and ($transient | length) == 1 and .transientWorker.freshness == "fresh")) and
             (.configuration | type) == "object" and (.configuration.value | type) == "object" and
             .configuration.value.isCurrent == true and .configuration.value.validationStatus == "validated" and

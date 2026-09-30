@@ -1,0 +1,30 @@
+@* Offers an in-app restart only when a supervisor restarts CameraAgent; otherwise explains the manual restart. *@
+@if (_restarting)
+{
+    <div class="restart-to-apply" role="status">
+        <span class="status-icon running" aria-hidden="true"></span>
+        <p><strong>Restarting CameraAgent…</strong> Captures pause briefly. This page reconnects and reloads when CameraAgent is back.</p>
+    </div>
+}
+else if (_status is { } status)
+{
+    <div class="restart-to-apply">
+        @if (status.Supervised && status.CanRequest)
+        {
+            <button type="button" class="button primary restart-now" disabled="@_busy" @onclick="RequestAsync">Restart now</button>
+            <p>Restarting applies @Subject. Captures pause briefly while CameraAgent comes back.</p>
+        }
+        else if (status.Supervised)
+        {
+            <p>Restarting CameraAgent applies @Subject. Operations change rights are required to restart from here.</p>
+        }
+        else
+        {
+            <p>Restart CameraAgent manually to apply @Subject. This host is not supervised, so it cannot restart itself.</p>
+        }
+    </div>
+    @if (_error is not null)
+    {
+        <p class="restart-to-apply-error" role="alert">@_error</p>
+    }
+}

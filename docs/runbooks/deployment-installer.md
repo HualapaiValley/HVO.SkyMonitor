@@ -173,6 +173,39 @@ hvo-skymonitor cameraagent upgrade \
   --no-download
 ```
 
+The generated CameraAgent rig and pipeline are immutable instance configuration.
+The installer-virtualsky-v3 profile changes only the generated **new-install**
+20-second ASI174 combined-preview display stretch (white percentile 0.9997,
+asinh strength 8 instead of 0.9999 and 4); raw and combined Mono16 samples are
+unchanged. Upgrading the image on an existing v2 instance does **not** replace
+its rig or pipeline and therefore does not apply the new stretch to its captures.
+The scene-layer producer version changes independently: new processing with the
+new image draws star names at 14 source pixels on a 1936x1216 frame while
+retaining the same cardinal/corner text geometry, even on an existing instance;
+retained layers and previews are immutable and do not change retroactively.
+To adopt both installer defaults, provision a new isolated instance through a
+clean install and migrate operational state only under the supported lifecycle;
+do not edit an installed profile in place or treat an image upgrade as a clean
+install. These are display choices, not a physical visibility model.
+
+The installer-virtualsky-v4 profile changes only the generated **new-install**
+optics to `horizontalFlip: true`. For an upward-looking all-sky camera that is
+the physical orientation: with North up, East appears on the **left** of the
+frame, as seen when looking up at the sky. The unflipped setting (`false`) is
+the mirrored, map-style view with East on the right. Nothing else in the
+generated rig, pipeline, or schedule changes. Upgrading the image on an existing
+v3 (or earlier) instance does **not** replace its rig, so an installed instance
+keeps the flip it was generated with. To change it on an installed instance,
+use **Operations > Camera & rig > Edit active rig** in the CameraAgent UI: that
+records new optics and rig revisions, stages them, and applies them when
+CameraAgent next restarts. It does not rewrite the installed rig in place, and
+previously captured frames and layers are not changed. In the installed
+container, whose `restart: unless-stopped` policy starts CameraAgent again, the
+pending-rig banner offers **Restart now** to operators with Operations change
+rights. On a host with no supervisor, restart CameraAgent manually;
+`CameraAgent:Restart:Supervised` (`true` or `false`) overrides the container
+detection.
+
 `cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).
@@ -449,8 +482,10 @@ config/compose/{compose.yml,instance.env}
 config/secrets/*
 config/owner-bootstrap/temporary-password
 state/deployment/{installation-state.json,installation-result.json,state-preflight.json}
+state/identity/appsettings.local.json
 operations/cameraagent-<uuid>.owner-recovery.json
 operations/state-reset-<operation-uuid>.evidence.json
+operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json   (only while a reset carries the file)
 operations/owner-recovery/<operation-uuid>/temporary-password
 ```
 
@@ -467,6 +502,39 @@ The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed, then performs catalog, configuration,
 Docker, Compose, and HTTP work as the invoking Docker-capable runtime user. Do
 not invoke the whole installer through `sudo`.
+
+### Operator settings file
+
+`state/identity/appsettings.local.json`, mounted in the container as `/app/App_Data/appsettings.local.json`, is
+the one persisted place for settings an operator changes on the camera. CameraAgent loads it over the image's
+`appsettings.json` and `appsettings.{Environment}.json`, so it survives image upgrades. The Observatory &
+location page writes the site profile (observatory name, camera name, owner name and contact) to
+`CameraAgent:Site` and the scene object limit to `CameraAgent:SkyMap:MaximumObjects`; any other setting can be
+added by hand. The page names the file it writes.
+
+- Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
+  precedence over the file. The page says when one of them sets a value it edits, because saving that value in
+  the file would have no effect.
+- The installer seeds the file with the friendly name as `CameraAgent:DisplayName` when the file does not
+  exist, and never rewrites an existing one, so an install rerun keeps every name and setting changed since.
+  The first time CameraAgent reads the site profile it moves that name to `CameraAgent:Site:CameraName`, in the
+  same write that records the profile, unless an earlier release already recorded a profile for this camera, in
+  which case that profile is kept and the seeded name is dropped.
+- CameraAgent reads and writes a file of up to 1 MiB, the same bound the deployment tooling applies when it
+  carries the file across a state reset.
+- Each save from the page names the file content it read, so a save never overwrites a hand edit made after
+  the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
+  limit apply at once; most other settings take effect at the next CameraAgent start.
+- A hand-edited file may contain comments and trailing commas, as the configuration loader allows. A save from
+  the page keeps every setting but rewrites the file without its comments.
+- A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's
+  settings unset until it is corrected, and the page reports the file as unreadable and refuses to save over it.
+
+Earlier installers also wrote the camera name to `config/secrets/CameraAgent__DisplayName`, a read-only setting
+outside the operator's control. The installer now deletes it. An instance upgraded without an install rerun
+still has it: its name is copied into the settings file the first time CameraAgent reads the site profile, after
+which the file's name is shown and the secret is unused. Delete
+`config/secrets/CameraAgent__DisplayName` by hand so that no read-only copy of the name remains.
 
 ## Bootstrap And Recovery
 
@@ -563,14 +631,16 @@ compatibility promise:
 io.hvo.skymonitor.state-compatibility=cameraagent-state-v2
 io.hvo.skymonitor.minimum-compatible-revision=70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f
 io.hvo.skymonitor.identity-migration=20260827053715_InitialIdentity
-io.hvo.skymonitor.raw-ingress-schema=12
+io.hvo.skymonitor.raw-ingress-schema=13
 io.hvo.skymonitor.catalog-manifest-version=2
 ```
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
 raw-ingress schema 11. The current image requires manifest version 2, migration
-`20260827053715_InitialIdentity`, and schema 12, and there is no supported automatic migration between them.
+`20260827053715_InitialIdentity`, and schema 13. There is no supported automatic migration from
+schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
+stop, or Compose mutation, and runtime startup also refuses it without changing its contents.
 Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
 state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
 already installed image stays inspectable; it is never accepted as an upgrade candidate declaration.
@@ -694,6 +764,18 @@ Preserved: `instance-manifest.json`, `application-identity.json`, the whole `con
 `config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
 and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
 
+The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
+configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is
+deleted, kept as `operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json` until it
+is written back into the recreated `state/identity`, and then that copy is removed. A settings file that is a
+symbolic link, has hard links, or is larger than 1 MiB stops the reset before anything is deleted.
+
+A reset interrupted after the deletion but before the write-back leaves the file only in that copy. The next
+install rerun or `reset-state` that is not a dry run puts the newest copy back before it seeds or deletes
+anything, and removes a copy only once the settings file holds the same content, so a rerun never seeds a fresh
+file over the operator's settings. A copy whose content differs from the settings file is left in place for the
+operator.
+
 ```bash
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>
 hvo-skymonitor cameraagent reset-state --instance-id <uuid> \
@@ -749,6 +831,85 @@ the exact command with `--resume`. A failed candidate restores the exact prior
 Compose, image, and identity records before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
+
+### Restore Only After an Interrupted Upgrade
+
+Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
+startup. **Do not use it merely to restore service after a failed backup.** For
+an operator-image upgrade whose exact original runtime is already healthy, the
+bounded recovery-only form is:
+
+```bash
+hvo-skymonitor cameraagent upgrade \
+  --instance-id <original-instance-uuid> \
+  --image-ref <original-request-candidate-reference> \
+  <same-original-request-options> \
+  --resume --restore-only --operation-id <interrupted-operation-uuid>
+```
+
+Retain the original image reference, archive checksum, `--no-download`, and
+compatibility acknowledgement exactly as supplied to that upgrade. The command
+checks the original request hash and operation UUID; it does not acquire or
+inspect the candidate image. This first recovery slice supports operator-image
+upgrades only, not signed-release selectors, rollback, or catalog operations.
+
+The original manifest/result and operation snapshots must agree exactly, including
+the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
+hash, rendered original Compose hash, daemon identity, root ownership/inode checks,
+container image/user/mount/port/security checks, protected schema-1 bound application
+identity, original image schema boundaries and candidate request/platform correlation,
+protected installation identity/owner verification, and both retained tokens remain
+required. Admission must match the recorded paused version and capture sequence.
+Changed state, candidate-running, absent/unhealthy original runtime, foreign admission,
+expired/rejected credentials, and committed or partially committed candidates fail
+closed. No backup archive, including a leftover partial archive, authorizes recovery.
+
+This form never pauses capture, stops/recreates/restarts a container, writes Compose,
+changes identity, or resets state. An approved Docker runtime memory override remains
+untouched; it is not a change to the authenticated Compose file. It does not provide a
+cold-start or candidate-to-old-image restoration procedure.
+
+Before resuming admission the journal retains a command UUID. Retries reuse that
+UUID and the original pause version, so a lost acknowledgement cannot create a new
+command or override a later operator pause. The authenticated executed receipt is
+validated separately from current admission: if a lost acknowledgement was followed
+by an operator pause, replay proves the earlier Running result while leaving that
+newer pause intact, including after restart. This settles recovery instead of leaving
+an interrupted operation permanently blocking further lifecycle work. Normal success reports
+`restored-previous-healthy-admission-resumed`; the original upgrade remains terminal
+`Failed` / `Restored`, with `mutationStarted=false` and the original failure retained.
+Older interrupted journals lacking a failure detail explicitly record that it was
+not retained, rather than inventing a cause. Superseded success reports
+`restored-previous-healthy-resume-superseded-current-admission-preserved`; the journal
+retains the executed resume receipt separately from the current post-recovery boundary.
+Both are validated on read, including nonnegative counters, initialization, versions,
+capture sequence and receipt timing. The identical complete invariant is checked
+before terminal publication against one captured post-resume boundary. Inconsistent
+timestamps (including a future receipt or a backward clock) leave the operation
+`Restoring` with its mutation flag and command UUID retained for a later valid replay;
+they never publish terminal success. Repeating a successful restore-only request
+verifies the current result without another resume command. It never reports the
+upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
+
+Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
+open for size-aware backup deadlines, capacity, progress, cancellation/partial cleanup,
+and resource-qualified cold startup. Do not manually edit the lifecycle journal or
+reduce an approved memory override to work around those remaining limits.
+
+The protected installation-verification GET used by both the pre-mutation owner
+state read and full installation identity verification has one finite **120-second
+request deadline**, including response-body receipt. Each call makes one request;
+this is not an unlimited retry or a change to the separate health/startup, login,
+or drain limits. An elapsed request deadline reports
+`CameraAgent installation verification request timed out.` without transport
+details or credentials. Caller cancellation remains cancellation, not a timeout.
+Before mutation, a timeout follows the existing refusal policy without pause,
+stop, backup, or image replacement; caller cancellation leaves an unmutated
+operation resumable. Do not manually repair the journal or reset the instance.
+Issue [#1041](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041) records
+an old-image response of about 35 seconds, beyond the former 15-second client
+limit; this CLI compatibility allowance does not fix or attribute the endpoint's
+underlying repeated work.
 
 Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
-using Microsoft.AspNetCore.Components.Web;
 using HVO.SkyMonitor.CameraAgent.Security;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Layout;
@@ -12,15 +11,16 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 {
     private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
     [
-        new NavigationLink("/", "Current sky", NavLinkMatch.All),
+        new NavigationLink("/", "Current Sky", NavLinkMatch.All),
         new NavigationLink("/gallery", "Archive", NavLinkMatch.Prefix),
+        new NavigationLink("/transients", "Events", NavLinkMatch.Prefix),
         new NavigationLink("/operations", "Operations", NavLinkMatch.Prefix)
     ];
 
     // Routes that belong to a primary destination without sharing its path.
     private static readonly Dictionary<string, string[]> GroupedRoutes = new(StringComparer.Ordinal)
     {
-        ["/gallery"] = ["/archive", "/transients"],
+        ["/gallery"] = ["/archive"],
         ["/operations"] = ["/schedule", "/calibration", "/system", "/environmental", "/devices"]
     };
 
@@ -33,9 +33,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
     private string SignInUrl => ReturnUrlHelper.BuildLoginPath(CurrentReturnUrl);
 
-    private ElementReference _menuToggle;
-
-    private bool _menuOpen;
     private string _currentPath = "/";
 
     protected override void OnInitialized()
@@ -47,19 +44,7 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
         UpdateReturnUrl(e.Location);
-        _menuOpen = false;
         _ = InvokeAsync(StateHasChanged);
-    }
-
-    private void ToggleMenu() => _menuOpen = !_menuOpen;
-
-    private async Task HandleMenuKeyDown(KeyboardEventArgs eventArgs)
-    {
-        if (_menuOpen && string.Equals(eventArgs.Key, "Escape", StringComparison.Ordinal))
-        {
-            _menuOpen = false;
-            await _menuToggle.FocusAsync().ConfigureAwait(false);
-        }
     }
 
     private void UpdateReturnUrl(string location)

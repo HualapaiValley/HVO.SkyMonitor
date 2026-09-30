@@ -1,0 +1,31 @@
+/* Observatory & location sky plot, drawn in the camera's image space. Labels carry a halo in the plot
+   background colour so they stay readable over stars and figure lines. */
+
+.site-dial { display: block; width: 100%; max-width: 20rem; margin: 0 auto; }
+.site-dial-frame { fill: #09111b; stroke: var(--border); stroke-width: 1; }
+.site-dial-ring { fill: none; stroke: rgba(88, 166, 255, .24); stroke-width: .5; stroke-linejoin: round; }
+.site-dial-ring.horizon { stroke: var(--muted); stroke-dasharray: 2 2; }
+.site-dial-figure polyline { fill: none; stroke: var(--cyan); stroke-width: .7; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+.site-dial-label { fill: var(--muted-strong); font-size: 8px; font-weight: 700; paint-order: stroke; stroke: #09111b; stroke-width: 2px; stroke-linejoin: round; }
+
+/* The transparent stroke widens each object's pointer target without changing how it looks. */
+.site-dial-item { cursor: pointer; }
+.site-dial-object { fill: #c4dcfa; opacity: .55; stroke: transparent; stroke-width: 5; pointer-events: all; }
+.site-dial-object.on-page { fill: var(--blue); opacity: 1; }
+.site-dial-object.solar { fill: var(--amber); opacity: 1; }
+.site-dial-object.solar.on-page { fill: #f2c65f; }
+.site-dial-name,
+.site-dial-selection text { fill: var(--text); font-size: 7px; font-weight: 700; paint-order: stroke; stroke: #09111b; stroke-width: 2px; stroke-linejoin: round; pointer-events: none; }
+.site-dial-name { visibility: hidden; }
+.site-dial-item:hover .site-dial-name { visibility: visible; }
+.site-dial-selection { pointer-events: none; }
+.site-dial-selection circle { fill: none; stroke: var(--text); stroke-width: .8; }
+
+.site-dial-legend { display: flex; flex-wrap: wrap; gap: .3rem .8rem; margin: .6rem 0 0; padding: 0; color: var(--muted-strong); font-size: .56rem; list-style: none; }
+.site-dial-legend li { display: inline-flex; align-items: center; gap: .35rem; }
+.site-dial-swatch { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: #c4dcfa; opacity: .7; }
+.site-dial-swatch.on-page { background: var(--blue); opacity: 1; }
+.site-dial-swatch.solar { background: var(--amber); opacity: 1; }
+.site-dial-swatch.figure { width: .9rem; height: 0; border-top: 2px solid var(--cyan); border-radius: 0; background: none; opacity: 1; }
+.site-dial-note { margin: .6rem 0 0; color: var(--muted); font-size: .58rem; line-height: 1.45; }
+.site-dial-note code { color: #c4dcfa; font-size: .92em; overflow-wrap: anywhere; }

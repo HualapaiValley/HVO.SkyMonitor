@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -10,7 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.HealthChecks;
 
 public sealed class CalibrationLibraryHealthCheck(
     SqliteCalibrationLibraryStore store,
-    ICameraAgentConfigurationAccessor configurationAccessor) : IHealthCheck
+    ICameraAgentConfigurationAccessor configurationAccessor,
+    CaptureScheduleRuntimeCoordinator? scheduleRuntime = null) : IHealthCheck
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -29,8 +31,8 @@ public sealed class CalibrationLibraryHealthCheck(
 
         try
         {
-            var configuration = await configurationAccessor.WaitForConfigurationAsync(cancellationToken)
-                .ConfigureAwait(false);
+            var configuration = scheduleRuntime?.Snapshot?.Configuration
+                ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
             var required = IsLibraryRequired(configuration);
             var status = await store.GetOperationsStatusAsync(cancellationToken).ConfigureAwait(false);
             var data = CreateData(required, status);

@@ -565,6 +565,356 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.IsFalse(result.StructuredLayersAvailable);
     }
 
+    [TestMethod]
+    public void CombinedStageDisplaysLineageMatchedRetainedDerivativeWhileKeepingLinearIdentity()
+    {
+        var rawId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var derivativeId = Guid.NewGuid();
+        var capture = Capture(
+            7,
+            Now.AddSeconds(-5),
+            [
+                Artifact(rawId, FrameArtifactRole.Raw, "camera-native", "application/x-skymonitor-mono16", sources: []),
+                Artifact(combinedId, FrameArtifactRole.Combined, "rolling-mean", "application/x-hvo-linear-frame", sources: [rawId]),
+                EncodedPreview(derivativeId, "combined-preview", [combinedId])
+            ]);
+
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .ProjectWithRetainedDisplay(capture);
+
+        var combined = projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, combined.Availability);
+        Assert.AreEqual(combinedId, combined.ArtifactId, "stage identity must stay the linear Combined frame");
+        Assert.AreEqual(FrameArtifactRole.Combined, combined.ArtifactRole);
+        Assert.AreEqual("application/x-hvo-linear-frame", combined.MediaType);
+        Assert.AreEqual(derivativeId, combined.DisplayArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.RetainedDerivative, combined.DisplayBasis);
+        Assert.AreEqual($"/api/v1/operations/artifacts/{derivativeId:D}/preview?displayReference={derivativeId:D}", combined.PreviewUrl!.OriginalString);
+        StringAssert.Contains(combined.DisplayPolicy!, derivativeId.ToString("D"), StringComparison.Ordinal);
+        StringAssert.Contains(combined.DisplayPolicy!, "one configured display stretch", StringComparison.Ordinal);
+        // Processed artifact ranking is independent of the Combined slot's display substitution.
+        var processed = projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(derivativeId, processed.ArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, processed.DisplayBasis);
+        var raw = projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Raw);
+        Assert.AreEqual(rawId, raw.DisplayArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, raw.DisplayBasis);
+        Assert.AreEqual(derivativeId, raw.DisplayReferenceId);
+        Assert.AreEqual($"/api/v1/operations/artifacts/{rawId:D}/preview?displayReference={derivativeId:D}", raw.PreviewUrl!.OriginalString);
+        StringAssert.Contains(raw.DisplayPolicy!, "per-image histogram normalization", StringComparison.Ordinal);
+        StringAssert.Contains(raw.DisplayPolicy!, "not a locked transfer curve", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("wrong-lineage")]
+    [DataRow("cross-capture")]
+    [DataRow("ambiguous")]
+    [DataRow("multi-source")]
+    [DataRow("wrong-recipe")]
+    [DataRow("unavailable")]
+    [DataRow("missing")]
+    public void CombinedStageRejectsNonMatchingDerivativesAndFallsBackToOwnArtifact(string scenario)
+    {
+        var rawId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var otherCaptureCombinedId = Guid.NewGuid();
+        var artifacts = new List<CameraAgentGalleryArtifact>
+        {
+            Artifact(rawId, FrameArtifactRole.Raw, "camera-native", "application/x-skymonitor-mono16", sources: []),
+            Artifact(combinedId, FrameArtifactRole.Combined, "rolling-mean", "application/x-hvo-linear-frame", sources: [rawId])
+        };
+        switch (scenario)
+        {
+            case "wrong-lineage":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "calibrated-preview", [rawId]));
+                break;
+            case "cross-capture":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview", [otherCaptureCombinedId]));
+                break;
+            case "ambiguous":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview", [combinedId]));
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview-alt", [combinedId]));
+                break;
+            case "multi-source":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview", [combinedId, rawId]));
+                break;
+            case "wrong-recipe":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview", [combinedId], recipeName: "annotation"));
+                break;
+            case "unavailable":
+                artifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview", [combinedId]) with { Availability = "Missing" });
+                break;
+        }
+
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .ProjectWithRetainedDisplay(Capture(8, Now.AddSeconds(-5), artifacts));
+
+        var combined = projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, combined.Availability);
+        Assert.AreEqual(combinedId, combined.ArtifactId);
+        Assert.AreEqual(combinedId, combined.DisplayArtifactId, scenario);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, combined.DisplayBasis, scenario);
+        Assert.AreEqual($"/api/v1/operations/artifacts/{combinedId:D}/preview", combined.PreviewUrl!.OriginalString);
+        StringAssert.Contains(combined.DisplayPolicy!, "No retained lineage-matched display derivative", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void TruncatedArtifactListCannotProveDerivativeUniqueness()
+    {
+        var combinedId = Guid.NewGuid();
+        var combined = Artifact(combinedId, FrameArtifactRole.Combined, "rolling-mean", "application/x-hvo-linear-frame");
+        var first = EncodedPreview(Guid.NewGuid(), "combined-preview", [combinedId]);
+        var second = EncodedPreview(Guid.NewGuid(), "combined-preview-alt", [combinedId]);
+        var complete = Capture(11, Now, [combined, first, second]);
+        var projector = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()));
+
+        // D1 is visible but D2 is beyond the bounded projection. The visible subset must not turn ambiguity
+        // into a false uniqueness proof, even though D1's own lineage and eligibility are otherwise valid.
+        var truncated = complete with { Artifacts = [combined, first], ArtifactsTruncated = true };
+        var boundedSlot = projector.ProjectWithRetainedDisplay(truncated).Stages.Single(static slot =>
+            slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combinedId, boundedSlot.DisplayArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, boundedSlot.DisplayBasis);
+        StringAssert.Contains(boundedSlot.DisplayPolicy!, "bounded artifact list cannot prove", StringComparison.Ordinal);
+
+        var ambiguousSlot = projector.ProjectWithRetainedDisplay(complete).Stages.Single(static slot =>
+            slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combinedId, ambiguousSlot.DisplayArtifactId);
+        var uniqueSlot = projector.ProjectWithRetainedDisplay(truncated with { ArtifactsTruncated = false })
+            .Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(first.ArtifactId, uniqueSlot.DisplayArtifactId, "Complete-list control must exercise substitution.");
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentArtifactReadStatus.Conflict)]
+    [DataRow(CameraAgentArtifactReadStatus.Gone)]
+    public async Task InvalidRetainedDerivativeFallsBackToLinearCombinedPreviewAsync(CameraAgentArtifactReadStatus failure)
+    {
+        var combinedId = Guid.NewGuid();
+        var derivativeId = Guid.NewGuid();
+        var capture = Capture(
+            9,
+            Now.AddSeconds(-5),
+            [
+                Artifact(combinedId, FrameArtifactRole.Combined, "rolling-mean", "application/x-hvo-linear-frame"),
+                EncodedPreview(derivativeId, "combined-preview", [combinedId])
+            ]);
+        var artifacts = new StubArtifactService(new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [derivativeId] = failure,
+            [combinedId] = CameraAgentArtifactReadStatus.Found
+        });
+
+        var result = await CreateService(
+            new StubGallery(new CameraAgentGalleryPage([capture], null)),
+            artifacts: artifacts).GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var combined = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, combined.Availability);
+        Assert.AreEqual(combinedId, combined.ArtifactId);
+        Assert.AreEqual(combinedId, combined.DisplayArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, combined.DisplayBasis);
+        // The corrupt derivative is also the Processed stage's only candidate, so that stage is redacted.
+        var processed = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual(failure.ToString(), processed.Reason);
+        Assert.AreEqual(CameraAgentPresentationStage.Combined, result.SelectedStage);
+        CollectionAssert.AreEqual(new[] { derivativeId, combinedId }, artifacts.RequestedArtifactIds.ToArray());
+    }
+
+    [TestMethod]
+    public void CalibrationNoneIsDescribedAsNoCorrectionNotAsDisplayStretch()
+    {
+        var rawId = Guid.NewGuid();
+        var calibratedId = Guid.NewGuid();
+        var capture = Capture(
+            10,
+            Now.AddSeconds(-5),
+            [
+                Artifact(rawId, FrameArtifactRole.Raw, "camera-native", "application/x-skymonitor-mono16", sources: []),
+                Artifact(calibratedId, FrameArtifactRole.Calibrated, "none", "application/x-hvo-linear-frame", sources: [rawId])
+                    with { Recipe = new CameraAgentGalleryRecipe("linear-normalization", "1.0.0", "linear-normalization-none-v1", new string('B', 64), new string('C', 64)) }
+            ]);
+
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .Project(capture);
+
+        var calibrated = projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Calibrated);
+        StringAssert.StartsWith(calibrated.DisplayPolicy!, "Calibration None: no correction applied; pixels equal the Raw frame.", StringComparison.Ordinal);
+        StringAssert.Contains(calibrated.DisplayPolicy!, "per-image percentile normalization", StringComparison.Ordinal);
+        Assert.AreEqual(calibratedId, calibrated.DisplayArtifactId);
+        Assert.AreEqual(CameraAgentPresentationDisplayBasis.OwnArtifact, calibrated.DisplayBasis);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CurrentSkySharesVerifiedReferenceOrFallsBackEveryComparisonStageAsync(bool rejectRawReference)
+    {
+        var rawId = Guid.NewGuid();
+        var calibratedId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var referenceId = Guid.NewGuid();
+        var annotatedId = Guid.NewGuid();
+        var capture = Capture(12, Now,
+        [
+            Artifact(rawId, FrameArtifactRole.Raw, "native", "application/x-skymonitor-mono16", sources: []),
+            Artifact(calibratedId, FrameArtifactRole.Calibrated, "none", "application/x-hvo-linear-frame", sources: [rawId]),
+            Artifact(combinedId, FrameArtifactRole.Combined, "rolling-mean", "application/x-hvo-linear-frame", sources: [rawId]),
+            EncodedPreview(referenceId, "combined-preview", [combinedId]),
+            Artifact(annotatedId, FrameArtifactRole.AnnotatedPreview, "annotated", "image/jpeg", sources: [referenceId])
+        ]);
+        var artifacts = new StubArtifactService { RejectedPolicyTarget = rejectRawReference ? rawId : null };
+
+        var result = await CreateService(new StubGallery(new CameraAgentGalleryPage([capture], null)), artifacts: artifacts)
+            .GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(artifacts.Requests.Contains((referenceId, referenceId)), "Live mean must validate D's recorded policy/source, not just preview bytes.");
+        Assert.IsTrue(artifacts.Requests.Contains((calibratedId, referenceId)));
+        Assert.IsTrue(artifacts.Requests.Contains((rawId, referenceId)));
+        foreach (var stage in result.Stages.Where(static slot => slot.Stage != CameraAgentPresentationStage.Annotated))
+        {
+            Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, stage.Availability);
+            if (rejectRawReference)
+            {
+                Assert.IsNull(stage.DisplayReferenceId);
+                Assert.AreEqual(stage.ArtifactId, stage.DisplayArtifactId);
+                Assert.IsFalse(stage.PreviewUrl!.OriginalString.Contains("displayReference", StringComparison.Ordinal));
+                StringAssert.Contains(stage.DisplayPolicy!, "comparison reference failed validation", StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.AreEqual(referenceId, stage.DisplayReferenceId);
+                Assert.AreEqual(stage.Stage == CameraAgentPresentationStage.Combined ? referenceId : stage.ArtifactId, stage.DisplayArtifactId);
+            }
+        }
+        var gallery = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())).Project(capture);
+        Assert.IsTrue(gallery.Stages.All(static slot => slot.DisplayReferenceId is null));
+    }
+
+    [TestMethod]
+    public async Task FailedReadCannotTurnAmbiguousReferenceListIntoUniqueReferenceAsync()
+    {
+        var combinedId = Guid.NewGuid();
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var capture = Capture(13, Now,
+        [
+            Artifact(combinedId, FrameArtifactRole.Combined, "mean", "application/x-hvo-linear-frame"),
+            EncodedPreview(firstId, "a", [combinedId]),
+            EncodedPreview(secondId, "b", [combinedId])
+        ]);
+        var artifacts = new StubArtifactService(new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [firstId] = CameraAgentArtifactReadStatus.Gone
+        });
+        var result = await CreateService(new StubGallery(new CameraAgentGalleryPage([capture], null)), artifacts: artifacts)
+            .GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var combined = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combinedId, combined.DisplayArtifactId);
+        Assert.IsNull(combined.DisplayReferenceId);
+        Assert.IsTrue(artifacts.Requests.All(static request => request.Reference is null));
+    }
+
+    [TestMethod]
+    [DataRow("valid-reference")]
+    [DataRow("rejected-reference")]
+    [DataRow("gone-derivative")]
+    [DataRow("missing-derivative")]
+    [DataRow("ambiguous-derivative")]
+    public async Task ExactCaptureMatchesCurrentValidationWithoutHistoryOrRuntimeReadsAsync(string scenario)
+    {
+        var rawId = Guid.NewGuid();
+        var calibratedId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var derivativeId = Guid.NewGuid();
+        var captureArtifacts = new List<CameraAgentGalleryArtifact>
+        {
+            Artifact(rawId, FrameArtifactRole.Raw, "native", "application/x-skymonitor-mono16", sources: []),
+            Artifact(calibratedId, FrameArtifactRole.Calibrated, "linear", "application/x-hvo-linear-frame", sources: [rawId]),
+            Artifact(combinedId, FrameArtifactRole.Combined, "mean", "application/x-hvo-linear-frame", sources: [calibratedId])
+        };
+        if (scenario != "missing-derivative")
+            captureArtifacts.Add(EncodedPreview(derivativeId, "combined-preview", [combinedId]));
+        if (scenario == "ambiguous-derivative")
+            captureArtifacts.Add(EncodedPreview(Guid.NewGuid(), "combined-preview-alt", [combinedId]));
+        var capture = Capture(14, Now.AddDays(-3), captureArtifacts);
+        var statuses = new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [derivativeId] = scenario == "gone-derivative" ? CameraAgentArtifactReadStatus.Gone : CameraAgentArtifactReadStatus.Found
+        };
+        var exactArtifacts = new StubArtifactService(statuses)
+        {
+            RejectedPolicyTarget = scenario == "rejected-reference" ? rawId : null
+        };
+        var liveArtifacts = new StubArtifactService(statuses)
+        {
+            RejectedPolicyTarget = exactArtifacts.RejectedPolicyTarget
+        };
+        // Every dependency that can read current state is absent from the exact-capture service.
+        var exactService = new CameraAgentCurrentImagePresentationService(
+            null!, new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
+            exactArtifacts, null!, null!, null!);
+
+        var exact = await exactService.ProjectCaptureAsync(capture, CancellationToken.None).ConfigureAwait(false);
+        var live = await CreateService(new StubGallery(new CameraAgentGalleryPage([capture], null)), artifacts: liveArtifacts)
+            .GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(live.SelectedStage, exact.SelectedStage);
+        CollectionAssert.AreEqual(live.Stages.ToArray(), exact.Stages.ToArray());
+        CollectionAssert.AreEqual(liveArtifacts.Requests, exactArtifacts.Requests);
+        Assert.IsLessThanOrEqualTo(CameraAgentCurrentImagePresentationService.MaximumPreviewValidationAttempts, exactArtifacts.Requests.Count);
+        var combined = exact.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        Assert.AreEqual(combinedId, combined.ArtifactId);
+        Assert.AreEqual(scenario == "valid-reference" ? derivativeId : combinedId, combined.DisplayArtifactId);
+        Assert.AreEqual(scenario == "valid-reference" ? CameraAgentPresentationDisplayBasis.RetainedDerivative
+            : CameraAgentPresentationDisplayBasis.OwnArtifact, combined.DisplayBasis);
+        foreach (var slot in exact.Stages.Where(static slot => slot.Stage != CameraAgentPresentationStage.Annotated))
+        {
+            Assert.AreEqual(scenario == "valid-reference" ? derivativeId : (Guid?)null, slot.DisplayReferenceId);
+        }
+        if (scenario == "valid-reference")
+        {
+            Assert.Contains((derivativeId, (Guid?)derivativeId), exactArtifacts.Requests);
+            Assert.Contains((calibratedId, (Guid?)derivativeId), exactArtifacts.Requests);
+            Assert.Contains((rawId, (Guid?)derivativeId), exactArtifacts.Requests);
+        }
+    }
+
+    [TestMethod]
+    public async Task ExactCaptureValidationIsBoundedAndNeverSubstitutesAnotherCaptureAsync()
+    {
+        var capture = Capture(15, Now.AddDays(-3), Enumerable.Range(0, 13)
+            .Select(index => Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, $"preview-{index:D2}", "application/x-hvo-packed-image"))
+            .ToArray());
+        var artifacts = new StubArtifactService(capture.Artifacts.ToDictionary(
+            static artifact => artifact.ArtifactId, static _ => CameraAgentArtifactReadStatus.Gone));
+        var service = new CameraAgentCurrentImagePresentationService(
+            null!, new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
+            artifacts, null!, null!, null!);
+
+        var result = await service.ProjectCaptureAsync(capture, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(12, artifacts.Requests);
+        Assert.IsNull(result.SelectedStage);
+        var processed = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual("ValidationBoundReached", processed.Reason);
+        Assert.IsTrue(result.Stages.All(static slot => slot.ArtifactId is null && slot.PreviewUrl is null));
+    }
+
+    [TestMethod]
+    public async Task ExactCaptureCancellationPropagatesEvenWithoutDisplayableArtifactsAsync()
+    {
+        var service = new CameraAgentCurrentImagePresentationService(null!, null!, null!, null!, null!, null!);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await service.ProjectCaptureAsync(Capture(16, Now, []), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
     private static CameraAgentCurrentImagePresentationService CreateService(
         ICameraAgentGallery gallery,
         CameraAgentPresentationSystemState systemState = CameraAgentPresentationSystemState.Capturing,
@@ -632,6 +982,26 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             PreviewReconstructionSupported: !encoded && reconstructionSupported);
     }
 
+    private static CameraAgentGalleryArtifact EncodedPreview(
+        Guid id,
+        string variant,
+        IReadOnlyList<Guid> sources,
+        string recipeName = "encoded-preview")
+        => new(
+            id,
+            FrameArtifactRole.Preview,
+            "source",
+            variant,
+            Now.AddSeconds(-1),
+            "application/x-hvo-packed-image",
+            new string('D', 64),
+            64,
+            new CameraAgentGalleryRecipe(recipeName, "1.0.0", "encoded-preview-v1", new string('E', 64), new string('F', 64)),
+            sources,
+            "node",
+            PixelFormat: CameraPixelFormat.Mono8,
+            PreviewReconstructionSupported: true);
+
     private sealed class StubGallery : ICameraAgentGallery
     {
         private readonly CameraAgentGalleryPage? _page;
@@ -685,6 +1055,8 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         IReadOnlyDictionary<Guid, CameraAgentArtifactReadStatus>? statuses = null) : ICameraAgentArtifactService
     {
         internal List<Guid> RequestedArtifactIds { get; } = [];
+        internal List<(Guid Artifact, Guid? Reference)> Requests { get; } = [];
+        internal Guid? RejectedPolicyTarget { get; init; }
 
         public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
             Guid artifactId,
@@ -699,10 +1071,14 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
 
         public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
             Guid artifactId,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Guid? displayReference = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             RequestedArtifactIds.Add(artifactId);
+            Requests.Add((artifactId, displayReference));
+            if (artifactId == RejectedPolicyTarget && displayReference is not null)
+                return ValueTask.FromResult(new CameraAgentArtifactPreviewResult(CameraAgentArtifactReadStatus.Conflict));
             var status = statuses is not null && statuses.TryGetValue(artifactId, out var configured)
                 ? configured
                 : CameraAgentArtifactReadStatus.Found;

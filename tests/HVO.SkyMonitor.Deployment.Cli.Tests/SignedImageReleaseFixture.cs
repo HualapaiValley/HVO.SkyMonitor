@@ -43,7 +43,7 @@ internal sealed class SignedImageReleaseFixture : IDisposable
         ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
         ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
         ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-        ["io.hvo.skymonitor.raw-ingress-schema"] = "12",
+        ["io.hvo.skymonitor.raw-ingress-schema"] = "13",
         ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
         ["io.hvo.skymonitor.component"] = "CameraAgent",
         ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
@@ -120,7 +120,8 @@ internal sealed class SignedImageReleaseFixture : IDisposable
                 labels["io.hvo.skymonitor.configuration-contract"],
                 labels["io.hvo.skymonitor.catalog-contract"],
                 // A release built without the local replay runner publishes no runner contract at all.
-                labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replayRunner) ? replayRunner : null));
+                labels.TryGetValue("io.hvo.skymonitor.replay-runner-contract", out var replayRunner) ? replayRunner : null,
+                labels.TryGetValue("io.hvo.skymonitor.raw-ingress-migration", out var migration) ? migration : null));
         var manifest = new DistributionReleaseManifest(
             DistributionSchemaVersions.ReleaseManifest,
             DistributionManifestKind.ImageRelease,

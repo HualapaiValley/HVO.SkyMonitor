@@ -453,6 +453,101 @@ public sealed class CameraAgentLifecycleClientTests
         Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the resume did not honour its budget: {stopwatch.Elapsed}");
     }
 
+    [TestMethod]
+    public async Task ResumeRecovery_RetainsCommandIdentityAndExpectedVersionAcrossLostAcknowledgement()
+    {
+        var operationId = Guid.NewGuid();
+        var commandId = Guid.NewGuid();
+        var payloads = new List<string>();
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/internal/deployment/lifecycle/resume", request.RequestUri!.AbsolutePath);
+            Assert.AreEqual("lifecycle-token", request.Headers.GetValues("X-HVO-Installation-Token").Single());
+            var json = await request.Content!.ReadAsStringAsync(cancellationToken);
+            payloads.Add(json);
+            using var document = JsonDocument.Parse(json);
+            Assert.AreEqual(commandId, document.RootElement.GetProperty("operationId").GetGuid());
+            Assert.AreEqual(2L, document.RootElement.GetProperty("expectedVersion").GetInt64());
+            StringAssert.Contains(document.RootElement.GetProperty("reason").GetString(), operationId.ToString("D"), StringComparison.Ordinal);
+            if (sequence == 1) throw new HttpRequestException("lost acknowledgement");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"state\":1,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}", Encoding.UTF8, "application/json")
+            };
+        });
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(operationId, commandId, 2, "lifecycle-token", CancellationToken.None));
+        var receipt = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ResumeRecoveryAsync(operationId, commandId, 2, "lifecycle-token", CancellationToken.None);
+
+        Assert.IsTrue(receipt.Replayed);
+        Assert.AreEqual("Running", receipt.State);
+        Assert.AreEqual(3L, receipt.Version);
+        Assert.AreEqual(2, payloads.Count);
+        Assert.AreEqual(payloads[0], payloads[1]);
+    }
+
+    [TestMethod]
+    [DataRow(401)]
+    [DataRow(403)]
+    [DataRow(409)]
+    public async Task ResumeRecovery_RejectsExpiredCredentialOrForeignVersion(int status)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage((HttpStatusCode)status)));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            client.ResumeRecoveryAsync(Guid.NewGuid(), Guid.NewGuid(), 2, "lifecycle-token", CancellationToken.None));
+        StringAssert.Contains(exception.Message, $"status {status}", StringComparison.Ordinal);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task RecoveryRead_ReportsCurrentAdmissionWithoutPausingOrDraining()
+    {
+        using var handler = new ScriptedHandler((request, _, _) =>
+        {
+            Assert.AreEqual(HttpMethod.Get, request.Method);
+            Assert.AreEqual("lifecycle-token", request.Headers.GetValues("X-HVO-Installation-Token").Single());
+            return Task.FromResult(State("Running", 3, 1813));
+        });
+        var result = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None);
+        Assert.AreEqual("Running", result.CaptureState);
+        Assert.AreEqual(3L, result.CaptureVersion);
+        Assert.AreEqual(1813L, result.CaptureSequence);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(401)]
+    [DataRow(503)]
+    public async Task RecoveryRead_FailsClosedOnRejectedCredentialOrUnavailableState(int status)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage((HttpStatusCode)status)));
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None));
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow("{}")]
+    [DataRow("{invalid token=must-not-leak")]
+    [DataRow("{\"state\":3,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":5,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":3,\"changed\":false,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}")]
+    [DataRow("{\"state\":1,\"version\":3,\"changed\":true,\"replayed\":true,\"requestedUtc\":\"2026-09-24T00:00:01Z\",\"completedUtc\":\"2026-09-24T00:00:00Z\"}")]
+    public async Task ResumeRecovery_RejectsInvalidExecutedReceiptWithoutSensitiveDiagnostics(string json)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        }));
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ResumeRecoveryAsync(Guid.NewGuid(), Guid.NewGuid(), 2, "lifecycle-token", CancellationToken.None));
+        Assert.IsFalse(exception.ToString().Contains("must-not-leak", StringComparison.Ordinal));
+    }
+
     private static async Task<HttpResponseMessage> CommandAsync(
         HttpRequestMessage request,
         string action,

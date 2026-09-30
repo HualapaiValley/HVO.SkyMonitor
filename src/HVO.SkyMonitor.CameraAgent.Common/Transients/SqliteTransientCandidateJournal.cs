@@ -247,6 +247,9 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                 insert.Parameters.AddWithValue("$now", now);
                 await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+            await TransientStageEventWriter.RecordAsync(
+                connection, transaction, source.RawCaptureRowId, "frame-staged", null, "pending",
+                "transient_capture_work", DateTimeOffset.FromUnixTimeMilliseconds(now), cancellationToken).ConfigureAwait(false);
             await SetRawHoldAsync(connection, transaction, source.RawCaptureRowId, cancellationToken).ConfigureAwait(false);
             await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(TransientCandidateFaultPoint.BeforeStageCommit);
@@ -745,6 +748,24 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             }
             await RecomputeCandidateSourceHoldsAsync(connection, transaction, candidateId, cancellationToken).ConfigureAwait(false);
             await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            using (var table = connection.CreateCommand())
+            {
+                table.Transaction = transaction;
+                table.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'transient_worker_candidates';";
+                if ((long)(await table.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L) != 0)
+                {
+                    using var target = connection.CreateCommand();
+                    target.Transaction = transaction;
+                    target.CommandText = "SELECT target_raw_capture_row_id FROM transient_worker_candidates WHERE candidate_id = $candidate;";
+                    target.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+                    if (await target.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rawCaptureRowId)
+                    {
+                        await TransientStageEventWriter.RecordAsync(connection, transaction, rawCaptureRowId,
+                            "central-acknowledged", candidateId, "acknowledged", "transient_candidates", now,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
             _faultInjector.Inject(TransientCandidateFaultPoint.BeforeAcknowledgementCommit);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(TransientCandidateFaultPoint.AfterAcknowledgementCommit);
@@ -1003,6 +1024,35 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                     connection, transaction, candidateId, cancellationToken).ConfigureAwait(false);
             }
             await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            // The candidate journal can be used before the separate transient worker runtime
+            // initializes its tables (notably during recovery and retained-candidate tests).
+            // Only the runtime allocation proves the center capture; source captures are causal
+            // context and must never be substituted as a target. In the absence of the worker
+            // table, the journal payload remains authoritative and no stage event is invented.
+            using (var table = connection.CreateCommand())
+            {
+                table.Transaction = transaction;
+                table.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'transient_worker_candidates';";
+                if ((long)(await table.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L) != 0)
+                {
+                    using var target = connection.CreateCommand();
+                    target.Transaction = transaction;
+                    target.CommandText = "SELECT target_raw_capture_row_id FROM transient_worker_candidates WHERE candidate_id = $candidate;";
+                    target.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+                    if (await target.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long rawCaptureRowId)
+                    {
+                        var stage = phase switch
+                        {
+                            TransientCandidateWorkflowPhase.CandidatePersisted => "candidate-persisted",
+                            TransientCandidateWorkflowPhase.Finalized => "event-finalized",
+                            TransientCandidateWorkflowPhase.HandoffPending => "relay-pending",
+                            _ => throw new InvalidOperationException("Unsupported transient stage event phase.")
+                        };
+                        await TransientStageEventWriter.RecordAsync(connection, transaction, rawCaptureRowId,
+                            stage, candidateId, phase.ToString(), "transient_candidates", now, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
             _faultInjector.Inject(beforeCommit);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(afterCommit);

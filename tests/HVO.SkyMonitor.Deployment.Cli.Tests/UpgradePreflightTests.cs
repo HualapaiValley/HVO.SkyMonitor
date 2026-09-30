@@ -18,7 +18,7 @@ public sealed class UpgradePreflightTests
     private static readonly uint RuntimeGid = NativeLinux.getgid();
 
     private static readonly CameraAgentStateRequirements CurrentRequirements = new(
-        CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 12, 2);
+        CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, 2);
 
     private static readonly string[] ExpectedLegacyFindingCodes =
     [
@@ -62,7 +62,7 @@ public sealed class UpgradePreflightTests
         Assert.AreEqual(CurrentIdentityMigration, identity.Expected);
         var rawIngress = report.Findings.Single(static finding => finding.Code == "raw-ingress-schema");
         Assert.AreEqual("11", rawIngress.Observed);
-        Assert.AreEqual("12", rawIngress.Expected);
+        Assert.AreEqual("13", rawIngress.Expected);
         var mode = report.Findings.Single(static finding => finding.Code == "bind-source-mode");
         Assert.AreEqual("0755", mode.Observed);
         Assert.AreEqual("0700", mode.Expected);
@@ -83,7 +83,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         var report = Evaluate(fixture);
@@ -106,6 +106,146 @@ public sealed class UpgradePreflightTests
 
         Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
         Assert.AreEqual(0, report.Findings.Count);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_Schema12IsRejectedBeforeUpgradeAndExact13IsAccepted()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.CreateBindSources();
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        var legacy = Evaluate(fixture);
+        Assert.IsFalse(legacy.Compatible);
+        var finding = legacy.Findings.Single(static value => value.Blocking);
+        Assert.AreEqual("raw-ingress-schema", finding.Code);
+        Assert.AreEqual("12", finding.Observed);
+        Assert.AreEqual("13", finding.Expected);
+        Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(
+            CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)));
+        var otherForward = Evaluate(fixture, CurrentRequirements with { RawIngressSchema = 14 });
+        Assert.IsFalse(otherForward.Compatible);
+        Assert.AreEqual("raw-ingress-schema", otherForward.Findings.Single(static finding => finding.Blocking).Code);
+        var oldImage = CurrentRequirements with { RawIngressSchema = 12 };
+        fixture.SetRawIngressVersion(13);
+        Assert.IsTrue(Evaluate(fixture).Compatible);
+        var rollback = Evaluate(fixture, oldImage, CameraAgentStateContractPolicy.AllowLegacy);
+        Assert.IsFalse(rollback.Compatible);
+        Assert.AreEqual("raw-ingress-schema", rollback.Findings.Single(static finding => finding.Blocking).Code);
+        fixture.SetRawIngressVersion(11);
+        Assert.IsFalse(Evaluate(fixture).Compatible);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_V13ToV14RequiresCanonicalSchemaAndExplicitMigrationDeclaration()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.CreateBindSources();
+        var candidate = CurrentRequirements with
+        {
+            RawIngressSchema = 14,
+            RawIngressMigration = RawIngressV13Schema.MigrationContract
+        };
+        fixture.WriteCanonicalV13RawIngressDatabase();
+
+        Assert.IsTrue(Evaluate(fixture, candidate).Compatible, "canonical v13 must be eligible for v14");
+        Assert.IsFalse(Evaluate(fixture, candidate with { RawIngressMigration = null }).Compatible,
+            "schema 14 alone must not authorize migration");
+        Assert.IsFalse(Evaluate(fixture, candidate with { RawIngressMigration = "unrelated" }).Compatible);
+        Assert.IsFalse(Evaluate(fixture, CurrentRequirements with
+        {
+            RawIngressSchema = 15,
+            RawIngressMigration = RawIngressV13Schema.MigrationContract
+        }).Compatible);
+        Assert.IsFalse(Evaluate(fixture, CurrentRequirements with { RawIngressSchema = 12 },
+            CameraAgentStateContractPolicy.AllowLegacy).Compatible, "rollback 13 to 12 remains refused");
+        Assert.IsFalse(Evaluate(fixture, candidate, CameraAgentStateContractPolicy.AllowLegacy).Compatible,
+            "the forward exception is not a restore-only allowance");
+
+        fixture.ChangeRawIngressSchema("CREATE TABLE installer_drift (id INTEGER);");
+        var drift = Evaluate(fixture, candidate);
+        Assert.IsFalse(drift.Compatible);
+        Assert.AreEqual("raw-ingress-schema", drift.Findings.Single(static finding => finding.Blocking).Code);
+        Assert.AreEqual("13", drift.Findings.Single(static finding => finding.Blocking).Observed);
+        fixture.ChangeRawIngressSchema("DROP TABLE installer_drift;");
+        fixture.ChangeRawIngressSchema("PRAGMA foreign_keys = OFF; INSERT INTO transient_candidates (candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256, state, phase, timeout_unix_ms, created_unix_ms, updated_unix_ms) VALUES ('orphan', 'missing', 'agent', 'edge', 1, '" + new string('a', 64) + "', 'pending', 'reserved', 1, 1, 1);");
+        var orphan = Evaluate(fixture, candidate);
+        Assert.IsFalse(orphan.Compatible, "a canonical schema with an orphan must not be eligible");
+        Assert.AreEqual("raw-ingress-schema", orphan.Findings.Single(static finding => finding.Blocking).Code);
+        fixture.SetRawIngressVersion(14);
+        Assert.IsFalse(Evaluate(fixture, CurrentRequirements,
+            CameraAgentStateContractPolicy.AllowLegacy).Compatible,
+            "a restore-only rollback from 14 to 13 must still be refused");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Evaluate_ExactV14RequiresCanonicalHealthyJournalAndRejectsRollback()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.CreateBindSources();
+        var candidate = CurrentRequirements with
+        {
+            RawIngressSchema = 14,
+            RawIngressMigration = RawIngressV13Schema.MigrationContract
+        };
+        fixture.WriteCanonicalV14RawIngressDatabase();
+        Assert.IsTrue(Evaluate(fixture, candidate).Compatible, "canonical v14 must pass exact-match preflight");
+        Assert.IsTrue(Evaluate(fixture, candidate with { RawIngressMigration = null }).Compatible,
+            "an already-migrated v14 journal needs no forward migration declaration");
+        Assert.IsFalse(Evaluate(fixture, CurrentRequirements, CameraAgentStateContractPolicy.AllowLegacy).Compatible,
+            "rollback from v14 to v13 must remain refused");
+
+        fixture.ChangeRawIngressSchema("CREATE TABLE installer_drift (id INTEGER);");
+        AssertRawIngressRejected(Evaluate(fixture, candidate));
+        fixture.ChangeRawIngressSchema("DROP TABLE installer_drift;");
+        fixture.ChangeRawIngressSchema("PRAGMA foreign_keys = OFF; INSERT INTO transient_candidates (candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256, state, phase, timeout_unix_ms, created_unix_ms, updated_unix_ms) VALUES ('orphan', 'missing', 'agent', 'edge', 1, '" + new string('a', 64) + "', 'pending', 'reserved', 1, 1, 1);");
+        AssertRawIngressRejected(Evaluate(fixture, candidate));
+        fixture.ChangeRawIngressSchema("DELETE FROM transient_candidates WHERE candidate_id = 'orphan';");
+        fixture.ChangeRawIngressSchema("PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = 'BROKEN' WHERE name = 'raw_captures'; PRAGMA writable_schema = OFF;");
+        var corrupt = Evaluate(fixture, candidate);
+        Assert.IsFalse(corrupt.Compatible);
+        Assert.IsTrue(corrupt.Findings.Any(static finding => finding.Code is "raw-ingress-schema" or "raw-ingress-schema-unreadable"));
+    }
+
+    private static void AssertRawIngressRejected(CameraAgentStatePreflightReport report)
+    {
+        Assert.IsFalse(report.Compatible);
+        Assert.AreEqual("raw-ingress-schema", report.Findings.Single(static finding => finding.Blocking).Code);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task EnsureCompatibleAsync_Schema12BlocksDeploymentWithoutChangingTheJournal()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.CreateBindSources();
+        var candidate = new ImageInstallationIdentity(
+            "registry", $"cameraagent@sha256:{new string('b', 64)}",
+            $"sha256:{new string('c', 64)}", "amd64", null,
+            UpgradeCompatibility: CameraAgentStateContract.Current,
+            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            IdentityMigration: CurrentIdentityMigration,
+            RawIngressSchema: "13",
+            CatalogManifestVersion: "2");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            CameraAgentStatePreflight.EnsureCompatibleAsync(
+                fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.Current,
+                RuntimeUid, RuntimeGid, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
+                persist: true, renderToStandardError: false, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "raw-ingress-schema", StringComparison.Ordinal);
+        Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(
+            CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)));
     }
 
     [TestMethod]
@@ -176,7 +316,7 @@ public sealed class UpgradePreflightTests
             UpgradeCompatibility: CameraAgentStateContract.Current,
             MinimumCompatibleRevision: MinimumCompatibleRevision,
             IdentityMigration: CurrentIdentityMigration,
-            RawIngressSchema: "12",
+            RawIngressSchema: "13",
             CatalogManifestVersion: "2");
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
@@ -209,14 +349,14 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
         var candidate = new ImageInstallationIdentity(
             "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
             UpgradeCompatibility: CameraAgentStateContract.Current,
             MinimumCompatibleRevision: MinimumCompatibleRevision,
             IdentityMigration: CurrentIdentityMigration,
-            RawIngressSchema: "12",
+            RawIngressSchema: "13",
             CatalogManifestVersion: "2");
 
         var report = await CameraAgentStatePreflight.EnsureCompatibleAsync(
@@ -261,7 +401,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: false);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         // The runtime materializes the file on its first connection and creates the history table only during
@@ -279,7 +419,7 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteUnmigratedIdentityDatabase(createIdentityTable: true);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
 
         var report = Evaluate(fixture);
@@ -297,10 +437,10 @@ public sealed class UpgradePreflightTests
         using var fixture = new PreflightFixture();
         fixture.WriteCatalogManifest(manifestVersion: 2);
         fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
         fixture.CreateBindSources();
         var partial = new CameraAgentStateRequirements(
-            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 12, null);
+            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, null);
 
         var report = Evaluate(fixture, partial);
 
@@ -541,6 +681,95 @@ public sealed class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_CarriesTheOperatorSettingsFileAcrossTheDeletion()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot);
+        const string settings = """{ "CameraAgent": { "Site": { "CameraName": "East dome" } } }""";
+        SafeFileSystem.WriteTextAtomic(settingsPath, settings);
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        var completed = await CameraAgentStateResetManager.ExecuteAsync(
+            request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
+
+        Assert.AreEqual("completed", completed.Outcome);
+        CollectionAssert.Contains(completed.PreservedPaths.ToArray(), settingsPath);
+        Assert.IsFalse(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
+        Assert.AreEqual(settings, await File.ReadAllTextAsync(settingsPath));
+        SafeFileSystem.ValidateOwnerFile(settingsPath);
+        Assert.IsEmpty(Directory.GetFiles(fixture.Paths.OperationsRoot, $"*.{CameraAgentStateLayout.OperatorSettingsFileName}"));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_AfterAnInterruptedReset_CarriesTheSettingsThatResetKept()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        // An earlier reset stopped after deleting the Identity mount and before writing the settings back, so the
+        // only copy of the operator's settings is the one it kept beside its evidence.
+        const string settings = """{ "CameraAgent": { "Site": { "CameraName": "East dome" } } }""";
+        var copy = Path.Combine(
+            fixture.Paths.OperationsRoot,
+            $"cameraagent-{fixture.InstanceId:D}.state-reset-{Guid.NewGuid():D}.{CameraAgentStateLayout.OperatorSettingsFileName}");
+        SafeFileSystem.WriteTextAtomic(copy, settings);
+        var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot);
+        Assert.IsFalse(File.Exists(settingsPath));
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        var completed = await CameraAgentStateResetManager.ExecuteAsync(
+            request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
+
+        Assert.AreEqual("completed", completed.Outcome);
+        CollectionAssert.Contains(completed.PreservedPaths.ToArray(), settingsPath);
+        Assert.AreEqual(settings, await File.ReadAllTextAsync(settingsPath));
+        SafeFileSystem.ValidateOwnerFile(settingsPath);
+        Assert.IsEmpty(Directory.GetFiles(fixture.Paths.OperationsRoot, $"*.{CameraAgentStateLayout.OperatorSettingsFileName}"));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_RefusesALinkedOperatorSettingsFileBeforeDeletingAnything()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        File.CreateSymbolicLink(
+            CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot),
+            Path.Combine(fixture.Paths.ConfigRoot, "secrets", "LocalIdentity__DatabasePath"));
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => CameraAgentStateResetManager.ExecuteAsync(
+                request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None));
+
+        Assert.IsTrue(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
+        Assert.IsTrue(File.Exists(fixture.Paths.ResultPath), "a refused reset leaves the completed result in place");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_RequiresAPreserveByDefaultUninstall()
     {
         using var fixture = new PreflightFixture();
@@ -687,6 +916,66 @@ public sealed class UpgradePreflightTests
             command.CommandText =
                 (createTable ? "CREATE TABLE raw_capture (id INTEGER PRIMARY KEY);" : string.Empty) +
                 $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
+#pragma warning restore CA2100
+            command.ExecuteNonQuery();
+        }
+
+        public void SetRawIngressVersion(int schemaVersion)
+        {
+            using var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot)}");
+            connection.Open();
+            using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // Fixed test schema versions cannot be parameterized in PRAGMA.
+            command.CommandText = $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
+#pragma warning restore CA2100
+            command.ExecuteNonQuery();
+        }
+
+        public void WriteCanonicalV13RawIngressDatabase()
+        {
+            WriteCanonicalV14RawIngressDatabase();
+            ChangeRawIngressSchema("""
+                DROP TRIGGER tr_named_rig_revisions_no_delete;
+                DROP TRIGGER tr_named_rig_revisions_immutable;
+                DROP TRIGGER tr_named_equipment_revisions_no_delete;
+                DROP TRIGGER tr_named_equipment_revisions_immutable;
+                DROP TABLE named_rig_selection_receipts;
+                DROP TABLE named_rig_selection_commands;
+                DROP TABLE named_rig_selection;
+                DROP TABLE named_rig_revisions;
+                DROP TABLE named_equipment_revisions;
+                DROP TABLE named_equipment_definitions;
+                DROP TABLE named_rig_profiles;
+                PRAGMA user_version = 13;
+                """);
+            AssertRawIngressFingerprint(RawIngressV13Schema.Fingerprint);
+        }
+
+        public void WriteCanonicalV14RawIngressDatabase()
+        {
+            var path = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
+            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
+            using var stream = typeof(UpgradePreflightTests).Assembly.GetManifestResourceStream(
+                "HVO.SkyMonitor.Deployment.Cli.Tests.FrozenRawIngressV14.sql")!;
+            using var reader = new StreamReader(stream);
+            ChangeRawIngressSchema(reader.ReadToEnd());
+            AssertRawIngressFingerprint(RawIngressV13Schema.V14Fingerprint);
+        }
+
+        private void AssertRawIngressFingerprint(string expected)
+        {
+            using var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot)}");
+            connection.Open();
+            Assert.AreEqual(expected, RawIngressV13Schema.ComputeFingerprint(connection));
+        }
+
+        public void ChangeRawIngressSchema(string sql)
+        {
+            using var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot)}");
+            connection.Open();
+            using var command = connection.CreateCommand();
+#pragma warning disable CA2100 // Private fixture supplies only fixed test DDL.
+            command.CommandText = sql;
 #pragma warning restore CA2100
             command.ExecuteNonQuery();
         }

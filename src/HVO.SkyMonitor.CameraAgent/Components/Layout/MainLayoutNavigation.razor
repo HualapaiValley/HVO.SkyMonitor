@@ -10,17 +10,14 @@
             <span class="shell-brand__copy"><strong>HVO SkyMonitor</strong><small>Local CameraAgent</small></span>
         </a>
 
-        <div class="shell-menu" @onkeydown="HandleMenuKeyDown">
-            <button type="button"
-                    class="shell-menu__toggle"
-                    aria-expanded="@_menuOpen.ToString().ToLowerInvariant()"
-                    aria-controls="shell-menu-panel"
-                    @ref="_menuToggle"
-                    @onclick="ToggleMenu">
+        <div class="shell-menu">
+            <ResponsiveNavigation Id="shell-menu-panel" Label="Site menu">
+                <ToggleContent>
                 <span>Menu</span>
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"></path></svg>
-            </button>
-            <div id="shell-menu-panel" class="@(_menuOpen ? "shell-menu__panel shell-menu__panel--open" : "shell-menu__panel")">
+                </ToggleContent>
+                <ChildContent>
+                <div class="shell-menu__panel">
                 <nav class="shell-primary" aria-label="Primary navigation">
                     @foreach (var link in PrimaryNavigationLinks)
                     {
@@ -34,7 +31,7 @@
                     <AuthorizeView Context="authState">
                         <Authorized>
                             <details class="nav-account-info">
-                                <summary class="nav-avatar-button">
+                                <summary class="nav-avatar-button" aria-label="@($"Account for {GetUserDisplayName(authState.User)}")">
                                     <span class="nav-avatar">@GetUserInitials(authState.User)</span>
                                     <span class="nav-account-details">
                                         <span class="nav-account-name">@GetUserDisplayName(authState.User)</span>
@@ -64,7 +61,9 @@
                         </NotAuthorized>
                     </AuthorizeView>
                 </div>
-            </div>
+                </div>
+                </ChildContent>
+            </ResponsiveNavigation>
         </div>
     </div>
 </header>
