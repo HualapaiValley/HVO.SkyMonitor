@@ -1,3 +1,4 @@
+using System.Globalization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -23,6 +24,10 @@ public sealed class ObservatoryLocationPageTests
     private const string SettingsPath = "/srv/hvo/App_Data/appsettings.local.json";
 
     private static readonly DateTimeOffset Instant = new(2026, 3, 1, 4, 0, 0, TimeSpan.Zero);
+
+    private static readonly string[] FixtureStarNames = ["Sirius", "Vega"];
+    private static readonly string[] AddedBodyNames = ["Jupiter", "Moon"];
+    private static readonly string[] FixturePillTexts = ["Lyr", "Ori, not in the image at this instant"];
 
     private static readonly string[] ExpectedDialogNotes =
     [
@@ -233,6 +238,220 @@ public sealed class ObservatoryLocationPageTests
 
         Assert.AreEqual("No matches", cut.Find("nav.site-pager [role='status']").TextContent);
         Assert.Contains("No visible object matches this filter.", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(968d, 48d, 1528d, 608d, "north is up and east is right", "100.00,5.00", "195.00,100.00")]
+    [DataRow(968d, 48d, 408d, 608d, "north is up and east is left", "100.00,5.00", "5.00,100.00")]
+    [DataRow(1528d, 608d, 968d, 1168d, "north is right and east is down", "195.00,100.00", "100.00,195.00")]
+    public void Dial_PlotsTheSceneInImageSpaceWithTheCompassWhereTheOpticsPutIt(
+        double northX, double northY, double eastX, double eastY, string orientation, string northLabel, string eastLabel)
+    {
+        using var context = CreateContext();
+        var result = SkyMapTestData.Result(Instant);
+        // South and west sit opposite north and east through the principal point (968, 608).
+        result = result with
+        {
+            Geometry = result.Geometry with
+            {
+                HorizontalFlip = eastX < 968,
+                Cardinals =
+                [
+                    new CameraAgentSkyMapCardinal("North", 0, northX, northY),
+                    new CameraAgentSkyMapCardinal("East", 90, eastX, eastY),
+                    new CameraAgentSkyMapCardinal("South", 180, 1936 - northX, 1216 - northY),
+                    new CameraAgentSkyMapCardinal("West", 270, 1936 - eastX, 1216 - eastY)
+                ]
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(result, manual: ManualState()));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var dial = cut.WaitForElement("svg.site-dial");
+        Assert.AreEqual(
+            $"Sky plot of the visible objects as the camera images them: {orientation}.", dial.GetAttribute("aria-label"));
+        Assert.Contains($"so {orientation}.", cut.Find(".site-dial-note").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual(northLabel, CardinalPosition(cut, "North"));
+        Assert.AreEqual(eastLabel, CardinalPosition(cut, "East"));
+        // Objects sit at their projected pixel: the image circle (radius 560 px about 968, 608) fills the
+        // 92-unit ring about the plot centre, so Sirius at (970.1, 1090.4) is just right of centre, low down.
+        var sirius = cut.FindAll("svg.site-dial g.site-dial-item").Single(item => item.TextContent == "Sirius");
+        var circle = sirius.QuerySelector("circle.site-dial-object")!;
+        Assert.AreEqual(100.345, double.Parse(circle.GetAttribute("cx")!, CultureInfo.InvariantCulture), 0.01);
+        Assert.AreEqual(179.252, double.Parse(circle.GetAttribute("cy")!, CultureInfo.InvariantCulture), 0.01);
+        // The hover name is in the item itself, so pointing at an object needs no round trip.
+        CollectionAssert.AreEquivalent(FixtureStarNames, cut.FindAll("svg.site-dial .site-dial-name").Select(static name => name.TextContent).ToArray());
+        // The horizon ring is outside this image; the 30 and 60 degree rings are drawn from the published lines.
+        var rings = cut.FindAll("svg.site-dial polyline.site-dial-ring");
+        Assert.HasCount(2, rings);
+        Assert.StartsWith("100.00,54.00 ", rings[0].GetAttribute("points")!, StringComparison.Ordinal);
+        Assert.HasCount(1, cut.FindAll("svg.site-dial circle.site-dial-frame"));
+    }
+
+    [TestMethod]
+    public void Dial_WithoutCompassLandmarksOrAnEphemeris_SaysWhatItCannotShow()
+    {
+        using var context = CreateContext();
+        var result = SkyMapTestData.Result(Instant);
+        result = result with
+        {
+            EphemerisModelVersion = null,
+            Geometry = result.Geometry with
+            {
+                Aperture = "Rectangular",
+                ImageCircleRadiusPixels = null,
+                Cardinals = [.. result.Geometry.Cardinals.Select(static cardinal => cardinal with { PixelX = null, PixelY = null })]
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(result, manual: ManualState()));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var dial = cut.WaitForElement("svg.site-dial");
+        Assert.Contains("publishes no compass landmarks", dial.GetAttribute("aria-label")!, StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-cardinal"));
+        Assert.Contains("N, E, S and W are not marked", cut.Markup, StringComparison.Ordinal);
+        // A rectangular sensor is framed as a rectangle whose longer side spans the plot.
+        var frame = cut.Find("svg.site-dial rect.site-dial-frame");
+        Assert.AreEqual("8.00", frame.GetAttribute("x"));
+        Assert.AreEqual("184.00", frame.GetAttribute("width"));
+        Assert.Contains("No planet ephemeris is installed on this camera", cut.Markup, StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("svg.site-dial circle.site-dial-object.solar"));
+    }
+
+    [TestMethod]
+    public void SolarSystemBodies_AreTypedInTheTableAndDrawnApartOnTheDial()
+    {
+        using var context = CreateContext();
+        var result = SkyMapTestData.Result(Instant);
+        result = result with
+        {
+            Objects =
+            [
+                .. result.Objects,
+                new CameraAgentSkyMapObject("solar-system:Jupiter", "Jupiter", "Planet", -2.4, 55.1, 120.4, 1180.2, 700.5, null),
+                new CameraAgentSkyMapObject("solar-system:Moon", "Moon", "Moon", -11.2, 30.3, 200.2, 900.4, 950.8, null)
+            ]
+        };
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(result, manual: ManualState()));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        cut.WaitForElement("svg.site-dial");
+        var types = cut.FindAll("section.site-scene tbody tr").ToDictionary(
+            static row => row.QuerySelector("td strong")!.TextContent,
+            static row => row.QuerySelectorAll("td")[1].TextContent,
+            StringComparer.Ordinal);
+        Assert.AreEqual("Planet", types["Jupiter"]);
+        Assert.AreEqual("Moon", types["Moon"]);
+        Assert.AreEqual("Star", types["Sirius"]);
+        var solar = cut.FindAll("svg.site-dial g.site-dial-item")
+            .Where(static item => item.QuerySelector("circle.solar") is not null)
+            .Select(static item => item.TextContent)
+            .ToArray();
+        CollectionAssert.AreEquivalent(AddedBodyNames, solar);
+        // Bodies are drawn after the stars so a body is never hidden under one.
+        Assert.AreEqual("Moon", cut.FindAll("svg.site-dial g.site-dial-item")[^1].TextContent);
+        Assert.IsTrue(
+            cut.FindAll(".site-dial-note").Any(static note => note.TextContent.Contains(
+                $"placed by ephemeris {SkyMapTestData.EphemerisModelVersion}", StringComparison.Ordinal)),
+            "the plot names the ephemeris that placed the bodies");
+        Assert.HasCount(1, cut.FindAll(".site-dial-legend .site-dial-swatch.solar"));
+    }
+
+    [TestMethod]
+    public void SelectingAnObjectInTheTable_LabelsItOnTheDialUntilItIsCleared()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(
+            new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("svg.site-dial");
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-selection"));
+        Assert.IsTrue(TextButton(cut, "Clear label").HasAttribute("disabled"));
+
+        ObjectButton(cut, "Vega").Click();
+
+        Assert.AreEqual("true", ObjectButton(cut, "Vega").GetAttribute("aria-pressed"));
+        Assert.AreEqual("false", ObjectButton(cut, "Sirius").GetAttribute("aria-pressed"));
+        Assert.Contains("selected", ObjectButton(cut, "Vega").Closest("tr")!.ClassList);
+        Assert.AreEqual("Vega", cut.Find("svg.site-dial .site-dial-selection text").TextContent);
+        Assert.StartsWith("Labelled: Vega, star, magnitude 0.03", cut.Find(".site-selection [role='status']").TextContent.Trim(), StringComparison.Ordinal);
+
+        // Selecting the labelled row again removes the label.
+        ObjectButton(cut, "Vega").Click();
+
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-selection"));
+        Assert.AreEqual("false", ObjectButton(cut, "Vega").GetAttribute("aria-pressed"));
+        Assert.AreEqual("No object is labelled.", cut.Find(".site-selection [role='status']").TextContent.Trim());
+
+        ObjectButton(cut, "Sirius").Click();
+        TextButton(cut, "Clear label").Click();
+
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-selection"));
+        Assert.IsEmpty(cut.FindAll("section.site-scene tbody tr.selected"));
+    }
+
+    [TestMethod]
+    public void SelectingAnObjectOnTheDial_PagesTheTableToItsRowEvenWhenAFilterHidIt()
+    {
+        using var context = CreateContext();
+        var module = context.JSInterop.SetupModule("./Components/Pages/ObservatoryLocationPage.razor.js");
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(
+            new SiteUiService(ManyObjects(30), manual: ManualState()));
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("nav.site-pager");
+        cut.Find("#site-scene-search").Input("star 0");
+        Assert.AreEqual("1-10 of 10", cut.Find("nav.site-pager [role='status']").TextContent);
+
+        DialItem(cut, "Star 28").Click();
+
+        Assert.AreEqual(string.Empty, cut.Find("#site-scene-search").GetAttribute("value") ?? string.Empty);
+        Assert.AreEqual("26-30 of 30", cut.Find("nav.site-pager [role='status']").TextContent);
+        Assert.AreEqual("Star 28", cut.Find("section.site-scene tbody tr.selected td strong").TextContent);
+        Assert.AreEqual("Star 28", cut.Find("svg.site-dial .site-dial-selection text").TextContent);
+        // Star 28 is the fourth row of the second page, brought into view inside the table's frame.
+        Assert.AreEqual(3, module.VerifyInvoke("revealRow").Arguments[1]);
+
+        // A second click on the same object keeps it labelled rather than toggling it off.
+        DialItem(cut, "Star 28").Click();
+
+        Assert.AreEqual("Star 28", cut.Find("svg.site-dial .site-dial-selection text").TextContent);
+    }
+
+    [TestMethod]
+    public void ConstellationPills_OfferEveryInstalledFigureAndDrawOnlyTheSelectedOnes()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(
+            new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("svg.site-dial");
+
+        var pills = cut.FindAll(".site-constellations button.site-constellation");
+        CollectionAssert.AreEqual(FixturePillTexts, pills.Select(static pill => pill.TextContent.Trim()).ToArray());
+        Assert.IsFalse(Pill(cut, "Lyr").HasAttribute("disabled"));
+        Assert.AreEqual("false", Pill(cut, "Lyr").GetAttribute("aria-pressed"));
+        Assert.IsTrue(Pill(cut, "Ori").HasAttribute("disabled"));
+        Assert.AreEqual("Ori is not in the image at this instant", Pill(cut, "Ori").GetAttribute("title"));
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-figure"));
+        Assert.IsTrue(TextButton(cut, "Clear figures").HasAttribute("disabled"));
+
+        Pill(cut, "Lyr").Click();
+
+        Assert.AreEqual("true", Pill(cut, "Lyr").GetAttribute("aria-pressed"));
+        var figure = cut.Find("svg.site-dial g.site-dial-figure[data-constellation='Lyr']");
+        var points = figure.QuerySelector("polyline")!.GetAttribute("points")!.Split(' ');
+        Assert.HasCount(3, points);
+        // The figure shares the objects' image space, so its first vertex is Vega's plotted position.
+        var vega = cut.FindAll("svg.site-dial g.site-dial-item").Single(item => item.TextContent == "Vega").QuerySelector("circle")!;
+        Assert.AreEqual($"{vega.GetAttribute("cx")},{vega.GetAttribute("cy")}", points[0]);
+
+        TextButton(cut, "Clear figures").Click();
+
+        Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-figure"));
+        Assert.AreEqual("false", Pill(cut, "Lyr").GetAttribute("aria-pressed"));
     }
 
     [TestMethod]
@@ -1008,6 +1227,24 @@ public sealed class ObservatoryLocationPageTests
 
     private static AngleSharp.Dom.IElement RefreshButton(IRenderedComponent<ObservatoryLocationPage> cut)
         => cut.Find("button[aria-label='Refresh']");
+
+    private static AngleSharp.Dom.IElement TextButton(IRenderedComponent<ObservatoryLocationPage> cut, string text)
+        => cut.FindAll("section.site-scene button.text-button").Single(button => button.TextContent.Trim() == text);
+
+    private static AngleSharp.Dom.IElement ObjectButton(IRenderedComponent<ObservatoryLocationPage> cut, string name)
+        => cut.FindAll("section.site-scene tbody button.site-object").Single(button => button.QuerySelector("strong")!.TextContent == name);
+
+    private static AngleSharp.Dom.IElement DialItem(IRenderedComponent<ObservatoryLocationPage> cut, string name)
+        => cut.FindAll("svg.site-dial g.site-dial-item").Single(item => item.TextContent == name);
+
+    private static AngleSharp.Dom.IElement Pill(IRenderedComponent<ObservatoryLocationPage> cut, string id)
+        => cut.FindAll(".site-constellations button.site-constellation").Single(pill => pill.TextContent.Trim().StartsWith(id, StringComparison.Ordinal));
+
+    private static string CardinalPosition(IRenderedComponent<ObservatoryLocationPage> cut, string name)
+    {
+        var label = cut.Find($"svg.site-dial .site-dial-cardinal[data-cardinal='{name}'] text");
+        return $"{label.GetAttribute("x")},{label.GetAttribute("y")}";
+    }
 
     private static string FirstObject(IRenderedComponent<ObservatoryLocationPage> cut)
         => cut.Find("section.site-scene tbody tr td strong").TextContent;

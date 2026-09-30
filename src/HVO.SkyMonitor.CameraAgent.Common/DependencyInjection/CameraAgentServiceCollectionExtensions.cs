@@ -168,7 +168,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetService<IDeploymentLocationStore>(),
             provider.GetService<ILatestFrameAccessor>(),
             provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
-            SkyMapObjectBound(configuration)));
+            SkyMapObjectBound(configuration),
+            provider.GetService<IPlanetEphemeris>()));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

@@ -228,12 +228,13 @@ else
                         <label class="ops-field">Find object<input id="site-scene-search" type="search" autocomplete="off" @bind="_search" @bind:event="oninput" @bind:after="ResetScenePage" /></label>
                         <label class="ops-field">Brightness<select id="site-scene-magnitude" @bind="_magnitudeFilter" @bind:after="ResetScenePage"><option value="">Any magnitude</option>@foreach (var limit in MagnitudeLimits) { <option value="@limit">Magnitude @limit or brighter</option> }</select></label>
                     </div>
-                    <div class="ops-table-wrap site-scene-wrap">
+                    <div class="ops-table-wrap site-scene-wrap" @ref="_sceneWrap">
                         <table class="ops-table">
-                            <caption class="visually-hidden">Visible catalog objects, @SortDescription</caption>
+                            <caption class="visually-hidden">Visible objects, @SortDescription. Select an object's name to label it on the sky plot.</caption>
                             <thead>
                                 <tr>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Name)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Name)">Object</button></th>
+                                    <th scope="col">Type</th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Magnitude)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Magnitude)">Magnitude</button></th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Altitude)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Altitude)">Altitude</button></th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Azimuth)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Azimuth)">Azimuth</button></th>
@@ -243,8 +244,10 @@ else
                             <tbody>
                                 @foreach (var item in scene.Items)
                                 {
-                                    <tr @key="item.Id">
-                                        <td><strong>@item.DisplayName</strong></td>
+                                    var selected = item.Id == _selectedId;
+                                    <tr @key="item.Id" class="@(selected ? "selected" : null)">
+                                        <td class="site-object-cell"><button type="button" class="site-object" aria-pressed="@(selected ? "true" : "false")" @onclick="() => SelectObject(item.Id)"><strong>@item.DisplayName</strong><span class="visually-hidden">, label on the sky plot</span></button></td>
+                                        <td>@item.Kind</td>
                                         <td>@Number(item.Magnitude, 2)</td>
                                         <td>@Number(item.AltitudeDegrees, 1)&deg;</td>
                                         <td>@Number(item.AzimuthDegrees, 1)&deg;</td>
@@ -266,40 +269,51 @@ else
                     </nav>
                 </div>
                 <div class="site-scene-side">
-                    <svg class="site-dial" viewBox="0 0 200 200" role="img" aria-label="Sky plot of the visible objects: the outer ring is the horizon, the centre is straight overhead, north is up and east is right.">
-                        <circle cx="100" cy="100" r="92" class="site-dial-horizon" />
-                        <circle cx="100" cy="100" r="61.33" class="site-dial-ring" />
-                        <circle cx="100" cy="100" r="30.67" class="site-dial-ring" />
-                        <line x1="100" y1="8" x2="100" y2="192" class="site-dial-ring" />
-                        <line x1="8" y1="100" x2="192" y2="100" class="site-dial-ring" />
-                        @foreach (var item in _state.Objects)
-                        {
-                            <circle cx="@Number(DialX(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
-                                    cy="@Number(DialY(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
-                                    r="@Number(DialRadius(item.Magnitude), 2)"
-                                    class="site-dial-object @(scene.OnPage.Contains(item.Id) ? "on-page" : null)">
-                                <title>@item.DisplayName (magnitude @Number(item.Magnitude, 2))</title>
-                            </circle>
-                        }
-                        <text x="100" y="6" class="site-dial-label" text-anchor="middle">N</text>
-                        <text x="198" y="103" class="site-dial-label" text-anchor="end">E</text>
-                        <text x="100" y="200" class="site-dial-label" text-anchor="middle">S</text>
-                        <text x="2" y="103" class="site-dial-label" text-anchor="start">W</text>
-                    </svg>
-                    <p class="site-note">Rings mark 30&deg; and 60&deg; altitude. Objects on the current table page are highlighted.</p>
-                    <h3>Constellations</h3>
-                    @if (_state.Constellations.Count == 0)
+                    <ObservatorySkyDial Scene="_state" OnPage="scene.OnPage" SelectedId="@_selectedId" Figures="_figures" ObjectSelected="RevealObject" />
+                    <div class="site-selection">
+                        <p role="status">
+                            @if (SelectedObject is { } chosen)
+                            {
+                                <span>Labelled: <strong>@chosen.DisplayName</strong>, @chosen.Kind.ToLowerInvariant(), magnitude @Number(chosen.Magnitude, 2), altitude @Number(chosen.AltitudeDegrees, 1)&deg;, azimuth @Number(chosen.AzimuthDegrees, 1)&deg; (@Compass(chosen.AzimuthDegrees)).</span>
+                            }
+                            else
+                            {
+                                <span>No object is labelled.</span>
+                            }
+                        </p>
+                        <button type="button" class="text-button" disabled="@(SelectedObject is null)" @onclick="ClearSelection">Clear label</button>
+                    </div>
+                    <div class="site-figures-heading">
+                        <h3 id="site-figures-heading">Constellations</h3>
+                        <button type="button" class="text-button" disabled="@(_figures.Count == 0)" @onclick="ClearFigures">Clear figures</button>
+                    </div>
+                    @if (ConstellationChoices is { Count: > 0 } choices)
                     {
-                        <p class="site-note">No constellation figure crosses the image at this instant.</p>
+                        <p class="site-note site-figures-note">@(_state.Constellations.Count == 0
+                            ? "No constellation figure crosses the image at this instant."
+                            : "Select figures to draw their lines on the plot. Figures outside the image at this instant are unavailable.")</p>
+                        <div class="site-constellations" role="group" aria-labelledby="site-figures-heading">
+                            @foreach (var choice in choices)
+                            {
+                                var id = choice.Id;
+                                <button type="button"
+                                        class="site-constellation"
+                                        aria-pressed="@(_figures.Contains(id) ? "true" : "false")"
+                                        disabled="@(!choice.InImage)"
+                                        title="@(choice.InImage ? $"Draw {id} on the sky plot" : $"{id} is not in the image at this instant")"
+                                        @onclick="() => ToggleFigure(id)">
+                                    @id
+                                    @if (!choice.InImage)
+                                    {
+                                        <span class="visually-hidden">, not in the image at this instant</span>
+                                    }
+                                </button>
+                            }
+                        </div>
                     }
                     else
                     {
-                        <ul class="site-constellations">
-                            @foreach (var constellation in _state.Constellations)
-                            {
-                                <li>@constellation.ConstellationId</li>
-                            }
-                        </ul>
+                        <p class="site-note">The installed catalog carries no constellation figures, so none can be drawn.</p>
                     }
                 </div>
             </div>
