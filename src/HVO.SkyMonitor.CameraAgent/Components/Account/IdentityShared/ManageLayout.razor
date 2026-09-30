@@ -2,19 +2,23 @@
 @inherits LayoutComponentBase
 @layout HVO.SkyMonitor.CameraAgent.Components.Layout.MainLayout
 
-@* Each page under Manage supplies its own page heading through PageHeader, so the three
-   routes carry distinct programmatic names. The layout no longer emits a heading of its own
-   and no longer names this region by one: naming it would require every page in the folder
-   to supply a matching id, and _Imports.razor applies this layout to the whole folder, so a
-   page added later would leave the region silently unnamed. "Account settings" survives as
-   the navigation region's name, and each page's own h1 names the page. *@
-<section class="manage-page">
+@* Each page under Manage supplies its own page heading, so the three routes carry distinct programmatic names.
+   The layout emits no heading of its own: _Imports.razor applies it to the whole folder, and a heading here would
+   become a second h1 or a name every page had to match. "Account settings" is the navigation region's name, and
+   each page's own h1 names the page. The sidebar follows the Operations sidebar: an eyebrow, a title, icon links. *@
+<AccountShell Class="manage-page">
     <div class="manage-layout">
-        <nav aria-label="Account settings">
-            <ManageNavMenu />
-        </nav>
+        <div class="manage-sidebar">
+            <div class="manage-sidebar-head">
+                <p class="eyebrow">Local owner</p>
+                <strong>Account settings</strong>
+            </div>
+            <nav aria-label="Account settings">
+                <ManageNavMenu />
+            </nav>
+        </div>
         <div class="manage-content">
             @Body
         </div>
     </div>
-</section>
+</AccountShell>

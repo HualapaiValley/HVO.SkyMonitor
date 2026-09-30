@@ -45,13 +45,14 @@ public sealed partial class ApiKeys
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
 
+    // The inputs bind Input directly. Blazor names each input after its binding expression, and only Input.* names
+    // bind back to this property on the post.
     [SupplyParameterFromForm]
-    private CreateApiKeyInput? Input { get; set; }
-
-    private CreateApiKeyInput FormModel => Input ??= new();
+    private CreateApiKeyInput Input { get; set; } = default!;
 
     protected override async Task OnInitializedAsync()
     {
+        Input ??= new();
         user = await UserManager.GetUserAsync(HttpContext.User);
         if (user is null)
         {
@@ -70,7 +71,7 @@ public sealed partial class ApiKeys
             return;
         }
 
-        var model = FormModel;
+        var model = Input;
         createInProgress = true;
         statusMessage = null;
         generatedPlaintextKey = null;

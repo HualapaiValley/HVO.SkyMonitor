@@ -316,6 +316,54 @@ public sealed class ArchitectureBoundaryTests
     public void LogicHostLogEventIdsAreUniqueAcrossProductionSources()
         => AssertHostOwnedLogEventIdsAreUnique("LogicHost", "HVO.SkyMonitor.LogicHost");
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CameraAgentAccountFormsBindTheirFormSuppliedModel()
+        => AssertAccountFormsBindTheirFormSuppliedModel("HVO.SkyMonitor.CameraAgent");
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void LogicHostAccountFormsBindTheirFormSuppliedModel()
+        => AssertAccountFormsBindTheirFormSuppliedModel("HVO.SkyMonitor.LogicHost");
+
+    // The account pages render statically, so a posted input reaches the page only through a
+    // [SupplyParameterFromForm] property, and Blazor names each input after its binding
+    // expression. An input bound through any other member (such as a lazily created wrapper over
+    // the supplied property) posts a name nothing maps back, and the form silently submits empty.
+    private static void AssertAccountFormsBindTheirFormSuppliedModel(string projectDirectoryName)
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var accountRoot = Path.Combine(root, "src", projectDirectoryName, "Components", "Account");
+        var suppliedPattern = new System.Text.RegularExpressions.Regex(
+            """\[SupplyParameterFromForm[^\]]*\]\s*(?:(?:public|private|protected|internal)\s+)?[\w<>?.,]+\s+(?<name>\w+)\s*\{""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var bindPattern = new System.Text.RegularExpressions.Regex(
+            @"@bind-Value(?::get)?=""(?<expression>[^""]+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var violations = new List<string>();
+        var bindings = 0;
+
+        foreach (var page in Directory.EnumerateFiles(accountRoot, "*.razor", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            var markup = File.ReadAllText(page);
+            var codeBehind = page + ".cs";
+            var code = markup + (File.Exists(codeBehind) ? File.ReadAllText(codeBehind) : string.Empty);
+            var supplied = suppliedPattern.Matches(code).Select(match => match.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
+            foreach (System.Text.RegularExpressions.Match match in bindPattern.Matches(markup))
+            {
+                bindings++;
+                var expression = match.Groups["expression"].Value.Trim();
+                if (!supplied.Contains(expression.Split('.')[0]))
+                {
+                    violations.Add($"{Path.GetRelativePath(root, page)} binds {expression}; form-supplied: [{string.Join(", ", supplied.Order(StringComparer.Ordinal))}]");
+                }
+            }
+        }
+
+        Assert.IsGreaterThan(0, bindings, $"No account form bindings were found under {Path.GetRelativePath(root, accountRoot)}.");
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
+
     private static System.Text.RegularExpressions.Regex LogEventIdDeclarationPattern()
         => new(
             """\b(?:EventId\s*=\s*|new\s+EventId\s*\(\s*|LoggerMessage\s*\(\s*|EventId\b[^;=]*=\s*new\s*\(\s*)(?<id>\d+)""",
