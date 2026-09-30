@@ -124,15 +124,12 @@ public static class OperationsSectionCatalog
         new("automations", "Automations", "Automation", "/operations/automations",
             "Automation / typed scheduled work",
             "Generate observing-day products and perform bounded maintenance through registered task types, explicit triggers, and durable run history.", []),
-        new("delivery", "Delivery", "Data", "",
+        new("delivery", "Delivery", "Data", "/operations/delivery",
             "Data / one-way central integration",
-            "Monitor policy-selected exports, durable retries, and LogicHost acknowledgements without treating central availability as capture correctness.", [])
-        {
-            UnavailableReason = "The Delivery workspace is not implemented. Outbox pending, retry, and quarantine facts are shown under Storage & retention."
-        },
-        new("storage", "Storage & retention", "Data", "/operations/data",
+            "Monitor policy-selected exports, durable retries, and LogicHost acknowledgements without treating central availability as capture correctness.", []),
+        new("storage", "Storage & retention", "Data", "/operations/storage",
             "Data / local evidence safety",
-            "Keep immutable evidence, durable lanes, retention eligibility, and disk pressure visible as one local safety boundary.", ["/operations/quarantine"]),
+            "Keep immutable evidence, durable lanes, retention eligibility, and disk pressure visible as one local safety boundary.", ["/operations/data", "/operations/quarantine"]),
         new("health", "Health & diagnostics", "System", "/operations/system",
             "System / bounded diagnostics",
             "Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.", ["/system"]),

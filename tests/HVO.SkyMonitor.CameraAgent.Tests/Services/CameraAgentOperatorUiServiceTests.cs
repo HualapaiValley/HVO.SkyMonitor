@@ -6,9 +6,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -130,8 +132,12 @@ public sealed class CameraAgentOperatorUiServiceTests
         var neighbours = await service.GetGalleryNeighboursAsync(Guid.NewGuid(), new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
         var products = await service.GetProductPageAsync(new CameraAgentProductQuery(), CancellationToken.None).ConfigureAwait(false);
         var product = await service.GetProductDetailAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+        var delivery = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+        var reconciliation = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(16, authentication.ReadCount);
+        Assert.AreEqual(18, authentication.ReadCount);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, delivery.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, reconciliation.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, currentSky.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, calendar.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, neighbours.Kind);
@@ -151,7 +157,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(12));
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(14));
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
@@ -398,6 +404,116 @@ public sealed class CameraAgentOperatorUiServiceTests
         presentations.VerifyNoOtherCalls();
     }
 
+    [TestMethod]
+    public async Task DeliveryRecords_MergeLocationsWithUnfinishedWorkFirstAsync()
+    {
+        var now = new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+        var resolver = new Mock<ICameraAgentStorageResolver>(MockBehavior.Strict);
+        resolver.Setup(value => value.GetUploadLocationsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new CameraAgentStorageLocation("captures", "/data/captures"), new CameraAgentStorageLocation("archive", "/data/archive")]);
+        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/captures", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                DeliveryRecord(1, ArtifactOutboxStatus.Acknowledged, now.AddMinutes(-30), acknowledgedUtc: now.AddMinutes(-2)),
+                DeliveryRecord(2, ArtifactOutboxStatus.Retry, now.AddMinutes(-20)),
+            ]);
+        outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/archive", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                DeliveryRecord(3, ArtifactOutboxStatus.Pending, now.AddMinutes(-5)),
+                DeliveryRecord(4, ArtifactOutboxStatus.Abandoned, now.AddMinutes(-40), updatedUtc: now.AddMinutes(-1)),
+            ]);
+        var service = CreateReadService(storageResolver: resolver.Object, artifactOutbox: outbox.Object);
+
+        var result = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess);
+        string[] expected = ["archive:3", "captures:2", "archive:4", "captures:1"];
+        CollectionAssert.AreEqual(
+            expected,
+            result.Value!.Select(static item => $"{item.StorageAlias}:{item.Record.CaptureSequence}").ToArray());
+    }
+
+    [TestMethod]
+    public async Task DeliveryRecords_WhenStandalone_ReadNoOutboxAsync()
+    {
+        // Strict mocks with no setups fail the test if the standalone path touches an outbox store.
+        var service = CreateReadService(
+            storageResolver: new Mock<ICameraAgentStorageResolver>(MockBehavior.Strict).Object,
+            artifactOutbox: new Mock<IArtifactOutbox>(MockBehavior.Strict).Object,
+            hostOptions: new CameraAgentHostOptions
+            {
+                RawIngressRoot = "/unused",
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+            });
+
+        var result = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsEmpty(result.Value!);
+    }
+
+    [TestMethod]
+    public async Task DeliveryRecords_WhenAStoreFails_ReturnAFixedUnavailableMessageAsync()
+    {
+        var resolver = new Mock<ICameraAgentStorageResolver>(MockBehavior.Strict);
+        resolver.Setup(value => value.GetUploadLocationsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new CameraAgentStorageLocation("captures", "/data/captures")]);
+        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        outbox.Setup(value => value.ReadRecentDeliveryAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("/data/captures/outbox.db is locked"));
+        var service = CreateReadService(storageResolver: resolver.Object, artifactOutbox: outbox.Object);
+
+        var result = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unavailable, result.Kind);
+        Assert.AreEqual("The delivery outbox could not be read.", result.Message);
+    }
+
+    [TestMethod]
+    public async Task StorageReconciliation_ReturnsTheLatestRecordedPassesAsync()
+    {
+        var time = new FixedTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero));
+        var rawIngress = new RawIngressState(time);
+        var processing = new CaptureProcessingState();
+        var service = CreateReadService(rawIngressState: rawIngress, captureProcessingState: processing);
+
+        var before = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
+        rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096, IndexProjectionFailures: 3));
+        processing.RecordReconciliation(time.GetUtcNow(), new DerivedProductReconciliationSummary(120, 110, 5, 3, 1, 1, 2048));
+        var after = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
+        processing.RecordReconciliation(time.GetUtcNow().AddMinutes(5), null);
+        var failed = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(new CameraAgentStorageReconciliation(null, null), before.Value);
+        Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0, 3), after.Value!.RawIngress);
+        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow(), true, 120, 5, 3, 1, 1), after.Value.DerivedProducts);
+        // A failed pass replaces the last success, so the page never shows old counts as current.
+        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow().AddMinutes(5), false, 0, 0, 0, 0, 0), failed.Value!.DerivedProducts);
+        Assert.AreEqual(after.Value.RawIngress, failed.Value.RawIngress);
+    }
+
+    private static CameraAgentOperatorUiService CreateReadService(
+        ICameraAgentStorageResolver? storageResolver = null,
+        IArtifactOutbox? artifactOutbox = null,
+        CameraAgentHostOptions? hostOptions = null,
+        RawIngressState? rawIngressState = null,
+        CaptureProcessingState? captureProcessingState = null)
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            storageResolver: storageResolver, artifactOutbox: artifactOutbox, hostOptions: hostOptions,
+            rawIngressState: rawIngressState, captureProcessingState: captureProcessingState);
+    }
+
+    private static ArtifactOutboxDeliveryRecord DeliveryRecord(
+        long sequence, ArtifactOutboxStatus status, DateTimeOffset createdUtc,
+        DateTimeOffset? acknowledgedUtc = null, DateTimeOffset? updatedUtc = null)
+        => new(sequence, FrameArtifactRole.Preview, "image/png", 1024, status, 1,
+            createdUtc, updatedUtc ?? createdUtc, createdUtc, acknowledgedUtc, null);
+
     private static CameraAgentOperatorUiService CreateCaptureDetailService(
         ICameraAgentGallery gallery,
         ICameraAgentCurrentImagePresentationService presentations)
@@ -418,7 +534,12 @@ public sealed class CameraAgentOperatorUiServiceTests
         ICameraAgentGallery? gallery = null,
         ICameraAgentCurrentImagePresentationService? presentations = null,
         ICameraAgentConfigurationAccessor? configuration = null,
-        CaptureScheduleRuntimeCoordinator? scheduleRuntime = null) => new(
+        CaptureScheduleRuntimeCoordinator? scheduleRuntime = null,
+        ICameraAgentStorageResolver? storageResolver = null,
+        IArtifactOutbox? artifactOutbox = null,
+        CameraAgentHostOptions? hostOptions = null,
+        RawIngressState? rawIngressState = null,
+        CaptureProcessingState? captureProcessingState = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -429,8 +550,8 @@ public sealed class CameraAgentOperatorUiServiceTests
             layeredPresentations: layers!,
             null!,
             null!,
-            null!,
-            null!,
+            storageResolver!,
+            artifactOutbox!,
             null!,
             null!,
             null!,
@@ -438,10 +559,17 @@ public sealed class CameraAgentOperatorUiServiceTests
             scheduleRuntime,
             [],
             [],
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = "/unused" }),
+            Options.Create(hostOptions ?? new CameraAgentHostOptions { RawIngressRoot = "/unused" }),
             tokenService!,
             TimeProvider.System,
-            NullLogger<CameraAgentOperatorUiService>.Instance);
+            NullLogger<CameraAgentOperatorUiService>.Instance,
+            rawIngressState: rawIngressState,
+            captureProcessingState: captureProcessingState);
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     private sealed class CountingAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider
     {

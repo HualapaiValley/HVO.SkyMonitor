@@ -1,0 +1,25 @@
+/* Delivery layout. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css. Table overrides carry the wrapper and both table classes to outrank
+   .operations-layout ::deep .ops-table. */
+
+.delivery-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+.delivery-footnote { margin: .55rem 0 0; color: var(--muted); font-size: .55rem; }
+.delivery-link { align-self: flex-start; color: #9bcaff; font-size: .62rem; white-space: nowrap; }
+.delivery-lanes { margin-top: 1rem; }
+
+.ops-table-wrap .ops-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
+.ops-table-wrap .ops-table td a { color: #9bcaff; }
+.ops-table-wrap .ops-table.delivery-outbox-table td, .ops-table-wrap .ops-table.delivery-lane-table td { white-space: normal; }
+.ops-table-wrap .ops-table.delivery-outbox-table td:first-child, .ops-table-wrap .ops-table.delivery-lane-table td:first-child { white-space: nowrap; }
+
+dialog.action-dialog.delivery-dialog { width: min(calc(100% - 2rem), 40rem); }
+.delivery-dialog-body { max-height: min(60vh, 34rem); padding: 0 1.1rem; overflow-y: auto; }
+.delivery-dialog-body h3 { margin: 1rem 0 .45rem; color: var(--muted-strong); font-size: .6rem; letter-spacing: .04em; text-transform: uppercase; }
+.delivery-dialog-body h3:first-child { margin-top: 0; }
+.delivery-dialog-body dd { overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+    dialog.action-dialog.delivery-dialog { width: calc(100% - 1rem); }
+    .ops-table-wrap .ops-table.delivery-outbox-table th, .ops-table-wrap .ops-table.delivery-lane-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
+    .ops-table-wrap .ops-table.delivery-outbox-table td, .ops-table-wrap .ops-table.delivery-lane-table td { padding-inline: .3rem; }
+}

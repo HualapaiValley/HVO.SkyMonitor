@@ -1,0 +1,236 @@
+@page "/operations/delivery"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Common.Upload
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Delivery</PageTitle>
+
+<OperationsPageHeading Eyebrow="Data / one-way central integration" Title="Delivery" HeadingId="delivery-heading"
+                       Description="Monitor policy-selected exports, durable retries, and LogicHost acknowledgements without treating central availability as capture correctness.">
+    <Actions>
+        <button type="button" id="delivery-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@_loading" @onclick="LoadAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        <button type="button" id="@PolicyTriggerId" class="button secondary" title="@PolicyUnavailableReason"
+                aria-describedby="@(PolicyUnavailableReason is null ? null : "delivery-policy-reason")"
+                disabled="@(PolicyUnavailableReason is not null)" @onclick="OpenPolicyDialog">Export policy</button>
+        @if (PolicyUnavailableReason is not null)
+        {
+            <span id="delivery-policy-reason" class="visually-hidden">@PolicyUnavailableReason</span>
+        }
+        <button type="button" id="delivery-retry" class="button primary" title="@RetryUnavailableReason" aria-describedby="delivery-retry-reason" disabled>Retry eligible</button>
+        <span id="delivery-retry-reason" class="visually-hidden">@RetryUnavailableReason</span>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _view is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading delivery state.</span></div>
+}
+else if (_view is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Delivery state unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var summary = _view.Summary;
+    var outbox = summary.ArtifactOutbox.Value;
+    var lastAcknowledged = LastAcknowledged;
+    @if (_error is not null)
+    {
+        <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Showing the last valid snapshot.</strong> @_error</span></div>
+    }
+    @if (CentralDisabled)
+    {
+        <div class="ops-note-banner delivery-disabled" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Central integration is disabled.</strong> This agent runs standalone: nothing is exported to LogicHost, and local capture, processing and retention are unaffected.</span></div>
+    }
+
+    <section class="ops-status-rail" aria-label="Delivery status">
+        <div><span>Mode</span><strong>@(CentralDisabled ? "Disabled" : "Enabled")</strong><small>@ExportSummary</small></div>
+        <div>
+            <span>LogicHost</span>
+            @if (CentralDisabled)
+            {
+                <strong>Not used</strong><small>Standalone agent</small>
+            }
+            else
+            {
+                <strong>@OperationsPage.SplitWords(summary.Heartbeat.Value.Availability)</strong>
+                <small>@(summary.Heartbeat.Value.LastAcknowledgedUtc is { } heartbeat ? $"Heartbeat {Ago(heartbeat)}" : "No heartbeat acknowledged")</small>
+            }
+        </div>
+        <div>
+            <span>Waiting</span>
+            @if (IsRead(summary.ArtifactOutbox))
+            {
+                <strong>@Waiting(outbox)</strong><small>@outbox.RetryCount retrying / @outbox.QuarantineCount quarantined</small>
+            }
+            else
+            {
+                <strong>@UnknownCountText</strong><small>Outbox not read yet</small>
+            }
+        </div>
+        <div>
+            <span>Last acknowledgment</span>
+            @if (lastAcknowledged is null)
+            {
+                <strong>None recorded</strong><small>@(_records is null ? "Outbox records unavailable" : "In the recent outbox window")</small>
+            }
+            else
+            {
+                <strong>@Ago(lastAcknowledged.Record.AcknowledgedUtc!.Value)</strong><small>@CaptureLabel(lastAcknowledged.Record)</small>
+            }
+        </div>
+    </section>
+
+    <div class="ops-grid sidebar-right">
+        <section class="ops-panel delivery-outbox" aria-labelledby="delivery-outbox-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="delivery-outbox-heading">Durable outbox</h2><p>Payloads remain pinned until LogicHost acknowledges them.</p></div>
+                <span>@(IsRead(summary.ArtifactOutbox) ? $"{Waiting(outbox)} active / {outbox.QuarantineCount} quarantined" : NotReadText)</span>
+            </header>
+            @if (_recordsError is not null)
+            {
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_recordsError</span></div>
+            }
+            else if (_records is not { Count: > 0 } records)
+            {
+                <p class="delivery-empty">@(CentralDisabled ? "Central integration is disabled, so nothing is queued for export." : "No artifact has been queued for LogicHost yet.")</p>
+            }
+            else
+            {
+                var showAlias = records.Select(static record => record.StorageAlias).Distinct(StringComparer.Ordinal).Skip(1).Any();
+                <div class="ops-table-wrap">
+                    <table class="ops-table delivery-outbox-table">
+                        <thead><tr><th>Capture</th><th>Payload</th><th>State</th><th>Attempt</th><th>Next action</th></tr></thead>
+                        <tbody>
+                            @foreach (var item in records)
+                            {
+                                var record = item.Record;
+                                var state = State(record.Status);
+                                <tr class="@(record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined ? "current-row" : null)">
+                                    <td><strong>@CaptureLabel(record)</strong>@if (showAlias)
+                                        {
+                                            <small>@item.StorageAlias</small>
+                                        }</td>
+                                    <td>@Payload(record)@if (record.MediaType is not null)
+                                        {
+                                            <small>@record.MediaType</small>
+                                        }</td>
+                                    <td><span class="state-chip @state.Chip">@state.Text</span></td>
+                                    <td>@record.AttemptCount</td>
+                                    <td>
+                                        @switch (record.Status)
+                                        {
+                                            case ArtifactOutboxStatus.Quarantined:
+                                                <a href="/operations/quarantine">Review in quarantine</a>
+                                                break;
+                                            default:
+                                                @NextAction(record)
+                                                break;
+                                        }
+                                        @if (record.ReasonCode is not null && record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined)
+                                        {
+                                            <small>@OperationsPage.SplitWords(record.ReasonCode)</small>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <p class="delivery-footnote">Unfinished work first, then the newest completed records, up to @SqliteArtifactOutbox.MaximumRecentDeliveryRecords.</p>
+            }
+        </section>
+
+        <section class="ops-panel delivery-policy" aria-labelledby="delivery-policy-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="delivery-policy-heading">Export policy</h2><p>Central delivery is one-way; it is not two-way sync.</p></div>
+                <span>Read-only</span>
+            </header>
+            @if (_system is null)
+            {
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@(_policyError ?? "The export policy is unavailable.")</span></div>
+            }
+            else
+            {
+                <dl class="ops-facts">
+                    <div class="full"><dt>Capture artifacts</dt><dd>@EnabledText(_system.Upload.Enabled)</dd></div>
+                    <div><dt>Environment</dt><dd>@EnabledText(_system.Environmental.Enabled)</dd></div>
+                    <div><dt>Bandwidth limit</dt><dd>@Bandwidth(_system.Upload.BandwidthLimitBytesPerSecond)</dd></div>
+                    <div><dt>Retry backoff</dt><dd>@Seconds(_system.Upload.RetryInitialDelaySeconds) to @Seconds(_system.Upload.RetryMaximumDelaySeconds)</dd></div>
+                    <div><dt>Batch</dt><dd>@_system.Upload.BatchSize every @Seconds(_system.Upload.PollIntervalSeconds)</dd></div>
+                    <div class="full"><dt>Direction</dt><dd>One-way, from this agent to LogicHost</dd></div>
+                </dl>
+            }
+        </section>
+    </div>
+
+    <section class="ops-panel delivery-lanes" aria-labelledby="delivery-lanes-heading">
+        <header class="ops-panel-heading">
+            <div><h2 id="delivery-lanes-heading">Delivery lanes</h2><p>Each export has its own durable queue, so one backlog never blocks another.</p></div>
+            <a class="delivery-link" href="/operations/quarantine">Quarantine &amp; recovery</a>
+        </header>
+        <div class="ops-table-wrap">
+            <table class="ops-table delivery-lane-table">
+                <thead><tr><th>Lane</th><th>State</th><th>Waiting</th><th>Retrying</th><th>Quarantined</th><th>Oldest waiting</th></tr></thead>
+                <tbody>
+                    @foreach (var lane in Lanes)
+                    {
+                        <tr>
+                            <td><strong>@lane.Name</strong><small>@lane.Detail</small></td>
+                            <td><span class="state-chip @AvailabilityChip(lane.Availability)">@OperationsPage.SplitWords(lane.Availability)</span></td>
+                            <td>@Count(lane.Waiting)</td>
+                            <td>@Count(lane.Retrying)</td>
+                            <td>@Count(lane.Quarantined)</td>
+                            <td>@(lane.OldestWaitingUtc is { } oldest ? Ago(oldest) : lane.Read ? "None" : NotReadText)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    @if (_dialogOpen && _system is not null)
+    {
+        var upload = _system.Upload;
+        var environmental = _system.Environmental;
+        <dialog class="action-dialog operations-dialog delivery-dialog" aria-labelledby="delivery-policy-dialog-heading" aria-describedby="delivery-policy-dialog-description" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Export policy</p><h2 id="delivery-policy-dialog-heading">How this agent exports to LogicHost</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="delivery-policy-dialog-description" class="dialog-intro">These bounds come from this agent's configuration. Every export is written durably first, so LogicHost being slow or away never loses a capture; it only lengthens the queue.</p>
+            <div class="delivery-dialog-body">
+                <h3>Capture artifacts</h3>
+                <dl class="ops-facts">
+                    <div><dt>Export</dt><dd>@EnabledText(upload.Enabled)</dd></div>
+                    <div><dt>Bandwidth limit</dt><dd>@Bandwidth(upload.BandwidthLimitBytesPerSecond)</dd></div>
+                    <div><dt>Batch size</dt><dd>@upload.BatchSize per pass</dd></div>
+                    <div><dt>Poll interval</dt><dd>@Seconds(upload.PollIntervalSeconds)</dd></div>
+                    <div><dt>First retry after</dt><dd>@Seconds(upload.RetryInitialDelaySeconds)</dd></div>
+                    <div><dt>Longest retry wait</dt><dd>@Seconds(upload.RetryMaximumDelaySeconds)</dd></div>
+                    <div><dt>Required backlog cap</dt><dd>@upload.RequiredMaximumPendingCount items / @OperationsPage.FormatBytes(upload.RequiredMaximumPendingBytes)</dd></div>
+                    <div><dt>Optional backlog cap</dt><dd>@upload.OptionalMaximumPendingCount items / @OperationsPage.FormatBytes(upload.OptionalMaximumPendingBytes)</dd></div>
+                </dl>
+                <h3>Environment observations</h3>
+                <dl class="ops-facts">
+                    <div><dt>Export</dt><dd>@EnabledText(environmental.Enabled)</dd></div>
+                    <div><dt>Batch size</dt><dd>@environmental.BatchSize per pass</dd></div>
+                    <div><dt>Poll interval</dt><dd>@Seconds(environmental.PollIntervalSeconds)</dd></div>
+                    <div><dt>Attempts before quarantine</dt><dd>@environmental.MaximumAttempts</dd></div>
+                    <div class="full"><dt>Backlog cap</dt><dd>@environmental.MaximumPendingCount observations / @OperationsPage.FormatBytes(environmental.MaximumPendingBytes)</dd></div>
+                </dl>
+            </div>
+            <footer>
+                <button type="button" id="delivery-policy-close" class="button primary" @onclick="CloseDialog">Close</button>
+            </footer>
+        </dialog>
+    }
+}

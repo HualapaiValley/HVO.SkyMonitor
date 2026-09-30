@@ -15,7 +15,7 @@ public sealed class OperationsLayoutTests
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
     private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "transients", "automations", "delivery", "storage", "health", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
-    private static readonly string[] UnavailableSlugs = ["delivery", "control", "software"];
+    private static readonly string[] UnavailableSlugs = ["control", "software"];
 
     [TestMethod]
     public void Catalog_ListsThePrototypeSectionsOnceWithProtectedRoutes()
@@ -93,6 +93,8 @@ public sealed class OperationsLayoutTests
             ("/operations/system", "health"),
             ("/operations/quarantine?kind=Artifact", "storage"),
             ("/operations/data", "storage"),
+            ("/operations/storage", "storage"),
+            ("/operations/delivery", "delivery"),
             ("/operations/pipeline", "pipeline"),
             ("/operations/pipeline/executions", "pipeline"),
             ("/operations/pipeline/executions/00000000-0000-0000-0000-000000000000", "pipeline"),
@@ -104,7 +106,7 @@ public sealed class OperationsLayoutTests
             ("/operations/site", "site"),
             ("/operations/sky-map", "site"),
             ("/devices/bootstrap", "registration"),
-            ("/operations/unavailable/delivery", "delivery")
+            ("/operations/unavailable/control", "control")
         })
         {
             navigation.NavigateTo(path);
@@ -219,6 +221,28 @@ public sealed class OperationsLayoutTests
     }
 
     [TestMethod]
+    public void Render_DeliveryRetriesBadgeDeliveryAndQuarantineBadgesStorage()
+    {
+        using var context = CreateContext(out var service);
+        var current = OperatorUiTestData.Operations();
+        service.OperationsHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(current with
+        {
+            Summary = current.Summary with
+            {
+                ArtifactOutbox = current.Summary.ArtifactOutbox with
+                {
+                    Value = current.Summary.ArtifactOutbox.Value with { RetryCount = 2, QuarantineCount = 1 }
+                },
+            },
+        }));
+
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+
+        cut.WaitForAssertion(() => Assert.AreEqual("1 open attention item", Badge(cut, "delivery")));
+        Assert.AreEqual("1 open attention item", Badge(cut, "storage"));
+    }
+
+    [TestMethod]
     public void Render_FailedReadShowsUnknownAndDeniedReadShowsNoChip()
     {
         using var context = CreateContext(out var service);
@@ -257,7 +281,7 @@ public sealed class OperationsLayoutTests
         };
 
         // An unavailable section makes no read of its own, so only the layout can notice the revocation.
-        navigation.NavigateTo("/operations/unavailable/delivery");
+        navigation.NavigateTo("/operations/unavailable/control");
 
         cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
@@ -299,8 +323,8 @@ public sealed class OperationsLayoutTests
     public void UnavailableSection_ExplainsTheGapWithoutActionControls()
     {
         using var context = new BunitContext();
-        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "delivery"));
-        var section = OperationsSectionCatalog.Get("delivery");
+        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "control"));
+        var section = OperationsSectionCatalog.Get("control");
         Assert.AreEqual(section.Label, cut.Find(".ops-page-heading h1").TextContent.Trim());
         Assert.AreEqual(section.Eyebrow, cut.Find(".ops-page-heading .eyebrow").TextContent.Trim());
         StringAssert.Contains(cut.Find(".ops-note-banner").TextContent, section.UnavailableReason!, StringComparison.Ordinal);

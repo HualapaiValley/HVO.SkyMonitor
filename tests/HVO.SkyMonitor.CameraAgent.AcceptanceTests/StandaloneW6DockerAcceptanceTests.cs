@@ -1542,7 +1542,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ("/operations/environment", "Environment"),
             ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/data", "Data & storage"),
+            ("/operations/delivery", "Delivery"),
+            ("/operations/storage", "Storage & retention"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
             ("/operations/pipeline/graphs/new", "Draft graph")

@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -165,7 +166,22 @@ internal sealed record CameraAgentRetentionStatus(
     double PressureThresholdPercent,
     double PressureRecoveryPercent,
     int PressureRetentionDays,
-    long RawIngressReserveBytes);
+    long RawIngressReserveBytes,
+    bool EnvironmentalHistoryEnabled,
+    int EnvironmentalRetentionDays,
+    int EnvironmentalMaximumHistoryCount,
+    long EnvironmentalMaximumHistoryBytes);
+
+/// <summary>
+/// The latest recorded reconciliation of local evidence with its durable records. Either member is null until its
+/// pass has completed in this process.
+/// </summary>
+internal sealed record CameraAgentStorageReconciliation(
+    RawIngressReconciliationReport? RawIngress,
+    DerivedProductReconciliationReport? DerivedProducts);
+
+/// <summary>One artifact outbox record on the Delivery page, with the storage alias that holds it.</summary>
+internal sealed record CameraAgentDeliveryRecord(string StorageAlias, ArtifactOutboxDeliveryRecord Record);
 
 internal sealed record CameraAgentUploadStatus(
     bool Enabled,
@@ -264,6 +280,14 @@ internal interface ICameraAgentOperatorUiService
 
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The newest artifact outbox records across every upload location: unfinished work first, then
+    /// the newest acknowledged or abandoned records. Empty when central integration is disabled.
+    /// </summary>
+    ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken);
+
     Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(
         bool paused,
         long expectedVersion,
@@ -310,7 +334,9 @@ internal sealed class CameraAgentOperatorUiService(
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
     ILogger<CameraAgentOperatorUiService> logger,
-    ISiteProfileStore? siteProfileStore = null) : ICameraAgentOperatorUiService
+    ISiteProfileStore? siteProfileStore = null,
+    RawIngressState? rawIngressState = null,
+    CaptureProcessingState? captureProcessingState = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -1073,7 +1099,11 @@ internal sealed class CameraAgentOperatorUiService(
                     _hostOptions.DiskPressureThresholdPercent,
                     _hostOptions.DiskPressureRecoveryPercent,
                     _hostOptions.DiskPressureRetentionDays,
-                    _hostOptions.RawIngressReserveBytes),
+                    _hostOptions.RawIngressReserveBytes,
+                    _hostOptions.EnvironmentalAcquisition.Enabled,
+                    _hostOptions.EnvironmentalAcquisition.RetentionDays,
+                    _hostOptions.EnvironmentalAcquisition.MaximumHistoryCount,
+                    _hostOptions.EnvironmentalAcquisition.MaximumHistoryBytes),
                 new CameraAgentUploadStatus(
                     centralEnabled && distribution.UploadEnabled,
                     _hostOptions.UploadBatchSize,
@@ -1302,6 +1332,63 @@ internal sealed class CameraAgentOperatorUiService(
             logger.LogWarning(exception, "CameraAgent outbox UI command failed.");
             return Unavailable<OperatorCommandReceipt>("The outbox command could not be completed.");
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<IReadOnlyList<CameraAgentDeliveryRecord>>();
+        }
+        // A standalone agent never exports, so it must not create outbox stores just to show none.
+        if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]);
+        }
+
+        try
+        {
+            var unfinished = new List<CameraAgentDeliveryRecord>();
+            var finished = new List<CameraAgentDeliveryRecord>();
+            foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                foreach (var record in await artifactOutbox.ReadRecentDeliveryAsync(
+                    location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
+                {
+                    (record.Status is ArtifactOutboxStatus.Acknowledged or ArtifactOutboxStatus.Abandoned ? finished : unfinished)
+                        .Add(new CameraAgentDeliveryRecord(location.Alias, record));
+                }
+            }
+            IReadOnlyList<CameraAgentDeliveryRecord> merged = unfinished
+                .OrderByDescending(static item => item.Record.CreatedUtc)
+                .Concat(finished.OrderByDescending(static item => item.Record.AcknowledgedUtc ?? item.Record.UpdatedUtc))
+                .Take(SqliteArtifactOutbox.MaximumRecentDeliveryRecords)
+                .ToArray();
+            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success(merged);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent delivery UI read failed.");
+            return Unavailable<IReadOnlyList<CameraAgentDeliveryRecord>>("The delivery outbox could not be read.");
+        }
+    }
+
+    public async ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentStorageReconciliation>();
+        }
+        return OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(
+            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation));
     }
 
     private async ValueTask<IReadOnlyList<OperatorOutboxItem>> ReadArtifactQuarantineAsync(
