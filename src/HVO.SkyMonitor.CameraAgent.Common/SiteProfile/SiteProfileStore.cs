@@ -183,7 +183,7 @@ public sealed class SettingsFileSiteProfileStore(
                 {
                     return;
                 }
-                SiteProfileLog.Migrated(logger, file.FilePath);
+                SiteProfileLog.SeededNameRemoved(logger, file.FilePath);
             }
 
             // A record already in the file, or superseded by a section the operator wrote, is removed; one that
@@ -341,4 +341,7 @@ internal static partial class SiteProfileLog
 
     [LoggerMessage(7603, LogLevel.Warning, "The site profile recorded by an earlier release could not be removed after it was moved")]
     internal static partial void LegacyNotRemoved(ILogger logger, Exception exception);
+
+    [LoggerMessage(7604, LogLevel.Information, "The installer's seeded camera name was removed from the operator settings file {Path}, which already has a site section")]
+    internal static partial void SeededNameRemoved(ILogger logger, string path);
 }

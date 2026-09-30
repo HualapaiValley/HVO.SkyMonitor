@@ -2,8 +2,10 @@ using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.SiteProfile;
 
@@ -352,13 +354,18 @@ public sealed class SettingsFileSiteProfileStoreTests
         await File.WriteAllTextAsync(SettingsPath, """
             { "CameraAgent": { "DisplayName": "North Camera", "Site": { "ObservatoryName": "Written by hand", "CameraName": "East dome" } } }
             """).ConfigureAwait(false);
-        using var store = CreateStore(displayName: "North Camera");
+        var logger = new Mock<ILogger<SettingsFileSiteProfileStore>>();
+        logger.Setup(item => item.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        using var store = CreateStore(displayName: "North Camera", logger: logger.Object);
 
         var state = await store.GetAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(new SiteProfileValues("Written by hand", "East dome", null, null), state.Profile);
         Assert.AreEqual("East dome", ReadSetting("CameraAgent", "Site", "CameraName"));
         Assert.IsNull(ReadSetting("CameraAgent", "DisplayName"));
+        // The profile was already in the file, so the log names the removed seed rather than a move.
+        Assert.AreEqual(1, LoggedEvents(logger, 7604), "The seeded name removal was not logged.");
+        Assert.AreEqual(0, LoggedEvents(logger, 7601), "The removal was logged as a site profile move.");
     }
 
     [TestMethod]
@@ -424,14 +431,21 @@ public sealed class SettingsFileSiteProfileStoreTests
         return node?.ToString();
     }
 
-    private SettingsFileSiteProfileStore CreateStore(string? displayName = null, bool withFile = true)
+    private static int LoggedEvents(Mock<ILogger<SettingsFileSiteProfileStore>> logger, int eventId)
+        => logger.Invocations.Count(invocation =>
+            invocation.Method.Name == nameof(ILogger.Log) && ((EventId)invocation.Arguments[1]).Id == eventId);
+
+    private SettingsFileSiteProfileStore CreateStore(
+        string? displayName = null,
+        bool withFile = true,
+        ILogger<SettingsFileSiteProfileStore>? logger = null)
         => new(
             Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = Path.Combine(_root, "data"),
                 DisplayName = displayName
             }),
-            NullLogger<SettingsFileSiteProfileStore>.Instance,
+            logger ?? NullLogger<SettingsFileSiteProfileStore>.Instance,
             withFile ? new OperatorSettingsFile(SettingsPath, () => _reloads++, _ => []) : null);
 
     private static ValueTask<SiteProfileResult> ApplyAsync(
