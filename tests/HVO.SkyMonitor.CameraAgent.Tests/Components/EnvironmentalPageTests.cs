@@ -608,6 +608,25 @@ public sealed class EnvironmentalPageTests
     }
 
     [TestMethod]
+    public void AcquireAction_OpensTheDialogOnceThePageHasLoaded()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("virtual-rain", EnvironmentalObservationKind.RainState, onDemand: true)]))
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/environment?action=acquire");
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForElement("#environment-reason");
+        Assert.AreEqual(0, service.AcquireCalls);
+    }
+
+    [TestMethod]
     public void AcquireIsDisabledWithAnAnnouncedReasonWhenNoSourceSupportsOnDemand()
     {
         using var context = new BunitContext();
@@ -617,6 +636,8 @@ public sealed class EnvironmentalPageTests
             Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
                 [Source("periodic-air", EnvironmentalObservationKind.AirTemperature)]))
         });
+        // A link asking for the dialog does not open it while no source can acquire on demand.
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/environment?action=acquire");
 
         var cut = context.Render<EnvironmentalPage>();
 

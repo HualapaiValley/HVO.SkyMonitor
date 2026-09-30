@@ -61,6 +61,9 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
 
+    /// <summary><c>acquire</c> opens the acquisition dialog once the page has loaded, when a source supports it.</summary>
+    [Parameter, SupplyParameterFromQuery(Name = "action")] public string? Action { get; set; }
+
     private string? AcquireUnavailableReason => _status switch
     {
         null => "Environmental status is not loaded.",
@@ -85,7 +88,14 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         }
     }
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        if (string.Equals(Action, "acquire", StringComparison.Ordinal) && !_disposed)
+        {
+            OpenAcquireDialog();
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

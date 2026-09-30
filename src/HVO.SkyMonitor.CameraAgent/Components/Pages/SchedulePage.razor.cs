@@ -111,6 +111,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
 
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
+    /// <summary><c>override</c> opens the temporary override dialog once the page has loaded, when it is available.</summary>
+    [Parameter, SupplyParameterFromQuery(Name = "action")] public string? Action { get; set; }
+
     private CameraAgentScheduleNight? Tonight => _calendar?.Nights.Count > 0 ? _calendar.Nights[0] : null;
 
     private string? OverrideUnavailableReason => _siteTimeZoneKnown
@@ -131,7 +134,14 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         }
     }
 
-    protected override async Task OnInitializedAsync() => await LoadAsync(resetEditor: true).ConfigureAwait(false);
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync(resetEditor: true).ConfigureAwait(false);
+        if (string.Equals(Action, "override", StringComparison.Ordinal))
+        {
+            OpenOverrideDialog();
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

@@ -1,0 +1,127 @@
+@page "/operations/software"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Software &amp; catalog</PageTitle>
+
+<OperationsPageHeading Eyebrow="System / verified local assets" Title="Software &amp; catalog" HeadingId="software-heading"
+                       Description="Inspect the application and the selected immutable celestial package without implying unattended activation.">
+    <Actions>
+        <button type="button" class="button secondary" disabled title="@AvailabilityUnavailableReason" aria-describedby="software-availability-unavailable">Check availability</button>
+        <span id="software-availability-unavailable" class="visually-hidden">@AvailabilityUnavailableReason</span>
+        <button type="button" class="button primary" disabled title="@VerifyUnavailableReason" aria-describedby="software-verify-unavailable">Verify checksums</button>
+        <span id="software-verify-unavailable" class="visually-hidden">@VerifyUnavailableReason</span>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _software is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Reading the installed software.</span></div>
+}
+else if (_software is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Software inventory unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var software = _software;
+    var catalog = software.Catalog;
+    <section class="ops-status-rail" aria-label="Software summary">
+        <div><span>Selected HYG</span><strong>@catalog.CatalogVersion</strong><small>@catalog.CatalogId</small></div>
+        <div><span>Star rows</span><strong>@Number(catalog.RowCount)</strong><small>Schema @catalog.SchemaVersion / preprocessing @catalog.PreprocessingVersion</small></div>
+        <div><span>Catalog integrity</span><strong>Verified</strong><small>Checksum checked at startup</small></div>
+        <div><span>Orbital snapshot</span><strong>Not collected</strong><small>No orbital source on this version</small></div>
+    </section>
+
+    <div class="ops-note-banner"><span class="status-icon success" aria-hidden="true"></span><span><strong>Selection is explicit.</strong> Nothing on this page downloads, rebuilds, installs, or activates a catalog. Published package bytes remain immutable and historical captures retain their exact selected identity.</span></div>
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="software-agent-heading">
+            <header class="ops-panel-heading"><div><h2 id="software-agent-heading">CameraAgent software</h2><p>Lifecycle operations remain installer and CLI driven.</p></div><span class="state-chip success">Running</span></header>
+            <dl class="ops-facts">
+                <div><dt>Version</dt><dd>@software.Version</dd></div>
+                <div><dt>Source revision</dt><dd>@(software.SourceRevision is { } revision ? revision : "Not recorded")</dd></div>
+                <div><dt>Runtime</dt><dd>@software.Runtime / @software.RuntimeIdentifier</dd></div>
+                <div><dt>Uptime</dt><dd>@HealthPage.FormatDuration(software.Uptime)</dd></div>
+                <div><dt>Started</dt><dd>@FormatUtc(software.StartedUtc)</dd></div>
+                <div><dt>Update service</dt><dd>Installer CLI</dd></div>
+            </dl>
+        </section>
+        <section class="ops-panel" aria-labelledby="software-catalog-heading">
+            <header class="ops-panel-heading"><div><h2 id="software-catalog-heading">Selected celestial package</h2><p>Read-only local data with exact component provenance.</p></div><span class="state-chip success">Selected</span></header>
+            <dl class="ops-facts">
+                <div><dt>Catalog ID</dt><dd>@catalog.CatalogId</dd></div>
+                <div><dt>Package</dt><dd>@catalog.SnapshotVersion / @PackageKindText(catalog.PackageKind)</dd></div>
+                <div><dt>Star rows</dt><dd>@Number(catalog.RowCount)</dd></div>
+                <div><dt>Schema</dt><dd>@catalog.SchemaVersion (manifest @catalog.ManifestVersion)</dd></div>
+                <div><dt>Database size</dt><dd>@OperationsPage.FormatBytes(catalog.DatabaseBytes)</dd></div>
+                <div><dt>Selection scope</dt><dd>This CameraAgent</dd></div>
+                <div class="full"><dt>Database checksum</dt><dd><code title="sha256:@catalog.DatabaseSha256">@ShortChecksum(catalog.DatabaseSha256)</code></dd></div>
+            </dl>
+        </section>
+    </div>
+
+    <section class="ops-panel ops-grid" aria-labelledby="software-packages-heading">
+        <header class="ops-panel-heading"><div><h2 id="software-packages-heading">Installed celestial packages</h2><p>Rollback changes the selected identity; it never edits or replaces a published SQLite snapshot.</p></div><span>1 selected</span></header>
+        <div class="ops-table-wrap">
+            <table class="ops-table software-packages">
+                <thead><tr><th scope="col">Catalog ID</th><th scope="col">Package</th><th scope="col">State</th><th scope="col">Rows</th><th scope="col">Retained packages</th></tr></thead>
+                <tbody>
+                    <tr class="current-row">
+                        <td><strong>@catalog.CatalogId</strong></td>
+                        <td>HYG @catalog.CatalogVersion / @catalog.SnapshotVersion</td>
+                        <td><span class="state-chip success">Selected</span></td>
+                        <td>@Number(catalog.RowCount)</td>
+                        <td>Listed and selected with <code>hvo-skymonitor catalog select</code></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="ops-grid sidebar-right">
+        <section class="ops-panel" aria-labelledby="software-orbital-heading">
+            <header class="ops-panel-heading"><div><h2 id="software-orbital-heading">Orbital-element snapshot</h2><p>Time-varying evidence is refreshed and assessed independently from HYG/OpenNGC packages.</p></div><span class="state-chip neutral">Not collected</span></header>
+            <div class="ops-note-banner compact"><span class="status-icon pending" aria-hidden="true"></span><span>This version of CameraAgent does not acquire orbital elements, so it makes no satellite or orbital predictions. Nothing here needs configuring.</span></div>
+            <dl class="ops-facts software-orbital-facts">
+                <div><dt>Snapshot</dt><dd>None</dd></div>
+                <div><dt>Scheduler</dt><dd>Not present</dd></div>
+                <div class="full"><dt>Use boundary</dt><dd>Predicted geometry only; ordinary orbital data does not establish optical visibility.</dd></div>
+            </dl>
+        </section>
+        <section class="ops-panel" aria-labelledby="software-separation-heading">
+            <header class="ops-panel-heading"><div><h2 id="software-separation-heading">Lifecycle separation</h2><p>Static celestial truth and changing orbital predictions have different safety rules.</p></div></header>
+            <div class="ops-table-wrap">
+                <table class="ops-table lifecycle-comparison">
+                    <thead><tr><th scope="col">Evidence</th><th scope="col">Activation</th><th scope="col">Freshness</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>HYG / OpenNGC</strong><small>Official package</small></td><td>Explicit selection</td><td>Immutable version</td></tr>
+                        <tr><td><strong>Orbital elements</strong><small>Durable snapshot</small></td><td>Validated candidate</td><td>Age + stale policy</td></tr>
+                        <tr><td><strong>Capture binding</strong><small>Provenance</small></td><td>Exact identity</td><td>Never rewritten</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <section class="ops-panel ops-grid" aria-labelledby="software-boundary-heading">
+        <header class="ops-panel-heading"><div><h2 id="software-boundary-heading">Lifecycle boundary</h2><p>Where each operation runs, and the safety rule it keeps.</p></div></header>
+        <div class="ops-table-wrap">
+            <table class="ops-table software-boundary">
+                <thead><tr><th scope="col">Operation</th><th scope="col">Current interface</th><th scope="col">UI state</th><th scope="col">Safety boundary</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>Status &amp; verification</strong></td><td>This page / <code>hvo-skymonitor status</code></td><td><span class="state-chip success">Available</span></td><td>Read-only installed facts; checksums are verified at startup</td></tr>
+                    <tr><td><strong>Catalog install / select / rollback</strong></td><td><code>hvo-skymonitor catalog install|select|rollback</code></td><td>Informational</td><td>Atomic validation and explicit selection</td></tr>
+                    <tr><td><strong>Catalog cleanup</strong></td><td><code>hvo-skymonitor catalog gc</code></td><td>Informational</td><td>Removes only packages no selection references; <code>--dry-run</code> lists them first</td></tr>
+                    <tr><td><strong>Application upgrade / rollback</strong></td><td><code>hvo-skymonitor cameraagent upgrade|rollback</code></td><td>Informational</td><td>Candidate health before capture resumes</td></tr>
+                    <tr><td><strong>Uninstall / purge</strong></td><td><code>hvo-skymonitor cameraagent uninstall|purge</code></td><td>Not exposed</td><td>Separate confirmation and retained state</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+}

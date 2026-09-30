@@ -289,10 +289,15 @@ internal interface ICameraAgentOperatorUiService
 
     ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Pauses or resumes capture admission. <paramref name="reason"/> is the operator's own note,
+    /// recorded with the durable command; when it is blank a fixed reason code is recorded instead.
+    /// </summary>
     Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(
         bool paused,
         long expectedVersion,
         string idempotencyKey,
+        string? reason,
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(
@@ -341,6 +346,10 @@ internal sealed class CameraAgentOperatorUiService(
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
+    /// <summary>The reason recorded for a pause the operator gave no note for.</summary>
+    internal const string PauseReasonCode = "operator-maintenance";
+    /// <summary>The reason recorded for a resume the operator gave no note for.</summary>
+    internal const string ResumeReasonCode = "operator-resume";
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
@@ -1152,6 +1161,7 @@ internal sealed class CameraAgentOperatorUiService(
         bool paused,
         long expectedVersion,
         string idempotencyKey,
+        string? reason,
         CancellationToken cancellationToken)
     {
         var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
@@ -1160,13 +1170,16 @@ internal sealed class CameraAgentOperatorUiService(
             return Denied<OperatorCommandReceipt>();
         }
 
+        var recordedReason = string.IsNullOrWhiteSpace(reason)
+            ? paused ? PauseReasonCode : ResumeReasonCode
+            : reason.Trim();
         try
         {
             var result = paused
                 ? await captureControl.PauseAsync(
-                    idempotencyKey, expectedVersion, actor, "operator-maintenance", cancellationToken).ConfigureAwait(false)
+                    idempotencyKey, expectedVersion, actor, recordedReason, cancellationToken).ConfigureAwait(false)
                 : await captureControl.ResumeAsync(
-                    idempotencyKey, expectedVersion, actor, "operator-resume", cancellationToken).ConfigureAwait(false);
+                    idempotencyKey, expectedVersion, actor, recordedReason, cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<OperatorCommandReceipt>.Success(new(
                 paused ? "Pause capture" : "Resume capture",
                 result.Replayed ? "Duplicate receipt" : result.Changed ? "Applied" : "Already current",

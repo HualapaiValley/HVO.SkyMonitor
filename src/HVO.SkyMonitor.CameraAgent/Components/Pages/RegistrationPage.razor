@@ -1,0 +1,204 @@
+@page "/operations/registration"
+@page "/devices/bootstrap"
+@page "/devices"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Registration</PageTitle>
+
+<OperationsPageHeading Eyebrow="Setup / central integration" Title="Registration" HeadingId="registration-heading"
+                       Description="Inspect this CameraAgent identity, its LogicHost enrollment, Observatory assignment, and current credential health.">
+    <Actions>
+        <button type="button" id="registration-refresh" class="button secondary" disabled="@(_loading || _submitting)" @onclick="LoadAsync">@(_loading ? "Refreshing…" : "Refresh")</button>
+        <button type="button" class="button secondary" disabled title="@ClearUnavailableReason" aria-describedby="registration-clear-unavailable">Clear credentials after revocation</button>
+        <span id="registration-clear-unavailable" class="visually-hidden">@ClearUnavailableReason</span>
+        <button type="button" id="@RegisterTriggerId" class="button @(_view?.Record is null ? "primary" : "secondary")" disabled="@(_submitting || RegisterUnavailableReason is not null)"
+                title="@RegisterUnavailableReason" aria-describedby="@(RegisterUnavailableReason is null ? null : "registration-register-unavailable")"
+                @onclick="OpenWizard">@(_view?.Record is null ? "Register with LogicHost" : "Register again")</button>
+        @if (RegisterUnavailableReason is { } registerUnavailable)
+        {
+            <span id="registration-register-unavailable" class="visually-hidden">@registerUnavailable</span>
+        }
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _view is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Reading the registration state.</span></div>
+}
+else if (_view is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Registration state unavailable.</strong> @_error</span></div>
+}
+@if (_message is not null)
+{
+    <div class="ops-note-banner compact registration-message" role="status"><span class="status-icon @_message.Tone" aria-hidden="true"></span><span><strong>@_message.Title</strong> @_message.Detail</span></div>
+}
+
+@if (_view is { } view)
+{
+    var profile = Profile(view);
+    @if (_error is not null)
+    {
+        <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Showing the last read state.</strong> @_error</span></div>
+    }
+    <section class="ops-profile-banner registration-profile" aria-label="Registration summary">
+        <div><span class="status-icon @profile.Tone" aria-hidden="true"></span><span><strong>@profile.Title</strong><small>@profile.Detail</small></span></div>
+        <dl>
+            <div><dt>State</dt><dd>@StateText(view.State)</dd></div>
+            <div><dt>Last heartbeat</dt><dd>@LastHeartbeat(view)</dd></div>
+            <div><dt>LogicHost</dt><dd>@(view.State == RegistrationState.Standalone ? "Not used" : view.LogicHost ?? "Not configured")</dd></div>
+        </dl>
+    </section>
+
+    var guidance = Guidance(view);
+    <div class="ops-note-banner"><span class="status-icon @guidance.Tone" aria-hidden="true"></span><span><strong>@guidance.Title</strong> @guidance.Detail</span></div>
+
+    @if (view.State != RegistrationState.Standalone)
+    {
+        <section class="ops-panel" aria-labelledby="registration-lifecycle-heading">
+            <header class="ops-panel-heading"><div><h2 id="registration-lifecycle-heading">Provisioning lifecycle</h2><p>Owner-mediated registration preserves an explicit trust boundary.</p></div><span>@LifecycleSummary(view)</span></header>
+            <ol class="ops-progress-steps">
+                @foreach (var step in LifecycleSteps(view))
+                {
+                    <li class="ops-progress-step @step.State" aria-current="@(step.Current ? "step" : null)"><strong>@step.Title</strong><span>@step.Detail</span></li>
+                }
+            </ol>
+        </section>
+    }
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="registration-identity-heading">
+            <header class="ops-panel-heading"><div><h2 id="registration-identity-heading">Local identity</h2><p>Credentials stay protected on this CameraAgent and are never shown.</p></div><span class="state-chip @(view.Identity is null ? "neutral" : "success")">@(view.Identity is null ? "Not created" : "Protected")</span></header>
+            @if (view.Identity is { } identity)
+            {
+                <dl class="ops-facts">
+                    <div class="full"><dt>Device ID</dt><dd class="registration-copy"><code>@identity.DeviceId</code><button type="button" id="registration-copy-device" class="icon-button" aria-label="Copy device ID" title="Copy device ID" @onclick="() => CopyAsync(identity.DeviceId, CopiedValue.DeviceId)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5"></rect><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"></path></svg></button></dd></div>
+                    <div class="full"><dt>Verification code</dt><dd class="registration-copy"><code id="registration-code" class="@(_revealCode ? null : "masked")">@(_revealCode ? identity.VerificationCode : MaskedCode)</code>
+                        <button type="button" id="registration-reveal-code" class="icon-button" aria-pressed="@(_revealCode ? "true" : "false")" aria-label="@(_revealCode ? "Hide verification code" : "Show verification code")" title="@(_revealCode ? "Hide" : "Show")" @onclick="ToggleReveal"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10Z"></path><circle cx="10" cy="10" r="2.4"></circle>@if (_revealCode)
+                            {
+                                <path d="m3 3 14 14"></path>
+                            }</svg></button>
+                        <button type="button" id="registration-copy-code" class="icon-button" aria-label="Copy verification code" title="Copy verification code" @onclick="() => CopyAsync(identity.VerificationCode, CopiedValue.VerificationCode)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5"></rect><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"></path></svg></button></dd></div>
+                    <div><dt>Created</dt><dd>@FormatUtc(identity.CreatedUtc)</dd></div>
+                    <div><dt>Mode</dt><dd>Connected</dd></div>
+                    <div><dt>Credential</dt><dd>@(view.Record is null ? "None yet" : "Device key")</dd></div>
+                    <div><dt>Capture identity</dt><dd>@(view.CaptureIdentityAligned ? "Matches device ID" : "Differs from device ID")</dd></div>
+                    <div class="full"><dt>State directory</dt><dd>Protected local state; not shown</dd></div>
+                </dl>
+                @if (_copyStatus is not null)
+                {
+                    <p class="registration-copy-status" role="status">@_copyStatus</p>
+                }
+            }
+            else
+            {
+                <dl class="ops-facts">
+                    <div><dt>Mode</dt><dd>@(view.State == RegistrationState.Standalone ? "Standalone" : "Connected")</dd></div>
+                    <div><dt>Credential</dt><dd>None</dd></div>
+                </dl>
+                <p class="registration-note">@(view.State == RegistrationState.Standalone
+                    ? "A standalone CameraAgent never creates a central device identity."
+                    : "The device identity could not be read.")</p>
+            }
+        </section>
+        <section class="ops-panel" aria-labelledby="registration-central-heading">
+            <header class="ops-panel-heading"><div><h2 id="registration-central-heading">Central relationship</h2><p>LogicHost owns membership and revocation.</p></div>@{ var central = CentralChip(view); }<span class="state-chip @central.Css">@central.Text</span></header>
+            @if (view.Record is { } record)
+            {
+                <dl class="ops-facts">
+                    <div><dt>Registered as</dt><dd>@(record.FriendlyName ?? "Not named")</dd></div>
+                    <div><dt>Heartbeat</dt><dd>@HeartbeatText(view)</dd></div>
+                    <div><dt>Artifact delivery</dt><dd>@DeliveryText(view.Delivery)</dd></div>
+                    <div><dt>Location review</dt><dd>@ObservatoryLocationPage.LocationReviewText(record.LocationReview)</dd></div>
+                    <div><dt>Revocation</dt><dd>@(view.State == RegistrationState.Rejected ? "Credentials refused" : "Not reported")</dd></div>
+                    <div><dt>Credential expires</dt><dd>@FormatUtc(record.ExpiresUtc)</dd></div>
+                </dl>
+                <a class="text-button" href="/operations/site">View Observatory &amp; location</a>
+            }
+            else
+            {
+                <dl class="ops-facts">
+                    <div><dt>Observatory</dt><dd>@(view.State == RegistrationState.Standalone ? "Not used" : "Not assigned")</dd></div>
+                    <div><dt>Heartbeat</dt><dd>@(view.State == RegistrationState.Standalone ? "Not used" : "Not sent")</dd></div>
+                    <div class="full"><dt>Artifact delivery</dt><dd>@(view.State == RegistrationState.Standalone ? "Not used" : "Waits for registration")</dd></div>
+                </dl>
+                <p class="registration-note">@(view.State switch
+                {
+                    RegistrationState.Standalone => "Central integration is off. Captures, processing and the archive stay on this CameraAgent.",
+                    RegistrationState.Unavailable => "The protected registration record could not be read. Registering again replaces it.",
+                    _ => "LogicHost assigns this camera to an Observatory when an observatory owner issues its envelope.",
+                })</p>
+            }
+        </section>
+    </div>
+}
+
+@if (_wizardOpen && _view?.Identity is { } wizardIdentity)
+{
+    <dialog class="action-dialog operations-dialog registration-dialog" aria-labelledby="registration-dialog-heading" aria-describedby="registration-dialog-description"
+            @ref="_dialogElement" @oncancel="CancelWizard" @oncancel:preventDefault>
+        <div class="dialog-header">
+            <div><p class="eyebrow">Step @(_wizardStep == WizardStep.Share ? "1" : "2") of 2</p><h2 id="registration-dialog-heading">@(_wizardStep == WizardStep.Share ? "Share this device with LogicHost" : "Import the envelope")</h2></div>
+            <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_submitting" @onclick="CancelWizard"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg></button>
+        </div>
+        <ol class="registration-steps" aria-label="Registration steps">
+            <li class="@(_wizardStep == WizardStep.Share ? "current" : "done")" aria-current="@(_wizardStep == WizardStep.Share ? "step" : null)">Share device</li>
+            <li class="@(_wizardStep == WizardStep.Import ? "current" : null)" aria-current="@(_wizardStep == WizardStep.Import ? "step" : null)">Import envelope</li>
+        </ol>
+        @if (_wizardStep == WizardStep.Share)
+        {
+            <p id="registration-dialog-description" class="dialog-intro">Sign in to LogicHost as an observatory owner, choose the Observatory, and enter these two values. LogicHost then issues a short-lived envelope for this device.</p>
+            <dl class="ops-facts registration-dialog-facts">
+                <div class="full"><dt>Device ID</dt><dd class="registration-copy"><code>@wizardIdentity.DeviceId</code><button type="button" class="icon-button" aria-label="Copy device ID" title="Copy device ID" @onclick="() => CopyAsync(wizardIdentity.DeviceId, CopiedValue.DeviceId)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5"></rect><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"></path></svg></button></dd></div>
+                <div class="full"><dt>Verification code</dt><dd class="registration-copy"><code id="registration-dialog-code" class="@(_revealCode ? null : "masked")">@(_revealCode ? wizardIdentity.VerificationCode : MaskedCode)</code>
+                    <button type="button" class="icon-button" aria-pressed="@(_revealCode ? "true" : "false")" aria-label="@(_revealCode ? "Hide verification code" : "Show verification code")" title="@(_revealCode ? "Hide" : "Show")" @onclick="ToggleReveal"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10Z"></path><circle cx="10" cy="10" r="2.4"></circle></svg></button>
+                    <button type="button" class="icon-button" aria-label="Copy verification code" title="Copy verification code" @onclick="() => CopyAsync(wizardIdentity.VerificationCode, CopiedValue.VerificationCode)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5"></rect><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"></path></svg></button></dd></div>
+            </dl>
+            @if (_copyStatus is not null)
+            {
+                <p class="registration-copy-status dialog" role="status">@_copyStatus</p>
+            }
+            @if (_view.RegistrationUri is { } registrationUri)
+            {
+                <div class="operations-dialog-note"><strong>LogicHost registration page</strong><span><a id="registration-open-logichost" href="@registrationUri" target="_blank" rel="noopener noreferrer">Open @(_view.LogicHost ?? "LogicHost") in a new tab</a></span></div>
+            }
+            else
+            {
+                <div class="operations-dialog-note"><strong>LogicHost address not set</strong><span>Open LogicHost's device registration page yourself; this CameraAgent has no public LogicHost address configured.</span></div>
+            }
+            <footer>
+                <button type="button" id="registration-dialog-cancel" class="button secondary" @onclick="CancelWizard">Cancel</button>
+                <button type="button" id="registration-dialog-next" class="button primary" @onclick="ShowImportStep">I have the envelope</button>
+            </footer>
+        }
+        else
+        {
+            <p id="registration-dialog-description" class="dialog-intro">Paste the envelope LogicHost issued. It is used once, sent only to LogicHost, and never stored or shown again.</p>
+            @if (_view.Record is not null)
+            {
+                <div class="operations-dialog-note warning"><strong>Replaces the current registration</strong><span>LogicHost accepts a new envelope only after the current registration is revoked there. The stored credentials change only once LogicHost's answer passes this CameraAgent's checks.</span></div>
+            }
+            <fieldset disabled="@_submitting">
+                <legend class="visually-hidden">Registration envelope</legend>
+                <label class="ops-field">Envelope
+                    <textarea id="registration-envelope" rows="6" autocomplete="off" spellcheck="false" maxlength="@CameraAgentRegistrationUiService.EnvelopeMaxLength"
+                              aria-describedby="@(_importError is null ? null : "registration-import-error")" @bind="_envelopeInput" @bind:event="oninput"></textarea>
+                </label>
+            </fieldset>
+            @if (_importError is not null)
+            {
+                <div id="registration-import-error" class="ops-note-banner compact dialog-error" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_importError</span></div>
+            }
+            <footer>
+                <button type="button" id="registration-dialog-back" class="button secondary" disabled="@_submitting" @onclick="ShowShareStep">Back</button>
+                <button type="button" id="registration-dialog-import" class="button primary" disabled="@(_submitting || string.IsNullOrWhiteSpace(_envelopeInput))" @onclick="ImportAsync">@(_submitting ? "Importing…" : "Import and register")</button>
+            </footer>
+        }
+    </dialog>
+}
