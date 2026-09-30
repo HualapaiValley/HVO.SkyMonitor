@@ -353,6 +353,106 @@ public sealed class PipelineSummaryPageTests
     }
 
     [TestMethod]
+    public void Toggle_StageOutcomeUnknown_ReopeningTheSameStepReusesTheStageCommand()
+    {
+        var service = ToggleService();
+        service.StageResults.Enqueue(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(OperatorUiResultKind.Unavailable, "Timed out."));
+        using var context = CreateContext(service);
+        var cut = OpenToggle(context, "#pipeline-node-1");
+        cut.Find("#pipeline-toggle-apply").Click();
+        cut.Find("dialog.pipeline-dialog footer .button.secondary").Click();
+
+        cut.Find("#pipeline-node-1").Click();
+        cut.Find("#pipeline-step-toggle").Click();
+        cut.WaitForElement("#pipeline-toggle-apply:not([disabled])");
+
+        Assert.Contains("The last attempt did not report whether it saved.", cut.Find("dialog.pipeline-dialog [role=alert]").TextContent);
+        cut.Find("#pipeline-toggle-apply").Click();
+
+        cut.WaitForElement(".pipeline-message");
+        Assert.HasCount(2, service.Stages);
+        Assert.AreEqual(service.Stages[0].Key, service.Stages[1].Key);
+        Assert.AreEqual(service.Stages[0].ExpectedVersion, service.Stages[1].ExpectedVersion);
+        Assert.ContainsSingle(service.Activations);
+    }
+
+    [TestMethod]
+    public void Toggle_ApplyOutcomeUnknown_ReopeningTheSameStepRepeatsOnlyTheApply()
+    {
+        var service = ToggleService();
+        service.ActivationResults.Enqueue(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(OperatorUiResultKind.Unavailable, "Timed out."));
+        using var context = CreateContext(service);
+        var cut = OpenToggle(context, "#pipeline-node-1");
+        cut.Find("#pipeline-toggle-apply").Click();
+        cut.Find("dialog.pipeline-dialog footer .button.secondary").Click();
+
+        cut.Find("#pipeline-node-1").Click();
+        cut.Find("#pipeline-step-toggle").Click();
+        cut.WaitForElement("#pipeline-toggle-apply:not([disabled])");
+
+        Assert.Contains("Draft revision 3 was saved, but applying it did not complete.", cut.Find("dialog.pipeline-dialog [role=alert]").TextContent);
+        Assert.AreEqual("Apply revision 3", cut.Find("#pipeline-toggle-apply").TextContent.Trim());
+        cut.Find("#pipeline-toggle-apply").Click();
+
+        cut.WaitForElement(".pipeline-message");
+        Assert.ContainsSingle(service.Stages);
+        Assert.HasCount(2, service.Activations);
+        Assert.AreEqual(service.Activations[0], service.Activations[1]);
+    }
+
+    [TestMethod]
+    public void Toggle_OutcomeUnknown_ADifferentStepStartsANewCommand()
+    {
+        var service = ToggleService();
+        service.StageResults.Enqueue(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(OperatorUiResultKind.Unavailable, "Timed out."));
+        using var context = CreateContext(service);
+        var cut = OpenToggle(context, "#pipeline-node-1");
+        cut.Find("#pipeline-toggle-apply").Click();
+        cut.Find("dialog.pipeline-dialog footer .button.secondary").Click();
+
+        cut.Find("#pipeline-node-2").Click();
+        cut.Find("#pipeline-step-toggle").Click();
+        cut.WaitForElement("#pipeline-toggle-apply:not([disabled])");
+
+        Assert.IsEmpty(cut.FindAll("dialog.pipeline-dialog [role=alert]"));
+        Assert.AreEqual("Turn off and apply", cut.Find("#pipeline-toggle-apply").TextContent.Trim());
+        cut.Find("#pipeline-toggle-apply").Click();
+
+        cut.WaitForElement(".pipeline-message");
+        Assert.HasCount(2, service.Stages);
+        Assert.AreNotEqual(service.Stages[0].Key, service.Stages[1].Key);
+    }
+
+    [TestMethod]
+    public void Toggle_PreviewFromAnEarlierOpening_DoesNotReachTheReopenedDialog()
+    {
+        var service = ToggleService();
+        var first = new TaskCompletionSource<OperatorUiResult<CameraAgentPipelineProfilePreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource<OperatorUiResult<CameraAgentPipelineProfilePreview>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new Queue<TaskCompletionSource<OperatorUiResult<CameraAgentPipelineProfilePreview>>>([first, second]);
+        var succeed = service.Toggle!;
+        service.ToggleAsync = _ => new(pending.Dequeue().Task);
+        using var context = CreateContext(service);
+        var cut = OpenToggle(context, "#pipeline-node-1");
+        cut.Find("dialog.pipeline-dialog footer .button.secondary").Click();
+        cut.Find("#pipeline-node-1").Click();
+        cut.Find("#pipeline-step-toggle").Click();
+        cut.WaitForElement("dialog.pipeline-dialog");
+
+        first.SetResult(OperatorUiResult<CameraAgentPipelineProfilePreview>.Failure(OperatorUiResultKind.Invalid, "Stale preview."));
+
+        cut.WaitForAssertion(() => Assert.Contains("Compiling the updated graph.", cut.Find("dialog.pipeline-dialog [role=status]").TextContent));
+        Assert.IsEmpty(cut.FindAll("dialog.pipeline-dialog [role=alert]"));
+        Assert.IsTrue(cut.Find("#pipeline-toggle-apply").HasAttribute("disabled"));
+
+        second.SetResult(succeed(service.Toggles[^1]));
+
+        cut.WaitForElement("#pipeline-toggle-apply:not([disabled])");
+        Assert.IsEmpty(cut.FindAll("dialog.pipeline-dialog [role=alert]"));
+        Assert.Contains("3 to 2 steps", cut.Find("dialog.pipeline-dialog .ops-facts").TextContent);
+    }
+
+    [TestMethod]
     public void Toggle_ApplyRejected_SaysTheDraftWasSavedButNotApplied()
     {
         var service = ToggleService();
@@ -619,6 +719,7 @@ public sealed class PipelineSummaryPageTests
         internal OperatorUiResult<CameraAgentPipelineOperatorState>? PipelineResult { get; set; }
         internal int PipelineReads { get; private set; }
         internal Func<(string ProfileJson, string Basis, string NodeId, bool Enabled), OperatorUiResult<CameraAgentPipelineProfilePreview>>? Toggle { get; set; }
+        internal Func<(string ProfileJson, string Basis, string NodeId, bool Enabled), ValueTask<OperatorUiResult<CameraAgentPipelineProfilePreview>>>? ToggleAsync { get; set; }
         internal List<(string ProfileJson, string Basis, string NodeId, bool Enabled)> Toggles { get; } = [];
         internal Queue<OperatorUiResult<CaptureScheduleStoreSnapshot>> StageResults { get; } = [];
         internal List<(string ProfileJson, string Basis, long ExpectedVersion, string Key, string? Reason)> Stages { get; } = [];
@@ -639,6 +740,10 @@ public sealed class PipelineSummaryPageTests
         {
             var request = (profileJson, basisRevisionId, nodeId, enabled);
             Toggles.Add(request);
+            if (ToggleAsync is { } pending)
+            {
+                return pending(request);
+            }
             return ValueTask.FromResult(Toggle?.Invoke(request) ?? throw new NotSupportedException());
         }
 

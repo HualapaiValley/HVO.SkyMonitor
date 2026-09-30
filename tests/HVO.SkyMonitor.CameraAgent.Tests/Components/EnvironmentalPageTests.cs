@@ -583,6 +583,31 @@ public sealed class EnvironmentalPageTests
     }
 
     [TestMethod]
+    public void DeliveryPolicyBeforeTheOutboxIsReadShowsUnknownRatherThanZero()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
+                [Source("air", EnvironmentalObservationKind.AirTemperature)],
+                delivery: new EnvironmentalUiDelivery(true, "Initializing", null, null, null, null, null)))
+        });
+
+        var cut = context.Render<EnvironmentalPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var facts = cut.Find(".environment-delivery").QuerySelectorAll("div")
+                .ToDictionary(item => item.QuerySelector("dt")!.TextContent.Trim(), item => item.QuerySelector("dd")!.TextContent.Trim());
+            Assert.AreEqual("Initializing", cut.Find("#environment-delivery-heading").ParentElement!.NextElementSibling!.TextContent);
+            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Pending"]);
+            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Oldest pending"]);
+            Assert.AreEqual("Not yet acknowledged", facts["Last acknowledgment"]);
+        });
+    }
+
+    [TestMethod]
     public void AcquireIsDisabledWithAnAnnouncedReasonWhenNoSourceSupportsOnDemand()
     {
         using var context = new BunitContext();
@@ -656,6 +681,48 @@ public sealed class EnvironmentalPageTests
             Assert.AreEqual(4, service.HistoryCalls);
             Assert.IsNull(service.LastKind);
         });
+    }
+
+    [TestMethod]
+    public async Task AHistoryReadForAFormerKindThatFinishesLastDoesNotReplaceTheCurrentKind()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = CreateOnDemandService();
+        var pending = new Dictionary<EnvironmentalObservationKind, TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>>();
+        service.HistoryRead = (_, _) =>
+        {
+            if (service.LastKind is not { } kind)
+            {
+                return ValueTask.FromResult(OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([], null)));
+            }
+            var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>();
+            pending[kind] = completion;
+            return new(completion.Task);
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.HistoryCalls));
+        var former = cut.Find("#environment-history-kind").ChangeAsync(new ChangeEventArgs { Value = nameof(EnvironmentalObservationKind.CloudCover) });
+        var current = cut.Find("#environment-history-kind").ChangeAsync(new ChangeEventArgs { Value = nameof(EnvironmentalObservationKind.RainState) });
+        Assert.AreEqual(3, service.HistoryCalls);
+
+        pending[EnvironmentalObservationKind.RainState].SetResult(
+            OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+                [Observation(EnvironmentalObservationKind.RainState, EnvironmentalObservationUnit.Boolean, null, true, sourceId: "current-rain")],
+                null)));
+        await current.ConfigureAwait(false);
+        pending[EnvironmentalObservationKind.CloudCover].SetResult(
+            OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+                [Observation(EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Percent, 40, null, sourceId: "former-cloud")],
+                "former-cursor")));
+        await former.ConfigureAwait(false);
+
+        var rows = cut.Find(".environment-history-table tbody").TextContent;
+        StringAssert.Contains(rows, "current-rain", StringComparison.Ordinal);
+        Assert.IsFalse(rows.Contains("former-cloud", StringComparison.Ordinal));
+        Assert.IsTrue(cut.FindAll("button").Single(button => button.TextContent.Contains("Older", StringComparison.Ordinal)).HasAttribute("disabled"));
+        Assert.AreEqual(nameof(EnvironmentalObservationKind.RainState), cut.Find("#environment-history-kind").GetAttribute("value"));
     }
 
     [TestMethod]

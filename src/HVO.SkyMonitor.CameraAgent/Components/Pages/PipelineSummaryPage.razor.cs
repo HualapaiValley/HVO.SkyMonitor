@@ -58,6 +58,10 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private CaptureScheduleRevisionSnapshot? _staged;
     private long _stagedVersion;
     private string? _activationKey;
+    private int _dialogGeneration;
+    private string? _commandNodeId;
+    private bool _commandTarget;
+    private long _commandStateVersion;
 
     [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
@@ -325,14 +329,32 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             return;
         }
         var schedule = _schedule;
+        var generation = ++_dialogGeneration;
         _toggleNode = node;
         _toggleTarget = !node.Enabled;
         _preview = null;
         _dialogError = null;
-        _staged = null;
-        _stageKey = null;
-        _stagePayload = null;
-        _activationKey = null;
+        // A command whose outcome is unknown keeps its identity when the same change is reopened against the same
+        // schedule state, so applying again replays it instead of issuing a second command. Any other change, or a
+        // schedule that has been re-read at a different version since, starts a new command.
+        if (!string.Equals(_commandNodeId, node.Id, StringComparison.OrdinalIgnoreCase)
+            || _commandTarget != _toggleTarget
+            || _commandStateVersion != schedule.StateVersion)
+        {
+            ClearCommand();
+            _commandNodeId = node.Id;
+            _commandTarget = _toggleTarget;
+            _commandStateVersion = schedule.StateVersion;
+        }
+        else if (_staged is { } staged)
+        {
+            _dialogError = string.Create(CultureInfo.InvariantCulture,
+                $"Draft revision {staged.RevisionNumber} was saved, but applying it did not complete. Apply to try again; the same request is repeated, so it cannot apply twice.");
+        }
+        else if (_stageKey is not null)
+        {
+            _dialogError = "The last attempt did not report whether it saved. Apply to try again; the same request is repeated, so it cannot save twice.";
+        }
         _previewing = true;
         _dialogOpen = true;
         _showDialog = true;
@@ -345,7 +367,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
                 node.Id,
                 _toggleTarget,
                 _lifetime.Token);
-            if (_disposed || !_dialogOpen || !ReferenceEquals(_toggleNode, node) || Denied(result.Kind))
+            if (_disposed || !_dialogOpen || generation != _dialogGeneration || Denied(result.Kind))
             {
                 return;
             }
@@ -363,7 +385,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         }
         finally
         {
-            if (!_disposed)
+            // A preview from an earlier opening must not end the loading state of the current one.
+            if (!_disposed && generation == _dialogGeneration)
             {
                 _previewing = false;
             }
@@ -460,6 +483,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
 
     private async Task FinishAsync(string message, bool error)
     {
+        ClearCommand();
         ResetDialog();
         _message = message;
         _messageError = error;
@@ -480,15 +504,25 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         ResetDialog();
     }
 
+    /// <summary>Closes the dialog. The command identity is kept until its outcome is known; see <see cref="ClearCommand"/>.</summary>
     private void ResetDialog()
     {
+        _dialogGeneration++;
         _dialogOpen = false;
         _showDialog = false;
         _toggleNode = null;
         _preview = null;
         _previewing = false;
         _dialogError = null;
+    }
+
+    private void ClearCommand()
+    {
+        _commandNodeId = null;
+        _stagePayload = null;
+        _stageKey = null;
         _staged = null;
+        _activationKey = null;
     }
 
     /// <summary>

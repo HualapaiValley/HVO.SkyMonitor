@@ -35,6 +35,7 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
     private EnvironmentalUiHistoryPage? _history;
     private EnvironmentalObservationKind? _historyKind;
     private string? _historyCursor;
+    private int _historyGeneration;
     private string? _error;
     private string? _latestError;
     private string? _selectedSourceId;
@@ -334,6 +335,7 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         {
             return;
         }
+        var generation = ++_historyGeneration;
         var history = await EnvironmentalService.GetHistoryAsync(_historyKind, HistoryPageSize, null, _lifetime.Token);
         if (_disposed)
         {
@@ -342,6 +344,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         if (history.Kind == OperatorUiResultKind.Unauthorized)
         {
             DenyAccess();
+        }
+        else if (generation != _historyGeneration)
+        {
+            return;
         }
         else if (history.IsSuccess && history.Value is not null)
         {
@@ -366,8 +372,13 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         await LoadHistoryAsync(null);
     }
 
+    /// <summary>
+    /// Reads one history page. Only the most recent request may assign the page and cursor, so a slower read for a
+    /// former kind or page cannot replace the one the operator asked for last.
+    /// </summary>
     private async Task LoadHistoryAsync(string? cursor)
     {
+        var generation = ++_historyGeneration;
         var result = await EnvironmentalService.GetHistoryAsync(_historyKind, HistoryPageSize, cursor, _lifetime.Token);
         if (_disposed)
         {
@@ -376,6 +387,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
             DenyAccess();
+        }
+        else if (generation != _historyGeneration)
+        {
+            return;
         }
         else if (result.IsSuccess && result.Value is not null)
         {
@@ -494,9 +509,20 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
                 _ => OperationsPage.SplitWords(trigger.ToString()),
             }));
 
+    internal const string OutboxNotReadText = "Not read yet";
+
+    private static string OldestPendingText(EnvironmentalUiDelivery delivery)
+        => delivery.OldestPendingUtc is { } oldest ? FormatUtc(oldest)
+            : delivery.ExportEnabled && delivery.PendingCount is null ? OutboxNotReadText
+            : "None";
+
     private static string PendingText(EnvironmentalUiDelivery delivery)
     {
-        var text = delivery.PendingCount.ToString("N0", CultureInfo.InvariantCulture);
+        if (delivery.PendingCount is not { } pending)
+        {
+            return OutboxNotReadText;
+        }
+        var text = pending.ToString("N0", CultureInfo.InvariantCulture);
         if (delivery.RetryCount > 0)
         {
             text += FormattableString.Invariant($" ({delivery.RetryCount:N0} retrying)");

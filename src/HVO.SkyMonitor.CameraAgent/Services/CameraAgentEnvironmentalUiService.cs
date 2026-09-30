@@ -42,9 +42,9 @@ internal sealed record EnvironmentalUiDelivery(
     bool ExportEnabled,
     string Availability,
     DateTimeOffset? LastAcknowledgedUtc,
-    long PendingCount,
-    long RetryCount,
-    long QuarantineCount,
+    long? PendingCount,
+    long? RetryCount,
+    long? QuarantineCount,
     DateTimeOffset? OldestPendingUtc);
 
 internal sealed record EnvironmentalUiSource(
@@ -309,15 +309,17 @@ internal sealed class CameraAgentEnvironmentalUiService(
         {
             return new(false, "Disabled", null, 0, 0, 0, null);
         }
+        // The outbox has no snapshot until the delivery worker first reads it; its counts are then unknown, not zero.
         var snapshot = deliveryState.Snapshot;
+        var outbox = snapshot.Outbox;
         return new(
             true,
             snapshot.Availability.ToString(),
             snapshot.LastAcknowledgedUtc,
-            snapshot.Outbox?.PendingCount ?? 0,
-            snapshot.Outbox?.RetryCount ?? 0,
-            snapshot.Outbox?.QuarantineCount ?? 0,
-            snapshot.Outbox?.OldestPendingUtc);
+            outbox?.PendingCount,
+            outbox?.RetryCount,
+            outbox?.QuarantineCount,
+            outbox?.OldestPendingUtc);
     }
 
     private static EnvironmentalUiObservation Project(LocalEnvironmentalObservationRecord item) => new(

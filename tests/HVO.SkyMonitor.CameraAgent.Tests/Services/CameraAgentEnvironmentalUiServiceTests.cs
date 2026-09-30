@@ -81,11 +81,12 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
     }
 
     [TestMethod]
-    [DataRow(CentralIntegrationMode.Enabled, true, true)]
-    [DataRow(CentralIntegrationMode.Disabled, true, false)]
-    [DataRow(CentralIntegrationMode.Enabled, false, false)]
+    [DataRow(CentralIntegrationMode.Enabled, true, true, true)]
+    [DataRow(CentralIntegrationMode.Enabled, true, true, false)]
+    [DataRow(CentralIntegrationMode.Disabled, true, false, true)]
+    [DataRow(CentralIntegrationMode.Enabled, false, false, true)]
     public async Task GetStatusAsync_ProjectsScheduleRetentionAndDeliveryOnlyWhenExportIsEnabled(
-        CentralIntegrationMode centralMode, bool deliveryEnabled, bool exportEnabled)
+        CentralIntegrationMode centralMode, bool deliveryEnabled, bool exportEnabled, bool outboxRead)
     {
         var (principal, authorization) = ReadAuthorized();
         var stateStore = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
@@ -97,11 +98,14 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         observationStore.Setup(value => value.GetLocalSnapshotAsync(Root, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LocalEnvironmentalObservationSnapshot(3, 900, 0, Now.AddDays(-1), Now));
         var delivery = new EnvironmentalObservationDeliveryState();
-        delivery.Update(
-            new EnvironmentalObservationOutboxSnapshot(3, 900, 2, 600, 0, 1, 1, 0, 0, Now.AddMinutes(-7), Now),
-            EnvironmentalObservationDeliveryAvailability.Degraded,
-            "retrying",
-            Now.AddMinutes(-2));
+        if (outboxRead)
+        {
+            delivery.Update(
+                new EnvironmentalObservationOutboxSnapshot(3, 900, 2, 600, 0, 1, 1, 0, 0, Now.AddMinutes(-7), Now),
+                EnvironmentalObservationDeliveryAvailability.Degraded,
+                "retrying",
+                Now.AddMinutes(-2));
+        }
         var source = new EnvironmentalSourceConfiguration
         {
             Id = "weather-1",
@@ -146,7 +150,12 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         Assert.AreEqual(60, projected.PeriodSeconds);
         Assert.AreEqual(4, projected.EveryNthCapture);
         Assert.AreEqual(exportEnabled, status.Delivery.ExportEnabled);
-        if (exportEnabled)
+        if (exportEnabled && !outboxRead)
+        {
+            // Before the delivery worker first reads its outbox the counts are unknown, not zero.
+            Assert.AreEqual(new EnvironmentalUiDelivery(true, "Initializing", null, null, null, null, null), status.Delivery);
+        }
+        else if (exportEnabled)
         {
             Assert.AreEqual("Degraded", status.Delivery.Availability);
             Assert.AreEqual(2, status.Delivery.PendingCount);

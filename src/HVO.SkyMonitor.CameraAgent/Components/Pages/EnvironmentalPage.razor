@@ -141,7 +141,7 @@ else
                 <div><dt>Stored locally</dt><dd>@_status.StoredCount.ToString("N0", CultureInfo.InvariantCulture) / @OperationsPage.FormatBytes(_status.StoredBytes)</dd></div>
                 <div><dt>Retention</dt><dd>@_status.RetentionDays days</dd></div>
                 <div><dt>Capacity rejections</dt><dd>@_status.OverflowCount.ToString("N0", CultureInfo.InvariantCulture)</dd></div>
-                <div><dt>Oldest pending</dt><dd>@(_status.Delivery.OldestPendingUtc is { } oldest ? FormatUtc(oldest) : "None")</dd></div>
+                <div><dt>Oldest pending</dt><dd>@OldestPendingText(_status.Delivery)</dd></div>
                 <div class="full"><dt>Last acknowledgment</dt><dd>@(_status.Delivery.LastAcknowledgedUtc is { } acknowledged ? FormatUtc(acknowledged) : _status.Delivery.ExportEnabled ? "Not yet acknowledged" : "Export disabled")</dd></div>
             </dl>
         </section>
