@@ -110,7 +110,7 @@ public sealed class OperationsPageTests
             var items = cut.FindAll(".ops-attention-item");
             Assert.HasCount(2, items);
             StringAssert.Contains(items[0].TextContent, "LogicHost connection unavailable", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/system", items[0].QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual("/operations/health", items[0].QuerySelector("a")!.GetAttribute("href"));
             StringAssert.Contains(items[1].TextContent, "Storage or lane pressure", StringComparison.Ordinal);
             StringAssert.Contains(items[1].TextContent, "Under pressure: Raw ingress storage, Standard lane.", StringComparison.Ordinal);
             Assert.AreEqual("/operations/storage", items[1].QuerySelector("a")!.GetAttribute("href"));

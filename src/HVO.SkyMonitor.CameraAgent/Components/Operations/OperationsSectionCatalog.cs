@@ -13,20 +13,13 @@ public sealed record OperationsSection(
     string Description,
     IReadOnlyList<string> AliasPaths)
 {
-    /// <summary>Why the section has no local capability yet; null when it is implemented.</summary>
-    public string? UnavailableReason { get; init; }
-
     /// <summary>A short neutral sidebar badge, such as "Manual"; null for none.</summary>
     public string? Badge { get; init; }
 
     /// <summary>
-    /// What an implemented page cannot do yet on this CameraAgent. Unlike <see cref="UnavailableReason"/>
-    /// the page stays routable; the sidebar describes its link with this note.
+    /// What the page cannot do yet on this CameraAgent; the sidebar describes its link with this note.
     /// </summary>
     public string? CapabilityNote { get; init; }
-
-    /// <summary>The address the sidebar links to: the section route, or its unavailable notice.</summary>
-    public string NavigationHref => UnavailableReason is null ? Href : $"/operations/unavailable/{Slug}";
 
     public string IconPath => Slug switch
     {
@@ -53,8 +46,6 @@ public sealed record OperationsSection(
     public bool Matches(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
-        if (UnavailableReason is not null)
-            return string.Equals(TrimSlash(path), NavigationHref, StringComparison.OrdinalIgnoreCase);
         if (string.Equals(Href, OperationsSectionCatalog.OverviewPath, StringComparison.Ordinal))
         {
             return string.Equals(TrimSlash(path), Href, StringComparison.OrdinalIgnoreCase);
@@ -96,9 +87,9 @@ public static class OperationsSectionCatalog
         new("camera", "Camera & rig", "Setup", "/operations/camera",
             "Setup / versioned capture profile",
             "Keep the camera implementation, native readout, and physical optics explicit while activating them as one capture-time profile.", []),
-        new("registration", "Registration", "Setup", "/devices/bootstrap",
+        new("registration", "Registration", "Setup", "/operations/registration",
             "Setup / central integration",
-            "Inspect this CameraAgent identity, its LogicHost enrollment, Observatory assignment, and current credential health.", ["/devices"]),
+            "Inspect this CameraAgent identity, its LogicHost enrollment, Observatory assignment, and current credential health.", ["/devices/bootstrap", "/devices"]),
         new("schedule", "Schedule", "Capture", "/operations/schedule",
             "Capture / deterministic admission",
             "Define when capture may start, then apply day, twilight, and night exposure policies without catch-up captures.", ["/schedule"]),
@@ -130,21 +121,15 @@ public static class OperationsSectionCatalog
         new("storage", "Storage & retention", "Data", "/operations/storage",
             "Data / local evidence safety",
             "Keep immutable evidence, durable lanes, retention eligibility, and disk pressure visible as one local safety boundary.", ["/operations/data", "/operations/quarantine"]),
-        new("health", "Health & diagnostics", "System", "/operations/system",
+        new("health", "Health & diagnostics", "System", "/operations/health",
             "System / bounded diagnostics",
-            "Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.", ["/system"]),
-        new("control", "System control", "System", "",
+            "Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.", ["/operations/system", "/system"]),
+        new("control", "System control", "System", "/operations/control",
             "System / authenticated local actions",
-            "Perform only bounded CameraAgent controls that preserve accepted evidence and produce an auditable terminal receipt.", [])
-        {
-            UnavailableReason = "System lifecycle controls are not implemented. No restart, shutdown, or reset action is exposed here."
-        },
-        new("software", "Software & catalog", "System", "",
+            "Perform only bounded CameraAgent controls that preserve accepted evidence and produce an auditable terminal receipt.", []),
+        new("software", "Software & catalog", "System", "/operations/software",
             "System / verified local assets",
             "Inspect application, immutable celestial packages, and separately refreshed orbital evidence without implying unattended activation.", [])
-        {
-            UnavailableReason = "The Software & catalog workspace is not implemented. Installed catalog identity is shown under Observatory & location."
-        }
     ];
 
     /// <summary>Resolves the section that owns an absolute path, or null outside the workspace.</summary>

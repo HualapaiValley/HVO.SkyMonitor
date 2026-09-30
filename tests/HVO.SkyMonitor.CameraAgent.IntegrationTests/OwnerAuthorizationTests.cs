@@ -986,7 +986,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/schedule", Expected: "Capture / deterministic admission"),
             (Path: "/calibration", Expected: "Capture / immutable references"),
             (Path: "/environmental", Expected: "Environment"),
-            (Path: "/system", Expected: "System snapshot"),
+            (Path: "/system", Expected: "System / bounded diagnostics"),
             (Path: "/operations/schedule", Expected: "Capture / deterministic admission"),
             (Path: "/operations/calibration", Expected: "Capture / immutable references"),
             (Path: "/operations/focus", Expected: "Capture / manual optical setup"),
@@ -1004,7 +1004,11 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/pipeline/graphs", Expected: "Named graphs"),
             (Path: "/operations/pipeline/graphs/new", Expected: "Draft graph"),
             (Path: "/operations/pipeline/replays/new", Expected: "Submit this capture for replay"),
-            (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
+            (Path: "/operations/health", Expected: "System / bounded diagnostics"),
+            (Path: "/operations/control", Expected: "System / authenticated local actions"),
+            (Path: "/operations/software", Expected: "System / verified local assets"),
+            (Path: "/operations/registration", Expected: "Setup / central integration"),
+            (Path: "/devices/bootstrap", Expected: "Setup / central integration")
         })
         {
             using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();

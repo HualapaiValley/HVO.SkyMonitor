@@ -49,14 +49,14 @@ internal sealed class OperationsAttention
         {
             items.Add(new("health", "warning", "warning", "Some operating facts are stale",
                 "The latest read did not refresh every section; the values shown may be out of date.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         if (freshness.Contains("unknown", StringComparer.OrdinalIgnoreCase))
         {
             items.Add(new("health", "info", "pending", "Some operating facts have not been observed",
                 "No source has reported them since this CameraAgent started.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         var centralEnabled = !string.Equals(summary.Configuration.Value.CentralIntegration, "Disabled", StringComparison.Ordinal);
@@ -66,7 +66,7 @@ internal sealed class OperationsAttention
         {
             items.Add(new("health", "warning", "warning", "LogicHost connection unavailable",
                 "Local acquisition continues; central delivery waits in the durable outbox.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         var pressuredStorage = summary.Storage.Value.Where(static storage => storage.IsUnderPressure)

@@ -87,8 +87,6 @@
 .operations-navigation a.active { border-color: rgba(88, 166, 255, .25); color: white; background: linear-gradient(90deg, var(--blue-soft), rgba(47, 129, 247, .035)); font-weight: 600; }
 .operations-navigation a.active .ops-nav-icon { color: var(--blue); }
 /* A section the prototype names but this CameraAgent does not implement yet: still reachable, visibly quieter. */
-.operations-navigation a.unavailable { color: var(--muted); }
-.operations-navigation a.unavailable .ops-nav-icon { opacity: .65; }
 .ops-nav-icon { display: grid; width: 1.7rem; height: 1.7rem; place-items: center; color: var(--muted); }
 .ops-nav-icon svg { width: 1.15rem; height: 1.15rem; }
 .ops-nav-group { margin: 1.1rem .6rem .4rem; color: var(--muted); font-size: .69rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }

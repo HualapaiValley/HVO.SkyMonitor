@@ -318,7 +318,13 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken) => DeliveryHandler(cancellationToken);
 
     public ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken) => ReconciliationHandler(cancellationToken);
-    public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
+    public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
+    {
+        CaptureReasons.Add(reason);
+        return CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
+    }
+
+    public List<string?> CaptureReasons { get; } = [];
     public ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(string referenceToken, string deploymentRunId, string inventorySha256, bool legacyOwnershipExternallyEstablished, CancellationToken cancellationToken) => OwnershipHandler(referenceToken, deploymentRunId, inventorySha256, legacyOwnershipExternallyEstablished, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
 

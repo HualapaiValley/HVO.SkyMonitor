@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using System.Text.Json;
@@ -156,6 +157,8 @@ public sealed class SchedulePageTests
         using var context = CreateContext();
         var service = new ScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        // A link asking for the dialog does not open it while the override is unavailable.
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/schedule?action=override");
 
         var cut = context.Render<SchedulePage>();
 
@@ -167,6 +170,25 @@ public sealed class SchedulePageTests
                 "site timezone is unknown", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".schedule-state").TextContent, "UTC (site timezone unknown)", StringComparison.Ordinal);
         });
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.IsEmpty(service.OverrideCommands);
+    }
+
+    [TestMethod]
+    public void OverrideAction_OpensTheOverrideDialogOnceThePageHasLoaded()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State())
+        {
+            Calendar = Calendar("UTC", new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero))
+        };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/schedule?action=override");
+
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() =>
+            StringAssert.Contains(cut.Find("dialog").TextContent, "Create override", StringComparison.Ordinal));
         Assert.IsEmpty(service.OverrideCommands);
     }
 

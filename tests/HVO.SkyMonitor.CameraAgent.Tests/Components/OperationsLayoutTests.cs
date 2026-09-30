@@ -15,7 +15,6 @@ public sealed class OperationsLayoutTests
     private static readonly RenderFragment Body = builder => builder.AddMarkupContent(0, "<h1>Section body</h1>");
     private static readonly string[] ExpectedSlugs = ["overview", "site", "camera", "registration", "schedule", "focus", "calibration", "pipeline", "environment", "transients", "automations", "delivery", "storage", "health", "control", "software"];
     private static readonly string[] ExpectedGroups = ["Setup", "Capture", "Processing", "Automation", "Data", "System"];
-    private static readonly string[] UnavailableSlugs = ["control", "software"];
 
     [TestMethod]
     public void Catalog_ListsThePrototypeSectionsOnceWithProtectedRoutes()
@@ -23,16 +22,14 @@ public sealed class OperationsLayoutTests
         var slugs = OperationsSectionCatalog.Sections.Select(static section => section.Slug).ToArray();
         CollectionAssert.AllItemsAreUnique(slugs);
         CollectionAssert.AreEqual(ExpectedSlugs, slugs);
-        CollectionAssert.AreEqual(UnavailableSlugs, OperationsSectionCatalog.Sections
-            .Where(static section => section.UnavailableReason is not null).Select(static section => section.Slug).ToArray());
-        Assert.IsTrue(OperationsSectionCatalog.Sections.Where(static section => section.UnavailableReason is null).All(static section =>
-            section.Href.StartsWith("/operations", StringComparison.Ordinal) || section.Href == "/devices/bootstrap"));
+        Assert.IsTrue(OperationsSectionCatalog.Sections.All(static section =>
+            section.Href.StartsWith("/operations", StringComparison.Ordinal)));
         Assert.IsTrue(OperationsSectionCatalog.Sections.All(static section => OperationsSectionCatalog.Groups.Contains(section.Group)));
         Assert.IsTrue(OperationsSectionCatalog.Sections.All(static section =>
             !string.IsNullOrWhiteSpace(section.Eyebrow) && !string.IsNullOrWhiteSpace(section.Description)));
         // Gaps are explained in words, never by tracker number.
         Assert.IsFalse(OperationsSectionCatalog.Sections.Any(static section =>
-            (section.UnavailableReason ?? string.Empty).Contains('#', StringComparison.Ordinal)));
+            (section.CapabilityNote ?? string.Empty).Contains('#', StringComparison.Ordinal)));
         Assert.IsNull(OperationsSectionCatalog.Resolve("/gallery"));
         Assert.IsNull(OperationsSectionCatalog.Resolve("/"));
         Assert.AreEqual("overview", OperationsSectionCatalog.Resolve("/operations")!.Slug);
@@ -40,6 +37,10 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("storage", OperationsSectionCatalog.Resolve("/operations/quarantine")!.Slug);
         Assert.AreEqual("schedule", OperationsSectionCatalog.Resolve("/schedule")!.Slug);
         Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices/bootstrap")!.Slug);
+        Assert.AreEqual("registration", OperationsSectionCatalog.Resolve("/devices")!.Slug);
+        Assert.AreEqual("health", OperationsSectionCatalog.Resolve("/operations/system")!.Slug);
+        Assert.AreEqual("control", OperationsSectionCatalog.Resolve("/operations/control")!.Slug);
+        Assert.AreEqual("software", OperationsSectionCatalog.Resolve("/operations/software")!.Slug);
         Assert.AreEqual("focus", OperationsSectionCatalog.Resolve("/operations/focus")?.Slug);
         Assert.IsNull(OperationsSectionCatalog.Resolve("/operations/unavailable/focus"));
     }
@@ -54,7 +55,7 @@ public sealed class OperationsLayoutTests
 
         var links = cut.FindAll("nav.operations-navigation a");
         Assert.HasCount(OperationsSectionCatalog.Sections.Count, links);
-        CollectionAssert.AreEqual(OperationsSectionCatalog.Sections.Select(static section => section.NavigationHref).ToArray(),
+        CollectionAssert.AreEqual(OperationsSectionCatalog.Sections.Select(static section => section.Href).ToArray(),
             links.Select(static link => link.GetAttribute("href")).ToArray());
         CollectionAssert.AreEqual(OperationsSectionCatalog.Sections.Select(static section => section.Label).ToArray(),
             links.Select(static link => link.QuerySelector("span:not(.ops-nav-icon)")!.TextContent.Trim()).ToArray());
@@ -91,6 +92,9 @@ public sealed class OperationsLayoutTests
             ("/operations/transients", "transients"),
             ("/system", "health"),
             ("/operations/system", "health"),
+            ("/operations/health", "health"),
+            ("/operations/control", "control"),
+            ("/operations/software", "software"),
             ("/operations/quarantine?kind=Artifact", "storage"),
             ("/operations/data", "storage"),
             ("/operations/storage", "storage"),
@@ -105,8 +109,9 @@ public sealed class OperationsLayoutTests
             ("/operations/camera", "camera"),
             ("/operations/site", "site"),
             ("/operations/sky-map", "site"),
+            ("/operations/registration", "registration"),
             ("/devices/bootstrap", "registration"),
-            ("/operations/unavailable/control", "control")
+            ("/devices", "registration")
         })
         {
             navigation.NavigateTo(path);
@@ -114,13 +119,13 @@ public sealed class OperationsLayoutTests
             {
                 var current = cut.FindAll("nav.operations-navigation a[aria-current='page']");
                 Assert.HasCount(1, current, path);
-                Assert.AreEqual(OperationsSectionCatalog.Get(slug).NavigationHref, current[0].GetAttribute("href"), path);
+                Assert.AreEqual(OperationsSectionCatalog.Get(slug).Href, current[0].GetAttribute("href"), path);
             });
         }
     }
 
     [TestMethod]
-    public void Render_UsesSharedResponsiveDialogAndExplainsEveryUnavailableSection()
+    public void Render_UsesSharedResponsiveDialogAndDescribesOnlyNotedSections()
     {
         using var context = CreateContext(out _);
         var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
@@ -128,14 +133,10 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("false", toggle.GetAttribute("aria-expanded"));
         Assert.AreEqual("operations-sections", toggle.GetAttribute("aria-controls"));
         Assert.AreEqual(940, cut.FindComponent<ResponsiveNavigation>().Instance.Breakpoint);
-        foreach (var section in OperationsSectionCatalog.Sections.Where(static section => section.UnavailableReason is not null))
-        {
-            var link = cut.Find($"a[aria-describedby='operations-unavailable-{section.Slug}']");
-            Assert.AreEqual($"/operations/unavailable/{section.Slug}", link.GetAttribute("href"));
-            Assert.AreEqual("unavailable", link.GetAttribute("class"));
-            Assert.AreEqual(section.UnavailableReason, cut.Find($"#operations-unavailable-{section.Slug}").TextContent);
-            Assert.AreEqual(section, OperationsSectionCatalog.Resolve($"/operations/unavailable/{section.Slug}"));
-        }
+        CollectionAssert.AreEqual(
+            OperationsSectionCatalog.Sections.Where(static section => section.CapabilityNote is not null)
+                .Select(static section => $"operations-note-{section.Slug}").ToArray(),
+            cut.FindAll("nav.operations-navigation a[aria-describedby]").Select(static link => link.GetAttribute("aria-describedby")).ToArray());
     }
 
     [TestMethod]
@@ -146,11 +147,11 @@ public sealed class OperationsLayoutTests
         var focus = OperationsSectionCatalog.Get("focus");
 
         var link = cut.Find("a[href='/operations/focus']");
-        Assert.AreEqual(string.Empty, link.GetAttribute("class"));
+        Assert.IsFalse(link.HasAttribute("class"));
         Assert.AreEqual("Manual", link.QuerySelector(".ops-nav-badge.neutral")!.TextContent.Trim());
-        Assert.AreEqual("operations-unavailable-focus", link.GetAttribute("aria-describedby"));
+        Assert.AreEqual("operations-note-focus", link.GetAttribute("aria-describedby"));
         Assert.AreEqual(focus.CapabilityNote, link.GetAttribute("title"));
-        Assert.AreEqual(focus.CapabilityNote, cut.Find("#operations-unavailable-focus").TextContent);
+        Assert.AreEqual(focus.CapabilityNote, cut.Find("#operations-note-focus").TextContent);
         Assert.HasCount(1, cut.FindAll(".ops-nav-badge.neutral"));
     }
 
@@ -166,7 +167,7 @@ public sealed class OperationsLayoutTests
         Assert.AreEqual("North Camera / Virtual Sky", cut.Find(".operations-scope small").TextContent.Trim());
         Assert.DoesNotContain("agent-test", cut.Find(".operations-scope").TextContent);
         var registration = cut.Find(".operations-scope a");
-        Assert.AreEqual("/devices/bootstrap", registration.GetAttribute("href"));
+        Assert.AreEqual("/operations/registration", registration.GetAttribute("href"));
         Assert.AreEqual("View registration", registration.GetAttribute("aria-label"));
     }
 
@@ -214,10 +215,6 @@ public sealed class OperationsLayoutTests
         Assert.HasCount(2, cut.FindAll(".ops-nav-badge.attention"));
         Assert.AreEqual("1 open attention item", Badge(cut, "storage"));
         Assert.AreEqual("1 open attention item", Badge(cut, "health"));
-        foreach (var section in OperationsSectionCatalog.Sections.Where(static section => section.UnavailableReason is not null))
-        {
-            Assert.IsNull(cut.Find($"a[href='{section.NavigationHref}']").QuerySelector(".ops-nav-badge"), section.Slug);
-        }
     }
 
     [TestMethod]
@@ -280,8 +277,8 @@ public sealed class OperationsLayoutTests
             return ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
         };
 
-        // An unavailable section makes no read of its own, so only the layout can notice the revocation.
-        navigation.NavigateTo("/operations/unavailable/control");
+        // The layout rereads on navigation, so it notices the revocation whatever the page itself reads.
+        navigation.NavigateTo("/operations/control");
 
         cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         Assert.AreEqual("CameraAgent", cut.Find(".operations-scope small").TextContent.Trim());
@@ -319,32 +316,6 @@ public sealed class OperationsLayoutTests
         cut.WaitForAssertion(() => Assert.HasCount(1, module.Invocations["close"]));
     }
 
-    [TestMethod]
-    public void UnavailableSection_ExplainsTheGapWithoutActionControls()
-    {
-        using var context = new BunitContext();
-        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, "control"));
-        var section = OperationsSectionCatalog.Get("control");
-        Assert.AreEqual(section.Label, cut.Find(".ops-page-heading h1").TextContent.Trim());
-        Assert.AreEqual(section.Eyebrow, cut.Find(".ops-page-heading .eyebrow").TextContent.Trim());
-        StringAssert.Contains(cut.Find(".ops-note-banner").TextContent, section.UnavailableReason!, StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".ops-note-banner").TextContent, "Not implemented on this CameraAgent.", StringComparison.Ordinal);
-        Assert.AreEqual("/operations", cut.Find(".unavailable-section a.button").GetAttribute("href"));
-        Assert.IsEmpty(cut.FindAll(".unavailable-section button, .unavailable-section form"));
-    }
-
-    [TestMethod]
-    [DataRow("camera")]
-    [DataRow("focus")]
-    [DataRow("no-such-section")]
-    public void UnavailableSection_ImplementedOrUnknownSlugSaysTheSectionDoesNotExist(string slug)
-    {
-        using var context = new BunitContext();
-        var cut = context.Render<OperationsUnavailablePage>(parameters => parameters.Add(page => page.Section, slug));
-        Assert.AreEqual("Section unavailable", cut.Find(".ops-page-heading h1").TextContent.Trim());
-        Assert.IsEmpty(cut.FindAll(".ops-note-banner"));
-    }
-
     private static BunitContext CreateContext(out TestOperatorUiService service)
     {
         var context = new BunitContext();
@@ -355,5 +326,5 @@ public sealed class OperationsLayoutTests
     }
 
     private static string Badge(IRenderedComponent<OperationsLayout> cut, string slug)
-        => cut.Find($"a[href='{OperationsSectionCatalog.Get(slug).NavigationHref}'] .ops-nav-badge").TextContent.Trim();
+        => cut.Find($"a[href='{OperationsSectionCatalog.Get(slug).Href}'] .ops-nav-badge").TextContent.Trim();
 }

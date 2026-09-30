@@ -11,7 +11,7 @@ for capabilities that are not implemented.
 | LogicHost users | Self-registration, email confirmation, login, password reset, two-factor authentication, passkeys, and self-service account management under `/Account/*`. |
 | API keys | Owner-managed `Read` and `ReadWrite` keys at `/Account/Manage/ApiKeys`; create, activate, deactivate, and delete are supported. |
 | OAuth | Authorization-code with PKCE, client credentials, password, and refresh-token grants through `/connect/authorize` and `/connect/token`. |
-| Devices | Registration at `/devices/register`, inventory and revocation at `/devices`, and CameraAgent import at `/devices/bootstrap`. |
+| Devices | Registration at `/devices/register`, inventory and revocation at `/devices`, and CameraAgent import at `/operations/registration` (formerly `/devices/bootstrap`, which still opens it). |
 | Local CameraAgent users | SQLite-backed local Identity and one configuration-seeded site owner. This identity is separate from LogicHost. |
 | Runtime state | SQL Server `SkyMonitor`, the two approved object-store buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
 | Observability | `/alive`, `/health`, `/metrics`, structured token/API-key events, and ASP.NET request traces. |
@@ -135,15 +135,17 @@ path.
 
 ### Device registration and bootstrap
 
-1. Start the CameraAgent, sign in locally, and open `/devices/bootstrap`.
+1. Start the CameraAgent, sign in locally, open Operations > Registration
+   (`/operations/registration`), and choose **Register with LogicHost**.
 2. Record the displayed device ID and verification code without placing them in
-   retained logs or screenshots.
+   retained logs or screenshots. The code stays masked until you choose to show it.
 3. Sign in to LogicHost, create an active observatory at `/observatories` if one
    does not already exist, and open `/devices/register`.
 4. Enter the device ID, self-attested code, observatory, and friendly name. The
    resulting pending registration and envelope are short-lived.
-5. Return to CameraAgent `/devices/bootstrap`, import the envelope, and wait for
-   successful secret persistence and rig-profile seeding.
+5. Return to the CameraAgent registration wizard, continue to the import step,
+   paste the envelope, and wait for successful secret persistence and
+   rig-profile seeding.
 6. Confirm the registration is Active at LogicHost `/devices`, then confirm the
    `fleet-heartbeat` CameraAgent health check reaches Healthy after the first
    acknowledged status report.

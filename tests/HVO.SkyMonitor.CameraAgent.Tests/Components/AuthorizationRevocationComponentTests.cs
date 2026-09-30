@@ -84,18 +84,19 @@ public sealed class AuthorizationRevocationComponentTests
     private static async Task AssertSystemRevocationAsync()
     {
         using var context = new BunitContext();
-        var service = Configure(context);
-        var cut = context.Render<SystemStatusPage>();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Virtual sensor", StringComparison.Ordinal));
-        service.SystemHandler = _ => ValueTask.FromResult(Denied<CameraAgentSystemStatus>());
+        Configure(context);
+        var system = new TestSystemUiService();
+        context.Services.AddSingleton<ICameraAgentSystemUiService>(system);
+        var cut = context.Render<HealthPage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Capture processing", StringComparison.Ordinal));
+        system.HealthHandler = _ => ValueTask.FromResult(Denied<SystemHealthView>());
 
-        await cut.InvokeAsync(cut.Instance.RefreshAuthorizationAsync);
-        cut.Render();
+        await cut.Find("#health-refresh").ClickAsync();
 
         cut.WaitForAssertion(() =>
         {
             AssertAccessDenied(context);
-            Assert.IsFalse(cut.Markup.Contains("Virtual sensor", StringComparison.Ordinal));
+            Assert.IsFalse(cut.Markup.Contains("Capture processing", StringComparison.Ordinal));
         });
     }
 

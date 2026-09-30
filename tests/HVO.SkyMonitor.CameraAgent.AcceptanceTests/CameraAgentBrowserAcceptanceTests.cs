@@ -127,14 +127,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === false")
             .ConfigureAwait(false);
-        await page.GotoAsync("/operations/unavailable/control").ConfigureAwait(false);
+        await page.GotoAsync("/operations/control").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System control", Level = 1, Exact = true }))
             .ConfigureAwait(false);
-        StringAssert.Contains(await page.Locator(".unavailable-section .ops-note-banner").InnerTextAsync().ConfigureAwait(false),
-            "Not implemented on this CameraAgent.", StringComparison.Ordinal);
-        Assert.IsEmpty(await page.Locator(".unavailable-section form, .unavailable-section button").AllAsync().ConfigureAwait(false));
-        await page.GetByRole(AriaRole.Link, new() { Name = "Back to Operations overview" }).ClickAsync()
-            .ConfigureAwait(false);
+        await VisibleAsync(page.Locator("section[aria-labelledby='control-receipts-heading']")).ConfigureAwait(false);
+        await page.GotoAsync("/operations").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Operations", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
@@ -651,8 +648,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("H1", await page.EvaluateAsync<string>("() => document.activeElement.tagName").ConfigureAwait(false));
 
         await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
-        await page.Locator("#operations-sections a[href='/operations/system']").ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'System snapshot'")
+        await page.Locator("#operations-sections a[href='/operations/health']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'Health & diagnostics'")
             .ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.querySelector('button[aria-controls=\"operations-sections\"]')?.getAttribute('aria-expanded') === 'false'")
             .ConfigureAwait(false);
@@ -695,7 +692,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
               document.querySelector('main').append(controls);
             }
             """).ConfigureAwait(false);
-        await AssertComputedContrastAsync(page, "/operations/system", new ViewportSize { Width = 390, Height = 844 },
+        await AssertComputedContrastAsync(page, "/operations/health", new ViewportSize { Width = 390, Height = 844 },
             "#shell-contrast-regression button").ConfigureAwait(false);
 
         await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
@@ -2141,9 +2138,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertSystemNavigationAsync(IPage page)
     {
         await page.GotoAsync("/system").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System snapshot", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Health & diagnostics", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Read-only system facts:", new() { Exact = true })).ConfigureAwait(false);
+        await VisibleAsync(page.Locator("section[aria-label='Health summary']")).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/system").ConfigureAwait(false);
     }
 
@@ -2199,7 +2196,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/schedule", "Schedule"),
             ("/calibration", "Calibration"),
             ("/operations/focus", "Focus"),
-            ("/system", "System snapshot"),
+            ("/operations/health", "Health & diagnostics"),
+            ("/operations/control", "System control"),
+            ("/operations/software", "Software & catalog"),
+            ("/operations/registration", "Registration"),
             ("/operations/camera", "Camera & rig"),
             ("/operations/pipeline", "Pipeline"),
             ("/operations/environment", "Environment"),

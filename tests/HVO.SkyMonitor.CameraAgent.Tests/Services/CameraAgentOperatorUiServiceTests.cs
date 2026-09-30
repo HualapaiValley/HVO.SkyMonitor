@@ -108,7 +108,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         var detail = await service.GetGalleryCaptureAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var detailView = await service.GetCaptureDetailViewAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var system = await service.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false);
-        var capture = await service.SetCapturePausedAsync(true, 1, "operation-key", CancellationToken.None).ConfigureAwait(false);
+        var capture = await service.SetCapturePausedAsync(true, 1, "operation-key", null, CancellationToken.None).ConfigureAwait(false);
         var outbox = await service.ResolveOutboxAsync(
             "Artifact",
             OutboxOperationAction.Replay,

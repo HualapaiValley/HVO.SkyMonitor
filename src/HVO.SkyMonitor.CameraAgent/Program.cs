@@ -303,6 +303,8 @@ public class Program
         builder.Services.AddScoped<ICameraAgentObservingDayUiService, CameraAgentObservingDayUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
 
         builder.Services.AddOptions<CapturePreviewOptions>()

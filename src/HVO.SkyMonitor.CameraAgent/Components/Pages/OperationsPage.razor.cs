@@ -295,6 +295,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
                     command.PauseCapture,
                     command.ExpectedVersion,
                     command.IdempotencyKey,
+                    reason: null,
                     cancellationToken).ConfigureAwait(false);
                 if (result.IsSuccess && result.Value is not null)
                 {

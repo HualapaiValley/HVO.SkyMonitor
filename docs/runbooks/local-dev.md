@@ -96,7 +96,8 @@ After startup:
 - LogicHost user registration is `/Account/Register`.
 - LogicHost API-key management is `/Account/Manage/ApiKeys`.
 - Device registration is `/devices/register` and inventory is `/devices`.
-- CameraAgent import is `/devices/bootstrap`.
+- CameraAgent registration and envelope import is Operations > Registration at
+  `/operations/registration`; the older `/devices/bootstrap` address still opens it.
 - CameraAgent temporary-owner replacement is
   `/Account/ReplaceTemporaryPassword`; bounded authenticated status is
   `/api/internal/owner-bootstrap/status`.
