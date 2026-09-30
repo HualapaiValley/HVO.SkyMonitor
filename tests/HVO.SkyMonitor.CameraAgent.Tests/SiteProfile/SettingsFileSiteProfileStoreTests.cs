@@ -433,7 +433,7 @@ public sealed class SettingsFileSiteProfileStoreTests
 
     private static int LoggedEvents(Mock<ILogger<SettingsFileSiteProfileStore>> logger, int eventId)
         => logger.Invocations.Count(invocation =>
-            invocation.Method.Name == nameof(ILogger.Log) && ((EventId)invocation.Arguments[1]).Id == eventId);
+            invocation.Method.Name == nameof(ILogger.Log) && invocation.Arguments[1] is EventId logged && logged.Id == eventId);
 
     private SettingsFileSiteProfileStore CreateStore(
         string? displayName = null,
