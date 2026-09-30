@@ -36,21 +36,26 @@
                             {
                                 var current = Current is not null && section.Slug == Current.Slug;
                                 var count = _attention?.CountFor(section.Slug) ?? 0;
+                                var note = section.UnavailableReason ?? section.CapabilityNote;
                                 <a href="@section.NavigationHref"
                                    class="@LinkClass(section, current)"
                                    aria-current="@(current ? "page" : null)"
-                                   aria-describedby="@(section.UnavailableReason is null ? null : UnavailableId(section))"
-                                   title="@(section.UnavailableReason ?? section.Description)">
+                                   aria-describedby="@(note is null ? null : UnavailableId(section))"
+                                   title="@(note ?? section.Description)">
                                     <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="@section.IconPath"></path></svg></span>
                                     <span>@section.Label</span>
+                                    @if (section.Badge is { } badge)
+                                    {
+                                        <span class="ops-nav-badge neutral">@badge</span>
+                                    }
                                     @if (count > 0)
                                     {
                                         <span class="ops-nav-badge attention">@count<span class="visually-hidden"> open attention @(count == 1 ? "item" : "items")</span></span>
                                     }
                                 </a>
-                                @if (section.UnavailableReason is { } reason)
+                                @if (note is not null)
                                 {
-                                    <span id="@UnavailableId(section)" class="visually-hidden">@reason</span>
+                                    <span id="@UnavailableId(section)" class="visually-hidden">@note</span>
                                 }
                             }
                         }

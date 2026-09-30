@@ -17,9 +17,11 @@ public sealed class SchedulePageTests
     private static readonly string[] RawDependency = ["$raw"];
 
     private static BunitContext CreateContext(NamedRigSelection? selection = null, bool unauthorized = false,
-        Mock<ICameraAgentNamedRigUiService>? rig = null)
+        Mock<ICameraAgentNamedRigUiService>? rig = null, TimeProvider? time = null)
     {
         var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton(time ?? TimeProvider.System);
         rig ??= new Mock<ICameraAgentNamedRigUiService>();
         rig.Setup(service => service.GetAsync(It.IsAny<CancellationToken>())).Returns(() =>
             ValueTask.FromResult(unauthorized
@@ -30,28 +32,359 @@ public sealed class SchedulePageTests
         return context;
     }
 
+    private static void OpenEditor(IRenderedComponent<SchedulePage> cut)
+        => cut.Find("#schedule-edit-open").Click();
+
+    private static AngleSharp.Dom.IElement SaveDraft(IRenderedComponent<SchedulePage> cut)
+        => cut.FindAll("button").Single(button => button.TextContent.Contains("Save draft", StringComparison.Ordinal));
+
     [TestMethod]
     public void Render_ShowsDurableStateEditorPreviewAndRollbackHistory()
     {
         using var context = CreateContext();
-        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State()));
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State())
+        {
+            Calendar = Calendar("UTC", new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero))
+        });
 
         var cut = context.Render<SchedulePage>();
 
         cut.WaitForAssertion(() =>
         {
-            Assert.IsTrue(cut.Markup.Contains("Capture schedule", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Revision 2", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Schedule draft", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Basis revision 2<", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Advanced canonical JSON", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Setpoint profiles", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Weekly windows", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Create override", StringComparison.Ordinal));
+            Assert.AreEqual("Schedule", cut.Find("#schedule-heading").TextContent);
+            StringAssert.Contains(cut.Find(".schedule-state").TextContent, "Revision 2 is open", StringComparison.Ordinal);
             Assert.IsTrue(cut.Markup.Contains("Revision history", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Desired and effective graph", StringComparison.Ordinal));
-            Assert.IsTrue(cut.Markup.Contains("Preview / required", StringComparison.Ordinal));
+            Assert.AreEqual("night", cut.Find(".ops-regime-card.active h4").TextContent);
+            Assert.HasCount(4, cut.FindAll(".ops-progress-step"));
+            Assert.IsEmpty(cut.FindAll("dialog"));
         });
+
+        OpenEditor(cut);
+        var editor = cut.Find("dialog.schedule-editor");
+        StringAssert.Contains(editor.TextContent, "Schedule draft / basis revision 2", StringComparison.Ordinal);
+        foreach (var text in new[] { "Setpoint profiles", "Weekly windows", "Desired and effective graph", "Preview / required", "Advanced canonical JSON" })
+        {
+            StringAssert.Contains(editor.TextContent, text, StringComparison.Ordinal);
+        }
+        Assert.AreEqual("step", cut.Find(".schedule-steps button[aria-current]").GetAttribute("aria-current"));
+        StringAssert.Contains(cut.Find(".schedule-steps button[aria-current]").TextContent, "Capture policy", StringComparison.Ordinal);
+        cut.FindAll("dialog footer button").Single(button => button.TextContent == "Next").Click();
+        StringAssert.Contains(cut.Find(".schedule-steps button[aria-current]").TextContent, "Setpoints", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("section[aria-labelledby='schedule-step-setpoints']").HasAttribute("hidden"));
+        Assert.IsTrue(cut.Find("section[aria-labelledby='schedule-step-policy']").HasAttribute("hidden"));
+
+        cut.Find("dialog .icon-button[aria-label='Close dialog']").Click();
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        cut.Find("#schedule-override-open").Click();
+        StringAssert.Contains(cut.Find("dialog").TextContent, "Create override", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Calendar_DrawsTonightAndTheWeekFromResolvedSegments()
+    {
+        using var context = CreateContext();
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var nights = Enumerable.Range(0, 7).Select(index =>
+        {
+            var start = noon.AddDays(index);
+            CameraAgentScheduleSegment[] segments = index == 1
+                ? [new(start, start.AddDays(1), false, CaptureScheduleAdmissionReason.Blackout, null, null)]
+                :
+                [
+                    new(start, start.AddHours(8), false, CaptureScheduleAdmissionReason.DefaultClosed, null, null),
+                    new(start.AddHours(8), start.AddHours(16), true, CaptureScheduleAdmissionReason.WeeklyWindow, "night", null),
+                    new(start.AddHours(16), start.AddDays(1), false, CaptureScheduleAdmissionReason.DefaultClosed, null, null),
+                ];
+            return new CameraAgentScheduleNight(DateOnly.FromDateTime(start.UtcDateTime), start, start.AddDays(1), segments);
+        }).ToArray();
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State())
+        {
+            Calendar = new CameraAgentScheduleCalendar("UTC", noon.AddHours(9), nights)
+        });
+
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var clock = cut.Find(".schedule-clock");
+            Assert.HasCount(1, clock.QuerySelectorAll(".schedule-segment.open"));
+            StringAssert.Contains(clock.QuerySelector(".schedule-segment.open")!.GetAttribute("style")!, "left: 33.3", StringComparison.Ordinal);
+            StringAssert.Contains(clock.QuerySelector(".schedule-now")!.GetAttribute("style")!, "left: 37.5", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-window-list").TextContent, "20:00 to 04:00", StringComparison.Ordinal);
+            Assert.HasCount(7, cut.FindAll(".ops-week-row"));
+            Assert.HasCount(1, cut.FindAll(".ops-week-row .schedule-segment.blackout"));
+            StringAssert.Contains(cut.Find("#schedule-week-heading").ParentElement!.ParentElement!.TextContent, "6 of 7 open", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void OverrideDialog_ConvertsLocalTimesAndRejectsAnEndBeforeTheStart()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State())
+        {
+            Calendar = Calendar("UTC", new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero))
+        };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.Find("#schedule-override-open").Click();
+        // Blazor's event normalization appends the seconds a step=60 browser input omits; bUnit bypasses it.
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-10-01T21:15:00");
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-10-01T20:00:00");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        Assert.IsEmpty(service.OverrideCommands);
+        StringAssert.Contains(cut.Find("dialog .schedule-message[role='alert']").TextContent, "The override must end after it starts.", StringComparison.Ordinal);
+
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-10-01T23:45:00");
+        cut.Find("#schedule-override-mode").Change("ForceOpen");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        var command = service.OverrideCommands.Single();
+        Assert.AreEqual(CaptureScheduleOverrideMode.ForceOpen, command.Mode);
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 1, 21, 15, 0, TimeSpan.Zero), command.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 1, 23, 45, 0, TimeSpan.Zero), command.EndUtc);
+        Assert.AreEqual("night", command.SetpointProfileId);
+        Assert.AreEqual(State().ActiveRevision.ScheduleSha256, command.ScheduleRevisionSha256);
+        Assert.HasCount(1, cut.FindAll("dialog"));
+    }
+
+    [TestMethod]
+    public void OverrideDialog_IsUnavailableUntilTheSiteTimezoneIsKnown()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var open = cut.Find("#schedule-override-open");
+            Assert.IsTrue(open.HasAttribute("disabled"));
+            StringAssert.Contains(cut.Find("#" + open.GetAttribute("aria-describedby")).TextContent,
+                "site timezone is unknown", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-state").TextContent, "UTC (site timezone unknown)", StringComparison.Ordinal);
+        });
+        Assert.IsEmpty(service.OverrideCommands);
+    }
+
+    [TestMethod]
+    public void OverrideDialog_RejectsALocalTimeThatADaylightSavingChangeRepeats()
+    {
+        using var context = CreateContext();
+        var service = new ScheduleUiService(State())
+        {
+            Calendar = Calendar("America/Denver", new DateTimeOffset(2026, 10, 31, 18, 0, 0, TimeSpan.Zero))
+        };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-override-open").HasAttribute("disabled")));
+        cut.Find("#schedule-override-open").Click();
+        // Denver falls back at 02:00 on 1 November 2026, so 01:30 occurs twice.
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-11-01T01:30:00");
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-11-01T04:00:00");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        Assert.IsEmpty(service.OverrideCommands);
+        StringAssert.Contains(cut.Find("dialog .schedule-message[role='alert']").TextContent, "occurs twice", StringComparison.Ordinal);
+
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-11-01T02:30:00");
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        var command = service.OverrideCommands.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 11, 1, 9, 30, 0, TimeSpan.Zero), command.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 11, 1, 11, 0, 0, TimeSpan.Zero), command.EndUtc);
+    }
+
+    [TestMethod]
+    public void Calendar_RefreshesOnALongLivedPageSoTonightAdvancesAtTheNightBoundary()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(23).AddMinutes(58));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon, generatedUtc: time.GetUtcNow()) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent, "1 Oct", StringComparison.Ordinal));
+
+        var first = time.Timers.Single();
+        Assert.AreEqual(TimeSpan.FromMinutes(2), first.DueTime);
+        time.Now = noon.AddDays(1).AddMinutes(1);
+        service.Calendar = Calendar("UTC", noon.AddDays(1), generatedUtc: time.GetUtcNow());
+        first.Fire();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(2, service.CalendarCalls);
+            StringAssert.Contains(
+                cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent, "2 Oct", StringComparison.Ordinal);
+            Assert.IsTrue(first.Disposed);
+            Assert.AreEqual(TimeSpan.FromMinutes(5), time.Timers[^1].DueTime);
+        });
+
+        cut.Instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        Assert.IsTrue(time.Timers[^1].Disposed);
+        time.Timers[^1].Fire();
+        Assert.AreEqual(2, service.CalendarCalls);
+    }
+
+    [TestMethod]
+    public void Calendar_TimerRefreshRendersWhenTheReadCompletesAsynchronously()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(23));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(TonightText(cut), "1 Oct", StringComparison.Ordinal));
+
+        service.HoldCalendarReads = true;
+        time.Now = noon.AddDays(1).AddMinutes(1);
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => Assert.HasCount(1, service.PendingCalendarReads));
+
+        // Completed from the test thread, off the renderer's context, as an I/O completion would be.
+        service.PendingCalendarReads.Dequeue().SetResult(
+            OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar("UTC", noon.AddDays(1))));
+
+        cut.WaitForAssertion(() => StringAssert.Contains(TonightText(cut), "2 Oct", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Calendar_AnOlderTimerReadNeverReplacesANewerRefresh()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(1));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("UTC", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-refresh").HasAttribute("disabled")));
+
+        service.HoldCalendarReads = true;
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => Assert.HasCount(1, service.PendingCalendarReads));
+        var olderPeriodicRead = service.PendingCalendarReads.Dequeue();
+
+        service.HoldCalendarReads = false;
+        service.Calendar = Calendar("America/Denver", noon.AddHours(6));
+        cut.Find("#schedule-refresh").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find(".schedule-state").TextContent, "America/Denver", StringComparison.Ordinal));
+
+        olderPeriodicRead.SetResult(OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar("UTC", noon)));
+        // Any render the older completion queued runs before this no-op on the renderer's serial dispatcher.
+        cut.InvokeAsync(() => { }).GetAwaiter().GetResult();
+
+        StringAssert.Contains(cut.Find(".schedule-state").TextContent, "America/Denver", StringComparison.Ordinal);
+        Assert.AreEqual(3, service.CalendarCalls);
+    }
+
+    [TestMethod]
+    public void OverrideDialog_AsksForAReviewWhenTheSiteTimezoneChangesWhileItIsOpen()
+    {
+        var noon = new DateTimeOffset(2026, 10, 1, 18, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(noon.AddHours(1));
+        using var context = CreateContext(time: time);
+        var service = new ScheduleUiService(State()) { Calendar = Calendar("America/Denver", noon) };
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-override-open").HasAttribute("disabled")));
+        cut.Find("#schedule-override-open").Click();
+        cut.FindAll("dialog input[type='datetime-local']")[0].Change("2026-10-01T15:15:00");
+        cut.FindAll("dialog input[type='datetime-local']")[1].Change("2026-10-01T17:45:00");
+
+        service.Calendar = Calendar("America/Phoenix", noon.AddHours(1));
+        time.Timers.Single().Fire();
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find(".schedule-state").TextContent, "America/Phoenix", StringComparison.Ordinal));
+
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        Assert.IsEmpty(service.OverrideCommands);
+        StringAssert.Contains(cut.Find("dialog .schedule-message[role='alert']").TextContent,
+            "changed from America/Denver to America/Phoenix", StringComparison.Ordinal);
+
+        cut.FindAll("dialog button").Single(button => button.TextContent == "Create override").Click();
+
+        // Phoenix keeps UTC-7 all year, so the reviewed times convert in the new zone, not Denver's UTC-6.
+        var command = service.OverrideCommands.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 1, 22, 15, 0, TimeSpan.Zero), command.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 10, 2, 0, 45, 0, TimeSpan.Zero), command.EndUtc);
+    }
+
+    private static string TonightText(IRenderedComponent<SchedulePage> cut)
+        => cut.Find("#schedule-tonight-heading").ParentElement!.ParentElement!.TextContent;
+
+    private static CameraAgentScheduleCalendar Calendar(string timeZoneId, DateTimeOffset firstNoon, DateTimeOffset? generatedUtc = null)
+    {
+        var nights = Enumerable.Range(0, 7).Select(index =>
+        {
+            var start = firstNoon.AddDays(index);
+            CameraAgentScheduleSegment[] segments =
+                [new(start, start.AddDays(1), false, CaptureScheduleAdmissionReason.DefaultClosed, null, null)];
+            return new CameraAgentScheduleNight(DateOnly.FromDateTime(start.UtcDateTime), start, start.AddDays(1), segments);
+        }).ToArray();
+        return new CameraAgentScheduleCalendar(timeZoneId, generatedUtc ?? firstNoon, nights);
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        internal DateTimeOffset Now { get; set; } = now;
+
+        internal List<ManualTimer> Timers { get; } = [];
+
+        public override DateTimeOffset GetUtcNow() => Now;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state, dueTime);
+            Timers.Add(timer);
+            return timer;
+        }
+    }
+
+    private sealed class ManualTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+    {
+        internal TimeSpan DueTime { get; } = dueTime;
+
+        internal bool Disposed { get; private set; }
+
+        internal void Fire()
+        {
+            if (!Disposed)
+            {
+                callback(state);
+            }
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period) => false;
+
+        public void Dispose() => Disposed = true;
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [TestMethod]
+    public void EditBlackouts_OpensTheEditorOnTheBlackoutStep()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(State()));
+        var cut = context.Render<SchedulePage>();
+
+        cut.Find("#schedule-exceptions-edit").Click();
+
+        Assert.IsFalse(cut.Find("section[aria-labelledby='schedule-step-blackouts']").HasAttribute("hidden"));
+        StringAssert.Contains(cut.Find(".schedule-steps button[aria-current]").TextContent, "Blackouts", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -61,9 +394,10 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         var friday = cut.FindAll(".window-days input[type=checkbox]")[5];
         friday.Change(true);
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
         Assert.HasCount(1, service.StageCommands);
         var expanded = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload);
         Assert.HasCount(2, expanded.Schedule.WeeklyWindows);
@@ -71,7 +405,7 @@ public sealed class SchedulePageTests
 
         var json = CameraAgentScheduleUiService.SerializeProfile(Profile());
         cut.Find("textarea[aria-label='Local profile JSON']").Input(json);
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
         Assert.HasCount(2, service.StageCommands);
         Assert.AreEqual(json, service.StageCommands[1].Payload);
     }
@@ -83,12 +417,13 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
 
         cut.FindAll(".window-days input[type=checkbox]")[5].Change(true);
         cut.Find("button[aria-label^='Split Friday']").Click();
         Assert.HasCount(2, cut.FindAll(".window-item"));
         cut.FindAll(".window-item input[aria-label='Start local time']")[1].Change("18:30");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.HasCount(1, service.StageCommands);
         var windows = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.WeeklyWindows;
@@ -105,9 +440,10 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
 
         cut.FindAll(".window-days input[type=checkbox]")[4].Change(false);
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.IsTrue(cut.Markup.Contains("needs at least one day", StringComparison.Ordinal));
         Assert.HasCount(0, service.StageCommands);
@@ -120,11 +456,12 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
 
         cut.FindAll(".window-days input[type=checkbox]")[5].Change(true);
         cut.Find("button[aria-label='Remove window for Thursday, Friday']").Click();
         Assert.HasCount(0, cut.FindAll(".window-item"));
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.HasCount(1, service.StageCommands);
         Assert.HasCount(0, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.WeeklyWindows);
@@ -232,7 +569,6 @@ public sealed class SchedulePageTests
     public void HistoricalRevision_UsesRollbackMutation()
     {
         using var context = CreateContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new ScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -255,7 +591,6 @@ public sealed class SchedulePageTests
     public void NewerHistoricalRevision_UsesActivationMutation()
     {
         using var context = CreateContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var state = State();
         var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
         var service = new ScheduleUiService(state with { ActiveRevision = prior });
@@ -280,7 +615,6 @@ public sealed class SchedulePageTests
     public void OlderPendingRevision_UsesRollbackMutation()
     {
         using var context = CreateContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var state = State();
         var prior = state.History.Single(static revision => revision.RevisionNumber == 1);
         var service = new ScheduleUiService(state with { PendingRevision = prior });
@@ -319,17 +653,17 @@ public sealed class SchedulePageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Find(".schedule-card--hero").TextContent, "Open", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".schedule-card--hero").TextContent, "night", StringComparison.Ordinal);
-            StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[1].TextContent, "Revision 2", StringComparison.Ordinal);
-            StringAssert.Contains(cut.FindAll(".schedule-grid .schedule-card")[2].TextContent, "awaiting restart", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-state").TextContent, "Revision 2 is open", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-state").TextContent, "night", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-pending").TextContent, "awaiting restart", StringComparison.Ordinal);
             Assert.AreEqual("/operations/camera", cut.Find("a[href='/operations/camera']").GetAttribute("href"));
-            Assert.AreEqual("Restart now", cut.FindAll(".schedule-grid .schedule-card")[2].QuerySelector("button.restart-now")!.TextContent);
+            Assert.AreEqual("Restart now", cut.Find(".schedule-pending button.restart-now").TextContent);
             Assert.IsEmpty(cut.FindAll("button").Where(button => button.TextContent.Contains("Review apply", StringComparison.Ordinal)
                 || button.TextContent.Contains("Review rollback", StringComparison.Ordinal)));
-            Assert.IsTrue(cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).HasAttribute("disabled"));
-            Assert.IsEmpty(service.StageCommands);
         });
+        OpenEditor(cut);
+        Assert.IsTrue(SaveDraft(cut).HasAttribute("disabled"));
+        Assert.IsEmpty(service.StageCommands);
         rig.Verify(read => read.GetAsync(It.IsAny<CancellationToken>()), Times.Once);
         rig.Verify(read => read.GetRestartStatusAsync(It.IsAny<CancellationToken>()), Times.Once);
         rig.VerifyNoOtherCalls();
@@ -344,9 +678,10 @@ public sealed class SchedulePageTests
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(new ScheduleUiService(state with { PendingRevision = pending }));
 
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
 
         Assert.IsTrue(cut.FindAll("button").Any(button => button.TextContent.Contains("Review apply", StringComparison.Ordinal)));
-        Assert.IsFalse(cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).HasAttribute("disabled"));
+        Assert.IsFalse(SaveDraft(cut).HasAttribute("disabled"));
         Assert.IsEmpty(cut.FindAll("a[href='/operations/camera']"));
     }
 
@@ -436,8 +771,8 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
-        var save = cut.FindAll("button").Single(button =>
-            button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal));
+        OpenEditor(cut);
+        var save = SaveDraft(cut);
 
         save.Click();
         save.Click();
@@ -452,7 +787,6 @@ public sealed class SchedulePageTests
     public async Task ActivationCancel_WhileCommandIsPending_KeepsConfirmationOpenAsync()
     {
         using var context = CreateContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = new DelayedScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
@@ -465,7 +799,7 @@ public sealed class SchedulePageTests
         var command = cut.FindAll("button").Single(button =>
             button.TextContent.Contains("Confirm rollback", StringComparison.Ordinal))
             .TriggerEventAsync("onclick", EventArgs.Empty);
-        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .btn-primary").HasAttribute("disabled")));
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .button.primary").HasAttribute("disabled")));
 
         await dialog.TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
 
@@ -482,10 +816,11 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement("input[aria-label='Setpoint gain']");
 
         cut.Find("input[aria-label='Setpoint gain']").Change("1.125");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.HasCount(1, service.StageCommands);
         var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload);
@@ -503,6 +838,7 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(state);
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement(".policy-fields input");
 
         Assert.IsEmpty(service.StageCommands);
@@ -512,7 +848,7 @@ public sealed class SchedulePageTests
         cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Cadence mode", StringComparison.Ordinal)).QuerySelector("select")!.Change(nameof(CaptureCadenceMode.MinimumStartInterval));
         cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Exposure control", StringComparison.Ordinal)).QuerySelector("select")!.Change(nameof(AutomaticControlOwnership.Disabled));
         Assert.IsEmpty(service.StageCommands);
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.HasCount(1, service.StageCommands);
         var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload);
@@ -537,13 +873,14 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement(".policy-fields input");
 
         cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Temperature target C", StringComparison.Ordinal)).QuerySelector("input")!.Change("cold");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.IsEmpty(service.StageCommands);
-        StringAssert.Contains(cut.Find(".schedule-banner[role='alert']").TextContent,
+        StringAssert.Contains(cut.Find(".schedule-message[role='alert']").TextContent,
             "Temperature target must be a number.", StringComparison.Ordinal);
     }
 
@@ -576,11 +913,12 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(state);
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement(".policy-fields input");
 
         cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Maximum gain", StringComparison.Ordinal)).QuerySelector("input")!.Change("25");
         cut.FindAll(".policy-fields label").Single(label => label.TextContent.Contains("Temperature target C", StringComparison.Ordinal)).QuerySelector("input")!.Change("-8");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands.Single().Payload);
         Assert.AreEqual(25, staged.Rig.Pipeline.Envelope!.MaxGain);
@@ -595,13 +933,14 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement("input[aria-label='Setpoint exposure milliseconds']");
 
         cut.Find("input[aria-label='Setpoint exposure milliseconds']").Change("fast");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.IsEmpty(service.StageCommands);
-        StringAssert.Contains(cut.Find(".schedule-banner[role='alert']").TextContent, "Setpoint 'night' exposure must be a number.", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".schedule-message[role='alert']").TextContent, "Setpoint 'night' exposure must be a number.", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -611,6 +950,7 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement("textarea");
         var edited = CameraAgentScheduleUiService.SerializeProfile(Profile() with
         {
@@ -618,11 +958,11 @@ public sealed class SchedulePageTests
         });
 
         cut.Find("textarea").Input(edited);
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
         Assert.AreEqual(7, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.SetpointProfiles[0].Gain);
 
         cut.Find("input[aria-label='Setpoint gain']").Change("2");
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.AreEqual(2, CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.SetpointProfiles[0].Gain);
     }
@@ -634,17 +974,18 @@ public sealed class SchedulePageTests
         var service = new RetryingScheduleUiService(State());
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
         cut.WaitForElement("input[aria-label='Setpoint gain']");
 
         cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
         cut.FindAll("button").Single(button => button.TextContent.Contains("Add setpoint profile", StringComparison.Ordinal)).Click();
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
         var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload);
         Assert.HasCount(2, staged.Schedule.SetpointProfiles);
         Assert.HasCount(1, staged.Schedule.Blackouts!);
 
         cut.FindAll("button").Single(button => button.GetAttribute("aria-label")?.StartsWith("Remove blackout", StringComparison.Ordinal) == true).Click();
-        cut.FindAll("button").Single(button => button.TextContent.Contains("Save immutable draft", StringComparison.Ordinal)).Click();
+        SaveDraft(cut).Click();
 
         Assert.IsTrue((CameraAgentScheduleUiService.ParseProfile(service.StageCommands[^1].Payload).Schedule.Blackouts?.Count ?? 0) == 0);
     }
@@ -723,6 +1064,28 @@ public sealed class SchedulePageTests
     {
         internal List<string> RollbackRevisionIds { get; } = [];
         internal List<string> ActivationRevisionIds { get; } = [];
+        internal List<CaptureScheduleOverride> OverrideCommands { get; } = [];
+        internal CameraAgentScheduleCalendar? Calendar { get; set; }
+        internal int CalendarCalls { get; private set; }
+
+        /// <summary>When set, calendar reads stay pending until the test completes them, as a real read can.</summary>
+        internal bool HoldCalendarReads { get; set; }
+        internal Queue<TaskCompletionSource<OperatorUiResult<CameraAgentScheduleCalendar>>> PendingCalendarReads { get; } = [];
+
+        public ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>> GetCalendarAsync(
+            int nightCount, CancellationToken cancellationToken)
+        {
+            CalendarCalls++;
+            if (HoldCalendarReads)
+            {
+                var read = new TaskCompletionSource<OperatorUiResult<CameraAgentScheduleCalendar>>();
+                PendingCalendarReads.Enqueue(read);
+                return new ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>>(read.Task);
+            }
+            return ValueTask.FromResult(Calendar is null
+                ? OperatorUiResult<CameraAgentScheduleCalendar>.Failure(OperatorUiResultKind.Unavailable, "The schedule calendar is unavailable.")
+                : OperatorUiResult<CameraAgentScheduleCalendar>.Success(Calendar));
+        }
 
         public ValueTask<OperatorUiResult<CaptureScheduleOperatorState>> GetAsync(CancellationToken cancellationToken)
             => ValueTask.FromResult(state is null
@@ -788,7 +1151,11 @@ public sealed class SchedulePageTests
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> AddOverrideAsync(
             CaptureScheduleOverride scheduleOverride, long expectedVersion, string idempotencyKey,
             string? reason, CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            OverrideCommands.Add(scheduleOverride);
+            return ValueTask.FromResult(OperatorUiResult<CaptureScheduleStoreSnapshot>.Failure(
+                OperatorUiResultKind.Invalid, "Synthetic override result."));
+        }
 
         public ValueTask<OperatorUiResult<CaptureScheduleStoreSnapshot>> ClearOverrideAsync(
             string overrideId, long expectedVersion, string idempotencyKey, string? reason,

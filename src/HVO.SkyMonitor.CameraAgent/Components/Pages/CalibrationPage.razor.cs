@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -12,19 +13,26 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 {
     private const int PageSize = 100;
+    private const string SelectedReason = "calibration.library.selected";
+    private const string StartTriggerId = "start-calibration-acquisition";
     private const string RollbackTriggerId = "review-calibration-rollback";
+    private const string InspectActiveTriggerId = "inspect-calibration-active";
+    private const string FocusFallbackId = "calibration-refresh";
     private CalibrationUiStatus? _status;
     private CalibrationUiBundlePage? _page;
+    private CalibrationUiBundleDetail? _activeDetail;
     private CalibrationUiBundleDetail? _detail;
     private CalibrationUiAcquisitionRequest? _pendingAcquisition;
-    private string? _confirmation;
+    private CalibrationDialog _dialog;
     private string? _pendingTarget;
     private string? _pendingKey;
     private string? _pendingReason;
     private long _pendingExpectedVersion;
+    private bool _rollback;
+    private bool _activationSent;
+    private string? _activationReason;
     private string? _cancelKey;
     private string? _cancelJobId;
-    private string? _cancelReason;
     private long _cancelExpectedVersion;
     private string? _cursor;
     private string? _message;
@@ -43,14 +51,22 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
     private bool _messageIsError;
     private bool _loading = true;
     private bool _busy;
-    private bool _focusConfirmation;
-    private bool _restoreConfirmationFocus;
+    private bool _showDialog;
     private bool _acquisitionRunning;
     private bool _disposed;
     private Task? _acquisitionTask;
     private IJSObjectReference? _module;
-    private ElementReference _confirmationDialog;
-    private string? _confirmationTriggerId;
+    private ElementReference _dialogElement;
+    private string? _dialogTriggerId;
+    private string? _focusTargetId;
+
+    private enum CalibrationDialog
+    {
+        None,
+        Acquire,
+        Activation,
+        Detail
+    }
 
     [Inject] internal ICameraAgentCalibrationUiService CalibrationService { get; set; } = default!;
 
@@ -67,19 +83,10 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     private bool AcquisitionInProgress => _acquisitionRunning || _status?.PendingAcquisition is not null;
 
-    private string ConfirmationHeading => _confirmation switch
-    {
-        "acquire" => "Acquire virtual references?",
-        "rollback" => "Rollback active calibration?",
-        _ => "Activate calibration bundle?"
-    };
-
-    private string ConfirmationDescription => _confirmation switch
-    {
-        "acquire" => "Twelve deterministic source frames and four masters will be published. This does not activate the new bundle.",
-        "rollback" => $"Bundle {_pendingTarget} will become active after the current capture publishes durably.",
-        _ => $"Bundle {_pendingTarget} will become active after the current capture publishes durably."
-    };
+    private IEnumerable<CalibrationUiArtifact> ActiveMasters => _activeDetail is null
+        ? []
+        : OrderedArtifacts(_activeDetail.Artifacts.Where(static artifact =>
+            artifact.Role == CalibrationLibraryArtifactRoles.Master));
 
     protected override async Task OnInitializedAsync()
     {
@@ -89,20 +96,20 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_focusConfirmation)
+        if (_showDialog)
         {
-            _focusConfirmation = false;
+            _showDialog = false;
             _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
                 "import", "./Components/Pages/CalibrationPage.razor.js").ConfigureAwait(false);
-            await _module.InvokeVoidAsync("showModal", _confirmationDialog).ConfigureAwait(false);
+            await _module.InvokeVoidAsync("showModal", _dialogElement).ConfigureAwait(false);
         }
-        else if (_restoreConfirmationFocus)
+        else if (_focusTargetId is not null)
         {
-            _restoreConfirmationFocus = false;
+            var target = _focusTargetId;
+            _focusTargetId = null;
             _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
                 "import", "./Components/Pages/CalibrationPage.razor.js").ConfigureAwait(false);
-            await _module.InvokeVoidAsync(
-                "focusById", _confirmationTriggerId, "calibration-heading").ConfigureAwait(false);
+            await _module.InvokeVoidAsync("focusById", target, FocusFallbackId).ConfigureAwait(false);
         }
     }
 
@@ -117,6 +124,10 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
                 return;
             }
             _status = status.Value;
+            if (!await LoadActiveDetailAsync().ConfigureAwait(false))
+            {
+                return;
+            }
             var page = await CalibrationService.GetBundlesAsync(PageSize, _cursor, CancellationToken.None)
                 .ConfigureAwait(false);
             if (!Accept(page))
@@ -133,25 +144,67 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void BeginAcquire()
+    /// <summary>
+    /// Loads the active bundle's references for the library view. Published bundles are immutable, so the detail is
+    /// fetched once per active bundle; a failure leaves the summary in place and the next refresh retries it.
+    /// </summary>
+    private async Task<bool> LoadActiveDetailAsync()
     {
-        if (_status is null)
+        var activeId = _status?.ActiveBundle?.BundleId;
+        if (activeId is null)
+        {
+            _activeDetail = null;
+            return true;
+        }
+        if (string.Equals(_activeDetail?.Summary.BundleId, activeId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        _activeDetail = null;
+        var result = await CalibrationService.GetBundleAsync(activeId, CancellationToken.None).ConfigureAwait(false);
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            Deny();
+            return false;
+        }
+        if (result.IsSuccess)
+        {
+            _activeDetail = result.Value;
+        }
+        return true;
+    }
+
+    private void OpenAcquireDialog()
+    {
+        if (_status is null || AcquisitionInProgress || _status.AcquisitionUnavailableReason is not null)
         {
             return;
         }
-        if (!TryCreateAcquisition(out var request, out var error))
+        _pendingAcquisition = null;
+        _pendingKey = null;
+        OpenDialog(CalibrationDialog.Acquire, StartTriggerId);
+    }
+
+    private async Task ConfirmAcquireAsync()
+    {
+        if (_status is null || _busy)
         {
-            SetMessage(error ?? "Calibration acquisition input is invalid.", error: true);
             return;
         }
-        _pendingAcquisition = request;
-        _pendingTarget = null;
-        _pendingExpectedVersion = _status.Version;
-        _pendingKey = NewKey();
-        _pendingReason = request.Reason;
-        _confirmationTriggerId = "start-calibration-acquisition";
-        _confirmation = "acquire";
-        _focusConfirmation = true;
+        if (_pendingAcquisition is null)
+        {
+            if (!TryCreateAcquisition(out var request, out var error))
+            {
+                SetMessage(error ?? "Calibration acquisition input is invalid.", error: true);
+                return;
+            }
+            // The request, key and version are pinned on the first send so a retry after an unknown result replays
+            // the identical durable command instead of acquiring a second set of references.
+            _pendingAcquisition = request;
+            _pendingExpectedVersion = _status.Version;
+            _pendingKey = NewKey();
+        }
+        await StartAcquisitionAsync().ConfigureAwait(false);
     }
 
     private void BeginActivation(string bundleId, string triggerId, bool rollback)
@@ -160,67 +213,54 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         {
             return;
         }
-        _pendingAcquisition = null;
         _pendingTarget = bundleId;
         _pendingExpectedVersion = _status.Version;
         _pendingKey = NewKey();
-        _pendingReason = string.IsNullOrWhiteSpace(_reason) ? null : _reason.Trim();
-        _confirmationTriggerId = triggerId;
-        _confirmation = rollback ? "rollback" : "activate";
-        _focusConfirmation = true;
+        _pendingReason = null;
+        _activationReason = null;
+        _activationSent = false;
+        _rollback = rollback;
+        OpenDialog(CalibrationDialog.Activation, triggerId);
     }
 
-    private async Task ConfirmAsync()
+    private async Task ConfirmActivationAsync()
     {
-        if (_confirmation is null || _pendingKey is null)
+        if (_pendingTarget is null || _pendingKey is null || _busy)
         {
             return;
         }
-        if (_confirmation == "acquire" && _pendingAcquisition is not null)
+        if (!_activationSent)
         {
-            await StartAcquisitionAsync().ConfigureAwait(false);
-            return;
+            _pendingReason = string.IsNullOrWhiteSpace(_activationReason) ? null : _activationReason.Trim();
+            _activationSent = true;
         }
         _busy = true;
-        OperatorUiResultKind kind;
-        string? failure;
-        if (_pendingTarget is not null)
-        {
-            var result = _confirmation == "rollback"
-                ? await CalibrationService.RollbackAsync(
-                    _pendingTarget, _pendingExpectedVersion, _pendingKey, _pendingReason, CancellationToken.None)
-                    .ConfigureAwait(false)
-                : await CalibrationService.ActivateAsync(
-                    _pendingTarget, _pendingExpectedVersion, _pendingKey, _pendingReason, CancellationToken.None)
-                    .ConfigureAwait(false);
-            kind = result.Kind;
-            failure = result.Message;
-        }
-        else
-        {
-            _busy = false;
-            return;
-        }
+        var result = _rollback
+            ? await CalibrationService.RollbackAsync(
+                _pendingTarget, _pendingExpectedVersion, _pendingKey, _pendingReason, CancellationToken.None)
+                .ConfigureAwait(false)
+            : await CalibrationService.ActivateAsync(
+                _pendingTarget, _pendingExpectedVersion, _pendingKey, _pendingReason, CancellationToken.None)
+                .ConfigureAwait(false);
         _busy = false;
-        if (kind == OperatorUiResultKind.Unauthorized)
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
             Deny();
             return;
         }
-        if (kind == OperatorUiResultKind.Unavailable)
+        if (result.Kind == OperatorUiResultKind.Unavailable)
         {
-            SetMessage(failure ?? "The command result is unavailable. Retry uses the same durable key.", error: true);
+            SetMessage(result.Message ?? "The command result is unavailable. Retry uses the same durable key.", error: true);
             return;
         }
-        var succeeded = kind == OperatorUiResultKind.Success;
-        ClearConfirmation();
-        if (!succeeded)
+        CloseDialog(restoreFocus: true);
+        if (!result.IsSuccess)
         {
-            if (kind == OperatorUiResultKind.Conflict)
+            if (result.Kind == OperatorUiResultKind.Conflict)
             {
                 await RefreshAsync().ConfigureAwait(false);
             }
-            SetMessage(failure ?? "The calibration command failed.", error: true);
+            SetMessage(result.Message ?? "The calibration command failed.", error: true);
             return;
         }
         await RefreshAsync().ConfigureAwait(false);
@@ -232,10 +272,14 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         var request = _pendingAcquisition!;
         var expectedVersion = _pendingExpectedVersion;
         var key = _pendingKey!;
-        _confirmation = null;
+        // Close the dialog and schedule the single focus restore before the observer starts: a synchronous result
+        // must not restore focus a second time, and an unavailable result reopens the dialog instead.
+        _dialog = CalibrationDialog.None;
+        _showDialog = false;
+        _message = null;
+        _focusTargetId = StartTriggerId;
         _acquisitionRunning = true;
         _acquisitionTask = ObserveAcquisitionAsync(request, expectedVersion, key);
-        _restoreConfirmationFocus = _confirmation is null && _status is not null;
         while (!_acquisitionTask.IsCompleted && !_disposed)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
@@ -276,8 +320,10 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
                 }
                 if (result.Kind == OperatorUiResultKind.Unavailable)
                 {
-                    _confirmation = "acquire";
-                    _focusConfirmation = true;
+                    _focusTargetId = null;
+                    _dialog = CalibrationDialog.Acquire;
+                    _dialogTriggerId = StartTriggerId;
+                    _showDialog = true;
                     SetMessage(
                         result.Message ?? "The acquisition result is unavailable. Retry uses the same durable key.",
                         error: true);
@@ -285,7 +331,8 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
                 }
                 var cancelled = result.Kind == OperatorUiResultKind.Conflict &&
                     result.Message?.Contains("cancelled", StringComparison.OrdinalIgnoreCase) == true;
-                ClearConfirmation(restoreFocus: _restoreConfirmationFocus);
+                _pendingAcquisition = null;
+                _pendingKey = null;
                 await RefreshAsync().ConfigureAwait(false);
                 SetMessage(
                     result.IsSuccess
@@ -327,9 +374,13 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         }
     }
 
+    // A method group keeps one event handler id across the status poll's re-renders.
+    private Task CancelPendingAcquisitionAsync()
+        => _status?.PendingAcquisition is { } pending ? CancelAcquisitionAsync(pending) : Task.CompletedTask;
+
     private async Task CancelAcquisitionAsync(CalibrationUiAcquisition acquisition)
     {
-        if (_status is null)
+        if (_status is null || _busy)
         {
             return;
         }
@@ -338,14 +389,13 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
             _cancelJobId = acquisition.JobId;
             _cancelExpectedVersion = _status.Version;
             _cancelKey = NewKey();
-            _cancelReason = string.IsNullOrWhiteSpace(_reason) ? null : _reason.Trim();
         }
         _busy = true;
         var result = await CalibrationService.CancelAsync(
             acquisition.JobId,
             _cancelExpectedVersion,
             _cancelKey!,
-            _cancelReason,
+            null,
             CancellationToken.None).ConfigureAwait(false);
         _busy = false;
         if (result.Kind == OperatorUiResultKind.Unauthorized)
@@ -357,7 +407,6 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         {
             _cancelJobId = null;
             _cancelKey = null;
-            _cancelReason = null;
         }
         if (!result.IsSuccess)
         {
@@ -372,16 +421,30 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         SetMessage("Calibration acquisition cancelled.", error: false);
     }
 
-    private async Task ShowDetailAsync(string bundleId)
+    private async Task ShowDetailAsync(string bundleId, string triggerId)
     {
-        _busy = true;
-        var result = await CalibrationService.GetBundleAsync(bundleId, CancellationToken.None).ConfigureAwait(false);
-        _busy = false;
-        if (!Accept(result))
+        if (_busy)
         {
             return;
         }
-        _detail = result.Value;
+        CalibrationUiBundleDetail detail;
+        if (string.Equals(_activeDetail?.Summary.BundleId, bundleId, StringComparison.Ordinal))
+        {
+            detail = _activeDetail!;
+        }
+        else
+        {
+            _busy = true;
+            var result = await CalibrationService.GetBundleAsync(bundleId, CancellationToken.None).ConfigureAwait(false);
+            _busy = false;
+            if (!Accept(result))
+            {
+                return;
+            }
+            detail = result.Value!;
+        }
+        _detail = detail;
+        OpenDialog(CalibrationDialog.Detail, triggerId);
     }
 
     private async Task LoadOlderAsync()
@@ -391,14 +454,12 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
             return;
         }
         _cursor = _page.NextCursor;
-        _detail = null;
         await RefreshAsync().ConfigureAwait(false);
     }
 
     private async Task LoadNewestAsync()
     {
         _cursor = null;
-        _detail = null;
         await RefreshAsync().ConfigureAwait(false);
     }
 
@@ -469,32 +530,50 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
     {
         _status = null;
         _page = null;
-        _detail = null;
-        ClearConfirmation(restoreFocus: false);
+        _activeDetail = null;
+        CloseDialog(restoreFocus: false);
         NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
+    private void OpenDialog(CalibrationDialog dialog, string triggerId)
+    {
+        _message = null;
+        _focusTargetId = null;
+        _dialogTriggerId = triggerId;
+        _dialog = dialog;
+        _showDialog = true;
+    }
+
+    /// <summary>Ignored while a durable command is in flight so its result is always observed in the dialog.</summary>
     private void CancelConfirmation()
     {
         if (!_busy)
         {
-            ClearConfirmation();
+            CloseDialog(restoreFocus: true);
         }
     }
 
-    private void ClearConfirmation(bool restoreFocus = true)
+    private void CloseDetail() => CloseDialog(restoreFocus: true);
+
+    private void CloseDialog(bool restoreFocus)
     {
-        _confirmation = null;
+        if (_dialog != CalibrationDialog.None)
+        {
+            // Opening a dialog clears the page message, so anything shown now was written inside the dialog and
+            // closes with it. Callers that report an outcome on the page set it after closing.
+            _message = null;
+            _focusTargetId = restoreFocus ? _dialogTriggerId : null;
+        }
+        _dialog = CalibrationDialog.None;
+        _showDialog = false;
+        _detail = null;
         _pendingTarget = null;
         _pendingAcquisition = null;
         _pendingKey = null;
         _pendingReason = null;
-        _restoreConfirmationFocus = restoreFocus;
+        _activationSent = false;
+        _dialogTriggerId = null;
     }
-
-    private static string ActivationTriggerId(string bundleId) => $"review-calibration-activate-{bundleId}";
-
-    private void CloseDetail() => _detail = null;
 
     private void SetMessage(string message, bool error)
     {
@@ -507,6 +586,189 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     private void EffectiveUntilChanged(ChangeEventArgs args)
         => _effectiveUntil = Convert.ToString(args.Value, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static bool CanActivate(CalibrationUiBundleSummary bundle)
+        => bundle.PublicationState == "published";
+
+    private bool CanActivateOther(CalibrationUiBundleSummary bundle)
+        => CanActivate(bundle) && !string.Equals(bundle.BundleId, _status?.ActiveBundle?.BundleId, StringComparison.Ordinal);
+
+    private string ActiveKindsLabel(CalibrationUiBundleSummary active)
+        => _activeDetail is null
+            ? $"{active.SourceCount} source frames"
+            : string.Join(" / ", ActiveMasters.Select(static master => master.Kind));
+
+    private string ReviewLabel(CalibrationUiBundleSummary? active)
+    {
+        if (active is null)
+        {
+            return "Not applicable";
+        }
+        if (active.Applicability.EffectiveUntilUtc is not { } until)
+        {
+            return "None set";
+        }
+        var days = (until - TimeProvider.GetUtcNow()).TotalDays;
+        return days switch
+        {
+            <= 0 => "Expired",
+            < 1 => "Today",
+            _ => string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(days):0} day{(Math.Floor(days) == 1 ? "" : "s")}")
+        };
+    }
+
+    private static string ReviewDetail(CalibrationUiBundleSummary? active)
+        => active?.Applicability.EffectiveUntilUtc is { } until
+            ? $"Validity interval ends {until.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}"
+            : active is null ? "No active bundle" : "Validity is open-ended";
+
+    private static (string Label, string Detail, string Chip) Compatibility(string? reason) => reason switch
+    {
+        null => ("Not checked", "No capture has requested references yet", "pending"),
+        SelectedReason => ("Compatible", "The last capture matched the active bundle", "success"),
+        CalibrationLibraryReasonCodes.Missing => ("No references", "No bundle is active", "warning"),
+        CalibrationLibraryReasonCodes.Inactive => ("Not active", "No usable bundle is active", "warning"),
+        CalibrationLibraryReasonCodes.Stale => ("Outside validity", "The capture fell outside the validity interval", "warning"),
+        CalibrationLibraryReasonCodes.IncompatibleIdentity => ("Rig mismatch", "Agent, rig or sensor profile differs", "failure"),
+        CalibrationLibraryReasonCodes.IncompatibleReadout => ("Readout mismatch", "Geometry, depth or CFA differs", "failure"),
+        CalibrationLibraryReasonCodes.IncompatibleConditions => ("Conditions mismatch", "Gain, offset or temperature is out of range", "warning"),
+        CalibrationLibraryReasonCodes.IncompatibleExposure => ("Exposure mismatch", "The light exposure is out of range", "warning"),
+        CalibrationLibraryReasonCodes.IncompatibleCodeSpace => ("Code-space mismatch", "Stored sample codes differ", "failure"),
+        CalibrationLibraryReasonCodes.Corrupt => ("Corrupt", "The active bundle failed verification", "failure"),
+        CalibrationLibraryReasonCodes.Incomplete => ("Incomplete", "The active bundle is missing evidence", "failure"),
+        CalibrationLibraryReasonCodes.Ambiguous => ("Ambiguous", "More than one reference matched", "failure"),
+        _ => (reason, "Reported by the last selection", "pending")
+    };
+
+    private static string PublicationLabel(CalibrationUiBundleSummary bundle, bool isActive)
+        => isActive && bundle.PublicationState == "published"
+            ? "Active"
+            : bundle.PublicationState switch
+            {
+                "published" => "Retained",
+                "incomplete" => "Incomplete",
+                "corrupt" => "Corrupt",
+                "quarantined" => "Quarantined",
+                _ => bundle.PublicationState
+            };
+
+    private static string PublicationChip(CalibrationUiBundleSummary bundle, bool isActive)
+        => bundle.PublicationState switch
+        {
+            "published" => isActive ? "success" : "pending",
+            "incomplete" => "warning",
+            _ => "failure"
+        };
+
+    private static IEnumerable<CalibrationUiArtifact> OrderedArtifacts(IEnumerable<CalibrationUiArtifact> artifacts)
+        => artifacts
+            .OrderBy(static artifact => KindOrder(artifact.Kind))
+            .ThenBy(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Master ? 0 : 1)
+            .ThenBy(static artifact => artifact.SourceIndex ?? -1);
+
+    private static int KindOrder(string kind)
+    {
+        for (var index = 0; index < CalibrationReferenceKinds.All.Count; index++)
+        {
+            if (CalibrationReferenceKinds.All[index] == kind)
+            {
+                return index;
+            }
+        }
+        return int.MaxValue;
+    }
+
+    private static string KindTitle(string kind)
+        => kind.Length == 0 ? kind : string.Concat(char.ToUpperInvariant(kind[0]).ToString(), kind[1..]);
+
+    private static RenderFragment KindGlyph(string kind) => builder =>
+    {
+        builder.OpenElement(0, "svg");
+        builder.AddAttribute(1, "viewBox", "0 0 20 20");
+        builder.AddAttribute(2, "aria-hidden", "true");
+        switch (kind)
+        {
+            case CalibrationReferenceKinds.Dark:
+                builder.OpenElement(3, "circle");
+                builder.AddAttribute(4, "cx", "10");
+                builder.AddAttribute(5, "cy", "10");
+                builder.AddAttribute(6, "r", "5");
+                builder.CloseElement();
+                break;
+            case CalibrationReferenceKinds.Flat:
+                builder.OpenElement(7, "circle");
+                builder.AddAttribute(8, "cx", "10");
+                builder.AddAttribute(9, "cy", "10");
+                builder.AddAttribute(10, "r", "7");
+                builder.CloseElement();
+                builder.OpenElement(11, "circle");
+                builder.AddAttribute(12, "cx", "10");
+                builder.AddAttribute(13, "cy", "10");
+                builder.AddAttribute(14, "r", "2");
+                builder.CloseElement();
+                break;
+            case CalibrationReferenceKinds.Defect:
+                builder.OpenElement(15, "path");
+                builder.AddAttribute(16, "d", "m4 4 12 12M16 4 4 16");
+                builder.CloseElement();
+                break;
+            default:
+                builder.OpenElement(17, "path");
+                builder.AddAttribute(18, "d", "M4 10h12M10 4v12");
+                builder.CloseElement();
+                break;
+        }
+        builder.CloseElement();
+    };
+
+    private static string SourceLabel(string source) => source switch
+    {
+        CalibrationLibraryBundleSources.VirtualAcquisitionV1 => "Software-generated (VirtualSky)",
+        CalibrationLibraryBundleSources.SyntheticReferencesV1 => "Synthetic references",
+        _ => source
+    };
+
+    private static string Cfa(FrameLayoutDescriptor layout)
+        => layout.CfaPattern == ColorFilterArrayPattern.None ? "Mono" : layout.CfaPattern.ToString().ToUpperInvariant();
+
+    private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string Seconds(TimeSpan value)
+        => string.Create(CultureInfo.InvariantCulture, $"{value.TotalSeconds:0.000}s");
+
+    private static string Temperature(double? value)
+        => value is { } temperature
+            ? string.Create(CultureInfo.InvariantCulture, $"{temperature:0.#} C")
+            : "temperature not recorded";
+
+    private static string Range(double minimum, double maximum)
+        => minimum == maximum ? Number(minimum) : $"{Number(minimum)} to {Number(maximum)}";
+
+    private static string Range(double? minimum, double? maximum) => (minimum, maximum) switch
+    {
+        (null, null) => "Any",
+        ({ } low, { } high) => Range(low, high),
+        ({ } low, null) => $"{Number(low)} or more",
+        (null, { } high) => $"up to {Number(high)}"
+    };
+
+    private static string TemperatureRange(double? minimum, double? maximum)
+        => minimum is null && maximum is null ? "Any" : $"{Range(minimum, maximum)} C";
+
+    private static string SecondsRange(TimeSpan? minimum, TimeSpan? maximum) => (minimum, maximum) switch
+    {
+        (null, null) => "Any",
+        ({ } low, { } high) when low == high => Seconds(low),
+        ({ } low, { } high) => $"{Seconds(low)} to {Seconds(high)}",
+        ({ } low, null) => $"{Seconds(low)} or more",
+        (null, { } high) => $"up to {Seconds(high)}"
+    };
+
+    private static string Validity(CalibrationApplicabilityV1 applicability)
+        => $"{When(applicability.EffectiveFromUtc)} to {(applicability.EffectiveUntilUtc is { } until ? When(until) : "open-ended")}";
+
+    private static string When(DateTimeOffset? value)
+        => value?.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture) ?? "never";
 
     private static bool TryParseUtc(string value, out DateTimeOffset result)
     {
@@ -530,22 +792,28 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     private static string ShortHash(string value) => value.Length <= 12 ? value : value[..12];
 
-    private static string FormatUtc(DateTimeOffset? value) => value?.ToString("u") ?? "No recorded result";
+    private static string AcquisitionStateLabel(string state) => state switch
+    {
+        CalibrationAcquisitionStates.Planned => "Acquisition planned",
+        CalibrationAcquisitionStates.Acquiring => "Acquiring source frames",
+        CalibrationAcquisitionStates.Building => "Building masters",
+        CalibrationAcquisitionStates.Publishing => "Publishing the bundle",
+        _ => $"Acquisition {state}"
+    };
 
-    private static string Split(string value)
-        => string.Concat(value.Select((character, index) =>
-            index > 0 && char.IsUpper(character) ? $" {character}" : character.ToString()));
+    private static string ChangeLabel(CalibrationLibraryActivationSnapshot change) => change.CommandKind switch
+    {
+        "rollback" => $"Rolled back to {change.ToBundleId}",
+        "activate" => $"Activated {change.ToBundleId}",
+        _ => $"{change.CommandKind} {change.ToBundleId}"
+    };
 
     private static string FormatLayout(FrameLayoutDescriptor layout)
-        => $"{layout.Width} x {layout.Height} {layout.PixelFormat}, {layout.SampleDepthBits}-in-{layout.ContainerDepthBits}, {layout.CfaPattern}";
+        => $"{layout.Width} x {layout.Height} {layout.PixelFormat}, {layout.SampleDepthBits}-in-{layout.ContainerDepthBits}, {Cfa(layout)}";
 
-    private static string FormatConditions(CalibrationApplicabilityV1 applicability)
-        => string.Create(CultureInfo.InvariantCulture,
-            $"{applicability.MinimumGain:g} / {applicability.MinimumOffset?.ToString("g", CultureInfo.InvariantCulture) ?? "unknown"} / {applicability.MinimumTemperatureC?.ToString("g", CultureInfo.InvariantCulture) ?? "unknown"} C");
+    private static string ActivationTriggerId(string bundleId) => $"review-calibration-activate-{bundleId}";
 
-    private static string FormatApplicability(CalibrationApplicabilityV1 applicability)
-        => string.Create(CultureInfo.InvariantCulture,
-            $"{applicability.MinimumLightExposure?.TotalSeconds.ToString("g", CultureInfo.InvariantCulture) ?? "any"} s / {applicability.EffectiveFromUtc:u} to {applicability.EffectiveUntilUtc?.ToString("u", CultureInfo.InvariantCulture) ?? "open"}");
+    private static string InspectTriggerId(string bundleId) => $"inspect-calibration-{bundleId}";
 
     public async ValueTask DisposeAsync()
     {

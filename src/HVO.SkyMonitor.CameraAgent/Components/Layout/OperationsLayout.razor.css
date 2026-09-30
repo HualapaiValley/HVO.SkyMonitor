@@ -92,6 +92,7 @@
 .ops-nav-group { margin: 1.1rem .6rem .4rem; color: var(--muted); font-size: .69rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
 .ops-nav-badge { padding: .15rem .4rem; border-radius: 999px; font: 700 .62rem ui-monospace, monospace; }
 .ops-nav-badge.attention { color: #f1c96f; background: var(--amber-soft); }
+.ops-nav-badge.neutral { color: var(--muted); background: var(--surface-raised); }
 
 .operations-scope {
     display: grid;
@@ -128,7 +129,7 @@
 
 .operations-content { min-width: 0; padding: clamp(1rem, 2.6vw, 2.5rem) clamp(.75rem, 2.6vw, 2.5rem) 4rem; }
 /* Pages not yet ported from the prototype still provide their own gutters; do not stack the layout gutter. */
-.operations-content:has(.system-page, .quarantine-page, .schedule-console, .calibration-console) { padding: 0; }
+.operations-content:has(.system-page, .quarantine-page) { padding: 0; }
 .operations-page-frame { width: min(100%, 92rem); margin: 0 auto; }
 
 /* Base rules from styles.css. */
@@ -359,6 +360,15 @@
 .operations-layout ::deep .ops-note-banner strong { color: var(--text); }
 .operations-layout ::deep .ops-note-banner.compact { margin: .7rem 0 0; box-shadow: none; }
 
+/* Prototype .ops-progress-steps; the state modifiers colour the top rule the prototype always draws green. */
+.operations-layout ::deep .ops-progress-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .4rem; margin: 0; padding: 0; list-style: none; }
+.operations-layout ::deep .ops-progress-step { position: relative; padding: .65rem; border-top: 2px solid var(--green); color: var(--muted); background: rgba(13, 20, 32, .54); }
+.operations-layout ::deep .ops-progress-step.blocking { border-top-color: var(--red); }
+.operations-layout ::deep .ops-progress-step.info { border-top-color: var(--blue); }
+.operations-layout ::deep .ops-progress-step.not-reached { border-top-color: var(--border-strong); opacity: .72; }
+.operations-layout ::deep .ops-progress-step strong { display: block; color: var(--text); font-size: .6rem; }
+.operations-layout ::deep .ops-progress-step span { display: block; margin-top: .18rem; font-size: .51rem; line-height: 1.4; }
+
 .operations-layout ::deep .ops-action-list { display: grid; gap: .45rem; }
 .operations-layout ::deep .ops-action-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .7rem; align-items: center; padding: .65rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); }
 .operations-layout ::deep .ops-action-icon { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .4rem; color: var(--blue); background: var(--blue-soft); }
@@ -416,6 +426,7 @@
     .operations-layout ::deep :is(.ops-grid.two, .ops-grid.three) { grid-template-columns: 1fr; }
     .operations-layout ::deep .ops-span-two { grid-column: auto; }
     .operations-layout ::deep .ops-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .operations-layout ::deep .ops-progress-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .operations-layout ::deep .ops-profile-banner { align-items: flex-start; flex-direction: column; }
     .operations-layout ::deep .ops-profile-banner dl { width: 100%; justify-content: space-between; }
     .operations-layout ::deep .ops-status-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
