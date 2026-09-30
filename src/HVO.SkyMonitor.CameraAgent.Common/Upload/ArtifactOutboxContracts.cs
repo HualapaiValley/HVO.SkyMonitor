@@ -91,6 +91,24 @@ public sealed record ArtifactOutboxSnapshot(
     long AbandonedCount,
     DateTimeOffset? EvaluatedUtc = null);
 
+/// <summary>
+/// One outbox record as the Delivery workspace shows it: which capture it carries, what the payload
+/// is, where it stands and when it next moves. It deliberately omits the idempotency key, storage
+/// paths and the manifest, so nothing in it can address or reveal stored evidence.
+/// </summary>
+public sealed record ArtifactOutboxDeliveryRecord(
+    long? CaptureSequence,
+    FrameArtifactRole? Role,
+    string? MediaType,
+    long? PayloadBytes,
+    ArtifactOutboxStatus Status,
+    int AttemptCount,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset UpdatedUtc,
+    DateTimeOffset NextAttemptUtc,
+    DateTimeOffset? AcknowledgedUtc,
+    string? ReasonCode);
+
 public sealed record ArtifactOutboxAuditEntry(
     long Sequence,
     string Action,

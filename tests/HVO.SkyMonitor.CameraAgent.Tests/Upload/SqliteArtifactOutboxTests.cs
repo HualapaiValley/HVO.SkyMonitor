@@ -387,6 +387,57 @@ public sealed class SqliteArtifactOutboxTests
     }
 
     [TestMethod]
+    public async Task RecentDelivery_ListsUnfinishedWorkBeforeFinishedRecordsWithoutKeysAsync()
+    {
+        using var root = new TemporaryRoot();
+        var clock = new MutableTimeProvider(StartUtc);
+        using var outbox = new SqliteArtifactOutbox(clock);
+        var acknowledged = CreateManifest(root.Path, "frames/acknowledged.bin", StartUtc, 11);
+        await outbox.EnqueueAsync(root.Path, acknowledged, CancellationToken.None).ConfigureAwait(false);
+        var ackLease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(ackLease);
+        await outbox.AcknowledgeAsync(root.Path, ackLease, CreateAcknowledgement(acknowledged), CancellationToken.None).ConfigureAwait(false);
+        var retrying = CreateManifest(root.Path, "frames/retrying.bin", StartUtc.AddMinutes(1), 12);
+        await outbox.EnqueueAsync(root.Path, retrying, CancellationToken.None).ConfigureAwait(false);
+        var retryLease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(retryLease);
+        await outbox.RetryAsync(root.Path, retryLease, StartUtc.AddMinutes(5), "central-unavailable", CancellationToken.None).ConfigureAwait(false);
+        var quarantined = CreateManifest(root.Path, "frames/quarantined.bin", StartUtc.AddMinutes(2), 13);
+        await outbox.EnqueueAsync(root.Path, quarantined, CancellationToken.None).ConfigureAwait(false);
+        var pending = CreateManifest(root.Path, "frames/pending.bin", StartUtc.AddMinutes(3), 14);
+        await outbox.EnqueueAsync(root.Path, pending, CancellationToken.None).ConfigureAwait(false);
+        await outbox.EnqueueAsync(root.Path, CreateStructuredManifest(root.Path, "products/scene.json"), CancellationToken.None).ConfigureAwait(false);
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            // A quarantined row whose manifest is no longer JSON must still list, without a capture.
+            command.CommandText = "UPDATE artifact_outbox_records SET status = 'quarantined', last_reason = 'Bad Reason', manifest_bytes = zeroblob(64) WHERE idempotency_key = $key;";
+            command.Parameters.AddWithValue("$key", quarantined.IdempotencyKey);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        var all = await outbox.ReadRecentDeliveryAsync(root.Path, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, CancellationToken.None).ConfigureAwait(false);
+        var limited = await outbox.ReadRecentDeliveryAsync(root.Path, 2, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "Pending:1,Pending:14,Quarantined:-,Retry:12,Acknowledged:11",
+            string.Join(",", all.Select(static record => $"{record.Status}:{record.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}")));
+        Assert.AreEqual("Pending:1,Pending:14", string.Join(",", limited.Select(static record => $"{record.Status}:{record.CaptureSequence}")));
+        var retry = all[3];
+        Assert.AreEqual(1, retry.AttemptCount);
+        Assert.AreEqual(StartUtc.AddMinutes(5), retry.NextAttemptUtc);
+        Assert.AreEqual("central-unavailable", retry.ReasonCode);
+        Assert.AreEqual("unspecified", all[2].ReasonCode);
+        Assert.AreEqual(FrameArtifactRole.Raw, all[4].Role);
+        Assert.AreEqual(Payload.LongLength, all[4].PayloadBytes);
+        Assert.AreEqual(StartUtc, all[4].AcknowledgedUtc);
+        Assert.IsNull(all[3].AcknowledgedUtc);
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await outbox.ReadRecentDeliveryAsync(root.Path, SqliteArtifactOutbox.MaximumRecentDeliveryRecords + 1, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task OperationsProjection_PagesBeyondFiftyQuarantinedRecordsAsync()
     {
         using var root = new TemporaryRoot();

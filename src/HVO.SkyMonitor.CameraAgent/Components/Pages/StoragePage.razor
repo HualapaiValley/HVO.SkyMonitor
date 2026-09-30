@@ -1,0 +1,261 @@
+@page "/operations/storage"
+@page "/operations/data"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Storage &amp; retention</PageTitle>
+
+<OperationsPageHeading Eyebrow="Data / local evidence safety" Title="Storage &amp; retention" HeadingId="storage-heading"
+                       Description="Keep immutable evidence, durable lanes, retention eligibility, and disk pressure visible as one local safety boundary.">
+    <Actions>
+        <button type="button" id="storage-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@_loading" @onclick="LoadAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        <button type="button" id="@PolicyTriggerId" class="button secondary" title="@PolicyUnavailableReason"
+                aria-describedby="@(PolicyUnavailableReason is null ? null : "storage-policy-reason")"
+                disabled="@(PolicyUnavailableReason is not null)" @onclick="OpenPolicyDialog">Retention policy</button>
+        @if (PolicyUnavailableReason is not null)
+        {
+            <span id="storage-policy-reason" class="visually-hidden">@PolicyUnavailableReason</span>
+        }
+        <button type="button" id="storage-reconcile" class="button secondary" title="@ReconcileUnavailableReason" aria-describedby="storage-reconcile-reason" disabled>Run reconciliation</button>
+        <span id="storage-reconcile-reason" class="visually-hidden">@ReconcileUnavailableReason</span>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _view is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading storage and retention state.</span></div>
+}
+else if (_view is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Storage state unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var summary = _view.Summary;
+    var storage = summary.Storage.Value;
+    var capacity = CapacityState(storage);
+    var holds = Holds;
+    @if (_error is not null)
+    {
+        <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Showing the last valid snapshot.</strong> @_error</span></div>
+    }
+    @if (HasPressure)
+    {
+        <div class="ops-note-banner storage-pressure" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Pressure detected.</strong> Retention is shortened for eligible history only; evidence still waiting to be processed, delivered or reviewed stays pinned.</span></div>
+    }
+
+    <div class="ops-grid sidebar-right">
+        <section class="ops-panel storage-capacity" aria-labelledby="storage-capacity-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="storage-capacity-heading">Local capacity</h2><p>Pressure shortens only eligible history; held evidence remains pinned.</p></div>
+                <span class="state-chip @capacity.Chip">@capacity.Text</span>
+            </header>
+            @if (storage.Count == 0)
+            {
+                <p class="storage-empty">No storage location has reported its capacity yet. The first retention sweep records it.</p>
+            }
+            else
+            {
+                @foreach (var location in storage)
+                {
+                    var used = UsedPercent(location);
+                    <div class="storage-location">
+                        @if (storage.Count > 1)
+                        {
+                            <h3>@OperationsPage.SplitWords(location.Alias)</h3>
+                        }
+                        <div class="ops-storage-visual">
+                            @if (used is { } percent)
+                            {
+                                <div class="ops-donut" style="@DonutStyle(percent)" role="img" aria-label="@($"{percent}% used")"><span>@percent%</span></div>
+                            }
+                            else
+                            {
+                                <div class="ops-donut unknown" role="img" aria-label="Capacity unknown"><span>?</span></div>
+                            }
+                            <dl class="ops-facts">
+                                @if (used is null)
+                                {
+                                    <div class="full"><dt>Capacity</dt><dd>Unknown; the last capacity probe did not succeed</dd></div>
+                                }
+                                else
+                                {
+                                    <div><dt>Used</dt><dd>@OperationsPage.FormatBytes(location.TotalBytes - location.AvailableBytes)</dd></div>
+                                    <div><dt>Available</dt><dd>@OperationsPage.FormatBytes(location.AvailableBytes)</dd></div>
+                                }
+                                @if (_system is not null)
+                                {
+                                    <div><dt>Pressure starts</dt><dd>Below @Percent(_system.Retention.PressureThresholdPercent) free</dd></div>
+                                    <div><dt>Recovers</dt><dd>At @Percent(_system.Retention.PressureRecoveryPercent) free</dd></div>
+                                }
+                                <div class="full"><dt>Retention now</dt><dd>@Days(location.EffectiveRetentionDays)@(location.IsUnderPressure ? ", shortened by disk pressure" : null)</dd></div>
+                            </dl>
+                        </div>
+                    </div>
+                }
+            }
+        </section>
+
+        <section class="ops-panel storage-holds" aria-labelledby="storage-holds-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="storage-holds-heading">Retention holds</h2><p>Work that must finish before its evidence can age out. One capture can be held by several of these, so the figures overlap and are not a total.</p></div>
+            </header>
+            <dl class="ops-facts">
+                @foreach (var hold in holds)
+                {
+                    <div><dt>@hold.Label</dt><dd>@hold.Count</dd></div>
+                }
+                <div class="full"><dt>Oldest held evidence</dt><dd>@OldestHeld</dd></div>
+            </dl>
+            <p class="storage-links"><a href="/operations/quarantine">Quarantine &amp; recovery</a><a href="/operations/delivery">Delivery</a></p>
+        </section>
+    </div>
+
+    <div class="ops-grid two">
+        <section class="ops-panel storage-classes" aria-labelledby="storage-classes-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="storage-classes-heading">Retention classes</h2><p>Eligibility requires the time policy and every required acknowledgement.</p></div>
+            </header>
+            <div class="ops-table-wrap">
+                <table class="ops-table storage-class-table">
+                    <thead><tr><th>Class</th><th>Policy</th><th>Current</th></tr></thead>
+                    <tbody>
+                        @foreach (var location in storage)
+                        {
+                            <tr>
+                                <td><strong>Captures &amp; products</strong>@if (storage.Count > 1)
+                                    {
+                                        <small>@OperationsPage.SplitWords(location.Alias)</small>
+                                    }</td>
+                                <td>@Days(location.EffectiveRetentionDays)</td>
+                                <td>@(location.IsUnderPressure ? "Shortened by pressure" : "Normal")</td>
+                            </tr>
+                        }
+                        @if (_system is not null)
+                        {
+                            var retention = _system.Retention;
+                            var environmental = summary.EnvironmentalDelivery.Value;
+                            <tr>
+                                <td><strong>Disk-pressure history</strong><small>Below @Percent(retention.PressureThresholdPercent) free</small></td>
+                                <td>@Days(retention.PressureRetentionDays)</td>
+                                <td>@(HasStoragePressure ? "Active" : "Not active")</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Environment observations</strong><small>Up to @retention.EnvironmentalMaximumHistoryCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) / @OperationsPage.FormatBytes(retention.EnvironmentalMaximumHistoryBytes)</small></td>
+                                <td>@(retention.EnvironmentalHistoryEnabled ? Days(retention.EnvironmentalRetentionDays) : "Not collected")</td>
+                                <td>@(environmental.StoredCount > 0 ? $"{Count(environmental.StoredCount, "observation", "observations")} / {OperationsPage.FormatBytes(environmental.StoredBytes)}" : "None stored")</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Raw ingress reserve</strong><small>Kept free for new frames</small></td>
+                                <td>@OperationsPage.FormatBytes(retention.RawIngressReserveBytes)</td>
+                                <td>@(summary.RawIngress.Value.Availability == "Accepting" ? "Accepting" : OperationsPage.SplitWords(summary.RawIngress.Value.Availability))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_system is null)
+            {
+                <p class="storage-empty">@(_policyError ?? "The retention policy is unavailable.")</p>
+            }
+        </section>
+
+        <section class="ops-panel storage-reconciliation" aria-labelledby="storage-reconciliation-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="storage-reconciliation-heading">Evidence reconciliation</h2><p>Files on disk and their durable records are checked against each other.</p></div>
+                @if (LastReconciledUtc is { } last)
+                {
+                    <span>Last @FormatUtc(last)</span>
+                }
+            </header>
+            @if (_reconciliationError is not null)
+            {
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_reconciliationError</span></div>
+            }
+            else
+            {
+                <ul class="ops-validation-list">
+                    @foreach (var line in ReconciliationLines)
+                    {
+                        <li class="ops-validation-item @line.Kind">
+                            <i aria-hidden="true">@line.Glyph</i>
+                            <span class="visually-hidden">@line.Status</span>
+                            @line.Text
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+    </div>
+
+    <section class="ops-panel storage-lanes" aria-labelledby="storage-lanes-heading">
+        <header class="ops-panel-heading">
+            <div><h2 id="storage-lanes-heading">Durable lanes</h2><p>Accepted work waiting on this agent, with the backlog pressure each lane reports.</p></div>
+        </header>
+        <div class="ops-table-wrap">
+            <table class="ops-table storage-lane-table">
+                <thead><tr><th>Lane</th><th>Waiting</th><th>Size</th><th>Quarantined</th><th>Pressure</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Raw ingress</strong><small>Accepted frames</small></td>
+                        <td>@summary.RawIngress.Value.PendingCount</td>
+                        <td>@OperationsPage.FormatBytes(summary.RawIngress.Value.PendingBytes)</td>
+                        <td>@summary.RawIngress.Value.QuarantineCount</td>
+                        <td><span class="state-chip @AvailabilityChip(summary.RawIngress.Value.Availability)">@OperationsPage.SplitWords(summary.RawIngress.Value.Availability)</span></td>
+                    </tr>
+                    @foreach (var lane in summary.CaptureLanes.Value.Lanes)
+                    {
+                        var pressure = Pressure(lane.PressureLevel);
+                        <tr>
+                            <td><strong>@OperationsPage.SplitWords(lane.Name)</strong><small>@(lane.Required ? "Required lane" : "Optional lane")</small></td>
+                            <td>@Waiting(lane.PendingCount, lane.QuarantineCount)</td>
+                            <td>@OperationsPage.FormatBytes(lane.PendingBytes)</td>
+                            <td>@lane.QuarantineCount</td>
+                            <td><span class="state-chip @pressure.Chip">@pressure.Text</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    @if (_dialogOpen && _system is not null)
+    {
+        var retention = _system.Retention;
+        <dialog class="action-dialog operations-dialog storage-dialog" aria-labelledby="storage-policy-dialog-heading" aria-describedby="storage-policy-dialog-description" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Retention policy</p><h2 id="storage-policy-dialog-heading">How this agent keeps local evidence</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="storage-policy-dialog-description" class="dialog-intro">These bounds come from this agent's configuration. A sweep never removes evidence that is still waiting to be processed, delivered or reviewed; it waits for that work to finish.</p>
+            <div class="storage-dialog-body">
+                <h3>Sweeps and disk pressure</h3>
+                <dl class="ops-facts">
+                    <div><dt>Sweep interval</dt><dd>Every @Minutes(retention.SweepIntervalMinutes)</dd></div>
+                    <div><dt>Raw ingress reserve</dt><dd>@OperationsPage.FormatBytes(retention.RawIngressReserveBytes)</dd></div>
+                    <div><dt>Pressure starts</dt><dd>Below @Percent(retention.PressureThresholdPercent) free</dd></div>
+                    <div><dt>Pressure ends</dt><dd>At @Percent(retention.PressureRecoveryPercent) free</dd></div>
+                    <div class="full"><dt>History kept under pressure</dt><dd>@Days(retention.PressureRetentionDays), or less if the location keeps less</dd></div>
+                </dl>
+                <h3>Environment observations</h3>
+                <dl class="ops-facts">
+                    <div><dt>History</dt><dd>@(retention.EnvironmentalHistoryEnabled ? "Collected" : "Not collected")</dd></div>
+                    <div><dt>Kept for</dt><dd>@Days(retention.EnvironmentalRetentionDays)</dd></div>
+                    <div><dt>At most</dt><dd>@retention.EnvironmentalMaximumHistoryCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) observations</dd></div>
+                    <div><dt>Size cap</dt><dd>@OperationsPage.FormatBytes(retention.EnvironmentalMaximumHistoryBytes)</dd></div>
+                </dl>
+            </div>
+            <footer>
+                <button type="button" id="storage-policy-close" class="button primary" @onclick="CloseDialog">Close</button>
+            </footer>
+        </dialog>
+    }
+}

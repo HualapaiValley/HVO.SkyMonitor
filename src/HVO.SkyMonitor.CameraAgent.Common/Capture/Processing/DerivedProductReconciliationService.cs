@@ -34,6 +34,7 @@ internal sealed class DerivedProductReconciliationService(
             var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
             state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
             state.SetReconciliationFailure(false);
+            state.RecordReconciliation(TimeProvider.System.GetUtcNow(), summary);
             logger.DerivedProductReconciliationCompleted(
                 summary.Inspected, summary.Available, summary.Recoverable, summary.Cleaned,
                 summary.Missing, summary.Quarantined, summary.QuarantineBytes);
@@ -44,6 +45,7 @@ internal sealed class DerivedProductReconciliationService(
             activity?.SetTag("error.type", exception.GetType().Name);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "reconciliation-failed");
             state.SetReconciliationFailure(true);
+            state.RecordReconciliation(TimeProvider.System.GetUtcNow(), null);
             logger.DerivedProductReconciliationFailed(exception);
         }
     }

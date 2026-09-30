@@ -127,8 +127,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === false")
             .ConfigureAwait(false);
-        await page.GotoAsync("/operations/unavailable/delivery").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Delivery", Level = 1, Exact = true }))
+        await page.GotoAsync("/operations/unavailable/control").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System control", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         StringAssert.Contains(await page.Locator(".unavailable-section .ops-note-banner").InnerTextAsync().ConfigureAwait(false),
             "Not implemented on this CameraAgent.", StringComparison.Ordinal);
@@ -2205,7 +2205,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/operations/environment", "Environment"),
             ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/data", "Data & storage"),
+            ("/operations/delivery", "Delivery"),
+            ("/operations/storage", "Storage & retention"),
             ("/operations/site", "Observatory & location"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
@@ -2279,7 +2280,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/site",
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/delivery", "/operations/storage",
+        "/operations/site",
         "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
 

@@ -171,7 +171,7 @@ internal static class OperatorUiTestData
         new CameraAgentOpticsStatus("Fisheye", "Equidistant", 3, 180, 140, "cal-v1", false, "Full sensor"),
         new CameraAgentCapturePolicyStatus("MinimumStartInterval", 5, 10, 1000, 1, 2, 1, 2000, 0, 10, "ExposureFirst"),
         [new CameraAgentPipelineNodeStatus("preview", "Preview", true, ["calibrate"])],
-        new CameraAgentRetentionStatus(30, 10, 15, 1, 1024),
+        new CameraAgentRetentionStatus(30, 10, 15, 1, 1024, true, 31, 100_000, 256L * 1024 * 1024),
         new CameraAgentUploadStatus(true, 10, 10, 10, 300, 0, 100, 1000, 50, 500),
         new CameraAgentEnvironmentalPolicyStatus(true, 100, 10, 10, 1000, 4096),
         new CameraAgentTransientPolicyStatus("Edge", true, 10, 1000, 5, 30, 2000));
@@ -212,6 +212,10 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
             kind, alias is null ? [] : [alias], alias, [], null)));
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentSystemStatus>>> SystemHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<CameraAgentSystemStatus>.Success(OperatorUiTestData.SystemStatus()));
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>>> ReconciliationHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(null, null)));
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>>> DeliveryHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]));
     internal Func<bool, long, string, CancellationToken, Task<OperatorUiResult<OperatorCommandReceipt>>> CaptureHandler { get; set; } =
         (paused, _, _, _) => Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
             paused ? "Pause capture" : "Resume capture", "Applied", paused ? "Paused" : "Running", 8, OperatorUiTestData.Now)));
@@ -311,6 +315,9 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
+    public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken) => DeliveryHandler(cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken) => ReconciliationHandler(cancellationToken);
     public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(string referenceToken, string deploymentRunId, string inventorySha256, bool legacyOwnershipExternallyEstablished, CancellationToken cancellationToken) => OwnershipHandler(referenceToken, deploymentRunId, inventorySha256, legacyOwnershipExternallyEstablished, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);

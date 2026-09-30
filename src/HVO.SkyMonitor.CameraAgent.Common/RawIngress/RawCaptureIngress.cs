@@ -168,6 +168,7 @@ internal sealed class RawCaptureIngress :
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
+                _state.RecordReconciliation(reconciliation);
                 _logger.RawIngressSqliteResult("checkpoint", "success");
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
