@@ -9,7 +9,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -164,6 +166,7 @@ public sealed class CameraRigPageTests
             CameraAgentAuthorizationPolicyNames.OperationsReadV1)).ReturnsAsync(AuthorizationResult.Failed());
         var service = new CameraAgentNamedRigUiService(
             new FixedAuthenticationStateProvider(principal), authorization.Object, null!, null!,
+            Mock.Of<IHostApplicationLifetime>(), new ConfigurationBuilder().Build(), TimeProvider.System,
             NullLogger<CameraAgentNamedRigUiService>.Instance);
 
         var result = await service.GetAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1019,6 +1022,13 @@ public sealed class CameraRigPageTests
         internal string? SavedBasisRevisionId { get; private set; }
         internal JsonElement SavedDefinition { get; private set; }
         internal string? ComposedCameraId { get; private set; }
+        internal bool ActiveCameraListedSecond { get; set; }
+        internal int EditCount { get; private set; }
+        internal ActiveRigEditRequest? EditRequest { get; private set; }
+        internal ActiveRigEditOutcome? EditOutcome { get; set; }
+        internal CameraAgentRestartStatus RestartStatus { get; set; } = new(true, true, false);
+        internal int RestartCount { get; private set; }
+        private NamedRigRevision? _composedRig;
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedEquipmentDetail>>>> _deferredEquipment = [];
         private readonly Dictionary<string, Queue<TaskCompletionSource<OperatorUiResult<NamedRigHistoryPage>>>> _deferredHistory = [];
         private NamedEquipmentDefinition? _savedEquipment;
@@ -1066,7 +1076,8 @@ public sealed class CameraRigPageTests
             return ValueTask.FromResult(Unauthorized
                 ? OperatorUiResult<NamedRigUiCatalog>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
                 : OperatorUiResult<NamedRigUiCatalog>.Success(new(new("rig-v1", PendingId, Version),
-                    [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 }],
+                    [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 },
+                     .. (_composedRig is null ? [] : new[] { _composedRig })],
                     PendingFailure, ActiveFailure)));
         }
         public ValueTask<OperatorUiResult<NamedRigInventory>> GetInventoryAsync(CancellationToken token)
@@ -1082,7 +1093,7 @@ public sealed class CameraRigPageTests
                     ? [new NamedEquipmentDefinition("virtual", "camera", "Virtual camera", 1, "camera-v1", true, false),
                        .. _inventory.Equipment.Where(e => e.Kind != "camera")]
                     : [.. _inventory.Equipment, new NamedEquipmentDefinition("starter", "camera", "ASI676MC camera", 1, "starter-v1"), .. (_savedEquipment is null ? [] : new[] { _savedEquipment })])
-                : new(_inventory.Profiles, [.. _inventory.Equipment,
+                : new(_inventory.Profiles, [.. (ActiveCameraListedSecond ? _inventory.Equipment.OrderByDescending(e => e.RevisionId == "camera-v2").ToArray() : _inventory.Equipment),
                     .. (ExistingOpticsCopy ? new[] { new NamedEquipmentDefinition("optics-copy", "optics", "Installed optics copy", 1, "optics-copy-v1") } : []),
                     .. (_savedEquipment is null ? [] : new[] { _savedEquipment })])));
         }
@@ -1243,6 +1254,42 @@ public sealed class CameraRigPageTests
             return ValueTask.FromResult(CancelUnavailable
                 ? OperatorUiResult<NamedRigStageReceipt>.Failure(OperatorUiResultKind.Unavailable, "Transport unavailable")
                 : OperatorUiResult<NamedRigStageReceipt>.Success(receipt));
+        }
+        public ValueTask<OperatorUiResult<ActiveRigEditOutcome>> ApplyActiveRigEditAsync(ActiveRigEditRequest request,
+            CancellationToken token)
+        {
+            EditCount++;
+            EditRequest = request;
+            var outcome = EditOutcome ?? new ActiveRigEditOutcome(ActiveRigEditStatus.Staged,
+                ["Created optics \"Installed optics copy\" from \"Installed optics\", which is installed and read-only.",
+                 "Composed rig revision r2.", "Staged rig revision r2 for restart."], [], ComposedRevisionId: "rig-v2");
+            if (outcome.ComposedRevisionId is { } composed)
+            {
+                _composedRig = _rig with
+                {
+                    RevisionId = composed,
+                    RevisionNumber = 2,
+                    OpticsRevisionId = "optics-copy-v1",
+                    SourceScheduleRevisionId = null,
+                    Rig = _rig.Rig with { Optics = _rig.Rig.Optics with { HorizontalFlip = request.HorizontalFlip } }
+                };
+            }
+            if (outcome.Status == ActiveRigEditStatus.Staged)
+            {
+                PendingId = outcome.ComposedRevisionId;
+                Version = request.SelectionVersion + 1;
+            }
+            return ValueTask.FromResult(OperatorUiResult<ActiveRigEditOutcome>.Success(outcome));
+        }
+        public ValueTask<OperatorUiResult<CameraAgentRestartStatus>> GetRestartStatusAsync(CancellationToken token)
+            => ValueTask.FromResult(OperatorUiResult<CameraAgentRestartStatus>.Success(RestartStatus));
+        public ValueTask<OperatorUiResult<CameraAgentRestartDisposition>> RequestRestartAsync(CancellationToken token)
+        {
+            RestartCount++;
+            return ValueTask.FromResult(RestartStatus.CanRequest
+                ? OperatorUiResult<CameraAgentRestartDisposition>.Success(RestartStatus.Supervised
+                    ? CameraAgentRestartDisposition.Scheduled : CameraAgentRestartDisposition.Unsupervised)
+                : OperatorUiResult<CameraAgentRestartDisposition>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
         }
     }
 }
