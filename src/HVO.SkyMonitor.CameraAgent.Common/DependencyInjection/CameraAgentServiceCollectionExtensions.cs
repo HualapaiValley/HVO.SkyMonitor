@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Replay;
@@ -395,6 +396,16 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
         services.AddSingleton<TransientCandidateDeliveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientCandidateDeliveryService>());
+        services.TryAddSingleton<ISntpClient, SntpClient>();
+        services.TryAddSingleton<IKernelClockReader, LinuxKernelClockReader>();
+        services.AddSingleton(provider => new ClockSyncMonitor(
+            () => TimeSyncSettings.Read(configuration),
+            provider.GetRequiredService<ISntpClient>(),
+            provider.GetRequiredService<IKernelClockReader>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<ClockSyncMonitor>>()));
+        services.AddSingleton<IClockSyncMonitor>(provider => provider.GetRequiredService<ClockSyncMonitor>());
+        services.AddHostedService(provider => provider.GetRequiredService<ClockSyncMonitor>());
 
         return services;
     }

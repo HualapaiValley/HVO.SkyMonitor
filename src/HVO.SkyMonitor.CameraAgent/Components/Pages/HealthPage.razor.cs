@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -180,6 +181,10 @@ public sealed partial class HealthPage : ComponentBase, IDisposable
             ? new Chip("No checks", "neutral")
             : new Chip(StateText(states.Max()), StateChip(states.Max()));
     }
+
+    private string ClockDriftTitle(SystemClockFact? clock) => clock?.MeasuredUtc is { } measured
+        ? $"This agent's clock minus network time, measured {FormatAge(measured)} ago"
+        : "This agent's clock minus network time";
 
     internal static string StateText(SystemCheckState state) => state switch
     {
