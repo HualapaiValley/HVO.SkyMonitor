@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -48,6 +49,118 @@ public sealed class RetentionBackgroundServiceTests
             {
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_PauseWaitsForSweepAndPausedStatePreservesPayloads()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(
+                new RetentionTestIngress(root), Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                TimeProvider.System, telemetry);
+            await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
+            Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+            await File.WriteAllTextAsync(expired, "retained").ConfigureAwait(false);
+            var service = new RetentionBackgroundService(new StubConfigurationAccessor(),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(), new FixedCapacityProvider(50), new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance, admission: admission);
+
+            Task<CaptureControlCommandResult> pause;
+            using (await admission.EnterRetentionSweepAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                pause = admission.PauseAsync("retention-pause", null, "test", null, CancellationToken.None);
+                Assert.IsFalse(pause.IsCompleted);
+            }
+            await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("retained", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_InFlightSweepFinishesBeforePauseAcknowledgement()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(
+                new RetentionTestIngress(root), Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                TimeProvider.System, telemetry);
+            await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
+            Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+            await File.WriteAllTextAsync(expired, "expired").ConfigureAwait(false);
+            using var capacity = new RetentionLifecycleContentionCapacityProvider();
+            var service = new RetentionBackgroundService(new StubConfigurationAccessor(),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(), capacity, new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance, admission: admission);
+
+            var sweep = Task.Run(() => service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None));
+            Assert.IsTrue(capacity.Entered.Wait(TimeSpan.FromSeconds(5)));
+            var pause = admission.PauseAsync("retention-in-flight", null, "test", null, CancellationToken.None);
+            Assert.IsFalse(pause.IsCompleted);
+            capacity.Release();
+            await sweep.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(expired));
+            Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+            await File.WriteAllTextAsync(expired, "paused").ConfigureAwait(false);
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("paused", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_RestartedPausedAdmissionStillPreservesPayloads()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var firstTelemetry = new CaptureControlTelemetry();
+            using (var first = new CaptureAdmissionCoordinator(new RetentionTestIngress(root),
+                       Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }), TimeProvider.System, firstTelemetry))
+            {
+                await first.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                await first.PauseAsync("retention-restart", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+            }
+            using var telemetry = new CaptureControlTelemetry();
+            using var restarted = new CaptureAdmissionCoordinator(new RetentionTestIngress(root),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }), TimeProvider.System, telemetry);
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureAdmissionState.Paused, restarted.Snapshot.State);
+            var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
+            Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+            await File.WriteAllTextAsync(expired, "retained").ConfigureAwait(false);
+            var service = new RetentionBackgroundService(new StubConfigurationAccessor(),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
+                new SqliteArtifactOutbox(), new FixedCapacityProvider(50), new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance, admission: restarted);
+
+            await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("retained", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
         }
     }
 
@@ -927,6 +1040,17 @@ public sealed class RetentionBackgroundServiceTests
         {
             DeleteRoot(root);
         }
+    }
+
+    private sealed class RetentionTestIngress(string root) : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => new(new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(cancellationToken));
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration, CaptureLoopSubmission submission, CancellationToken cancellationToken)
+            => ValueTask.FromResult<RawCaptureReceipt?>(null);
     }
 
     private static CameraModuleConfig CreateConfig(params string[] roots)

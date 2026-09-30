@@ -751,23 +751,59 @@ hvo-skymonitor cameraagent uninstall --instance-id <uuid>
 hvo-skymonitor cameraagent reinstall --instance-id <uuid>
 ```
 
-`--migration-backward-compatible` is the operator's explicit acknowledgement that no transactional restore
-path is being reserved. It is necessary but not sufficient: the candidate must also declare the current
+`--migration-backward-compatible` acknowledges the current state-contract preflight; it is not a waiver
+of the image-swap state snapshot and restore. It is necessary but not sufficient: the candidate must also declare the current
 `cameraagent-state-v2` contract, and the persisted state must satisfy every declared boundary described in
 [State Compatibility Boundary](#state-compatibility-boundary). A rollback target installed before that label
 correction is accepted as a known contract because no state migration occurs on the way back.
 
 Each transition pins the Docker endpoint and daemon identity, validates the
-rendered Compose model, records pre-mutation continuity, creates and validates a
-consistent backup, and journals mutation intent before pause or stop. Candidate
+rendered Compose model, checks free space for a bounded state snapshot, records
+pre-mutation continuity, and journals mutation intent before pause or stop. After
+drain and stop, the CLI snapshots deployment records and the separate mutable
+SQLite stores through SQLite's online backup API, then records the snapshot hash
+before starting the candidate. Frames, derivatives, and archive payloads are
+not copied. The raw-ingress journal is snapshotted because
+candidate startup changes lane policy and retention holds even without a schema
+migration. A mismatched raw-ingress schema is refused before drain. A failed candidate is stopped
+before the verified store snapshots are restored, then the previous image starts.
+The daily raw/archive indexes and projected-scene reconciliation cursor are
+privately copied as mutable records. This snapshot does **not** restore a frame,
+derived output, staged scene, or calibration payload that the candidate moves
+or deletes. Do not deploy this draft CLI until those names and bytes have a
+qualified recovery boundary.
+The candidate retention worker must honor capture admission: a paused candidate
+must not prune frames, derived outputs, or archive files referenced by the
+snapshotted journal. The old image can complete normal retention before it is
+stopped and the snapshot is taken; that completed state is the rollback boundary.
+The drain, stop, snapshot, and journal publication share an eight-minute preparation
+budget, with a five-minute snapshot budget inside it. Candidate startup,
+verification, restart, and resume use separate deadlines; eight minutes is not a
+bound on the total capture interruption.
+This is a transactional *image swap*, not a general backup or disaster-recovery
+copy; keep an independent application-consistent backup of capture history.
+The installer lock serializes cooperative deployment commands, and recovery stops
+the candidate before restoring files. Owner-controlled instance paths require one
+trusted writer: a hostile concurrent process using the same runtime UID can race
+pathname-based restore publication and is outside the supported deployment trust
+boundary. Do not treat the lock or ownership checks as protection from that actor.
+An interrupted schema-1 whole-instance archive is not silently interpreted as a
+SQLite snapshot: the new CLI refuses it before stopping a running container.
+Do not run `--resume` against that archive without following the original
+recovery procedure. Similarly, if the previous image is already running after
+an interrupted rollback, do not replay its snapshot over live state. Use
+`rollback --resume --restore-only --operation-id <interrupted-operation-uuid>`
+with the original rollback request; it verifies the previous-image identity,
+Compose, owner, daemon, and paused capture boundary before settling admission.
+Candidate
 Compose, manifest, and result identities commit while capture remains paused;
 resume is the final idempotent action. If final acknowledgement is lost, rerun
 the exact command with `--resume`. A failed candidate restores the exact prior
-Compose, image, and identity records before capture resumes. Noncurrent manifests
+Compose, image, Identity and other small-store state before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
-### Restore Only After an Interrupted Upgrade
+### Restore Only After an Interrupted Image Operation
 
 Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
 startup. **Do not use it merely to restore service after a failed backup.** For
@@ -785,8 +821,9 @@ hvo-skymonitor cameraagent upgrade \
 Retain the original image reference, archive checksum, `--no-download`, and
 compatibility acknowledgement exactly as supplied to that upgrade. The command
 checks the original request hash and operation UUID; it does not acquire or
-inspect the candidate image. This first recovery slice supports operator-image
-upgrades only, not signed-release selectors, rollback, or catalog operations.
+inspect the candidate image. Rollback supplies no image reference but must
+retain the original instance and operation UUID. This form supports operator-image
+upgrades and rollback, not signed-release selectors or catalog operations.
 
 The original manifest/result and operation snapshots must agree exactly, including
 the prior rollback history. Owner-only bounded snapshot reads, canonical configuration

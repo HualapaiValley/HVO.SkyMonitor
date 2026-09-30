@@ -160,11 +160,11 @@ internal sealed class CameraAgentLifecycleManager
         return request.Operation switch
         {
             LifecycleOperationKind.Upgrade => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
+                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
                 rollback: false, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Rollback => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
+                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
                 rollback: true, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Reinstall => await ReinstallAsync(
@@ -201,10 +201,11 @@ internal sealed class CameraAgentLifecycleManager
         uint gid,
         CancellationToken cancellationToken)
     {
-        if (operation is null || operation.Kind != LifecycleOperationKind.Upgrade ||
+        if (operation is null || operation.Kind != request.Operation ||
+            operation.Kind is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback) ||
             operation.OperationId != request.RecoveryOperationId || operation.InstanceId != manifest.InstanceId ||
             operation.RequestSha256 != request.ComputeRequestSha256())
-            throw new InstallerException("Restore-only requires the exact retained upgrade operation and original request.");
+            throw new InstallerException("Restore-only requires the exact retained image operation and original request.");
         if (operation.Status == InstallationStatus.Completed ||
             operation.Phase is LifecycleOperationPhase.Committed or LifecycleOperationPhase.Completed ||
             manifest.LastLifecycleOperationId == operation.OperationId ||
@@ -214,12 +215,14 @@ internal sealed class CameraAgentLifecycleManager
             operation.PreMutationContinuity is not { CaptureState: "Paused", CaptureVersion: >= 0 } boundary ||
             manifest.LifecycleCondition != InstanceLifecycleCondition.Installed ||
             manifest.RuntimeUid != uid || manifest.RuntimeGid != gid)
-            throw new InstallerException("Restore-only requires an owned interrupted upgrade with a recorded durable pause.");
+            throw new InstallerException("Restore-only requires an owned interrupted image operation with a recorded durable pause.");
         var candidate = operation.CandidateImage;
-        if (candidate.ImmutableReference != request.ImageReference ||
-            request.ImageReference!.StartsWith("sha256:", StringComparison.Ordinal) && candidate.ImageId != request.ImageReference ||
-            candidate.ArchiveSha256 != request.ImageArchiveSha256 ||
-            candidate.Source != (request.ImageArchive is null ? "registry" : "archive") ||
+        if (operation.Kind == LifecycleOperationKind.Upgrade &&
+            (candidate.ImmutableReference != request.ImageReference ||
+             request.ImageReference!.StartsWith("sha256:", StringComparison.Ordinal) && candidate.ImageId != request.ImageReference ||
+             candidate.ArchiveSha256 != request.ImageArchiveSha256 ||
+             candidate.Source != (request.ImageArchive is null ? "registry" : "archive")) ||
+            operation.Kind == LifecycleOperationKind.Rollback && candidate != manifest.PreviousImage ||
             candidate.Architecture != manifest.Image.Architecture || candidate.Architecture != manifest.DockerDaemon.Architecture)
             throw new InstallerException("Restore-only candidate identity does not match the original request and instance platform.");
         if (!IsValidRecoveryBoundary(boundary) || boundary.CaptureVersion == long.MaxValue)
@@ -272,9 +275,29 @@ internal sealed class CameraAgentLifecycleManager
         await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
         // Repository digests and Docker image IDs need not be equal. The staged request must bind the resolved ID too.
         var originalEnvironment = await ReadRecoveryTextAsync(previousCompose.EnvironmentFile, cancellationToken).ConfigureAwait(false);
+        var rollbackEnvironment = operation.Kind == LifecycleOperationKind.Rollback
+            ? await ReadRecoveryTextAsync(Path.Combine(operationRoot, "prior-rollback.env"), cancellationToken).ConfigureAwait(false)
+            : originalEnvironment;
         if (await ReadRecoveryTextAsync(Path.Combine(operationRoot, "candidate.env"), cancellationToken).ConfigureAwait(false) !=
-            ReplaceEnvironmentValue(originalEnvironment, "CAMERAAGENT_IMAGE", candidate.ImageId))
+            ReplaceEnvironmentValue(rollbackEnvironment, "CAMERAAGENT_IMAGE", candidate.ImageId))
             throw new InstallerException("Restore-only staged candidate identity does not match the retained request.");
+        if (operation.Kind == LifecycleOperationKind.Rollback)
+        {
+            if (!IsSha256(manifest.PreviousComposeModelSha256))
+                throw new InstallerException("Restore-only rollback requires the authenticated previous Compose model.");
+            var candidateCompose = compose with
+            {
+                ComposeFile = Path.Combine(operationRoot, "candidate-compose.yml"),
+                EnvironmentFile = Path.Combine(operationRoot, "candidate.env")
+            };
+            if (await ReadRecoveryTextAsync(candidateCompose.ComposeFile, cancellationToken).ConfigureAwait(false) !=
+                await ReadRecoveryTextAsync(Path.Combine(operationRoot, "prior-rollback-compose.yml"), cancellationToken).ConfigureAwait(false))
+                throw new InstallerException("Restore-only rollback candidate Compose differs from its retained history.");
+            var rendered = await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile,
+                candidateCompose.ProjectName, ["config"], cancellationToken).ConfigureAwait(false);
+            if (ComposeDeployment.ComputeSha256(rendered.StandardOutput) != manifest.PreviousComposeModelSha256)
+                throw new InstallerException("Restore-only rollback Compose model differs from its authenticated identity.");
+        }
         var configuration = await ReadRecoveryTextAsync(Path.Combine(paths.ConfigRoot, "camera-module.json"), cancellationToken)
             .ConfigureAwait(false);
         using var configurationDocument = JsonDocument.Parse(configuration);
@@ -349,8 +372,10 @@ internal sealed class CameraAgentLifecycleManager
             Phase = LifecycleOperationPhase.Restoring,
             ExpectedOwnerBootstrapState = verifiedOwner,
             RestoreResumeCommandId = operation.RestoreResumeCommandId ?? Guid.NewGuid(),
-            FailureCode = operation.FailureCode ?? "upgrade-interrupted",
-            FailureMessage = operation.FailureMessage ?? "The original upgrade was interrupted; its failure detail was not retained. Restore-only does not complete that upgrade."
+            FailureCode = operation.FailureCode ?? (operation.Kind == LifecycleOperationKind.Upgrade ? "upgrade-interrupted" : "rollback-interrupted"),
+            FailureMessage = operation.FailureMessage ?? (operation.Kind == LifecycleOperationKind.Upgrade
+                ? "The original upgrade was interrupted; its failure detail was not retained. Restore-only does not complete that upgrade."
+                : "The original rollback was interrupted; its failure detail was not retained. Restore-only does not complete that rollback.")
         }, cancellationToken).ConfigureAwait(false);
         // Replaying this same command after a lost acknowledgement proves ownership; never mint a second command.
         var receipt = await lifecycle.ResumeRecoveryAsync(operation.OperationId, operation.RestoreResumeCommandId!.Value,
@@ -413,7 +438,6 @@ internal sealed class CameraAgentLifecycleManager
         InstallationResult installationResult,
         ComposeFiles compose,
         DockerClient docker,
-        IProcessRunner processRunner,
         Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
         uint uid,
         uint gid,
@@ -432,7 +456,7 @@ internal sealed class CameraAgentLifecycleManager
         try
         {
             return await ChangeImageAsync(
-                    request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
+                    request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory,
                     uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -457,7 +481,6 @@ internal sealed class CameraAgentLifecycleManager
         InstallationResult installationResult,
         ComposeFiles compose,
         DockerClient docker,
-        IProcessRunner processRunner,
         Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
         uint uid,
         uint gid,
@@ -476,6 +499,7 @@ internal sealed class CameraAgentLifecycleManager
             await docker.VerifyContainerAsync(
                 compose, paths, manifest.Image, uid, gid, cancellationToken).ConfigureAwait(false);
             EnsureUpgradeStorage(paths, request.ImageArchive);
+            InstanceBackupManager.EnsureEligible(paths, cancellationToken);
         }
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var previousManifestPath = Path.Combine(operationRoot, "previous-instance-manifest.json");
@@ -484,6 +508,27 @@ internal sealed class CameraAgentLifecycleManager
         {
             (manifest, installationResult) = await ReadRecoverySnapshotAsync(
                 paths, operation, previousManifestPath, previousResultPath, cancellationToken).ConfigureAwait(false);
+            // A completed recovery can leave a stale mutation flag if the CLI dies before
+            // recording its terminal journal. Never roll live, resumed capture back to the
+            // pre-candidate snapshot on a subsequent --resume.
+            var runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
+            if (operation.PreMutationContinuity is not null && runtime.Running && runtime.ImageId == manifest.Image.ImageId)
+                throw new InstallerException(operation.Kind == LifecycleOperationKind.Upgrade
+                    ? "The original image is already running after an interrupted recovery; use authenticated restore-only instead of replaying the state snapshot."
+                    : "The original image is already running after an interrupted rollback; use authenticated rollback --restore-only instead of replaying the state snapshot.");
+            // A crash can leave the candidate's migrated Identity store behind. Never start the
+            // original image against it; stop the candidate and restore the verified snapshot first.
+            if (operation.BackupManifestSha256 is not null)
+            {
+                await InstanceBackupManager.EnsureSupportedSnapshotAsync(paths, operation, cancellationToken)
+                    .ConfigureAwait(false);
+                EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+                await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
+                    ["stop"], cancellationToken).ConfigureAwait(false);
+                OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
+                await InstanceBackupManager.RestoreStoresAsync(paths, manifest, operation, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             await WriteRecoverySnapshotAsync(paths, manifest, installationResult, cancellationToken).ConfigureAwait(false);
         }
         if (operation is { MutationStarted: true, Phase: LifecycleOperationPhase.Committed })
@@ -726,7 +771,8 @@ internal sealed class CameraAgentLifecycleManager
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Prepared,
-                MutationStarted = false
+                MutationStarted = false,
+                BackupManifestSha256 = null
             }, cancellationToken).ConfigureAwait(false);
         }
         SafeFileSystem.WriteTextAtomic(previousEnvironmentPath, originalEnvironment);
@@ -740,31 +786,36 @@ internal sealed class CameraAgentLifecycleManager
         operation = await RecordAsync(paths, operation with
         {
             Phase = LifecycleOperationPhase.Prepared,
-            MutationStarted = true
+            MutationStarted = true,
+            BackupManifestSha256 = null
         }, cancellationToken).ConfigureAwait(false);
         var mutationStarted = true;
         var drainAttempted = false;
+        using var preparationBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        preparationBudget.CancelAfter(TimeSpan.FromMinutes(8));
         try
         {
             drainAttempted = true;
-            var continuity = await lifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            var continuity = await lifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, preparationBudget.Token).ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Drained,
                 PreMutationContinuity = ToBoundary(continuity)
-            }, cancellationToken)
+            }, preparationBudget.Token)
                 .ConfigureAwait(false);
-            EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["stop"], cancellationToken)
+            EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(preparationBudget.Token).ConfigureAwait(false));
+            await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["stop"], preparationBudget.Token)
                 .ConfigureAwait(false);
             OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
-            var backup = await InstanceBackupManager.CreateAsync(paths, manifest, operation.OperationId, processRunner, cancellationToken)
+            var backup = await InstanceBackupManager.CreateAsync(paths, manifest, operation.OperationId, preparationBudget.Token)
                 .ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.BackupRecorded,
                 BackupManifestSha256 = backup.ManifestSha256
-            }, cancellationToken).ConfigureAwait(false);
+            }, preparationBudget.Token).ConfigureAwait(false);
+            // Candidate startup and verification have their own budgets; this bounds preparation only.
+            preparationBudget.CancelAfter(Timeout.InfiniteTimeSpan);
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Mutating,
@@ -862,6 +913,14 @@ internal sealed class CameraAgentLifecycleManager
                 try
                 {
                     var failedPhase = operation.Phase;
+                    // An interrupted recovery may have already restarted the original image and
+                    // resumed capture. Never replay its pre-candidate snapshot over live writes.
+                    if (operation.BackupManifestSha256 is not null)
+                    {
+                        var runtime = await docker.InspectContainerAsync(compose.ContainerName, recovery.Token).ConfigureAwait(false);
+                        if (runtime.Running && runtime.ImageId == manifest.Image.ImageId)
+                            throw new InstallerException("The original image is already running; settle its admission with --restore-only rather than restoring an older state snapshot.");
+                    }
                     operation = await RecordAsync(paths, operation with
                     {
                         Phase = LifecycleOperationPhase.Restoring,
@@ -889,7 +948,6 @@ internal sealed class CameraAgentLifecycleManager
                         SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, originalEnvironment);
                         var snapshot = await ReadRecoverySnapshotAsync(
                             paths, operation, previousManifestPath, previousResultPath, recovery.Token).ConfigureAwait(false);
-                        await WriteRecoverySnapshotAsync(paths, snapshot.Manifest, snapshot.Result, recovery.Token).ConfigureAwait(false);
                         if (hadRollbackCompose)
                             SafeFileSystem.WriteTextAtomic(retainedRollbackCompose, await File.ReadAllTextAsync(priorRollbackCompose, recovery.Token).ConfigureAwait(false));
                         else if (File.Exists(retainedRollbackCompose))
@@ -900,11 +958,21 @@ internal sealed class CameraAgentLifecycleManager
                             File.Delete(retainedRollbackEnvironment);
                     }
                     EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
-                    if (failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified)
+                    if (operation.BackupManifestSha256 is not null)
                     {
                         await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                             ["stop"], recovery.Token).ConfigureAwait(false);
                         OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
+                        await InstanceBackupManager.RestoreStoresAsync(paths, manifest, operation, recovery.Token)
+                            .ConfigureAwait(false);
+                    }
+                    else if (failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified)
+                        throw new InstallerException("The candidate may have started without a recorded rollback snapshot.");
+                    if (mutationStarted)
+                    {
+                        var snapshot = await ReadRecoverySnapshotAsync(
+                            paths, operation, previousManifestPath, previousResultPath, recovery.Token).ConfigureAwait(false);
+                        await WriteRecoverySnapshotAsync(paths, snapshot.Manifest, snapshot.Result, recovery.Token).ConfigureAwait(false);
                     }
                     await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                         ["up", "--detach", "--remove-orphans"], recovery.Token).ConfigureAwait(false);
@@ -1451,7 +1519,8 @@ internal sealed class CameraAgentLifecycleManager
             value.Status == InstallationStatus.Completed && value.MutationStarted ||
             value.RestoreResumeCommandId == Guid.Empty ||
             value.RestoreResumeCommandId is not null &&
-            (value.Kind != LifecycleOperationKind.Upgrade || value.Phase is not (LifecycleOperationPhase.Restoring or LifecycleOperationPhase.Restored)) ||
+            (value.Kind is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback) ||
+             value.Phase is not (LifecycleOperationPhase.Restoring or LifecycleOperationPhase.Restored)) ||
             value.Phase == LifecycleOperationPhase.Restored &&
             (!IsRestored(value) || value.RestoreResumeCommandId is null || value.PostMutationContinuity is null ||
              value.FailureCode is null || value.FailureMessage is null) ||
@@ -1984,14 +2053,8 @@ internal sealed class CameraAgentLifecycleManager
 
     private static void EnsureUpgradeStorage(InstallationPaths paths, string? imageArchive)
     {
-        long instanceBytes = 0;
-        foreach (var file in Directory.EnumerateFiles(paths.InstanceRoot, "*", SearchOption.AllDirectories))
-        {
-            instanceBytes = checked(instanceBytes + new FileInfo(file).Length);
-        }
-        var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
-        var required = checked(instanceBytes + archiveBytes + 256L * 1024 * 1024);
-        var available = new DriveInfo(Path.GetPathRoot(paths.ProductRoot)!).AvailableFreeSpace;
+        var required = InstanceBackupManager.RequiredBytes(paths, imageArchive);
+        var available = new DriveInfo(paths.ProductRoot).AvailableFreeSpace;
         if (available < required)
         {
             throw new InstallerException("Insufficient free space for the candidate image and consistent rollback backup.");

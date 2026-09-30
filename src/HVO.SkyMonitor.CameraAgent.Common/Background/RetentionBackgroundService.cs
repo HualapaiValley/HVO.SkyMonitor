@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -34,7 +35,8 @@ public sealed class RetentionBackgroundService(
     ILogger<RetentionBackgroundService> logger,
     IRawIngressRetentionHolds? rawIngressHolds = null,
     IProcessingRetentionHolds? processingHolds = null,
-    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null,
+    CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -49,6 +51,9 @@ public sealed class RetentionBackgroundService(
         Justification = "The dependency injection container owns the schedule coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleCoordinator = scheduleCoordinator;
     private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The dependency injection container owns the shared capture admission coordinator.")]
+    private readonly CaptureAdmissionCoordinator? _admission = admission;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -63,6 +68,8 @@ public sealed class RetentionBackgroundService(
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Retention sweeps must continue even when deleting files fails.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_admission is null)
+            throw new InvalidOperationException("Hosted retention requires the capture admission transition fence.");
         var config = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
         var sweepInterval = TimeSpan.FromMinutes(_hostOptions.RetentionSweepIntervalMinutes);
 
@@ -91,6 +98,18 @@ public sealed class RetentionBackgroundService(
             return;
         }
 
+        // Initialization can acquire the raw-ingress lock, so it precedes the transition
+        // fence. The fence then covers every plan and every destructive prune.
+        if (_rawIngressHolds is RawCaptureIngress ingress &&
+            plans.Any(plan => PathsEqual(plan.StorageRoot, _hostOptions.RawIngressRoot)))
+            await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var transition = _admission is null
+            ? null
+            : await _admission.EnterRetentionSweepAsync(cancellationToken).ConfigureAwait(false);
+        if (_admission is not null &&
+            (_admission.Snapshot.State != CaptureAdmissionState.Running || !_admission.Snapshot.IsInitialized))
+            return;
+
         Exception? firstFailure = null;
         foreach (var plan in plans)
         {
@@ -103,11 +122,6 @@ public sealed class RetentionBackgroundService(
                     ?? throw new InvalidOperationException(
                         "Processing retention holds used under the raw-ingress lifecycle lock must provide a non-initializing read path.")
                 : null;
-            if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
-            {
-                // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
-                await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            }
             if (rawIngressGate is not null)
             {
                 await rawIngressGate.WaitAsync(cancellationToken).ConfigureAwait(false);

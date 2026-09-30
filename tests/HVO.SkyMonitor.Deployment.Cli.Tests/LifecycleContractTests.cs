@@ -1432,6 +1432,908 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_CandidateIdentityMigrationRestoresOriginalDatabaseWithoutCopyingCaptureHistory()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(identity)!);
+        await using (var connection = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT); INSERT INTO original VALUES('before');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var frame = Path.Combine(fixture.Paths.StateRoot, "raw", "frames", "do-not-copy.bin");
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(frame)!, fixture.Uid, fixture.Gid);
+        await File.WriteAllTextAsync(frame, "capture history");
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () =>
+        {
+            using var connection = new SqliteConnection($"Data Source={identity};Pooling=False");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE original; CREATE TABLE candidate(value TEXT);";
+            command.ExecuteNonQuery();
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        await using (var connection = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False"))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT value FROM original;";
+            Assert.AreEqual("before", await command.ExecuteScalarAsync());
+        }
+        Assert.AreEqual("capture history", await File.ReadAllTextAsync(frame));
+        var backupFiles = Directory.EnumerateFiles(fixture.Paths.BackupsRoot, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(fixture.Paths.BackupsRoot, path)).ToArray();
+        Assert.IsFalse(backupFiles.Any(path => path.Contains("do-not-copy", StringComparison.Ordinal)));
+        Assert.IsFalse(backupFiles.Any(path => path.EndsWith(".tar.gz", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_FailedCandidateCannotLosePreexistingFrameOnRollback()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var frame = Path.Combine(fixture.Paths.StateRoot, "raw", "frames", "preexisting.bin");
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(frame)!, fixture.Uid, fixture.Gid);
+        await File.WriteAllTextAsync(frame, "preexisting capture");
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () => File.Delete(frame);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.AreEqual("preexisting capture", await File.ReadAllTextAsync(frame));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_FailedCandidateRestoresProtectedRecords()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var keys = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        var key = Path.Combine(keys, "key.xml");
+        Directory.CreateDirectory(keys);
+        await File.WriteAllTextAsync(key, "original-key");
+        var marker = Path.Combine(fixture.Paths.StateRoot, "raw", ".deployment-location.v1.identity");
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        await File.WriteAllTextAsync(marker, "original-location");
+        var config = Path.Combine(fixture.Paths.ConfigRoot, "camera-module.json");
+        await File.WriteAllTextAsync(config, "original-config");
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () =>
+        {
+            File.WriteAllText(key, "candidate-key");
+            File.WriteAllText(marker, "candidate-location");
+            File.WriteAllText(config, "candidate-config");
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.AreEqual("original-key", await File.ReadAllTextAsync(key));
+        Assert.AreEqual("original-location", await File.ReadAllTextAsync(marker));
+        Assert.AreEqual("original-config", await File.ReadAllTextAsync(config));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_LinkedStoreDestinationDoesNotDeleteExternalFiles()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var external = Path.Combine(fixture.Root, "outside");
+        Directory.CreateDirectory(external);
+        var externalStore = Path.Combine(external, "local-automations.db");
+        await File.WriteAllTextAsync(externalStore, "leave this alone");
+        var storeDirectory = Path.Combine(fixture.Paths.StateRoot, "raw", ".automation");
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () => Directory.CreateSymbolicLink(storeDirectory, external);
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "exact rollback also failed", StringComparison.Ordinal);
+        Assert.AreEqual("leave this alone", await File.ReadAllTextAsync(externalStore));
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsTrue(retained!.MutationStarted);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_CorruptSnapshotStopsFailedCandidateBeforeRefusingRestore()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            candidateReference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () =>
+        {
+            var backupFile = Directory.EnumerateFiles(fixture.Paths.BackupsRoot, "application-identity.json",
+                SearchOption.AllDirectories).Single();
+            File.WriteAllText(backupFile, "corrupted");
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "exact rollback also failed", StringComparison.Ordinal);
+        Assert.IsGreaterThanOrEqualTo(2, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(1, fixture.Runner.ComposeUpCount);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsTrue(retained!.MutationStarted);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_WalSnapshotIncludesCommittedRowsWithoutCapturePayloads()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var store = CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(store)!, fixture.Uid, fixture.Gid);
+        await using var writer = new SqliteConnection($"Data Source={store};Pooling=False");
+        await writer.OpenAsync();
+        using (var command = writer.CreateCommand())
+        {
+            command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE entries(value TEXT); INSERT INTO entries VALUES('committed-in-wal');";
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.IsTrue(File.Exists(store + "-wal"));
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, Guid.NewGuid(), CancellationToken.None);
+        var snapshot = Path.Combine(fixture.Paths.BackupsRoot, backup.Manifest.BackupId.ToString("D"),
+            "state/raw/journal/raw-ingress.db");
+        await using var reader = new SqliteConnection($"Data Source={snapshot};Mode=ReadOnly;Pooling=False");
+        await reader.OpenAsync();
+        using var query = reader.CreateCommand();
+        query.CommandText = "SELECT value FROM entries";
+        Assert.AreEqual("committed-in-wal", await query.ExecuteScalarAsync());
+        Assert.IsFalse(backup.Manifest.Files.Any(file => file.RelativePath.EndsWith("-wal", StringComparison.Ordinal)));
+        Assert.IsTrue(backup.Manifest.Files.Any(file => file.RelativePath == "state/raw/journal/raw-ingress.db"));
+        Assert.IsFalse(backup.Manifest.Files.Any(file => file.RelativePath.Contains("raw/frames", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_FailedCandidateRestoresRawJournalStartupPolicy()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var journal = CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(journal)!, fixture.Uid, fixture.Gid);
+        await using (var connection = new SqliteConnection($"Data Source={journal};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE lane_policy(value TEXT); INSERT INTO lane_policy VALUES('original');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () =>
+        {
+            using var connection = new SqliteConnection($"Data Source={journal};Pooling=False");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE lane_policy SET value='candidate';";
+            command.ExecuteNonQuery();
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = reference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        await using var restored = new SqliteConnection($"Data Source={journal};Mode=ReadOnly;Pooling=False");
+        await restored.OpenAsync();
+        using var query = restored.CreateCommand();
+        query.CommandText = "SELECT value FROM lane_policy;";
+        Assert.AreEqual("original", await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_LegacyTarManifestCannotAuthorizeStoreRestore()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        var path = Path.Combine(fixture.Paths.BackupsRoot, backup.Manifest.BackupId.ToString("D"), "backup-manifest.json");
+        await SafeFileSystem.WriteJsonAtomicAsync(path, backup.Manifest with { SchemaVersion = 1 },
+            DeploymentJsonContext.Default.InstanceBackupManifest, CancellationToken.None);
+        var hash = await SafeFileSystem.ComputeSha256Async(path, CancellationToken.None);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: hash);
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "legacy whole-instance archive", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_UnsafeRecordTreeRefusesBeforeChangingIdentity()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(identity)!);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE candidate(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        File.CreateSymbolicLink(Path.Combine(fixture.Paths.ConfigRoot, "unsafe"), identity);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        await using var verify = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='candidate';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RestoresDeletedKeyDirectoryBeforeRestart()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var directory = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        SafeFileSystem.CreateRuntimeDirectory(directory, fixture.Uid, fixture.Gid);
+        var key = Path.Combine(directory, "key.xml");
+        await File.WriteAllTextAsync(key, "original-key");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        File.Delete(key);
+        Directory.Delete(directory);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        Assert.AreEqual("original-key", await File.ReadAllTextAsync(key));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RestoresMutableRawAndArchiveIndexes()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var indexes = new[]
+        {
+            Path.Combine(fixture.Paths.StateRoot, "raw", "index", "frames_2026-09-26.jsonl"),
+            Path.Combine(fixture.Paths.StateRoot, "archive", "index", "frames_2026-09-26.jsonl")
+        };
+        foreach (var index in indexes)
+        {
+            SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(index)!, fixture.Uid, fixture.Gid);
+            await File.WriteAllTextAsync(index, "original\n");
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        foreach (var index in indexes) await File.AppendAllTextAsync(index, "candidate\n");
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        foreach (var index in indexes) Assert.AreEqual("original\n", await File.ReadAllTextAsync(index));
+        Assert.IsTrue(backup.Manifest.Files.Any(file => file.RelativePath.StartsWith("state/raw/index/", StringComparison.Ordinal)));
+        Assert.IsTrue(backup.Manifest.Files.Any(file => file.RelativePath.StartsWith("state/archive/index/", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RemovesCandidateRecordWithoutInterruptingRestore()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        var added = Path.Combine(fixture.Paths.ConfigRoot, "candidate-only.json");
+        await File.WriteAllTextAsync(added, "candidate");
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        Assert.IsFalse(File.Exists(added));
+        Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RestoresOrRemovesProjectedSceneCursor(bool existed)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var cursor = Path.Combine(fixture.Paths.StateRoot, "raw", "journal", "projected-scene-stage.cursor");
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(cursor)!, fixture.Uid, fixture.Gid);
+        if (existed) await File.WriteAllTextAsync(cursor, "before");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await File.WriteAllTextAsync(cursor, "candidate");
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        if (existed) Assert.AreEqual("before", await File.ReadAllTextAsync(cursor));
+        else Assert.IsFalse(File.Exists(cursor));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_MissingStoreDirectoryIsRecreatedAndRestored()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(identity)!, fixture.Uid, fixture.Gid);
+        await using (var connection = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        File.Delete(identity);
+        Directory.Delete(Path.GetDirectoryName(identity)!);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        using var restored = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await restored.OpenAsync();
+        using var query = restored.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='original';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+        var directoryIdentity = NativeLinux.GetDirectoryIdentity(Path.GetDirectoryName(identity)!);
+        Assert.AreEqual(fixture.Uid, directoryIdentity.Uid);
+        Assert.AreEqual(fixture.Gid, directoryIdentity.Gid);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_UnsafeLaterStagingNameRefusesBeforeRestoringIdentity()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        var laterStore = Path.Combine(fixture.Paths.StateRoot, "raw", ".automation", "local-automations.db");
+        foreach (var path in new[] { identity, laterStore })
+        {
+            SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(path)!, fixture.Uid, fixture.Gid);
+            await using var database = new SqliteConnection($"Data Source={path};Pooling=False");
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE candidate(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        File.CreateSymbolicLink(laterStore + ".restore-" + operationId.ToString("N"), identity);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        await using var verify = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='candidate';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RecordDirectoryCollisionRefusesBeforeRestoringIdentity()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(identity)!, fixture.Uid, fixture.Gid);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var config = Path.Combine(fixture.Paths.ConfigRoot, "camera-module.json");
+        await File.WriteAllTextAsync(config, "before");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE candidate(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        File.Delete(config);
+        Directory.CreateDirectory(config);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        await using var verify = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='candidate';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RecreatesMissingCursorParentWithRuntimeOwnership()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var cursor = Path.Combine(fixture.Paths.StateRoot, "raw", "journal", "projected-scene-stage.cursor");
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(cursor)!, fixture.Uid, fixture.Gid);
+        await File.WriteAllTextAsync(cursor, "before");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        File.Delete(cursor);
+        Directory.Delete(Path.GetDirectoryName(cursor)!);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        Assert.AreEqual("before", await File.ReadAllTextAsync(cursor));
+        var parent = NativeLinux.GetDirectoryIdentity(Path.GetDirectoryName(cursor)!);
+        Assert.AreEqual(fixture.Uid, parent.Uid);
+        Assert.AreEqual(fixture.Gid, parent.Gid);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RecordRootFileCollisionRefusesBeforeChangingStore()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(identity)!, fixture.Uid, fixture.Gid);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var keys = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        SafeFileSystem.CreateRuntimeDirectory(keys, fixture.Uid, fixture.Gid);
+        await File.WriteAllTextAsync(Path.Combine(keys, "key.xml"), "original-key");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE candidate(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        File.Delete(Path.Combine(keys, "key.xml"));
+        Directory.Delete(keys);
+        await File.WriteAllTextAsync(keys, "not a directory");
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        await using var verify = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='candidate';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RecreatesNestedKeyAncestorsOwnerOnly()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var root = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        var nested = Path.Combine(root, "nested");
+        SafeFileSystem.CreateRuntimeDirectory(root, fixture.Uid, fixture.Gid);
+        SafeFileSystem.CreateRuntimeDirectory(nested, fixture.Uid, fixture.Gid);
+        var key = Path.Combine(nested, "key.xml");
+        await File.WriteAllTextAsync(key, "original-key");
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        File.Delete(key);
+        Directory.Delete(nested);
+        Directory.Delete(root);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None);
+        Assert.AreEqual("original-key", await File.ReadAllTextAsync(key));
+        foreach (var directory in new[] { root, nested })
+        {
+            var restored = NativeLinux.GetDirectoryIdentity(directory);
+            Assert.AreEqual(SafeFileSystem.OwnerDirectoryMode, restored.Mode);
+            Assert.AreEqual(fixture.Uid, restored.Uid);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_UnknownCandidateRootEntryRefusesBeforeRestoringIdentity()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(identity)!, fixture.Uid, fixture.Gid);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE original(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        await using (var database = new SqliteConnection($"Data Source={identity};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE candidate(value TEXT);";
+            await command.ExecuteNonQueryAsync();
+        }
+        SafeFileSystem.CreateRuntimeDirectory(Path.Combine(fixture.Paths.StateRoot, "raw"), fixture.Uid, fixture.Gid);
+        await File.WriteAllTextAsync(Path.Combine(fixture.Paths.StateRoot, "raw", "unknown-payload"), "candidate");
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, BackupManifestSha256: backup.ManifestSha256);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, operation, CancellationToken.None));
+        await using var verify = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='candidate';";
+        Assert.AreEqual(1L, await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_RetryAfterFirstStoreRestoreConvergesWithWal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
+        var journal = CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot);
+        foreach (var path in new[] { identity, journal })
+        {
+            SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(path)!, fixture.Uid, fixture.Gid);
+            await using var database = new SqliteConnection($"Data Source={path};Pooling=False");
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES('before');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var operationId = Guid.NewGuid();
+        var backup = await InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, operationId, CancellationToken.None);
+        foreach (var path in new[] { identity, journal })
+        {
+            await using var database = new SqliteConnection($"Data Source={path};Pooling=False");
+            await database.OpenAsync();
+            if (path == journal)
+            {
+                const int noCheckpointOnClose = 1006;
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_OK,
+                    SQLitePCL.raw.sqlite3_db_config(database.Handle, noCheckpointOnClose, 1, out var enabled));
+                Assert.AreEqual(1, enabled);
+            }
+            using var command = database.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE evidence SET value='candidate';";
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.IsTrue(File.Exists(journal + "-wal"));
+        Assert.IsGreaterThan(0L, new FileInfo(journal + "-wal").Length);
+        var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, operationId,
+            LifecycleOperationKind.Upgrade, fixture.InstanceId, new string('a', 64), LifecycleOperationPhase.Mutating,
+            InstallationStatus.Running, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            fixture.Manifest.Image, CandidateImage: fixture.Manifest.Image with
+            {
+                ImageId = $"sha256:{new string('5', 64)}"
+            }, OriginalCatalog: fixture.Manifest.Catalog, MutationStarted: true, BackupManifestSha256: backup.ManifestSha256);
+
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation, CancellationToken.None);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => InstanceBackupManager.RestoreStoresAsync(
+            fixture.Paths, fixture.Manifest, operation, CancellationToken.None,
+            relative => { if (relative == "state/identity/cameraagent_identity.db") throw new InvalidOperationException("crash boundary"); }));
+        await using (var restoredIdentity = new SqliteConnection($"Data Source={identity};Mode=ReadOnly;Pooling=False"))
+        {
+            await restoredIdentity.OpenAsync();
+            using var query = restoredIdentity.CreateCommand();
+            query.CommandText = "SELECT value FROM evidence;";
+            Assert.AreEqual("before", await query.ExecuteScalarAsync());
+        }
+        Assert.IsTrue(File.Exists(journal + "-wal"));
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(backup.ManifestSha256, retained!.BackupManifestSha256);
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, retained, CancellationToken.None);
+        await InstanceBackupManager.RestoreStoresAsync(fixture.Paths, fixture.Manifest, retained, CancellationToken.None);
+        foreach (var path in new[] { identity, journal })
+        {
+            await using var database = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+            await database.OpenAsync();
+            using var query = database.CreateCommand();
+            query.CommandText = "SELECT value FROM evidence;";
+            Assert.AreEqual("before", await query.ExecuteScalarAsync());
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_ResumeInterruptedRecoveryRestoresJournalBeforeRestart()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var journal = CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot);
+        SafeFileSystem.CreateRuntimeDirectory(Path.GetDirectoryName(journal)!, fixture.Uid, fixture.Gid);
+        await using (var database = new SqliteConnection($"Data Source={journal};Pooling=False"))
+        {
+            await database.OpenAsync();
+            using var command = database.CreateCommand();
+            command.CommandText = "CREATE TABLE recovery_evidence(value TEXT); INSERT INTO recovery_evidence VALUES('before'); PRAGMA user_version=12;";
+            await command.ExecuteNonQueryAsync();
+        }
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        fixture.Runner.OnCandidateUp = () =>
+        {
+            using var database = new SqliteConnection($"Data Source={journal};Pooling=False");
+            database.Open();
+            using var command = database.CreateCommand();
+            command.CommandText = "UPDATE recovery_evidence SET value='candidate';";
+            command.ExecuteNonQuery();
+            fixture.Runner.RejectNextStop = true;
+        };
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = reference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "exact rollback also failed", StringComparison.Ordinal);
+        var interrupted = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(LifecycleOperationPhase.Restoring, interrupted!.Phase);
+        Assert.IsTrue(interrupted.MutationStarted);
+        Assert.IsNotNull(interrupted.BackupManifestSha256);
+        await using (var candidateDatabase = new SqliteConnection($"Data Source={journal};Mode=ReadOnly;Pooling=False"))
+        {
+            await candidateDatabase.OpenAsync();
+            using var candidateQuery = candidateDatabase.CreateCommand();
+            candidateQuery.CommandText = "SELECT value FROM recovery_evidence;";
+            Assert.AreEqual("candidate", await candidateQuery.ExecuteScalarAsync());
+        }
+        fixture.Runner.OnCandidateUp = null;
+        var originalStartedWithRestoredJournal = false;
+        var originalStartCount = 0;
+        fixture.Runner.OnOriginalUp = () =>
+        {
+            originalStartCount++;
+            using var database = new SqliteConnection($"Data Source={journal};Mode=ReadOnly;Pooling=False");
+            database.Open();
+            using var query = database.CreateCommand();
+            query.CommandText = "SELECT value FROM recovery_evidence;";
+            if (originalStartCount == 1) originalStartedWithRestoredJournal = Equals("before", query.ExecuteScalar());
+        };
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.IsGreaterThan(0, originalStartCount);
+        Assert.IsTrue(originalStartedWithRestoredJournal);
+        await using var restored = new SqliteConnection($"Data Source={journal};Mode=ReadOnly;Pooling=False");
+        await restored.OpenAsync();
+        using var query = restored.CreateCommand();
+        query.CommandText = "SELECT value FROM recovery_evidence;";
+        Assert.AreEqual("before", await query.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_TooManyRecordsLeavesNoPartialSnapshot()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var directory = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        Directory.CreateDirectory(directory);
+        for (var index = 0; index < 257; index++)
+            await File.WriteAllTextAsync(Path.Combine(directory, $"key-{index:D3}.xml"), "key");
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, Guid.NewGuid(), CancellationToken.None));
+        Assert.IsFalse(Directory.EnumerateFileSystemEntries(fixture.Paths.BackupsRoot).Any());
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstanceBackupManager_LinkedNestedRecordDirectoryIsRejectedBeforePublication()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var external = Path.Combine(fixture.Root, "outside-records");
+        Directory.CreateDirectory(external);
+        await File.WriteAllTextAsync(Path.Combine(external, "secret"), "external");
+        Directory.CreateSymbolicLink(Path.Combine(fixture.Paths.ConfigRoot, "linked"), external);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            InstanceBackupManager.CreateAsync(fixture.Paths, fixture.Manifest, Guid.NewGuid(), CancellationToken.None));
+        Assert.IsFalse(Directory.Exists(fixture.Paths.BackupsRoot) &&
+                       Directory.EnumerateFiles(fixture.Paths.BackupsRoot, "backup-manifest.json", SearchOption.AllDirectories).Any());
+        Assert.AreEqual("external", await File.ReadAllTextAsync(Path.Combine(external, "secret")));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_TooManyRecordsRefusedBeforeCapturePause()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var directory = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+        Directory.CreateDirectory(directory);
+        for (var index = 0; index < 257; index++)
+            await File.WriteAllTextAsync(Path.Combine(directory, $"key-{index:D3}.xml"), "key");
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = reference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_UnknownRawRootEntryRefusedBeforePause()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var raw = Path.Combine(fixture.Paths.StateRoot, "raw");
+        Directory.CreateDirectory(raw);
+        await File.WriteAllTextAsync(Path.Combine(raw, "unknown-payload"), "unsupported");
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = reference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "unsupported entry", StringComparison.Ordinal);
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_GroupWritableJournalDirectoryRefusedBeforePause()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var journal = Path.Combine(fixture.Paths.StateRoot, "raw", "journal");
+        Directory.CreateDirectory(journal);
+        File.SetUnixFileMode(journal, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                                      UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute);
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        var lifecycle = new FakeLifecycleClient();
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = reference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "unsupported entry", StringComparison.Ordinal);
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_OwnerStateRegressionRestoresExactOriginalRuntime()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
@@ -1524,7 +2426,7 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_InterruptedMutationPersistsRestoredOwnerProgressionBeforeRetry()
+    public async Task UpgradeAsync_InterruptedMutationDoesNotReplaySnapshotOverRunningOriginal()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
@@ -1557,19 +2459,68 @@ public sealed class LifecycleContractTests
             },
             DeploymentJsonContext.Default.LifecycleOperationState,
             CancellationToken.None);
-        owner.VerificationStates.Enqueue("owner-ready");
-        owner.VerificationStates.Enqueue("owner-password-change-required");
-        owner.VerificationStates.Enqueue("owner-ready");
-
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+        var before = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             request with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
             fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "restore-only", StringComparison.Ordinal);
 
         retained = await CameraAgentLifecycleManager.ReadOperationAsync(
             fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual("owner-ready", retained!.ExpectedOwnerBootstrapState);
+        Assert.AreEqual("owner-password-change-required", retained!.ExpectedOwnerBootstrapState);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(InstallationStatus.Failed, retained.Status);
+        Assert.AreEqual(InstallationStatus.Running, retained.Status);
+        Assert.AreEqual(before, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_InterruptedBeforePauseRetriesRunningOriginal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var reference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            reference, $"sha256:{new string('5', 64)}", fixture.Uid, fixture.Gid);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            ImageReference = reference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
+        };
+        var operation = await CameraAgentLifecycleManager.BeginAsync(
+            request, fixture.Paths, LifecycleOperationKind.Upgrade, fixture.Manifest, CancellationToken.None);
+        var operationRoot = Path.Combine(fixture.Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
+        SafeFileSystem.CreateOwnerDirectory(operationRoot);
+        foreach (var (source, name) in new[]
+                 {
+                     (fixture.Paths.ManifestPath, "previous-instance-manifest.json"),
+                     (fixture.Paths.ResultPath, "previous-installation-result.json"),
+                     (Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml"), "previous-compose.yml"),
+                     (Path.Combine(fixture.Paths.ConfigRoot, "compose", "instance.env"), "previous.env")
+                 })
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, name), await File.ReadAllTextAsync(source));
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            Phase = LifecycleOperationPhase.Prepared,
+            MutationStarted = true,
+            CandidateImage = fixture.Manifest.Image with
+            {
+                ImageId = $"sha256:{new string('5', 64)}",
+                ImmutableReference = reference,
+                UpgradeCompatibility = CameraAgentStateContract.Current,
+                MinimumCompatibleRevision = new string('7', 40),
+                IdentityMigration = "20260827053715_InitialIdentity",
+                RawIngressSchema = "12",
+                CatalogManifestVersion = "2",
+                SourceRevision = new string('9', 40)
+            }
+        }, CancellationToken.None);
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual($"sha256:{new string('5', 64)}", result.Image!.ImageId);
     }
 
     [TestMethod]
@@ -1675,7 +2626,12 @@ public sealed class LifecycleContractTests
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
         fixture.Runner.RejectNextStop = failurePoint == "stop";
-        fixture.Runner.RejectNextBackup = failurePoint == "backup";
+        if (failurePoint == "backup")
+        {
+            var keys = Path.Combine(fixture.Paths.StateRoot, "data-protection");
+            Directory.CreateDirectory(keys);
+            File.CreateSymbolicLink(Path.Combine(keys, "foreign.xml"), fixture.Paths.ManifestPath);
+        }
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -1857,6 +2813,70 @@ public sealed class LifecycleContractTests
         var next = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Uninstall),
             fixture.Paths, LifecycleOperationKind.Uninstall, fixture.Manifest, CancellationToken.None);
         Assert.AreNotEqual(journal.OperationId, next.OperationId);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_InterruptedRollbackSettlesHealthyOriginalWithoutReplayingSnapshot()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync(LifecycleOperationKind.Rollback);
+        var lifecycle = new FakeLifecycleClient();
+        var original = await File.ReadAllBytesAsync(fixture.Paths.ManifestPath);
+
+        var result = await ExecuteRestoreAsync(fixture, request, lifecycle);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        var repeated = await ExecuteRestoreAsync(fixture, request, lifecycle);
+
+        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
+        Assert.AreEqual(result.Outcome, repeated.Outcome);
+        Assert.AreEqual(LifecycleOperationKind.Rollback, retained!.Kind);
+        Assert.AreEqual(LifecycleOperationPhase.Restored, retained.Phase);
+        Assert.AreEqual(InstallationStatus.Failed, retained.Status);
+        Assert.IsFalse(retained.MutationStarted);
+        Assert.AreEqual(1, lifecycle.RecoveryResumeCalls);
+        CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(fixture.Paths.ManifestPath));
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+        var next = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Uninstall),
+            fixture.Paths, LifecycleOperationKind.Uninstall, fixture.Manifest, CancellationToken.None);
+        Assert.AreNotEqual(retained.OperationId, next.OperationId);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_InterruptedRollbackRejectsForeignCandidateWithoutAdmissionChange()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync(LifecycleOperationKind.Rollback);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, retained! with
+        {
+            CandidateImage = retained.CandidateImage! with { ImageId = $"sha256:{new string('9', 64)}" }
+        }, CancellationToken.None);
+        var lifecycle = new FakeLifecycleClient();
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+        Assert.AreEqual(0, lifecycle.RecoveryResumeCalls);
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_InterruptedRollbackRejectsWrongPreviousComposeHash()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
+        var request = await fixture.PrepareRestoreAsync(LifecycleOperationKind.Rollback);
+        var operationRoot = Path.Combine(fixture.Paths.OperationsRoot, "lifecycle", request.RecoveryOperationId!.Value.ToString("D"));
+        var changed = "services: {}\nnetworks:\n  foreign: {}\n";
+        SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback-compose.yml"), changed);
+        SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "candidate-compose.yml"), changed);
+        SafeFileSystem.WriteTextAtomic(Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous-compose.yml"), changed);
+        var lifecycle = new FakeLifecycleClient();
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => ExecuteRestoreAsync(fixture, request, lifecycle));
+        StringAssert.Contains(failure.Message, "Compose model differs", StringComparison.Ordinal);
+        Assert.AreEqual(0, lifecycle.RecoveryResumeCalls);
+        AssertNoRecoveryContainerMutation(fixture, lifecycle);
     }
 
     [TestMethod]
@@ -2484,17 +3504,22 @@ public sealed class LifecycleContractTests
                 AllowTestProductRoot = true
             };
 
-        public async Task<LifecycleRequest> PrepareRestoreAsync()
+        public async Task<LifecycleRequest> PrepareRestoreAsync(LifecycleOperationKind kind = LifecycleOperationKind.Upgrade)
         {
-            var request = Request(LifecycleOperationKind.Upgrade) with
-            {
-                ImageReference = $"sha256:{new string('5', 64)}",
-                MigrationBackwardCompatible = true,
-                NoDownload = true
-            };
+            var request = kind == LifecycleOperationKind.Rollback
+                ? Request(kind)
+                : Request(kind) with
+                {
+                    ImageReference = $"sha256:{new string('5', 64)}",
+                    MigrationBackwardCompatible = true,
+                    NoDownload = true
+                };
+            var candidate = kind == LifecycleOperationKind.Rollback
+                ? Manifest.PreviousImage!
+                : Manifest.Image with { ImageId = request.ImageReference!, ImmutableReference = request.ImageReference! };
             Runner.ConfigureRuntime(Paths, Manifest.Image.ImmutableReference, Manifest.Image.ImageId,
-                request.ImageReference, request.ImageReference, Uid, Gid);
-            var operation = await CameraAgentLifecycleManager.BeginAsync(request, Paths, LifecycleOperationKind.Upgrade, Manifest, CancellationToken.None);
+                candidate.ImmutableReference, candidate.ImageId, Uid, Gid);
+            var operation = await CameraAgentLifecycleManager.BeginAsync(request, Paths, kind, Manifest, CancellationToken.None);
             var operationRoot = Path.Combine(Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
             SafeFileSystem.CreateOwnerDirectory(Path.Combine(Paths.OperationsRoot, "lifecycle"));
             SafeFileSystem.CreateOwnerDirectory(operationRoot);
@@ -2509,16 +3534,22 @@ public sealed class LifecycleContractTests
                 SafeFileSystem.WriteTextAtomic(source, await File.ReadAllTextAsync(source));
                 SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, destination), await File.ReadAllTextAsync(source));
             }
-            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback.env"), "prior rollback environment");
-            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "candidate.env"), $"CAMERAAGENT_IMAGE={request.ImageReference}\n");
-            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback-compose.yml"), "prior rollback compose");
-            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous.env"), "prior rollback environment");
-            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous-compose.yml"), "prior rollback compose");
+            var rollbackEnvironment = kind == LifecycleOperationKind.Rollback
+                ? $"CAMERAAGENT_IMAGE={candidate.ImageId}\nHVO_RETAINED_SETTING=previous\n"
+                : "prior rollback environment";
+            var rollbackCompose = kind == LifecycleOperationKind.Rollback ? "services: {}\n" : "prior rollback compose";
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback.env"), rollbackEnvironment);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "candidate.env"),
+                kind == LifecycleOperationKind.Rollback ? rollbackEnvironment : $"CAMERAAGENT_IMAGE={candidate.ImageId}\n");
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "prior-rollback-compose.yml"), rollbackCompose);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "candidate-compose.yml"), rollbackCompose);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous.env"), rollbackEnvironment);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(Paths.DeploymentStateRoot, "rollback", "previous-compose.yml"), rollbackCompose);
             await CameraAgentLifecycleManager.RecordAsync(Paths, operation with
             {
                 Phase = LifecycleOperationPhase.Restoring,
                 MutationStarted = true,
-                CandidateImage = Manifest.Image with { ImageId = request.ImageReference, ImmutableReference = request.ImageReference },
+                CandidateImage = candidate,
                 PreMutationContinuity = new LifecycleContinuityBoundary("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow),
                 ExpectedOwnerBootstrapState = "owner-ready",
                 FailureCode = "lifecycle-failed",
@@ -2571,9 +3602,10 @@ public sealed class LifecycleContractTests
         public bool RetainOwnedOrphanAfterDown { get; set; }
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
-        public bool RejectNextBackup { get; set; }
         public string CandidateRawIngressSchema { get; set; } = "12";
         public Action? OnCandidateInspect { get; set; }
+        public Action? OnCandidateUp { get; set; }
+        public Action? OnOriginalUp { get; set; }
         public List<string> Events { get; } = [];
         public List<string> LoggedContainers { get; } = [];
 
@@ -2605,16 +3637,6 @@ public sealed class LifecycleContractTests
             CancellationToken cancellationToken)
         {
             InvocationCount++;
-            if (fileName == "tar")
-            {
-                if (arguments.Contains("--create", StringComparer.Ordinal)) BackupCount++;
-                if (RejectNextBackup && arguments.Contains("--create", StringComparer.Ordinal))
-                {
-                    RejectNextBackup = false;
-                    return Task.FromResult(new ProcessResult(1, string.Empty, "simulated backup interruption"));
-                }
-                return new ProcessRunner().RunAsync(fileName, arguments, cancellationToken);
-            }
             Assert.AreEqual("docker", fileName);
             if (arguments is ["context", "inspect", ..])
                 return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
@@ -2699,6 +3721,8 @@ public sealed class LifecycleContractTests
                     activeImageId = File.ReadLines(environmentPath)
                         .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
                     running = true;
+                    if (activeImageId == candidateImageId) OnCandidateUp?.Invoke();
+                    if (activeImageId == initialImageId) OnOriginalUp?.Invoke();
                 }
                 if (arguments.Contains("restart", StringComparer.Ordinal)) running = true;
                 if (arguments.Contains("down", StringComparer.Ordinal))

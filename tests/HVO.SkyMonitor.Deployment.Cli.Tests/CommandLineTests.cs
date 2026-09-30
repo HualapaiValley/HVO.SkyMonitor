@@ -251,11 +251,25 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_RollbackRestoreOnlyBindsOriginalRequestHash()
+    {
+        var original = (LifecycleRequest)CommandLine.ParseCommand([
+            "cameraagent", "rollback", "--instance-id", Guid.NewGuid().ToString("D")
+        ]);
+        var recovery = (LifecycleRequest)CommandLine.ParseCommand([
+            "cameraagent", "rollback", "--instance-id", original.InstanceId!.Value.ToString("D"),
+            "--resume", "--restore-only", "--operation-id", Guid.NewGuid().ToString("D")
+        ]);
+        Assert.AreEqual(original.ComputeRequestSha256(), recovery.ComputeRequestSha256());
+        Assert.IsTrue(recovery.RestoreOnly);
+    }
+
+    [TestMethod]
     [DataRow("missing-resume")]
     [DataRow("missing-operation")]
     [DataRow("missing-restore")]
     [DataRow("dry-run")]
-    [DataRow("rollback")]
+    [DataRow("uninstall")]
     [DataRow("signed")]
     public void ParseCommand_RestoreOnlyRejectsUnsupportedOptions(string fault)
     {
@@ -272,7 +286,7 @@ public sealed class CommandLineTests
             "missing-operation" => request with { RecoveryOperationId = null },
             "missing-restore" => request with { RestoreOnly = false },
             "dry-run" => request with { DryRun = true },
-            "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
+            "uninstall" => request with { Operation = LifecycleOperationKind.Uninstall, ImageReference = null },
             "signed" => request with { ImageReference = null, ImageManifest = "/srv/release/image-manifest.json" },
             _ => throw new InvalidOperationException()
         };

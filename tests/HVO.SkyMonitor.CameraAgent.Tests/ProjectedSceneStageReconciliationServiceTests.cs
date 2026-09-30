@@ -2,7 +2,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -10,6 +12,40 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class ProjectedSceneStageReconciliationServiceTests
 {
+    [TestMethod]
+    public async Task ReconcileOnceAsync_PausedAdmissionDefersStageDeletionUntilResume()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-stage-pause-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var controlTelemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(new JournalIngress(root),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }), TimeProvider.System, controlTelemetry);
+            await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await admission.PauseAsync("stage-pause", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+            var owners = new RecordingOwnerProvider();
+            var reconciler = new RecordingReconciler([new ProjectedSceneStageReconciliationResult(1, 1, 0)]);
+            var state = new RawIngressState(TimeProvider.System);
+            using var telemetry = new RawIngressTelemetry(state);
+            using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
+            var service = new ProjectedSceneStageReconciliationService(new StubIngress(), owners,
+                reconciler, state, telemetry, TimeProvider.System, lifecycle,
+                NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+
+            var paused = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0, paused.Inspected);
+            Assert.AreEqual(0, owners.CallCount);
+            await admission.ResumeAsync("stage-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+            var resumed = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, resumed.Inspected);
+            Assert.AreEqual(1, owners.CallCount);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task ReconcileOnceAsync_DrainsOneBoundedBatchAndRecomputesOwnersEachPass()
     {
@@ -97,6 +133,17 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
             CameraModuleConfig configuration,
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken) => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class JournalIngress(string root) : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => new(new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(cancellationToken));
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            CameraModuleConfig configuration, CaptureLoopSubmission submission, CancellationToken cancellationToken)
+            => ValueTask.FromResult<RawCaptureReceipt?>(null);
     }
 
     private sealed class RecordingOwnerProvider : IProjectedSceneStageOwnerProvider

@@ -13,13 +13,16 @@ internal sealed class ProjectedSceneStageReconciliationService(
     RawIngressTelemetry telemetry,
     TimeProvider timeProvider,
     ProjectedSceneStageLifecycleCoordinator lifecycle,
-    ILogger<ProjectedSceneStageReconciliationService> logger) : BackgroundService
+    ILogger<ProjectedSceneStageReconciliationService> logger,
+    Capture.CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private static readonly TimeSpan BacklogDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PeriodicDelay = TimeSpan.FromMinutes(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (admission is null)
+            throw new InvalidOperationException("Hosted stage reconciliation requires the capture admission transition fence.");
         await rawIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -45,6 +48,18 @@ internal sealed class ProjectedSceneStageReconciliationService(
 
     internal async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileOnceAsync(
         CancellationToken cancellationToken)
+    {
+        using (var transition = admission is null ? null :
+                   await admission.EnterRetentionSweepAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (admission is not null &&
+                (!admission.Snapshot.IsInitialized || admission.Snapshot.State != Capture.CaptureAdmissionState.Running))
+                return new(0, 0, 0);
+            return await ReconcileCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileCoreAsync(CancellationToken cancellationToken)
     {
         using var lease = await lifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
         var owned = await ownerProvider.GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);

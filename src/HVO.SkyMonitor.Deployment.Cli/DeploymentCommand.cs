@@ -255,12 +255,12 @@ internal sealed record LifecycleRequest : DeploymentCommand
             throw new InstallUsageException("--resume requires a lifecycle operation.");
         }
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
-        if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
+        if (RestoreOnly && (!Resume || Operation is not (LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback) ||
                             RecoveryOperationId is null || RecoveryOperationId == Guid.Empty ||
                             ImageManifest is not null || ImageIndex is not null))
         {
             throw new InstallUsageException(
-                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; signed-release recovery is not supported.");
+                "--restore-only requires upgrade or rollback --resume --operation-id and the original operator-supplied request; signed-release recovery is not supported.");
         }
         if (!RestoreOnly && RecoveryOperationId is not null)
             throw new InstallUsageException("--operation-id requires --restore-only.");

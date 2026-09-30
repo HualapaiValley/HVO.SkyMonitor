@@ -14,7 +14,8 @@ internal sealed class DerivedProductReconciliationService(
     CaptureProcessingState state,
     Capture.Distribution.CaptureDistributionService distribution,
     ILogger<DerivedProductReconciliationService> logger,
-    IRawCaptureIngress? rawIngress = null) : BackgroundService
+    IRawCaptureIngress? rawIngress = null,
+    Capture.CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
@@ -26,18 +27,25 @@ internal sealed class DerivedProductReconciliationService(
             {
                 await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
             }
-            var reconciler = new DerivedProductReconciler(
-                options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,
-                distribution.NotifyCommittedCapture);
-            var summary = await reconciler.RunAsync(cancellationToken).ConfigureAwait(false);
-            telemetry.RecordReconciliation(summary);
-            var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
-            state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
-            state.SetReconciliationFailure(false);
-            logger.DerivedProductReconciliationCompleted(
-                summary.Inspected, summary.Available, summary.Recoverable, summary.Cleaned,
-                summary.Missing, summary.Quarantined, summary.QuarantineBytes);
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            using (var transition = admission is null ? null :
+                       await admission.EnterRetentionSweepAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (admission is not null &&
+                    (!admission.Snapshot.IsInitialized || admission.Snapshot.State != Capture.CaptureAdmissionState.Running)) return;
+                var reconciler = new DerivedProductReconciler(
+                    options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,
+                    distribution.NotifyCommittedCapture);
+                var summary = await reconciler.RunAsync(cancellationToken).ConfigureAwait(false);
+                telemetry.RecordReconciliation(summary);
+                var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
+                state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
+                state.SetReconciliationFailure(false);
+                logger.DerivedProductReconciliationCompleted(
+                    summary.Inspected, summary.Available, summary.Recoverable, summary.Cleaned,
+                    summary.Missing, summary.Quarantined, summary.QuarantineBytes);
+                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                return;
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -46,10 +54,13 @@ internal sealed class DerivedProductReconciliationService(
             state.SetReconciliationFailure(true);
             logger.DerivedProductReconciliationFailed(exception);
         }
+
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (admission is null)
+            throw new InvalidOperationException("Hosted derived reconciliation requires the capture admission transition fence.");
         while (!stoppingToken.IsCancellationRequested)
         {
             await RunOnceAsync(stoppingToken).ConfigureAwait(false);

@@ -1363,6 +1363,38 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_OperatorPausedJournalStillReconcilesTemporaryEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+                await original.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
+            Directory.CreateDirectory(rawDirectory);
+            var temporary = Path.Combine(rawDirectory, "capture.bin.temporary.tmp");
+            await File.WriteAllBytesAsync(temporary, [1, 2]).ConfigureAwait(false);
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE capture_control_state SET state='paused', version=2 WHERE state_key=1;";
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using var restarted = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(temporary));
+            using var connectionAfter = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("paused", await ScalarStringAsync(connectionAfter,
+                "SELECT state FROM capture_control_state WHERE state_key=1;").ConfigureAwait(false));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task InitializeAsync_WhenCommittedPayloadIsMissing_RemainsUnhealthyAndRefusesStartup()
     {
         var root = CreateRoot();

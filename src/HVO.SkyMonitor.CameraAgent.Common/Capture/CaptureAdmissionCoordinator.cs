@@ -91,6 +91,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private readonly bool _pauseFreshOnStartup;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private readonly SemaphoreSlim _commandGate = new(1, 1);
+    private readonly SemaphoreSlim _retentionTransitionGate = new(1, 1);
     private readonly object _drainGate = new();
     private TaskCompletionSource _runningSignal = NewSignal();
     private TaskCompletionSource? _drainedSignal;
@@ -128,6 +129,17 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     }
 
     public CaptureAdmissionSnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+    public async Task<IDisposable> EnterRetentionSweepAsync(CancellationToken cancellationToken)
+    {
+        await _retentionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return new RetentionSweepLease(_retentionTransitionGate);
+    }
+
+    private sealed class RetentionSweepLease(SemaphoreSlim gate) : IDisposable
+    {
+        public void Dispose() => gate.Release();
+    }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
@@ -260,66 +272,79 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var prior = Snapshot;
-            if (target == CaptureControlTarget.Paused)
-            {
-                Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
-                CloseGate();
-            }
-
-            CaptureControlStoreResult started;
+            await _retentionTransitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var transitionHeld = true;
             try
             {
-                started = await _store.BeginAsync(
-                    target,
-                    idempotencyKey,
-                    expectedVersion,
-                    actor,
-                    reason,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (target == CaptureControlTarget.Paused && Snapshot.State == CaptureAdmissionState.Running)
+                var prior = Snapshot;
+                if (target == CaptureControlTarget.Paused)
                 {
-                    OpenGate();
+                    Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
+                    CloseGate();
                 }
-                throw;
-            }
 
-            if (started.IsReplay)
-            {
-                ApplyGate(prior.State);
-                _telemetry.RecordAdmissionCommand(target.ToString(), "replayed");
-                return ToResult(started, true);
-            }
-
-            SetSnapshot(started.Snapshot);
-            if (started.IsComplete)
-            {
-                ApplyGate(started.Snapshot.State);
-                _telemetry.RecordAdmissionCommand(target.ToString(), started.Changed ? "changed" : "no-op");
-                return ToResult(started, false);
-            }
-
-            // Once PauseRequested is durable, request cancellation must not leave capture admission half-drained.
-            await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
-            if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
-            {
-                var unavailable = started.Snapshot with
+                CaptureControlStoreResult started;
+                try
                 {
-                    State = CaptureAdmissionState.Unavailable,
-                    UpdatedUtc = DateTimeOffset.UtcNow
-                };
-                SetSnapshot(unavailable);
-                _fleetRuntimeState?.CaptureFailed("pause-publication-failed");
-                _telemetry.RecordAdmissionCommand("Paused", "unavailable");
-                throw new CaptureAdmissionUnavailableException();
+                    started = await _store.BeginAsync(
+                        target,
+                        idempotencyKey,
+                        expectedVersion,
+                        actor,
+                        reason,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    if (target == CaptureControlTarget.Paused && Snapshot.State == CaptureAdmissionState.Running)
+                    {
+                        OpenGate();
+                    }
+                    throw;
+                }
+
+                if (started.IsReplay)
+                {
+                    ApplyGate(prior.State);
+                    _telemetry.RecordAdmissionCommand(target.ToString(), "replayed");
+                    return ToResult(started, true);
+                }
+
+                SetSnapshot(started.Snapshot);
+                if (started.IsComplete)
+                {
+                    ApplyGate(started.Snapshot.State);
+                    _telemetry.RecordAdmissionCommand(target.ToString(), started.Changed ? "changed" : "no-op");
+                    return ToResult(started, false);
+                }
+
+                // PauseRequested is durable and no maintenance pass may start in Running
+                // after this point. Do not hold the transition gate through capture drain.
+                _retentionTransitionGate.Release();
+                transitionHeld = false;
+                // Once PauseRequested is durable, request cancellation must not leave capture admission half-drained.
+                await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
+                if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
+                {
+                    var unavailable = started.Snapshot with
+                    {
+                        State = CaptureAdmissionState.Unavailable,
+                        UpdatedUtc = DateTimeOffset.UtcNow
+                    };
+                    SetSnapshot(unavailable);
+                    _fleetRuntimeState?.CaptureFailed("pause-publication-failed");
+                    _telemetry.RecordAdmissionCommand("Paused", "unavailable");
+                    throw new CaptureAdmissionUnavailableException();
+                }
+                var completed = await _store.CompletePauseAsync(idempotencyKey, CancellationToken.None).ConfigureAwait(false);
+                SetSnapshot(completed.Snapshot);
+                _telemetry.RecordAdmissionCommand("Paused", "changed");
+                return ToResult(completed, false);
             }
-            var completed = await _store.CompletePauseAsync(idempotencyKey, CancellationToken.None).ConfigureAwait(false);
-            SetSnapshot(completed.Snapshot);
-            _telemetry.RecordAdmissionCommand("Paused", "changed");
-            return ToResult(completed, false);
+            finally
+            {
+                if (transitionHeld) _retentionTransitionGate.Release();
+            }
         }
         finally
         {
@@ -465,6 +490,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _disposed = true;
         _initializeGate.Dispose();
         _commandGate.Dispose();
+        _retentionTransitionGate.Dispose();
     }
 
     [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "The readonly lease implements IDisposable and delegates idempotent disposal to shared reference state so struct copies cannot double-release admission.")]
