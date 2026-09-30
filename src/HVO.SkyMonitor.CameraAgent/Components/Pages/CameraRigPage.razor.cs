@@ -25,7 +25,8 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         None,
         Equipment,
         Profile,
-        Starter
+        Starter,
+        ActiveEdit
     }
 
     private sealed record CompareRow(string Label, string Active, string Selected, bool Changed);
@@ -47,6 +48,10 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
     private NamedRigRevision? _historicalRevision;
     private long _previewGeneration;
     private EquipmentFormModel _form = new();
+    private EquipmentFormModel _edit = new();
+    private NamedRigRevision? _editBasis;
+    private long _editVersion;
+    private ActiveRigEditOutcome? _editOutcome;
     private NamedEquipmentDetail? _basis;
     private NamedEquipmentDetail? _activeCamera;
     private NamedEquipmentDetail? _selectedCamera;
@@ -94,6 +99,10 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         _revisionId
     }, WebJson);
     private bool InstalledBasis => _basis?.IsInstalled == true;
+    private NamedRigRevision? ActiveRevision
+        => _catalog?.Revisions.FirstOrDefault(r => r.RevisionId == _catalog.Selection.ActiveRevisionId);
+    private bool CanEditActive => !_busy && ActiveRevision is not null && _catalog!.Selection.PendingRevisionId is null &&
+        _stageAttempt is null && _cancelAttempt is null;
     private bool VirtualOnlyInventory => _virtualOnlyInventory;
 
     private async Task CreateZwoStarterAsync()
@@ -153,6 +162,7 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
     {
         _busy = true;
         InvalidatePreview();
+        _editOutcome = null;
         try
         {
             var previousProfileId = _profileId;
@@ -178,8 +188,11 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
             }
             var selectedRevisionId = _revisionId;
             _activeCamera = await CameraDetailAsync(_catalog!.Revisions.FirstOrDefault(r => r.RevisionId == _catalog.Selection.ActiveRevisionId)?.CameraRevisionId);
+            var activeProfileId = ActiveRevision?.ProfileId;
             _profileId = _inventory!.Profiles.Any(p => p.ProfileId == _profileId)
-                ? _profileId : _inventory.Profiles.Count > 0 ? _inventory.Profiles[0].ProfileId : string.Empty;
+                ? _profileId
+                : _inventory.Profiles.Any(p => p.ProfileId == activeProfileId) ? activeProfileId!
+                : _inventory.Profiles.Count > 0 ? _inventory.Profiles[0].ProfileId : string.Empty;
             if (_profileId != previousProfileId || _profileName == previousProfileName || previousProfileName is null)
                 _profileName = _inventory.Profiles.FirstOrDefault(p => p.ProfileId == _profileId)?.DisplayName ?? string.Empty;
             await LoadHistoryAsync();
@@ -204,9 +217,23 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         finally { _busy = false; }
     }
 
+    /// <summary>
+    /// Keeps a still-listed composer choice; otherwise defaults to the active rig's revision of that
+    /// building block, so composing starts from what is running rather than from the first listed item.
+    /// </summary>
     private string SelectEquipment(string kind, string current)
-        => _inventory!.Equipment.Any(e => e.Kind == kind && e.RevisionId == current)
-            ? current : _inventory.Equipment.FirstOrDefault(e => e.Kind == kind)?.RevisionId ?? string.Empty;
+    {
+        if (_inventory!.Equipment.Any(e => e.Kind == kind && e.RevisionId == current)) return current;
+        var active = ActiveRevision;
+        var preferred = active is null ? null : kind switch
+        {
+            "camera" => active.CameraRevisionId,
+            "optics" => active.OpticsRevisionId,
+            _ => active.MountRevisionId
+        };
+        return preferred is not null && _inventory.Equipment.Any(e => e.Kind == kind && e.RevisionId == preferred)
+            ? preferred : _inventory.Equipment.FirstOrDefault(e => e.Kind == kind)?.RevisionId ?? string.Empty;
+    }
 
     private string LatestProfileRevisionId()
     {
@@ -654,6 +681,83 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         OpenDialog(RigDialog.Profile);
     }
 
+    private void OpenActiveEditDialog()
+    {
+        if (!CanEditActive || ActiveRevision is not { } active) return;
+        _message = null;
+        _error = false;
+        _editOutcome = null;
+        var mount = EquipmentFormModel.FromMount(active.Rig.Orientation);
+        _edit = EquipmentFormModel.FromOptics(active.Rig.Optics);
+        _edit.BoresightAltitudeDegrees = mount.BoresightAltitudeDegrees;
+        _edit.BoresightAzimuthDegrees = mount.BoresightAzimuthDegrees;
+        _edit.RollAdjustmentDegrees = mount.RollAdjustmentDegrees;
+        _editBasis = active;
+        _editVersion = _catalog!.Selection.Version;
+        _restoreFocusId = "rig-edit-active";
+        OpenDialog(RigDialog.ActiveEdit);
+    }
+
+    /// <summary>
+    /// Applies the quick edit as one server-side chain (save changed equipment, compose, preview, stage). The
+    /// confirm button is the acknowledgement that the change is unvalidated at runtime and applies on restart.
+    /// </summary>
+    private async Task ApplyActiveEditAsync()
+    {
+        if (_busy || _editBasis is not { } basis) return;
+        var opticsValid = _edit.TryApplyOptics(basis.Rig.Optics, out var optics, out var opticsErrors);
+        var mountValid = _edit.TryApplyMount(basis.Rig.Orientation, out var mount, out var mountErrors);
+        if (!opticsValid || !mountValid)
+        {
+            _message = string.Join(" ", opticsErrors.Concat(mountErrors));
+            _error = true;
+            return;
+        }
+        InvalidatePreview();
+        _message = null;
+        _error = false;
+        _busy = true;
+        try
+        {
+            var request = new ActiveRigEditRequest(basis.RevisionId, _editVersion, optics.HorizontalFlip,
+                optics.FieldOfViewDegrees, optics.FocalLengthMillimeters, mount.BoresightAltitudeDegrees,
+                mount.BoresightAzimuthDegrees, mount.RollAdjustmentDegrees);
+            var result = await RigService.ApplyActiveRigEditAsync(request, CancellationToken.None);
+            if (Handle(result)) return;
+            var outcome = result.Value!;
+            FinishDialog("rig-edit-active");
+            if (outcome.ComposedRevisionId is { } composed)
+            {
+                _profileId = basis.ProfileId;
+                _revisionId = composed;
+            }
+            await RefreshAsync();
+            var refreshFailed = _error;
+            switch (outcome.Status)
+            {
+                case ActiveRigEditStatus.Staged:
+                    _editOutcome = outcome;
+                    _message = refreshFailed
+                        ? "Rig change staged for restart, but the page could not refresh. Refresh before acting."
+                        : "Rig change staged. It applies when CameraAgent restarts.";
+                    _error = refreshFailed;
+                    break;
+                case ActiveRigEditStatus.NoChanges:
+                    _message = "Nothing changed; no revisions were recorded.";
+                    _error = false;
+                    break;
+                default:
+                    _editOutcome = outcome;
+                    _message = $"The rig edit stopped: {outcome.Failure ?? "the change could not be completed."}" +
+                        (outcome.ComposedRevisionId is not null && !refreshFailed
+                            ? " The composed revision is selected in Compare & stage." : string.Empty);
+                    _error = true;
+                    break;
+            }
+        }
+        finally { _busy = false; }
+    }
+
     private void OpenStarterDialog()
     {
         _message = null;
@@ -729,6 +833,7 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
     {
         RigDialog.Profile => "Named rig",
         RigDialog.Starter => "Physical camera starter",
+        RigDialog.ActiveEdit => "Active rig / applies on restart",
         _ => "Immutable equipment version"
     };
 
@@ -736,8 +841,12 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
     {
         RigDialog.Profile => _newProfile ? "New named rig" : "Rename rig",
         RigDialog.Starter => "Add ZWO camera",
+        RigDialog.ActiveEdit => "Edit active rig",
         _ => $"{(_createNew ? "New" : "Edit")} {_kind}"
     };
+
+    private const string FlipHelp = "On for an upward-looking all-sky camera: with North up, East appears on the left, as seen " +
+        "looking up at the sky. Off is the mirrored, map-style view with East on the right.";
 
     private static string SelectId(string kind) => $"rig-{kind}-select";
 

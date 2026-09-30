@@ -936,6 +936,155 @@ public sealed class CameraRigPageTests
         Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void EditActiveRig_StagesTheWholeChainInOneRequestAndOffersRestart()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        Assert.AreEqual("Edit active rig", cut.Find("#rig-dialog-heading").TextContent);
+        Assert.IsFalse(cut.Find("#rig-edit-flip").HasAttribute("checked"));
+        Assert.AreEqual("10", cut.Find("#rig-edit-fov").GetAttribute("value"));
+        Assert.AreEqual("50", cut.Find("#rig-edit-focal").GetAttribute("value"));
+        Assert.AreEqual("90", cut.Find("#rig-edit-altitude").GetAttribute("value"));
+        StringAssert.Contains(cut.Find("#rig-edit-flip-help").TextContent, "East appears on the left", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("dialog input[type=checkbox]").Where(i => i.Id != "rig-edit-flip"));
+        Assert.IsFalse(cut.Markup.Contains("libraryPathEnvironmentVariable", StringComparison.OrdinalIgnoreCase));
+
+        cut.Find("#rig-edit-flip").Change(true);
+        cut.Find("#rig-edit-azimuth").Change("180");
+        Assert.AreEqual("Stage for restart", DialogPrimary(cut).TextContent);
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        Assert.AreEqual(1, service.EditCount);
+        Assert.AreEqual(0, service.StageCount);
+        Assert.AreEqual(new ActiveRigEditRequest("rig-v1", 1, true, 10, 50, 90, 180, 0), service.EditRequest);
+        StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent,
+            "Rig change staged. It applies when CameraAgent restarts.", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("[aria-label='Active rig edit steps']").TextContent, "Staged rig revision r2 for restart.",
+            StringComparison.Ordinal);
+        Assert.AreEqual("rig-v2", cut.Find("#rig-revision-select").GetAttribute("value"));
+        Assert.AreEqual("Revision 2", SelectionFact(cut, "Pending restart"));
+        var pending = cut.Find("[aria-label='Pending restart']");
+        Assert.AreEqual("Restart now", pending.QuerySelector("button.restart-now")!.TextContent);
+        Assert.IsTrue(cut.Find("#rig-edit-active").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    public void EditActiveRig_Unchanged_ReportsThatNothingWasRecorded()
+    {
+        var service = new FakeRigService { EditOutcome = new(ActiveRigEditStatus.NoChanges, [], []) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".rig-message[role='status']").TextContent,
+            "Nothing changed; no revisions were recorded.", StringComparison.Ordinal));
+        Assert.AreEqual(1, service.EditCount);
+        Assert.IsEmpty(cut.FindAll("[aria-label='Active rig edit steps']"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Pending restart']"));
+        Assert.IsFalse(cut.Find("#rig-edit-active").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
+    public void EditActiveRig_PreviewFailure_ShowsWhatWasRecordedAndWhatDidNotHappen()
+    {
+        var service = new FakeRigService
+        {
+            EditOutcome = new(ActiveRigEditStatus.Failed,
+                ["Saved optics \"Installed optics copy\" revision 2.", "Composed rig revision r2."],
+                ["Nothing was staged; the active rig and schedule are unchanged."],
+                "Preview failed: rig.readout", "rig-v2")
+        };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        cut.Find("#rig-edit-fov").Change("120");
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("dialog")));
+        var alert = cut.Find(".rig-message[role='alert']").TextContent;
+        StringAssert.Contains(alert, "The rig edit stopped: Preview failed: rig.readout", StringComparison.Ordinal);
+        StringAssert.Contains(alert, "selected in Compare & stage", StringComparison.Ordinal);
+        var steps = cut.Find("[aria-label='Active rig edit steps']").TextContent;
+        StringAssert.Contains(steps, "Composed rig revision r2.", StringComparison.Ordinal);
+        StringAssert.Contains(steps, "Did not happen", StringComparison.Ordinal);
+        StringAssert.Contains(steps, "Nothing was staged; the active rig and schedule are unchanged.", StringComparison.Ordinal);
+        Assert.AreEqual("rig-v2", cut.Find("#rig-revision-select").GetAttribute("value"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Pending restart']"));
+        Assert.AreEqual(0, service.StageCount);
+    }
+
+    [TestMethod]
+    public void EditActiveRig_InvalidValue_StaysOpenWithoutCallingTheService()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-edit-active").Click();
+        cut.Find("#rig-edit-fov").Change("0");
+        DialogPrimary(cut).Click();
+
+        StringAssert.Contains(cut.Find("dialog [role='alert']").TextContent, "Field of view", StringComparison.Ordinal);
+        Assert.AreEqual(0, service.EditCount);
+        Assert.AreEqual("Edit active rig", cut.Find("#rig-dialog-heading").TextContent);
+    }
+
+    [TestMethod]
+    public void PendingRig_RestartNow_ShowsRestartingState()
+    {
+        var service = new FakeRigService { PendingId = "other-v2" };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("[aria-label='Pending restart'] button.restart-now").Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[aria-label='Pending restart'] [role='status']").TextContent,
+            "Restarting CameraAgent", StringComparison.Ordinal));
+        Assert.AreEqual(1, service.RestartCount);
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+    }
+
+    [TestMethod]
+    public void PendingRig_UnsupervisedHost_HidesRestartAndExplainsManualRestart()
+    {
+        var service = new FakeRigService { PendingId = "other-v2", RestartStatus = new(false, true, false) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+        StringAssert.Contains(cut.Find("[aria-label='Pending restart']").TextContent, "Restart CameraAgent manually",
+            StringComparison.Ordinal);
+        Assert.AreEqual(0, service.RestartCount);
+    }
+
+    [TestMethod]
+    public void PendingRig_ReadOnlyOperator_IsNotOfferedRestart()
+    {
+        var service = new FakeRigService { PendingId = "other-v2", RestartStatus = new(true, false, false) };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.IsEmpty(cut.FindAll("button.restart-now"));
+        StringAssert.Contains(cut.Find("[aria-label='Pending restart']").TextContent, "change rights are required",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ComposerSelectors_DefaultToTheActiveRigsEquipment()
+    {
+        using var context = CreateContext(new FakeRigService { ActiveCameraListedSecond = true });
+        var cut = context.Render<CameraRigPage>();
+
+        Assert.AreEqual("camera-v2", cut.FindAll("#rig-camera-select option")[0].GetAttribute("value"));
+        Assert.AreEqual("rig", cut.Find("#rig-profile-select").GetAttribute("value"));
+        Assert.AreEqual("camera-v1", cut.Find("#rig-camera-select").GetAttribute("value"));
+        Assert.AreEqual("optics-v1", cut.Find("#rig-optics-select").GetAttribute("value"));
+        Assert.AreEqual("mount-v1", cut.Find("#rig-mount-select").GetAttribute("value"));
+    }
+
     private static BunitContext CreateContext(FakeRigService service)
     {
         var context = new BunitContext();
