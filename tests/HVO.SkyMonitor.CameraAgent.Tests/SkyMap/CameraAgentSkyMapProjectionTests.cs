@@ -3,7 +3,10 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
+using Microsoft.Extensions.Configuration;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 
@@ -75,9 +78,35 @@ public sealed class CameraAgentSkyMapProjectionTests
     [TestMethod]
     [DataRow(0)]
     [DataRow(CameraAgentSkyMapProjection.MaximumConfigurableObjects + 1)]
-    public void Constructor_WithAnOutOfRangeBound_Throws(int maximumObjects)
-        => Assert.ThrowsExactly<ArgumentOutOfRangeException>(
-            () => Project(CreateCatalog(BrightStars()), maximumObjects));
+    public async Task ProjectAsync_WithAnOutOfRangeBound_ThrowsAsync(int maximumObjects)
+        => await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await Project(CreateCatalog(BrightStars()), maximumObjects)
+                .ProjectAsync(Instant, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+    [TestMethod]
+    public void SkyMapObjectBound_ReadsTheCurrentSettingAndProjectsWithTheDefaultForAnUnusableOne()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>(StringComparer.Ordinal))
+            .Build();
+        var bound = CameraAgentServiceCollectionExtensions.SkyMapObjectBound(configuration);
+        Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, bound());
+
+        foreach (var (value, expected) in new (string, int)[]
+        {
+            ("900", 900),
+            ("1", 1),
+            ("5000", CameraAgentSkyMapProjection.MaximumConfigurableObjects),
+            ("0", CameraAgentSkyMapProjection.DefaultMaximumObjects),
+            ("5001", CameraAgentSkyMapProjection.DefaultMaximumObjects),
+            ("1.5", CameraAgentSkyMapProjection.DefaultMaximumObjects),
+            ("lots", CameraAgentSkyMapProjection.DefaultMaximumObjects)
+        })
+        {
+            configuration[SkyMapOptions.MaximumObjectsKey] = value;
+            Assert.AreEqual(expected, bound(), value);
+        }
+    }
 
     [TestMethod]
     public async Task ProjectAsync_ReadsTheAuthoritativeLocationAndNeverOffersAnEditingContractAsync()
@@ -191,7 +220,7 @@ public sealed class CameraAgentSkyMapProjectionTests
             catalog,
             TimeProvider.System,
             StandardConstellationTopology.CreateD3Celestial(),
-            maximumObjects: maximumObjects);
+            maximumObjects: () => maximumObjects);
     }
 
     internal static FixtureCatalog CreateCatalog(IEnumerable<CelestialCatalogObject> objects)

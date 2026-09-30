@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
 using ImageInstallationIdentity = HVO.SkyMonitor.Deployment.Contracts.ImageInstallationIdentity;
 
@@ -34,18 +35,24 @@ public sealed class ReplayRunnerComposeTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Write_FriendlyName_BecomesTheTrimmedCameraDisplayName()
+    public void Write_FriendlyName_SeedsTheTrimmedCameraNameIntoTheOperatorSettingsFile()
     {
         var root = CreateRoot();
         try
         {
             var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
+            // An earlier installer also wrote the name as a read-only setting outside the operator's control.
+            var obsolete = Path.Combine(paths.ConfigRoot, "secrets", "CameraAgent__DisplayName");
+            Directory.CreateDirectory(Path.GetDirectoryName(obsolete)!);
+            File.WriteAllText(obsolete, "Old Camera");
 
             Write(request with { FriendlyName = "  North Camera  " }, paths);
 
-            Assert.AreEqual(
-                "North Camera",
-                File.ReadAllText(Path.Combine(paths.ConfigRoot, "secrets", "CameraAgent__DisplayName")));
+            var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
+            var settings = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+            Assert.AreEqual("North Camera", settings["CameraAgent"]!["Site"]!["CameraName"]!.GetValue<string>());
+            SafeFileSystem.ValidateOwnerFile(settingsPath);
+            Assert.IsFalse(File.Exists(obsolete));
         }
         finally
         {
@@ -55,21 +62,52 @@ public sealed class ReplayRunnerComposeTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Write_OverlongLegacyFriendlyName_LeavesTheCameraUnnamedRatherThanUnstartable()
+    [DataRow("   ", DisplayName = "blank")]
+    [DataRow("overlong", DisplayName = "overlong legacy name")]
+    public void Write_WithoutAUsableFriendlyName_SeedsAnUnnamedCameraRatherThanAnUnstartableOne(string friendlyName)
+    {
+        var root = CreateRoot();
+        try
+        {
+            var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
+
+            // CameraAgent refuses a camera name over the bound, so a manifest that predates the install-time check
+            // seeds no name at all.
+            Write(
+                request with
+                {
+                    FriendlyName = friendlyName == "overlong"
+                        ? new string('n', InstallRequest.MaximumFriendlyNameLength + 1)
+                        : friendlyName
+                },
+                paths);
+
+            Assert.AreEqual(
+                "{}\n",
+                File.ReadAllText(CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot)));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Write_AnExistingOperatorSettingsFile_IsNeverRewritten()
     {
         var root = CreateRoot();
         try
         {
             var (request, paths) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
             Write(request, paths);
-            var setting = Path.Combine(paths.ConfigRoot, "secrets", "CameraAgent__DisplayName");
-            Assert.IsTrue(File.Exists(setting));
+            var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
+            const string operatorEdited = """{ "CameraAgent": { "Site": { "CameraName": "Renamed" } }, "Logging": {} }""";
+            File.WriteAllText(settingsPath, operatorEdited);
 
-            // CameraAgent refuses a display name over the bound, so a manifest that predates the install-time check
-            // renders no name at all, including over one an earlier render wrote.
-            Write(request with { FriendlyName = new string('n', InstallRequest.MaximumFriendlyNameLength + 1) }, paths);
+            Write(request with { FriendlyName = "Reinstalled Name" }, paths);
 
-            Assert.IsFalse(File.Exists(setting));
+            Assert.AreEqual(operatorEdited, File.ReadAllText(settingsPath));
         }
         finally
         {

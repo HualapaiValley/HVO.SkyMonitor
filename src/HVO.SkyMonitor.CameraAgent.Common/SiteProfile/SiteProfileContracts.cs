@@ -13,26 +13,17 @@ public static class SiteProfileLimits
 
     public const int MaximumActorLength = 128;
 
-    public const int MaximumIdempotencyKeyLength = 128;
-
-    public const int MaximumReasonLength = 512;
-
-    /// <summary>
-    /// The most recent revisions the record retains. Older revisions are dropped so an authenticated caller
-    /// cannot grow the record without bound; the idempotency replay window is the same retained set.
-    /// </summary>
-    public const int MaximumRetainedRevisions = 200;
-
-    /// <summary>The newest revisions a state projection carries to the operator UI.</summary>
-    public const int MaximumProjectedRevisions = 50;
-
     public const string InvalidCommandReasonCode = "siteProfile.invalidCommand";
 
     public const string InvalidFieldReasonCode = "siteProfile.invalidField";
 
     public const string ExpectedVersionConflictReasonCode = "siteProfile.expectedVersionConflict";
 
-    public const string IdempotencyKeyConflictReasonCode = "siteProfile.idempotencyKeyConflict";
+    /// <summary>This host loads no operator settings file, so the profile cannot be saved.</summary>
+    public const string UnavailableReasonCode = "siteProfile.unavailable";
+
+    /// <summary>The operator settings file is not valid JSON, so it is left for the operator to correct.</summary>
+    public const string UnreadableReasonCode = "siteProfile.unreadable";
 }
 
 /// <summary>
@@ -40,61 +31,47 @@ public static class SiteProfileLimits
 /// about them. It is descriptive only; nothing about capture, geometry, or LogicHost registration reads it.
 /// </summary>
 public sealed record SiteProfileValues(
-    [property: JsonRequired] string? ObservatoryName,
-    [property: JsonRequired] string? CameraName,
-    [property: JsonRequired] string? OwnerName,
-    [property: JsonRequired] string? OwnerContact)
+    string? ObservatoryName,
+    string? CameraName,
+    string? OwnerName,
+    string? OwnerContact)
 {
     public static SiteProfileValues Empty { get; } = new(null, null, null, null);
 }
 
-/// <summary>One accepted profile change. The stored values are the complete profile after the change.</summary>
-public sealed record SiteProfileRevision(
-    [property: JsonRequired] long Version,
-    [property: JsonRequired] DateTimeOffset RecordedAtUtc,
-    [property: JsonRequired] string Actor,
-    [property: JsonRequired] string? Reason,
-    [property: JsonRequired] string IdempotencyKey,
-    [property: JsonRequired] SiteProfileValues Profile);
-
-/// <summary>The current profile, the name the workspace shows for this camera, and the newest revisions.</summary>
-/// <param name="Version">Zero until an operator records a profile; the concurrency token a command echoes.</param>
+/// <summary>The current profile and the name the workspace shows for this camera.</summary>
+/// <param name="Version">The operator settings file version a save echoes, so a hand edit is never overwritten.</param>
 /// <param name="EffectiveCameraName">
-/// The recorded camera name, else the installer-configured display name, else null.
+/// The saved camera name; before the settings file has a site section, the installer-configured display name.
 /// </param>
+/// <param name="SettingsFilePath">The settings file that holds the profile, or null when this host loads none.</param>
+/// <param name="Problem">Why the profile cannot be saved right now, or null when it can.</param>
 public sealed record SiteProfileState(
-    long Version,
+    string Version,
     SiteProfileValues Profile,
     string? EffectiveCameraName,
-    string? ConfiguredCameraName,
-    DateTimeOffset? UpdatedAtUtc,
-    string? UpdatedBy,
-    IReadOnlyList<SiteProfileRevision> History);
+    string? SettingsFilePath,
+    string? Problem);
 
 /// <summary>One operator request to replace the site profile.</summary>
 public sealed record SiteProfileRequest(
     SiteProfileValues Profile,
-    long ExpectedVersion,
-    string IdempotencyKey,
-    string Actor,
-    string? Reason);
+    string ExpectedVersion,
+    string Actor);
 
 [JsonConverter(typeof(JsonStringEnumConverter<SiteProfileStatus>))]
 public enum SiteProfileStatus
 {
-    /// <summary>A new profile version was recorded.</summary>
+    /// <summary>The profile was saved to the operator settings file.</summary>
     Applied,
 
-    /// <summary>The same idempotency key and profile were already recorded; nothing changed.</summary>
-    Replayed,
-
-    /// <summary>The requested profile already matches the recorded one; nothing changed.</summary>
+    /// <summary>The requested profile already matches the saved one; nothing changed.</summary>
     Unchanged,
 
-    /// <summary>The expected version was stale, or a key was replayed with a different profile.</summary>
+    /// <summary>The settings file changed since the expected version was read.</summary>
     Conflict,
 
-    /// <summary>The command failed validation and nothing durable changed.</summary>
+    /// <summary>The command failed validation, or the file cannot be saved; nothing changed.</summary>
     Invalid
 }
 

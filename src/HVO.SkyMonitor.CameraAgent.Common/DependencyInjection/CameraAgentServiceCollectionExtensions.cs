@@ -1,3 +1,4 @@
+using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
@@ -33,6 +34,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -55,7 +57,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<DeploymentLocationTelemetry>();
         services.AddSingleton<IDeploymentLocationStore, ProtectedDeploymentLocationStore>();
-        services.AddSingleton<ISiteProfileStore, FileSiteProfileStore>();
+        services.AddSingleton<ISiteProfileStore>(provider => new SettingsFileSiteProfileStore(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<ILogger<SettingsFileSiteProfileStore>>(),
+            provider.GetService<OperatorSettingsFile>()));
         services.AddSingleton<ICameraAgentConfigurationLoader, FileCameraAgentConfigurationLoader>();
         services.AddSingleton<IFrameStorageService, FileSystemFrameStorageService>();
         var acceptanceFaultRoot = configuration["CameraAgent:AcceptanceFaultControlRoot"];
@@ -163,7 +168,7 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetService<IDeploymentLocationStore>(),
             provider.GetService<ILatestFrameAccessor>(),
             provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
-            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.SkyMap.MaximumObjects));
+            SkyMapObjectBound(configuration)));
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();
@@ -392,4 +397,18 @@ public static class CameraAgentServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// The sky map object bound as the host configuration holds it now, so an edit to the operator settings file
+    /// applies to the next projection without a restart. A value a later hand edit left unusable projects with the
+    /// default until it is corrected; startup validation already rejected one present when the host started.
+    /// </summary>
+    internal static Func<int> SkyMapObjectBound(IConfiguration configuration)
+        => () => int.TryParse(
+                configuration[SkyMapOptions.MaximumObjectsKey],
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var value) && value is >= 1 and <= CameraAgentSkyMapProjection.MaximumConfigurableObjects
+            ? value
+            : CameraAgentSkyMapProjection.DefaultMaximumObjects;
 }

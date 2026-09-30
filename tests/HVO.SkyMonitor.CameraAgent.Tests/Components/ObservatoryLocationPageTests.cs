@@ -20,6 +20,7 @@ public sealed class ObservatoryLocationPageTests
     private const string OwnerId = "7d3c1f0e-4b2a-4c8d-9e1f-2a3b4c5d6e7f";
     private const string OwnerEmail = "owner@home.lan";
     private const string TileTemplate = "https://tile.example.test/{z}/{x}/{y}.png";
+    private const string SettingsPath = "/srv/hvo/App_Data/appsettings.local.json";
 
     private static readonly DateTimeOffset Instant = new(2026, 3, 1, 4, 0, 0, TimeSpan.Zero);
 
@@ -51,7 +52,6 @@ public sealed class ObservatoryLocationPageTests
         Assert.AreEqual("2,100 m", profile["Elevation"]);
         Assert.AreEqual("America/Phoenix", profile["Timezone"]);
         Assert.AreEqual("Operator entered / ± 5 m", profile["Source"]);
-        Assert.Contains($"by {OwnerEmail}", cut.Markup, StringComparison.Ordinal);
         var catalog = Facts(cut, "site-catalog-heading");
         Assert.AreEqual("hvo-hyg-v3", catalog["Catalog"]);
         Assert.AreEqual("3.7.0", catalog["Version"]);
@@ -247,7 +247,7 @@ public sealed class ObservatoryLocationPageTests
 
         var banner = cut.WaitForElement("section.site-scene .ops-note-banner.compact");
         Assert.Contains("Only the 2 brightest objects are projected.", banner.TextContent, StringComparison.Ordinal);
-        Assert.Contains("Raise CameraAgent:SkyMap:MaximumObjects", banner.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Raise the object limit under Operator settings", banner.TextContent, StringComparison.Ordinal);
         Assert.AreEqual("2 objects", cut.Find("section.site-scene .state-chip.warning").TextContent.Trim());
     }
 
@@ -402,8 +402,6 @@ public sealed class ObservatoryLocationPageTests
         Assert.Contains("Unrecognized account", rows[1].TextContent, StringComparison.Ordinal);
         Assert.Contains("Not recorded", rows[1].TextContent, StringComparison.Ordinal);
         Assert.DoesNotContain("a-deleted-account", cut.Markup, StringComparison.Ordinal);
-        var profileRow = cut.Find("section[aria-labelledby='site-profile-history-heading'] tbody tr");
-        Assert.Contains("Hualapai Valley Observatory / camera East dome / owner Pat Example", profileRow.TextContent, StringComparison.Ordinal);
         Assert.DoesNotContain(OwnerId, cut.Markup, StringComparison.Ordinal);
     }
 
@@ -678,13 +676,13 @@ public sealed class ObservatoryLocationPageTests
     }
 
     [TestMethod]
-    public void Profile_OffersTheSignInEmailSavesTrimmedValuesAndShowsTheNewRevision()
+    public void Profile_OffersTheSignInEmailAndSavesTrimmedValuesToTheSettingsFile()
     {
         using var context = CreateContext();
         var saved = ProfileState(
-            version: 2,
+            version: "v2",
             values: new SiteProfileValues("Hualapai Valley Observatory North", null, "Pat Example", OwnerEmail),
-            effectiveCameraName: "hvo-cam-01");
+            effectiveCameraName: null);
         var service = new SiteUiService(
             SkyMapTestData.Result(Instant),
             manual: ManualState(),
@@ -696,13 +694,17 @@ public sealed class ObservatoryLocationPageTests
         context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
         var cut = context.Render<ObservatoryLocationPage>();
         cut.WaitForElement($"#{ObservatoryLocationPage.ProfileTriggerId}");
+        Assert.Contains(
+            $"Saved in the operator settings file, {SettingsPath}.",
+            cut.Find("section[aria-labelledby='site-profile-heading']").TextContent,
+            StringComparison.Ordinal);
 
         cut.Find($"#{ObservatoryLocationPage.ProfileTriggerId}").Click();
 
         Assert.AreEqual("Edit site profile", cut.Find("dialog.site-dialog h2").TextContent);
         Assert.AreEqual("Hualapai Valley Observatory", cut.Find("#site-observatory-name").GetAttribute("value"));
-        Assert.AreEqual("hvo-cam-01", cut.Find("#site-camera-name").GetAttribute("placeholder"));
-        Assert.Contains("falls back to the installation name, hvo-cam-01", cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual("East dome", cut.Find("#site-camera-name").GetAttribute("value"));
+        Assert.IsEmpty(cut.FindAll("#site-profile-reason"));
 
         DialogButton(cut, $"Use sign-in email {OwnerEmail}").Click();
 
@@ -711,25 +713,43 @@ public sealed class ObservatoryLocationPageTests
 
         cut.Find("#site-observatory-name").Change("  Hualapai Valley Observatory North  ");
         cut.Find("#site-camera-name").Change("   ");
-        cut.Find("#site-profile-reason").Change("renamed");
         DialogButton(cut, "Save profile").Click();
 
         var command = service.ProfileCommands.Single();
         Assert.AreEqual(
             new SiteProfileValues("Hualapai Valley Observatory North", null, "Pat Example", OwnerEmail),
             command.Profile);
-        Assert.AreEqual(1L, command.ExpectedVersion);
-        Assert.AreEqual("renamed", command.Reason);
+        Assert.AreEqual("v1", command.ExpectedVersion);
         Assert.IsEmpty(cut.FindAll("dialog.site-dialog"));
-        Assert.Contains("Saved site profile revision 2.", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+        Assert.Contains(
+            "Saved the site profile to the operator settings file.",
+            cut.Find(".site-message[role='status']").TextContent,
+            StringComparison.Ordinal);
         var profile = Facts(cut, "site-profile-heading");
         Assert.AreEqual("Hualapai Valley Observatory North", profile["Observatory"]);
-        Assert.AreEqual("hvo-cam-01 from installation", profile["Camera"]);
+        Assert.AreEqual("Not named", profile["Camera"]);
         Assert.AreEqual(OwnerEmail, profile["Contact"]);
     }
 
     [TestMethod]
-    public void Profile_RetryAfterUnavailable_ReusesTheKeyAndExpectedVersion()
+    public void Profile_BeforeTheFileNamesTheCamera_ShowsTheInstallationName()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(profile: ProfileState(
+                values: new SiteProfileValues("Hualapai Valley Observatory", null, null, null),
+                effectiveCameraName: "hvo-cam-01"))));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        cut.WaitForElement("#site-profile-heading");
+        Assert.AreEqual("hvo-cam-01 from installation", Facts(cut, "site-profile-heading")["Camera"]);
+    }
+
+    [TestMethod]
+    public void Profile_RetryAfterUnavailable_KeepsTheEditsAndTheExpectedVersion()
     {
         using var context = CreateContext();
         var service = new SiteUiService(
@@ -750,18 +770,14 @@ public sealed class ObservatoryLocationPageTests
         DialogButton(cut, "Save profile").Click();
 
         Assert.HasCount(2, service.ProfileCommands);
-        Assert.AreEqual(service.ProfileCommands[0].IdempotencyKey, service.ProfileCommands[1].IdempotencyKey);
-        Assert.AreEqual(1L, service.ProfileCommands[1].ExpectedVersion);
+        Assert.AreEqual("v1", service.ProfileCommands[1].ExpectedVersion);
+        Assert.AreEqual("Sam Example", service.ProfileCommands[1].Profile.OwnerName);
+        Assert.AreEqual("Sam Example", cut.Find("#site-owner-name").GetAttribute("value"));
         Assert.Contains("could not be saved", cut.Find("dialog.site-dialog [role='alert']").TextContent, StringComparison.Ordinal);
-
-        cut.Find("#site-owner-name").Change("Sam Example Jr");
-        DialogButton(cut, "Save profile").Click();
-
-        Assert.AreNotEqual(service.ProfileCommands[1].IdempotencyKey, service.ProfileCommands[2].IdempotencyKey);
     }
 
     [TestMethod]
-    public void Profile_OnConflict_ReReadsTheProfileAndKeepsTheDialogOpen()
+    public void Profile_OnConflict_KeepsTheEditsAndSavesAgainstTheFileAsItIsNow()
     {
         using var context = CreateContext();
         var service = new SiteUiService(
@@ -777,13 +793,156 @@ public sealed class ObservatoryLocationPageTests
         cut.WaitForElement($"#{ObservatoryLocationPage.ProfileTriggerId}");
         cut.Find($"#{ObservatoryLocationPage.ProfileTriggerId}").Click();
         cut.Find("#site-owner-name").Change("Sam Example");
-        var readsBefore = service.SiteReads;
+        // Someone edits the file by hand while the dialog is open.
+        service.Site = SiteView(profile: ProfileState(version: "v2"));
 
         DialogButton(cut, "Save profile").Click();
 
-        Assert.IsTrue(service.SiteReads > readsBefore);
         Assert.Contains("changed since this page was read", cut.Find("dialog.site-dialog [role='alert']").TextContent, StringComparison.Ordinal);
         Assert.AreEqual("Sam Example", cut.Find("#site-owner-name").GetAttribute("value"));
+
+        DialogButton(cut, "Save profile").Click();
+
+        Assert.AreEqual("v1", service.ProfileCommands[0].ExpectedVersion);
+        Assert.AreEqual("v2", service.ProfileCommands[1].ExpectedVersion);
+        Assert.AreEqual("Sam Example", service.ProfileCommands[1].Profile.OwnerName);
+    }
+
+    [TestMethod]
+    public void Render_WithoutASettingsFile_SaysSoAndOffersNoEdits()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(profile: ProfileState(settingsFilePath: null), withoutObjectLimit: true)));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        cut.WaitForElement("#site-settings-heading");
+        Assert.IsTrue(cut.Find($"#{ObservatoryLocationPage.ProfileTriggerId}").HasAttribute("disabled"));
+        var settings = cut.Find("section[aria-labelledby='site-settings-heading']");
+        Assert.AreEqual("Not loaded", settings.QuerySelector(".state-chip")!.TextContent.Trim());
+        Assert.Contains("This host loads no operator settings file", settings.TextContent, StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll("#site-object-limit"));
+    }
+
+    [TestMethod]
+    public void Render_WithAnUnreadableSettingsFile_NamesTheProblemAndLocksTheLimit()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(profile: ProfileState(problem: "The settings file is not valid JSON (line 4)."))));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var settings = cut.WaitForElement("section[aria-labelledby='site-settings-heading']");
+        Assert.AreEqual("Needs correction", settings.QuerySelector(".state-chip")!.TextContent.Trim());
+        Assert.Contains("not valid JSON (line 4)", settings.TextContent, StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find("fieldset.site-settings-form").HasAttribute("disabled"));
+        Assert.Contains(
+            "not valid JSON (line 4)",
+            cut.Find("section[aria-labelledby='site-profile-heading']").TextContent,
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ObjectLimit_SavesAWholeNumberAndUseDefaultRemovesIt()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        var settings = cut.WaitForElement("section[aria-labelledby='site-settings-heading']");
+        Assert.AreEqual("Active", settings.QuerySelector(".state-chip")!.TextContent.Trim());
+        Assert.AreEqual(SettingsPath, Facts(cut, "site-settings-heading")["File"]);
+        Assert.IsTrue(SettingsButton(cut, "Use default").HasAttribute("disabled"));
+
+        cut.Find("#site-object-limit").Change(" 900 ");
+        SettingsButton(cut, "Save limit").Click();
+
+        Assert.AreEqual(new ObjectLimitCommand(900, "v1"), service.ObjectLimitCommands.Single());
+        Assert.Contains("Saved an object limit of 900.", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("900", cut.Find("#site-object-limit").GetAttribute("value"));
+
+        SettingsButton(cut, "Use default").Click();
+
+        Assert.AreEqual(new ObjectLimitCommand(null, "v2"), service.ObjectLimitCommands[1]);
+        Assert.Contains("The object limit is back to its default.", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual(string.Empty, cut.Find("#site-object-limit").GetAttribute("value") ?? string.Empty);
+    }
+
+    [TestMethod]
+    [DataRow("0")]
+    [DataRow("-5")]
+    [DataRow("1.5")]
+    [DataRow("lots")]
+    [DataRow("5001")]
+    public void ObjectLimit_OutsideTheAdvertisedRange_IsRefusedWithoutACommand(string input)
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState());
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-object-limit");
+
+        cut.Find("#site-object-limit").Change(input);
+        SettingsButton(cut, "Save limit").Click();
+
+        Assert.IsEmpty(service.ObjectLimitCommands);
+        Assert.Contains("must be a whole number from 1 to", cut.Find(".site-message[role='alert']").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ObjectLimit_WhenAnotherSourceSetsIt_SaysTheSavedValueHasNoEffect()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            site: SiteView(objectLimit: new CameraAgentObjectLimitSetting("v1", "300", Overridden: true)));
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-object-limit");
+
+        Assert.AreEqual("300", cut.Find("#site-object-limit").GetAttribute("value"));
+        Assert.Contains("Another setting source supplies the object limit", cut.Markup, StringComparison.Ordinal);
+
+        cut.Find("#site-object-limit").Change("400");
+        SettingsButton(cut, "Save limit").Click();
+
+        Assert.Contains("still supplies the limit, so it has no effect yet", cut.Find(".site-message[role='status']").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ObjectLimit_OnConflict_KeepsTheEntryAndSavesAgainstTheFileAsItIsNow()
+    {
+        using var context = CreateContext();
+        var service = new SiteUiService(
+            SkyMapTestData.Result(Instant),
+            manual: ManualState(),
+            objectLimitResults:
+            [
+                OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                    OperatorUiResultKind.Conflict, "The settings file changed since this page was read.")
+            ]);
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
+        var cut = context.Render<ObservatoryLocationPage>();
+        cut.WaitForElement("#site-object-limit");
+        cut.Find("#site-object-limit").Change("900");
+        service.Site = SiteView(objectLimit: new CameraAgentObjectLimitSetting("v2", "700", false));
+
+        SettingsButton(cut, "Save limit").Click();
+
+        Assert.Contains("changed since this page was read", cut.Find(".site-message[role='alert']").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("900", cut.Find("#site-object-limit").GetAttribute("value"));
+
+        SettingsButton(cut, "Save limit").Click();
+
+        Assert.AreEqual(new ObjectLimitCommand(900, "v1"), service.ObjectLimitCommands[0]);
+        Assert.AreEqual(new ObjectLimitCommand(900, "v2"), service.ObjectLimitCommands[1]);
     }
 
     [TestMethod]
@@ -837,6 +996,9 @@ public sealed class ObservatoryLocationPageTests
 
     private static AngleSharp.Dom.IElement DialogButton(IRenderedComponent<ObservatoryLocationPage> cut, string text)
         => cut.FindAll("dialog.site-dialog button").Single(button => button.TextContent.Trim() == text);
+
+    private static AngleSharp.Dom.IElement SettingsButton(IRenderedComponent<ObservatoryLocationPage> cut, string text)
+        => cut.FindAll("fieldset.site-settings-form button").Single(button => button.TextContent.Trim() == text);
 
     private static AngleSharp.Dom.IElement PagerButton(IRenderedComponent<ObservatoryLocationPage> cut, string text)
         => cut.FindAll("nav.site-pager button").Single(button => button.TextContent.Trim() == text);
@@ -896,20 +1058,17 @@ public sealed class ObservatoryLocationPageTests
             History: history ?? []);
 
     private static SiteProfileState ProfileState(
-        long version = 1,
+        string version = "v1",
         SiteProfileValues? values = null,
-        string? effectiveCameraName = "East dome")
-    {
-        var profile = values ?? new SiteProfileValues("Hualapai Valley Observatory", "East dome", "Pat Example", null);
-        return new SiteProfileState(
+        string? effectiveCameraName = "East dome",
+        string? settingsFilePath = SettingsPath,
+        string? problem = null)
+        => new(
             version,
-            profile,
+            values ?? new SiteProfileValues("Hualapai Valley Observatory", "East dome", "Pat Example", null),
             effectiveCameraName,
-            "hvo-cam-01",
-            Instant,
-            OwnerId,
-            [new SiteProfileRevision(version, Instant, OwnerId, null, $"key-{version}", profile)]);
-    }
+            settingsFilePath,
+            problem);
 
     private static CameraAgentSiteAssignment Assignment(
         CameraAgentSiteAssignmentState state,
@@ -922,7 +1081,9 @@ public sealed class ObservatoryLocationPageTests
         SiteProfileState? profile = null,
         CameraAgentSiteAssignment? assignment = null,
         bool mapEnabled = true,
-        int zoom = 13)
+        int zoom = 13,
+        CameraAgentObjectLimitSetting? objectLimit = null,
+        bool withoutObjectLimit = false)
         => new(
             profile ?? ProfileState(),
             OwnerEmail,
@@ -933,6 +1094,7 @@ public sealed class ObservatoryLocationPageTests
                 "© OpenStreetMap contributors",
                 new Uri("https://www.openstreetmap.org/copyright"),
                 zoom),
+            withoutObjectLimit ? null : objectLimit ?? new CameraAgentObjectLimitSetting("v1", null, false),
             new Dictionary<string, string>(StringComparer.Ordinal) { [OwnerId] = OwnerEmail });
 
     internal sealed class SiteUiService(
@@ -942,12 +1104,14 @@ public sealed class ObservatoryLocationPageTests
         IReadOnlyList<OperatorUiResult<ManualDeploymentLocationResult>>? applyResults = null,
         CameraAgentSiteView? site = null,
         OperatorUiResult<CameraAgentSiteView>? siteFailure = null,
-        IReadOnlyList<OperatorUiResult<SiteProfileResult>>? profileResults = null)
+        IReadOnlyList<OperatorUiResult<SiteProfileResult>>? profileResults = null,
+        IReadOnlyList<OperatorUiResult<CameraAgentObjectLimitSetting>>? objectLimitResults = null)
         : ICameraAgentSkyMapUiService
     {
         private ManualDeploymentLocationState? _manual = manual;
         private int _applyIndex;
         private int _profileIndex;
+        private int _objectLimitIndex;
 
         internal CameraAgentSiteView Site { get; set; } = site ?? SiteView();
 
@@ -956,6 +1120,8 @@ public sealed class ObservatoryLocationPageTests
         internal List<ManualCommand> Commands { get; } = [];
 
         internal List<ProfileCommand> ProfileCommands { get; } = [];
+
+        internal List<ObjectLimitCommand> ObjectLimitCommands { get; } = [];
 
         internal int ManualReads { get; private set; }
 
@@ -1023,12 +1189,10 @@ public sealed class ObservatoryLocationPageTests
 
         public ValueTask<OperatorUiResult<SiteProfileResult>> SaveSiteProfileAsync(
             SiteProfileValues profile,
-            long expectedVersion,
-            string idempotencyKey,
-            string? reason,
+            string expectedVersion,
             CancellationToken cancellationToken)
         {
-            ProfileCommands.Add(new ProfileCommand(profile, expectedVersion, idempotencyKey, reason));
+            ProfileCommands.Add(new ProfileCommand(profile, expectedVersion));
             var results = profileResults ?? [];
             var result = results.Count == 0
                 ? OperatorUiResult<SiteProfileResult>.Failure(
@@ -1038,6 +1202,29 @@ public sealed class ObservatoryLocationPageTests
             if (result.IsSuccess && result.Value is { } saved)
             {
                 Site = Site with { Profile = saved.State };
+            }
+            return ValueTask.FromResult(result);
+        }
+
+        /// <summary>Without scripted results, each save succeeds and advances the settings file version.</summary>
+        public ValueTask<OperatorUiResult<CameraAgentObjectLimitSetting>> SaveObjectLimitAsync(
+            int? maximumObjects,
+            string expectedVersion,
+            CancellationToken cancellationToken)
+        {
+            ObjectLimitCommands.Add(new ObjectLimitCommand(maximumObjects, expectedVersion));
+            var current = Site.ObjectLimit ?? new CameraAgentObjectLimitSetting("v1", null, false);
+            var result = objectLimitResults is { Count: > 0 } scripted
+                ? scripted[Math.Min(_objectLimitIndex, scripted.Count - 1)]
+                : OperatorUiResult<CameraAgentObjectLimitSetting>.Success(current with
+                {
+                    Version = $"v{ObjectLimitCommands.Count + 1}",
+                    SavedValue = maximumObjects?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                });
+            _objectLimitIndex++;
+            if (result.IsSuccess && result.Value is { } saved)
+            {
+                Site = Site with { ObjectLimit = saved };
             }
             return ValueTask.FromResult(result);
         }
@@ -1052,10 +1239,8 @@ public sealed class ObservatoryLocationPageTests
             string IdempotencyKey,
             string? Reason);
 
-        internal sealed record ProfileCommand(
-            SiteProfileValues Profile,
-            long ExpectedVersion,
-            string IdempotencyKey,
-            string? Reason);
+        internal sealed record ProfileCommand(SiteProfileValues Profile, string ExpectedVersion);
     }
+
+    internal sealed record ObjectLimitCommand(int? MaximumObjects, string ExpectedVersion);
 }

@@ -67,6 +67,14 @@ th[aria-sort="descending"] .site-sort::after { content: " \2193"; }
 .site-history-wrap { max-height: 22rem; overflow: auto; }
 .site-history-wrap td { overflow-wrap: anywhere; }
 
+/* Operator settings panel. */
+.site-settings-form { display: grid; gap: .55rem; margin: .8rem 0 0; padding: 0; border: 0; min-width: 0; }
+.site-settings-form input { max-width: 10rem; }
+.site-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.site-settings-actions .text-button { margin-top: 0; }
+/* A settings file path is one unbroken word, so it may wrap anywhere rather than widen a narrow page. */
+.site-note code, .ops-facts code { overflow-wrap: anywhere; }
+
 /* Dialogs; element-qualified so the width outranks the shared .action-dialog width. */
 dialog.action-dialog.site-dialog { width: min(calc(100% - 2rem), 40rem); }
 .site-dialog fieldset { display: grid; gap: .6rem; min-inline-size: 0; }

@@ -31,20 +31,13 @@ public sealed class CameraAgentSkyMapProjection(
     IDeploymentLocationStore? deploymentLocationStore = null,
     ILatestFrameAccessor? latestFrameAccessor = null,
     CaptureScheduleRuntimeCoordinator? scheduleRuntime = null,
-    int maximumObjects = CameraAgentSkyMapProjection.DefaultMaximumObjects) : ICameraAgentSkyMapProjection
+    Func<int>? maximumObjects = null) : ICameraAgentSkyMapProjection
 {
     /// <summary>The object bound applied when the host does not configure <c>SkyMap:MaximumObjects</c>.</summary>
     public const int DefaultMaximumObjects = 200;
 
     /// <summary>The largest object bound a host may configure for one projection.</summary>
     public const int MaximumConfigurableObjects = 5_000;
-
-    private readonly int _maximumObjects = maximumObjects is >= 1 and <= MaximumConfigurableObjects
-        ? maximumObjects
-        : throw new ArgumentOutOfRangeException(
-            nameof(maximumObjects),
-            maximumObjects,
-            $"The sky map object bound must be between 1 and {MaximumConfigurableObjects}.");
 
     /// <summary>The fixed limiting magnitude applied before exact horizon and projection rejection.</summary>
     public const double MaximumMagnitude = 6.5;
@@ -58,6 +51,13 @@ public sealed class CameraAgentSkyMapProjection(
         CancellationToken cancellationToken)
     {
         var instant = (atUtc ?? timeProvider.GetUtcNow()).ToUniversalTime();
+        // Read on every projection, so an operator's change to the bound applies to the next one.
+        var limit = maximumObjects?.Invoke() ?? DefaultMaximumObjects;
+        if (limit is < 1 or > MaximumConfigurableObjects)
+        {
+            throw new InvalidOperationException(
+                $"The sky map object bound must be between 1 and {MaximumConfigurableObjects}.");
+        }
         var startupConfig = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         var config = scheduleRuntime?.Snapshot?.Configuration ?? startupConfig;
         if (catalog is not ICelestialCatalogMetadataSource metadataSource)
@@ -97,7 +97,7 @@ public sealed class CameraAgentSkyMapProjection(
             new ObserverLocation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters),
             projection,
             // One past the bound so truncation is observed rather than inferred from an exact count.
-            new CatalogQuery(MaximumMagnitude, _maximumObjects + 1),
+            new CatalogQuery(MaximumMagnitude, limit + 1),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
             projectionVersion: config.Rig.Optics.CalibrationVersion,
@@ -109,7 +109,7 @@ public sealed class CameraAgentSkyMapProjection(
         var objects = scene.Objects
             .OrderBy(static item => item.Magnitude)
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
-            .Take(_maximumObjects)
+            .Take(limit)
             .Select(static item => new CameraAgentSkyMapObject(
                 item.Id,
                 item.DisplayName,
@@ -141,11 +141,11 @@ public sealed class CameraAgentSkyMapProjection(
             CreateGeometry(config, projection),
             objects,
             constellations,
-            _maximumObjects,
-            scene.Objects.Count > _maximumObjects,
+            limit,
+            scene.Objects.Count > limit,
             MaximumMagnitude,
             AstronomyAlgorithmVersion,
-            CreateSummary(objects.Length, constellations.Length, constellationIds.Length, latestScene),
+            CreateSummary(objects.Length, limit, constellations.Length, constellationIds.Length, latestScene),
             latestScene);
     }
 
@@ -214,15 +214,16 @@ public sealed class CameraAgentSkyMapProjection(
             scene.ProjectedSceneStageIdentitySha256);
     }
 
-    private string CreateSummary(
+    private static string CreateSummary(
         int objectCount,
+        int limit,
         int constellationCount,
         int requestedConstellationCount,
         CameraAgentSkyMapCaptureProvenance? latestScene)
     {
         var summary = string.Create(
             CultureInfo.InvariantCulture,
-            $"{objectCount} of at most {_maximumObjects} catalog objects brighter than magnitude {MaximumMagnitude} fall inside the calibrated image, with {constellationCount} of {requestedConstellationCount} installed constellation figures partly visible.");
+            $"{objectCount} of at most {limit} catalog objects brighter than magnitude {MaximumMagnitude} fall inside the calibrated image, with {constellationCount} of {requestedConstellationCount} installed constellation figures partly visible.");
         if (requestedConstellationCount == 0)
         {
             summary += " Constellation topology is unavailable to this catalog, so no figures were resolved.";

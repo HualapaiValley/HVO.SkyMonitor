@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -106,7 +107,11 @@ internal static class CameraAgentStateResetManager
                 inventory.Add(node with { RelativePath = $"{name}/{node.RelativePath}" });
             }
         }
-        var preserved = PreservedPaths(paths);
+        // The operator settings file shares the Identity mount but is the operator's configuration, not runtime
+        // state, so the reset carries it across the deletion rather than losing every setting changed on the camera.
+        var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
+        var operatorSettings = await ReadOperatorSettingsAsync(settingsPath, cancellationToken).ConfigureAwait(false);
+        var preserved = operatorSettings is null ? PreservedPaths(paths) : [.. PreservedPaths(paths), settingsPath];
         var evidencePath = Path.Combine(paths.OperationsRoot, $"state-reset-{operationId:D}.evidence.json");
         var evidence = new CameraAgentStateResetEvidence(
             SchemaVersion,
@@ -132,6 +137,13 @@ internal static class CameraAgentStateResetManager
         // Owner bootstrap must run again against the preserved temporary password, so the retained completed result
         // is withdrawn before the deletion while the installation identity, configuration, and secrets stay
         // untouched. An interruption after this point leaves a pending installation the preflight still guards.
+        // A copy beside the evidence keeps the settings recoverable if the reset is interrupted before they return.
+        var settingsCopy = Path.Combine(
+            paths.OperationsRoot, $"state-reset-{operationId:D}.{CameraAgentStateLayout.OperatorSettingsFileName}");
+        if (operatorSettings is not null)
+        {
+            SafeFileSystem.WriteTextAtomic(settingsCopy, operatorSettings);
+        }
         await RewindInstallationStateAsync(paths, retainedState, cancellationToken).ConfigureAwait(false);
         foreach (var directory in deletable)
         {
@@ -140,6 +152,11 @@ internal static class CameraAgentStateResetManager
         foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
         {
             SafeFileSystem.CreateRuntimeDirectory(directory, uid, gid);
+        }
+        if (operatorSettings is not null)
+        {
+            SafeFileSystem.WriteTextAtomic(settingsPath, operatorSettings);
+            File.Delete(settingsCopy);
         }
 
         var completedUtc = DateTimeOffset.UtcNow;
@@ -171,6 +188,22 @@ internal static class CameraAgentStateResetManager
         paths.OperationsRoot,
         paths.BackupsRoot
     ];
+
+    private static async Task<string?> ReadOperatorSettingsAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path) && new FileInfo(path).LinkTarget is null)
+        {
+            return null;
+        }
+        // Read without following a link, so a planted link cannot carry another file's contents into the instance.
+        await using var stream = SafeFileSystem.OpenRegularFileRead(path);
+        if (stream.Length > CameraAgentStateLayout.MaximumOperatorSettingsBytes)
+        {
+            throw new InstallerException("The operator settings file is too large to carry across the reset.");
+        }
+        using var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: false);
+        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     private static async Task<InstallationState> ReadInstallationStateAsync(
         InstallationPaths paths,

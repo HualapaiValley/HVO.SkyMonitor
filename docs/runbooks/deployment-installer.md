@@ -464,6 +464,7 @@ config/compose/{compose.yml,instance.env}
 config/secrets/*
 config/owner-bootstrap/temporary-password
 state/deployment/{installation-state.json,installation-result.json,state-preflight.json}
+state/identity/appsettings.local.json
 operations/cameraagent-<uuid>.owner-recovery.json
 operations/state-reset-<operation-uuid>.evidence.json
 operations/owner-recovery/<operation-uuid>/temporary-password
@@ -482,6 +483,32 @@ The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed, then performs catalog, configuration,
 Docker, Compose, and HTTP work as the invoking Docker-capable runtime user. Do
 not invoke the whole installer through `sudo`.
+
+### Operator settings file
+
+`state/identity/appsettings.local.json`, mounted in the container as `/app/App_Data/appsettings.local.json`, is
+the one persisted place for settings an operator changes on the camera. CameraAgent loads it over the image's
+`appsettings.json` and `appsettings.{Environment}.json`, so it survives image upgrades. The Observatory &
+location page writes the site profile (observatory name, camera name, owner name and contact) to
+`CameraAgent:Site` and the scene object limit to `CameraAgent:SkyMap:MaximumObjects`; any other setting can be
+added by hand. The page names the file it writes.
+
+- Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
+  precedence over the file. The page says when one of them sets a value it edits, because saving that value in
+  the file would have no effect.
+- The installer seeds the file with the friendly name as `CameraAgent:Site:CameraName` when the file does not
+  exist, and never rewrites an existing one, so an install rerun keeps every name and setting changed since.
+- Each save from the page names the file content it read, so a save never overwrites a hand edit made after
+  the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
+  limit apply at once; most other settings take effect at the next CameraAgent start.
+- A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's
+  settings unset until it is corrected, and the page reports the file as unreadable and refuses to save over it.
+
+Earlier installers also wrote the camera name to `config/secrets/CameraAgent__DisplayName`, a read-only setting
+outside the operator's control. The installer now deletes it. An instance upgraded without an install rerun
+still has it: its name is copied into the settings file the first time CameraAgent reads the site profile, after
+which the file's name is shown and the secret is unused. Delete
+`config/secrets/CameraAgent__DisplayName` by hand so that no read-only copy of the name remains.
 
 ## Bootstrap And Recovery
 
@@ -710,6 +737,12 @@ state/replay-runner     # local replay runner socket directory
 Preserved: `instance-manifest.json`, `application-identity.json`, the whole `config/` tree including
 `config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
 and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
+
+The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
+configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is
+deleted, kept as `operations/state-reset-<operation-uuid>.appsettings.local.json` until it is written back into
+the recreated `state/identity`, and then that copy is removed. A settings file that is a symbolic link, has hard
+links, or is larger than 1 MiB stops the reset before anything is deleted.
 
 ```bash
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>

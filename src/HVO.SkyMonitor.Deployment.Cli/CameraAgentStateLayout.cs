@@ -52,6 +52,18 @@ internal static class CameraAgentStateLayout
 
     public const string IdentityDatabaseFileName = "cameraagent_identity.db";
 
+    /// <summary>
+    /// The operator settings file CameraAgent loads over its image settings from the Identity mount. The operator
+    /// UI and hand edits both change it, so it is the one persisted place for operator-editable settings.
+    /// </summary>
+    public const string OperatorSettingsFileName = "appsettings.local.json";
+
+    /// <summary>The largest operator settings file deployment tooling carries or seeds.</summary>
+    public const int MaximumOperatorSettingsBytes = 1024 * 1024;
+
+    public static string OperatorSettingsPath(string stateRoot)
+        => Path.Combine(stateRoot, IdentityDirectoryName, OperatorSettingsFileName);
+
     /// <summary>Every writable bind source the generated Compose model mounts, nested sources included.</summary>
     public static IReadOnlyList<CameraAgentBindSource> WritableBindSources(
         string stateRoot,

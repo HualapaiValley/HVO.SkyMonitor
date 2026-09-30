@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using Microsoft.Playwright;
@@ -104,7 +105,7 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
             "The sky plot highlights exactly the objects on the current table page.");
         await CaptureAsync(page, "site-1440x900").ConfigureAwait(false);
 
-        // Naming the camera is recorded as a profile revision and renames the workspace sidebar at once.
+        // Naming the camera writes the operator settings file and renames the workspace sidebar at once.
         var editProfile = page.Locator("#site-edit-profile");
         await editProfile.ClickAsync().ConfigureAwait(false);
         var dialog = page.Locator("dialog.site-dialog");
@@ -115,14 +116,14 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
         await CaptureAsync(page, "profile-dialog-1440x900").ConfigureAwait(false);
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Save profile" }).ClickAsync().ConfigureAwait(false);
         await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        await page.GetByText("Saved site profile revision 1.").WaitForAsync().ConfigureAwait(false);
+        await page.GetByText("Saved the site profile to the operator settings file.").WaitForAsync().ConfigureAwait(false);
         // The sidebar reads "<camera name> / <module type>".
         await page.WaitForFunctionAsync(
             "() => document.querySelector('.operations-scope small')?.textContent.trim().startsWith('East dome camera / ')")
             .ConfigureAwait(false);
-        var profileHistory = page.Locator("section[aria-labelledby='site-profile-history-heading']");
-        StringAssert.Contains(await profileHistory.InnerTextAsync().ConfigureAwait(false), "Hualapai Valley Observatory",
-            StringComparison.Ordinal);
+        var saved = JsonNode.Parse(await File.ReadAllTextAsync(host.SettingsFilePath).ConfigureAwait(false))!;
+        Assert.AreEqual("East dome camera", saved["CameraAgent"]!["Site"]!["CameraName"]!.GetValue<string>());
+        Assert.AreEqual("Hualapai Valley Observatory", saved["CameraAgent"]!["Site"]!["ObservatoryName"]!.GetValue<string>());
         Assert.AreEqual("Hualapai Valley Observatory", (await page.Locator(".ops-map-label").InnerTextAsync()
             .ConfigureAwait(false)).Trim());
         await CaptureAsync(page, "profile-saved-1440x900").ConfigureAwait(false);

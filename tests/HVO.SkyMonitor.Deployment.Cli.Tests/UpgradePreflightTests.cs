@@ -681,6 +681,61 @@ public sealed class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_CarriesTheOperatorSettingsFileAcrossTheDeletion()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        var settingsPath = CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot);
+        const string settings = """{ "CameraAgent": { "Site": { "CameraName": "East dome" } } }""";
+        SafeFileSystem.WriteTextAtomic(settingsPath, settings);
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        var completed = await CameraAgentStateResetManager.ExecuteAsync(
+            request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None);
+
+        Assert.AreEqual("completed", completed.Outcome);
+        CollectionAssert.Contains(completed.PreservedPaths.ToArray(), settingsPath);
+        Assert.IsFalse(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
+        Assert.AreEqual(settings, await File.ReadAllTextAsync(settingsPath));
+        SafeFileSystem.ValidateOwnerFile(settingsPath);
+        Assert.IsEmpty(Directory.GetFiles(fixture.Paths.OperationsRoot, $"*.{CameraAgentStateLayout.OperatorSettingsFileName}"));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResetStateAsync_RefusesALinkedOperatorSettingsFileBeforeDeletingAnything()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 1);
+        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
+        fixture.CreateBindSources();
+        await fixture.WriteInstalledStateAsync(InstanceLifecycleCondition.Uninstalled);
+        File.CreateSymbolicLink(
+            CameraAgentStateLayout.OperatorSettingsPath(fixture.Paths.StateRoot),
+            Path.Combine(fixture.Paths.ConfigRoot, "secrets", "LocalIdentity__DatabasePath"));
+        var request = new CameraAgentStateResetRequest(
+            fixture.InstanceId, fixture.InstanceId, fixture.Root, DryRun: false, Json: false)
+        {
+            AllowTestProductRoot = true
+        };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => CameraAgentStateResetManager.ExecuteAsync(
+                request, new AbsentContainerRunner(), RuntimeUid, RuntimeGid, CancellationToken.None));
+
+        Assert.IsTrue(File.Exists(CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot)));
+        Assert.IsTrue(File.Exists(fixture.Paths.ResultPath), "a refused reset leaves the completed result in place");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ResetStateAsync_RequiresAPreserveByDefaultUninstall()
     {
         using var fixture = new PreflightFixture();

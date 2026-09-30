@@ -61,11 +61,12 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
     private string _cameraNameInput = string.Empty;
     private string _ownerNameInput = string.Empty;
     private string _ownerContactInput = string.Empty;
-    private string _profileReasonInput = string.Empty;
     private bool _profileDirty;
-    private string? _profileKey;
-    private string? _profilePayload;
-    private long _profileExpectedVersion;
+    private string? _profileExpectedVersion;
+
+    private string _objectLimitInput = string.Empty;
+    private bool _objectLimitDirty;
+    private string? _objectLimitExpectedVersion;
 
     private string _search = string.Empty;
     private string _magnitudeFilter = string.Empty;
@@ -206,6 +207,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
             _rigInventory = rigInventory.IsSuccess ? rigInventory.Value : null;
             SeedLocationForm();
             SeedProfileForm();
+            SeedObjectLimitForm();
         }
         finally
         {
@@ -251,6 +253,16 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _restoreFocus = true;
     }
 
+    private bool ProfileSet => _site is not null && _site.Profile.Profile != SiteProfileValues.Empty;
+
+    private (string Tone, string Label) SettingsFileState => _site?.Profile switch
+    {
+        null => ("pending", "Unknown"),
+        { SettingsFilePath: null } => ("pending", "Not loaded"),
+        { Problem: not null } => ("failure", "Needs correction"),
+        _ => ("success", "Active")
+    };
+
     private string DialogTitle => _dialog == SiteDialog.Location ? "Create local location draft" : "Edit site profile";
 
     /// <summary>Fills the location fields from durable state while the operator has not edited them.</summary>
@@ -277,7 +289,10 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         }
     }
 
-    /// <summary>Fills the profile fields from the recorded profile while the operator has not edited them.</summary>
+    /// <summary>
+    /// Fills the profile fields from the saved profile while the operator has not edited them, and remembers the
+    /// settings file version they came from, so a save never overwrites a change made after they were read.
+    /// </summary>
     private void SeedProfileForm()
     {
         if (_profileDirty || _dialog == SiteDialog.Profile || _site is null)
@@ -289,6 +304,23 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _cameraNameInput = profile.CameraName ?? string.Empty;
         _ownerNameInput = profile.OwnerName ?? string.Empty;
         _ownerContactInput = profile.OwnerContact ?? string.Empty;
+        _profileExpectedVersion = _site.Profile.Version;
+    }
+
+    private void SeedObjectLimitForm()
+    {
+        if (_objectLimitDirty || _site?.ObjectLimit is not { } limit)
+        {
+            return;
+        }
+        _objectLimitInput = limit.SavedValue ?? string.Empty;
+        _objectLimitExpectedVersion = limit.Version;
+    }
+
+    private void ObjectLimitFormChanged()
+    {
+        _objectLimitDirty = true;
+        _notice = null;
     }
 
     private void LocationFormChanged()
@@ -385,7 +417,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
 
     private async Task SaveProfileAsync()
     {
-        if (_busy || _site is not { } site)
+        if (_busy || _site is null || _profileExpectedVersion is not { } expectedVersion)
         {
             return;
         }
@@ -394,39 +426,16 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
             Optional(_cameraNameInput),
             Optional(_ownerNameInput),
             Optional(_ownerContactInput));
-        var reason = Optional(_profileReasonInput);
-        var signature = string.Join(
-            '\u001f',
-            profile.ObservatoryName ?? string.Empty,
-            profile.CameraName ?? string.Empty,
-            profile.OwnerName ?? string.Empty,
-            profile.OwnerContact ?? string.Empty,
-            reason ?? string.Empty);
-        if (!string.Equals(_profilePayload, signature, StringComparison.Ordinal))
-        {
-            _profilePayload = signature;
-            _profileKey = NewKey();
-            _profileExpectedVersion = site.Profile.Version;
-        }
         _busy = true;
         OperatorUiResult<SiteProfileResult> result;
         try
         {
-            result = await SkyMapService.SaveSiteProfileAsync(
-                profile,
-                _profileExpectedVersion,
-                _profileKey!,
-                reason,
-                CancellationToken.None).ConfigureAwait(false);
+            result = await SkyMapService.SaveSiteProfileAsync(profile, expectedVersion, CancellationToken.None)
+                .ConfigureAwait(false);
         }
         finally
         {
             _busy = false;
-        }
-        if (result.Kind != OperatorUiResultKind.Unavailable)
-        {
-            _profileKey = null;
-            _profilePayload = null;
         }
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
@@ -436,7 +445,6 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         if (result.IsSuccess && result.Value is { } saved)
         {
             _profileDirty = false;
-            _profileReasonInput = string.Empty;
             _dialog = SiteDialog.None;
             _restoreFocus = true;
             await LoadAsync().ConfigureAwait(false);
@@ -447,10 +455,68 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         }
         if (result.Kind == OperatorUiResultKind.Conflict)
         {
+            // The operator's edits stay in the form; the next save is checked against the file as it is now.
             await LoadAsync().ConfigureAwait(false);
+            _profileExpectedVersion = _site?.Profile.Version;
         }
         SetNotice(result.Message ?? "The site profile could not be saved.", error: true);
     }
+
+    private async Task SaveObjectLimitAsync(bool useDefault)
+    {
+        if (_busy || _objectLimitExpectedVersion is not { } expectedVersion)
+        {
+            return;
+        }
+        int? limit = null;
+        if (!useDefault && !string.IsNullOrWhiteSpace(_objectLimitInput))
+        {
+            if (!int.TryParse(_objectLimitInput.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ||
+                parsed is < 1 or > CameraAgentSkyMapProjection.MaximumConfigurableObjects)
+            {
+                SetNotice(ObjectLimitRule, error: true);
+                return;
+            }
+            limit = parsed;
+        }
+        _busy = true;
+        OperatorUiResult<CameraAgentObjectLimitSetting> result;
+        try
+        {
+            result = await SkyMapService.SaveObjectLimitAsync(limit, expectedVersion, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            NavigationManager.NavigateTo("/Account/AccessDenied");
+            return;
+        }
+        if (result.IsSuccess && result.Value is { } saved)
+        {
+            _objectLimitDirty = false;
+            // Projecting again shows the scene under the new bound.
+            await LoadAsync().ConfigureAwait(false);
+            SetNotice(
+                (limit is null ? "The object limit is back to its default." : $"Saved an object limit of {limit:N0}.")
+                + (saved.Overridden ? " Another setting source still supplies the limit, so it has no effect yet." : string.Empty),
+                error: false);
+            return;
+        }
+        if (result.Kind == OperatorUiResultKind.Conflict)
+        {
+            await LoadAsync().ConfigureAwait(false);
+            _objectLimitExpectedVersion = _site?.ObjectLimit?.Version;
+        }
+        SetNotice(result.Message ?? "The object limit could not be saved.", error: true);
+    }
+
+    private static string ObjectLimitRule { get; } = string.Create(
+        CultureInfo.InvariantCulture,
+        $"The object limit must be a whole number from 1 to {CameraAgentSkyMapProjection.MaximumConfigurableObjects:N0}.");
 
     private static string DescribeLocation(ManualDeploymentLocationResult result) => result.Status switch
     {
@@ -466,12 +532,9 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _ => "These coordinates already govern this deployment, so no new version was created."
     };
 
-    private static string DescribeProfile(SiteProfileResult result) => result.Status switch
-    {
-        SiteProfileStatus.Applied => $"Saved site profile revision {result.State.Version}.",
-        SiteProfileStatus.Replayed => "This profile change was already saved. No additional revision was created.",
-        _ => "The site profile already has these values, so no new revision was created."
-    };
+    private static string DescribeProfile(SiteProfileResult result) => result.Status == SiteProfileStatus.Applied
+        ? "Saved the site profile to the operator settings file."
+        : "The site profile already has these values, so nothing changed.";
 
     private bool TryParseLocation(
         out double latitude,
@@ -785,18 +848,6 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
             return "Not recorded";
         }
         return _site?.ActorNames.TryGetValue(actor, out var name) == true ? name : "Unrecognized account";
-    }
-
-    private static string ProfileSummary(SiteProfileValues profile)
-    {
-        var parts = new[]
-        {
-            profile.ObservatoryName,
-            profile.CameraName is { } camera ? $"camera {camera}" : null,
-            profile.OwnerName is { } owner ? $"owner {owner}" : null,
-            profile.OwnerContact
-        }.Where(part => part is not null).ToArray();
-        return parts.Length == 0 ? "All fields cleared" : string.Join(" / ", parts);
     }
 
     private static string Compass(double azimuthDegrees)
