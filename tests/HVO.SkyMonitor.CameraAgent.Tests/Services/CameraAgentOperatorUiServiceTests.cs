@@ -405,7 +405,7 @@ public sealed class CameraAgentOperatorUiServiceTests
     }
 
     [TestMethod]
-    public async Task DeliveryRecords_MergeLocationsWithUnfinishedWorkFirstAsync()
+    public async Task DeliveryRecords_KeepEachLocationsOwnOrderInConfigurationOrderAsync()
     {
         var now = new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
         var resolver = new Mock<ICameraAgentStorageResolver>(MockBehavior.Strict);
@@ -414,8 +414,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
         outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/captures", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
             .ReturnsAsync([
-                DeliveryRecord(1, ArtifactOutboxStatus.Acknowledged, now.AddMinutes(-30), acknowledgedUtc: now.AddMinutes(-2)),
                 DeliveryRecord(2, ArtifactOutboxStatus.Retry, now.AddMinutes(-20)),
+                DeliveryRecord(1, ArtifactOutboxStatus.Acknowledged, now.AddMinutes(-30), acknowledgedUtc: now.AddMinutes(-2)),
             ]);
         outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/archive", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
             .ReturnsAsync([
@@ -427,38 +427,45 @@ public sealed class CameraAgentOperatorUiServiceTests
         var result = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsTrue(result.IsSuccess);
-        string[] expected = ["captures:2", "archive:3", "archive:4", "captures:1"];
+        string[] expected = ["captures:2", "captures:1", "archive:3", "archive:4"];
         CollectionAssert.AreEqual(
             expected,
             result.Value!.Select(static item => $"{item.StorageAlias}:{item.Record.CaptureSequence}").ToArray());
     }
 
     [TestMethod]
-    public async Task DeliveryRecords_ShareTheRowsAcrossLocationsWhateverTheCaptureTimesAsync()
+    public async Task DeliveryRecords_BoundEachLocationSeparatelySoNoneCrowdsAnotherOutAsync()
     {
-        // The archive's single record was queued last but holds the oldest capture. Capture times do not order
-        // one queue against another, so the full captures queue must not crowd it out of the bounded list.
+        // Nothing orders one store's queue against another's, so a full location must neither push a later one
+        // out of view nor hide its newer work behind older records elsewhere: every location keeps its own bound.
         var now = new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+        const int max = SqliteArtifactOutbox.MaximumRecentDeliveryRecords;
+        var locations = Enumerable.Range(0, max + 1)
+            .Select(static index => new CameraAgentStorageLocation($"location-{index}", $"/data/{index}"))
+            .ToArray();
         var resolver = new Mock<ICameraAgentStorageResolver>(MockBehavior.Strict);
-        resolver.Setup(value => value.GetUploadLocationsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync([new CameraAgentStorageLocation("captures", "/data/captures"), new CameraAgentStorageLocation("archive", "/data/archive")]);
+        resolver.Setup(value => value.GetUploadLocationsAsync(It.IsAny<CancellationToken>())).ReturnsAsync(locations);
         var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
-        outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/captures", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Enumerable.Range(0, SqliteArtifactOutbox.MaximumRecentDeliveryRecords)
-                .Select(index => DeliveryRecord(100 - index, ArtifactOutboxStatus.Pending, now.AddMinutes(-index)))
-                .ToArray());
-        outbox.Setup(value => value.ReadRecentDeliveryAsync("/data/archive", SqliteArtifactOutbox.MaximumRecentDeliveryRecords, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([DeliveryRecord(7, ArtifactOutboxStatus.Pending, now.AddDays(-3))]);
+        for (var index = 0; index < locations.Length; index++)
+        {
+            var offset = index * 1000;
+            var root = $"/data/{index}";
+            outbox.Setup(value => value.ReadRecentDeliveryAsync(root, max, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Enumerable.Range(0, max)
+                    .Select(rank => DeliveryRecord(offset + max - rank, ArtifactOutboxStatus.Pending, now.AddMinutes(-rank)))
+                    .ToArray());
+        }
         var service = CreateReadService(storageResolver: resolver.Object, artifactOutbox: outbox.Object);
 
         var result = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsTrue(result.IsSuccess);
-        var shown = result.Value!.Select(static item => $"{item.StorageAlias}:{item.Record.CaptureSequence}").ToArray();
-        Assert.HasCount(SqliteArtifactOutbox.MaximumRecentDeliveryRecords, shown);
-        string[] head = ["captures:100", "archive:7", "captures:99", "captures:98"];
-        CollectionAssert.AreEqual(head, shown[..4]);
-        Assert.AreEqual("captures:77", shown[^1]);
+        var shown = result.Value!;
+        Assert.HasCount(locations.Length * max, shown);
+        var last = shown.Where(static item => item.StorageAlias == $"location-{max}").Select(static item => item.Record.CaptureSequence).ToArray();
+        Assert.HasCount(max, last);
+        Assert.AreEqual<long?>(max * 1000 + max, last[0]);
+        Assert.AreEqual<long?>(max * 1000 + 1, last[^1]);
     }
 
     [TestMethod]

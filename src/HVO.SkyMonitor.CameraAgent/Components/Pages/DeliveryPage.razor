@@ -103,47 +103,53 @@ else
             }
             else
             {
-                var showAlias = records.Select(static record => record.StorageAlias).Distinct(StringComparer.Ordinal).Skip(1).Any();
+                var locations = records.GroupBy(static record => record.StorageAlias, StringComparer.Ordinal).ToArray();
                 <div class="ops-table-wrap">
                     <table class="ops-table delivery-outbox-table">
                         <thead><tr><th>Capture</th><th>Payload</th><th>State</th><th>Attempt</th><th>Next action</th></tr></thead>
-                        <tbody>
-                            @foreach (var item in records)
-                            {
-                                var record = item.Record;
-                                var state = State(record.Status);
-                                <tr class="@(record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined ? "current-row" : null)">
-                                    <td><strong>@CaptureLabel(record)</strong>@if (showAlias)
-                                        {
-                                            <small>@item.StorageAlias</small>
-                                        }</td>
-                                    <td>@Payload(record)@if (record.MediaType is not null)
-                                        {
-                                            <small>@record.MediaType</small>
-                                        }</td>
-                                    <td><span class="state-chip @state.Chip">@state.Text</span></td>
-                                    <td>@record.AttemptCount</td>
-                                    <td>
-                                        @switch (record.Status)
-                                        {
-                                            case ArtifactOutboxStatus.Quarantined:
-                                                <a href="/operations/quarantine">Review in quarantine</a>
-                                                break;
-                                            default:
-                                                @NextAction(record)
-                                                break;
-                                        }
-                                        @if (record.ReasonCode is not null && record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined)
-                                        {
-                                            <small>@OperationsPage.SplitWords(record.ReasonCode)</small>
-                                        }
-                                    </td>
-                                </tr>
-                            }
-                        </tbody>
+                        @foreach (var location in locations)
+                        {
+                            <tbody>
+                                @if (locations.Length > 1)
+                                {
+                                    <tr class="delivery-location"><th colspan="5" scope="rowgroup">@location.Key</th></tr>
+                                }
+                                @foreach (var item in location)
+                                {
+                                    var record = item.Record;
+                                    var state = State(record.Status);
+                                    <tr class="@(record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined ? "current-row" : null)">
+                                        <td><strong>@CaptureLabel(record)</strong></td>
+                                        <td>@Payload(record)@if (record.MediaType is not null)
+                                            {
+                                                <small>@record.MediaType</small>
+                                            }</td>
+                                        <td><span class="state-chip @state.Chip">@state.Text</span></td>
+                                        <td>@record.AttemptCount</td>
+                                        <td>
+                                            @switch (record.Status)
+                                            {
+                                                case ArtifactOutboxStatus.Quarantined:
+                                                    <a href="/operations/quarantine">Review in quarantine</a>
+                                                    break;
+                                                default:
+                                                    @NextAction(record)
+                                                    break;
+                                            }
+                                            @if (record.ReasonCode is not null && record.Status is ArtifactOutboxStatus.Retry or ArtifactOutboxStatus.Quarantined)
+                                            {
+                                                <small>@OperationsPage.SplitWords(record.ReasonCode)</small>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        }
                     </table>
                 </div>
-                <p class="delivery-footnote">Unfinished work first, newest queued first in each upload location, then the newest completed records, up to @SqliteArtifactOutbox.MaximumRecentDeliveryRecords.</p>
+                <p class="delivery-footnote">@(locations.Length > 1
+                    ? $"Each upload location lists its unfinished work first, newest queued first, then its newest completed records, up to {SqliteArtifactOutbox.MaximumRecentDeliveryRecords} per location."
+                    : $"Unfinished work first, newest queued first, then the newest completed records, up to {SqliteArtifactOutbox.MaximumRecentDeliveryRecords}.")</p>
             }
         </section>
 

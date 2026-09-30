@@ -281,8 +281,9 @@ internal interface ICameraAgentOperatorUiService
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
     /// <summary>
-    /// The newest artifact outbox records across every upload location: unfinished work first, then
-    /// the newest acknowledged or abandoned records. Empty when central integration is disabled.
+    /// The newest artifact outbox records of each upload location in configuration order, each location
+    /// bounded separately: its unfinished work first, then its newest acknowledged or abandoned records.
+    /// Empty when central integration is disabled.
     /// </summary>
     ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken);
 
@@ -1350,31 +1351,18 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
-            var queues = new List<List<CameraAgentDeliveryRecord>>();
-            var finished = new List<CameraAgentDeliveryRecord>();
+            // Each store orders its own records exactly (unfinished work newest queued first, then the newest
+            // finished), but keeps no enqueue time that orders one store against another: CreatedUtc is the
+            // artifact's capture time and the attempt times move with every retry. So the locations are never
+            // merged into one bounded list, which would let one busy location hide another's newer work. Each
+            // keeps its own bounded list, in configuration order.
+            var merged = new List<CameraAgentDeliveryRecord>();
             foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
             {
-                var queued = new List<CameraAgentDeliveryRecord>();
-                foreach (var record in await artifactOutbox.ReadRecentDeliveryAsync(
-                    location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
-                {
-                    (record.Status is ArtifactOutboxStatus.Acknowledged or ArtifactOutboxStatus.Abandoned ? finished : queued)
-                        .Add(new CameraAgentDeliveryRecord(location.Alias, record));
-                }
-                queues.Add(queued);
+                merged.AddRange((await artifactOutbox.ReadRecentDeliveryAsync(
+                        location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
+                    .Select(record => new CameraAgentDeliveryRecord(location.Alias, record)));
             }
-            // Each store returns its unfinished work newest queued first, but keeps no enqueue time: CreatedUtc is
-            // the artifact's capture time and the attempt times move with every retry. Nothing orders one queue
-            // against another, so the locations take the rows in turn and each keeps its own exact queue order.
-            var unfinished = new List<CameraAgentDeliveryRecord>();
-            for (var rank = 0; rank < SqliteArtifactOutbox.MaximumRecentDeliveryRecords; rank++)
-            {
-                unfinished.AddRange(queues.Where(queue => rank < queue.Count).Select(queue => queue[rank]));
-            }
-            IReadOnlyList<CameraAgentDeliveryRecord> merged = unfinished
-                .Concat(finished.OrderByDescending(static item => item.Record.AcknowledgedUtc ?? item.Record.UpdatedUtc))
-                .Take(SqliteArtifactOutbox.MaximumRecentDeliveryRecords)
-                .ToArray();
             return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success(merged);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -9,6 +9,7 @@
 
 .ops-table-wrap .ops-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
 .ops-table-wrap .ops-table td a { color: #9bcaff; }
+.ops-table-wrap .ops-table.delivery-outbox-table .delivery-location th { padding-top: .7rem; color: var(--muted-strong); font-size: .58rem; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
 .ops-table-wrap .ops-table.delivery-outbox-table td, .ops-table-wrap .ops-table.delivery-lane-table td { white-space: normal; }
 .ops-table-wrap .ops-table.delivery-outbox-table td:first-child, .ops-table-wrap .ops-table.delivery-lane-table td:first-child { white-space: nowrap; }
 

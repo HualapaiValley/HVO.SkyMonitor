@@ -59,19 +59,39 @@ public sealed class DeliveryPageTests
     }
 
     [TestMethod]
-    public void Records_FromSeveralStorageAliases_NameTheAlias()
+    public void Records_FromSeveralStorageAliases_AreGroupedUnderEachLocation()
     {
         using var context = CreateContext(out var service);
         service.DeliveryHandler = _ => Records(
             Record(1, ArtifactOutboxStatus.Pending),
-            Record(2, ArtifactOutboxStatus.Pending) with { StorageAlias = "archive" });
+            Record(2, ArtifactOutboxStatus.Retry),
+            Record(3, ArtifactOutboxStatus.Pending) with { StorageAlias = "archive" });
 
         var cut = context.Render<DeliveryPage>();
 
         cut.WaitForElement(".delivery-outbox-table");
-        var aliases = cut.FindAll(".delivery-outbox-table tbody tr td:first-child small").Select(static item => item.TextContent).ToArray();
-        string[] expectedAliases = ["captures", "archive"];
-        CollectionAssert.AreEqual(expectedAliases, aliases);
+        var groups = cut.FindAll(".delivery-outbox-table tbody");
+        Assert.HasCount(2, groups);
+        Assert.AreEqual("captures", groups[0].QuerySelector("th[scope='rowgroup']")!.TextContent);
+        Assert.AreEqual(2, groups[0].QuerySelectorAll("tr:not(.delivery-location)").Length);
+        Assert.AreEqual("archive", groups[1].QuerySelector("th[scope='rowgroup']")!.TextContent);
+        Assert.AreEqual(1, groups[1].QuerySelectorAll("tr:not(.delivery-location)").Length);
+        StringAssert.Contains(cut.Find(".delivery-footnote").TextContent, "up to 25 per location", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Records_FromOneStorageAlias_NeedNoLocationHeading()
+    {
+        using var context = CreateContext(out var service);
+        service.DeliveryHandler = _ => Records(Record(1, ArtifactOutboxStatus.Pending), Record(2, ArtifactOutboxStatus.Pending));
+
+        var cut = context.Render<DeliveryPage>();
+
+        cut.WaitForElement(".delivery-outbox-table");
+        Assert.IsEmpty(cut.FindAll(".delivery-location"));
+        Assert.AreEqual(
+            "Unfinished work first, newest queued first, then the newest completed records, up to 25.",
+            cut.Find(".delivery-footnote").TextContent);
     }
 
     [TestMethod]
