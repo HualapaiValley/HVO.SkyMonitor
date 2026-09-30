@@ -188,6 +188,19 @@ clean install and migrate operational state only under the supported lifecycle;
 do not edit an installed profile in place or treat an image upgrade as a clean
 install. These are display choices, not a physical visibility model.
 
+The installer-virtualsky-v4 profile changes only the generated **new-install**
+optics to `horizontalFlip: true`. For an upward-looking all-sky camera that is
+the physical orientation: with North up, East appears on the **left** of the
+frame, as seen when looking up at the sky. The unflipped setting (`false`) is
+the mirrored, map-style view with East on the right. Nothing else in the
+generated rig, pipeline, or schedule changes. Upgrading the image on an existing
+v3 (or earlier) instance does **not** replace its rig, so an installed instance
+keeps the flip it was generated with. To change it on an installed instance,
+use **Operations > Camera & rig > Edit active rig** in the CameraAgent UI: that
+records new optics and rig revisions, stages them, and applies them when
+CameraAgent next restarts. It does not rewrite the installed rig in place, and
+previously captured frames and layers are not changed.
+
 `cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).

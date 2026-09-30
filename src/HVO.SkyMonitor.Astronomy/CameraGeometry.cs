@@ -96,6 +96,13 @@ public readonly record struct CameraBasis(EnuVector Right, EnuVector ImageUp, En
     /// at zenith its continuous limit is north-up. Positive roll is right-handed
     /// about boresight. Horizontal flip reverses camera-right.
     /// </summary>
+    /// <remarks>
+    /// For an upward-looking (zenith) camera the unflipped frame puts East on
+    /// image-right with North up, which is the mirrored map-style view rather
+    /// than what the sensor physically records. <c>horizontalFlip: true</c> is
+    /// the physical setting for an upward-looking all-sky camera: with North up,
+    /// East appears on the left, as seen when looking up at the sky.
+    /// </remarks>
     public static CameraBasis Create(
         double boresightAltitudeDegrees,
         double boresightAzimuthDegrees,
