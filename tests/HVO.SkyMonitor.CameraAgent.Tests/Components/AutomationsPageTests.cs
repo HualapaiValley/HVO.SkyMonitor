@@ -535,9 +535,14 @@ public sealed class AutomationsPageTests
                 DateTimeOffset.Parse("2026-09-04T02:59:00Z", CultureInfo.InvariantCulture),
                 60,
                 DateTimeOffset.Parse("2026-09-04T03:05:00Z", CultureInfo.InvariantCulture),
-                0)
+                0,
+                [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.OnDemand],
+                300,
+                1)
         ],
-        []);
+        [],
+        14,
+        new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null));
 
     private sealed class EnvironmentalUiService(EnvironmentalUiStatus? status) : ICameraAgentEnvironmentalUiService
     {
@@ -549,6 +554,10 @@ public sealed class AutomationsPageTests
 
         public ValueTask<OperatorUiResult<EnvironmentalUiHistoryPage>> GetHistoryAsync(
             EnvironmentalObservationKind? kind, int pageSize, string? cursor, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>> GetLatestReadingsAsync(
+            CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(

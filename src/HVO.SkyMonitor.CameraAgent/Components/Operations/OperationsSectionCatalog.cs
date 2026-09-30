@@ -118,12 +118,9 @@ public static class OperationsSectionCatalog
         new("environment", "Environment", "Processing", "/operations/environment",
             "Processing / independent observations",
             "Track weather and camera conditions independently from image processing, with explicit freshness and capture associations.", ["/environmental"]),
-        new("transients", "Transients", "Processing", "",
+        new("transients", "Transients", "Processing", "/operations/transients",
             "Processing / independent detector lane",
-            "Inspect local causal candidate extraction and the handoff to authoritative centered validation without conflating it with display processing.", [])
-        {
-            UnavailableReason = "Detector operations are not implemented in the Operations workspace. Candidate and event views remain under Events."
-        },
+            "Inspect local causal candidate extraction and the handoff to authoritative centered validation without conflating it with display processing.", []),
         new("automations", "Automations", "Automation", "/operations/automations",
             "Automation / typed scheduled work",
             "Generate observing-day products and perform bounded maintenance through registered task types, explicit triggers, and durable run history.", []),

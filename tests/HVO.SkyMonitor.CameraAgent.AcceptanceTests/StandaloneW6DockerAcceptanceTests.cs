@@ -1538,7 +1538,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ("/operations/camera", "Camera & rig"),
             ("/operations/focus", "Focus"),
             ("/operations/site", "Observatory & location"),
-            ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/pipeline", "Pipeline"),
+            ("/operations/environment", "Environment"),
+            ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
             ("/operations/data", "Data & storage"),
             ("/operations/pipeline/executions", "Processing executions"),
@@ -5141,18 +5143,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual($"rig-{ExpectedRigSha256[..16]}", rigId);
 
         await page.GotoAsync("/environmental").ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Environmental acquisition", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Environment", Exact = true, Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
-        var sourceCards = page.Locator(".source-grid article");
-        await sourceCards.First.WaitForAsync().ConfigureAwait(false);
-        var uiSourceCount = await sourceCards.CountAsync().ConfigureAwait(false);
-        var uiHistoryCount = await page.Locator(".history article").CountAsync().ConfigureAwait(false);
-        var uiAttemptCount = await page.Locator(".attempts > div").CountAsync().ConfigureAwait(false);
+        var sourceRows = page.Locator(".environment-source-table tbody tr");
+        await sourceRows.First.WaitForAsync().ConfigureAwait(false);
+        var uiSourceCount = await sourceRows.CountAsync().ConfigureAwait(false);
+        var uiHistoryCount = await page.Locator(".environment-history-table tbody tr").CountAsync().ConfigureAwait(false);
+        var uiAttemptCount = await page.Locator(".environment-attempt-table tbody tr").CountAsync().ConfigureAwait(false);
         Assert.AreEqual(12, uiSourceCount);
         Assert.IsGreaterThan(0, uiHistoryCount);
         Assert.IsGreaterThan(0, uiAttemptCount);
-        StringAssert.Contains(await page.Locator(".summary").InnerTextAsync().ConfigureAwait(false), "Enabled",
-            StringComparison.Ordinal);
+        Assert.AreEqual(0, await page.Locator(".environment-disabled").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(8, await page.Locator(".ops-reading-grid .ops-reading").CountAsync().ConfigureAwait(false));
         return new EnvironmentalEvidence(
             12,
             historyCount,
