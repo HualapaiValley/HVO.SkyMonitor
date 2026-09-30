@@ -346,6 +346,22 @@ public sealed class SettingsFileSiteProfileStoreTests
     }
 
     [TestMethod]
+    public async Task GetAsync_AfterAnInstallerSeedAndAHandWrittenSite_KeepsTheSiteAndRemovesTheSeededName()
+    {
+        // The operator wrote a site section by hand into the installer's seed before CameraAgent first read it.
+        await File.WriteAllTextAsync(SettingsPath, """
+            { "CameraAgent": { "DisplayName": "North Camera", "Site": { "ObservatoryName": "Written by hand", "CameraName": "East dome" } } }
+            """).ConfigureAwait(false);
+        using var store = CreateStore(displayName: "North Camera");
+
+        var state = await store.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(new SiteProfileValues("Written by hand", "East dome", null, null), state.Profile);
+        Assert.AreEqual("East dome", ReadSetting("CameraAgent", "Site", "CameraName"));
+        Assert.IsNull(ReadSetting("CameraAgent", "DisplayName"));
+    }
+
+    [TestMethod]
     public async Task GetAsync_WhenTheFileAlreadyHasASiteSection_KeepsItAndRemovesTheEarlierRecord()
     {
         await File.WriteAllTextAsync(SettingsPath, """{ "CameraAgent": { "Site": { "CameraName": "Written by hand" } } }""").ConfigureAwait(false);

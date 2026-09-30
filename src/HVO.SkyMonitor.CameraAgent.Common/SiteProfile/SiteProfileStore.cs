@@ -170,6 +170,21 @@ public sealed class SettingsFileSiteProfileStore(
                     SiteProfileLog.Migrated(logger, file.FilePath);
                 }
             }
+            else if (snapshot.GetValue(InstallerNameKey) is not null)
+            {
+                // A site section written by hand into the installer's seed before this first read already settles
+                // the profile; only the seeded name goes, so the file does not carry the camera name twice.
+                var result = await file.WriteAsync(
+                    snapshot.Version,
+                    new Dictionary<string, JsonNode?>(StringComparer.Ordinal) { [InstallerNameKey] = null },
+                    MigrationActor,
+                    cancellationToken).ConfigureAwait(false);
+                if (result.Status is not (OperatorSettingsWriteStatus.Applied or OperatorSettingsWriteStatus.Unchanged))
+                {
+                    return;
+                }
+                SiteProfileLog.Migrated(logger, file.FilePath);
+            }
 
             // A record already in the file, or superseded by a section the operator wrote, is removed; one that
             // cannot be read is left where it is rather than deleted unread.
