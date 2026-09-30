@@ -8,6 +8,8 @@
 .site-note { margin: .7rem 0 0; color: var(--muted); font-size: .6rem; line-height: 1.45; }
 .site-note code, .ops-note-banner code { color: #c4dcfa; font-size: .92em; }
 .site-muted { color: var(--muted); font-weight: 500; }
+/* A staged location stacks its restart control under the banner text. */
+.site-location-banner > div { display: grid; gap: .5rem; min-width: 0; }
 
 /* Current Sky's .text-button, copied so this page does not depend on another page's scoped styles, and
    sized to a 44px target at every width because it is not one of the shared control classes. */
@@ -52,20 +54,37 @@ th[aria-sort="descending"] .site-sort::after { content: " \2193"; }
 .site-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .55rem; margin-top: .6rem; color: var(--muted); font-size: .58rem; }
 .site-pager [role="status"] { margin-right: auto; }
 
-.site-scene-side h3 { margin: .9rem 0 .4rem; font-size: .68rem; }
-.site-dial { display: block; width: 100%; max-width: 20rem; margin: 0 auto; }
-.site-dial-horizon { fill: #09111b; stroke: var(--border); stroke-width: 1; }
-.site-dial-ring { fill: none; stroke: rgba(88, 166, 255, .22); stroke-width: .5; }
-.site-dial-label { fill: var(--muted); font-size: 8px; font-weight: 700; }
-.site-dial-object { fill: #c4dcfa; opacity: .55; }
-.site-dial-object.on-page { fill: var(--blue); opacity: 1; }
-.site-constellations { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0; padding: 0; list-style: none; }
-.site-constellations li { padding: .2rem .45rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-strong); font-size: .56rem; }
+/* The object name is the row's select control; it fills its cell so the target is the full 44px row height. */
+.site-scene-wrap td.site-object-cell { padding-block: 0; }
+.site-object { display: flex; width: 100%; min-width: 2.75rem; min-height: 2.75rem; align-items: center; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.site-object:hover strong, .site-object:focus-visible strong { color: var(--blue); }
+.site-scene-wrap tr.selected td { background: rgba(88, 166, 255, .12); }
+.site-scene-wrap tr.selected .site-object strong { color: var(--blue); }
+
+.site-scene-side h3 { margin: 0; font-size: .68rem; }
+.site-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .8rem; margin-top: .6rem; }
+.site-selection p { flex: 1 1 12rem; margin: 0; color: var(--muted-strong); font-size: .58rem; line-height: 1.45; overflow-wrap: anywhere; }
+.site-figures-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 .8rem; margin-top: .5rem; }
+.site-figures-note { margin-top: .2rem; }
+/* Figures are offered by catalog abbreviation; the list scrolls inside its own frame so 88 pills stay compact. */
+.site-constellations { display: flex; flex-wrap: wrap; gap: .35rem; max-height: 14rem; margin-top: .55rem; overflow-y: auto; }
+.site-constellation { display: inline-flex; min-width: 2.75rem; min-height: 2.75rem; align-items: center; justify-content: center; padding: 0 .6rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-strong); background: transparent; cursor: pointer; font: inherit; font-size: .6rem; font-weight: 700; }
+.site-constellation:hover, .site-constellation:focus-visible { border-color: var(--cyan); color: var(--text); }
+.site-constellation[aria-pressed="true"] { border-color: var(--cyan); color: var(--text); background: rgba(57, 197, 207, .16); }
+.site-constellation:disabled { border-style: dashed; color: var(--muted); opacity: .5; cursor: not-allowed; }
 .site-provenance { display: flex; align-items: flex-start; gap: .45rem; margin-top: .9rem; padding-top: .7rem; border-top: 1px solid var(--border); }
 .site-provenance .status-icon { flex: 0 0 auto; }
 
 .site-history-wrap { max-height: 22rem; overflow: auto; }
 .site-history-wrap td { overflow-wrap: anywhere; }
+
+/* Operator settings panel. */
+.site-settings-form { display: grid; gap: .55rem; margin: .8rem 0 0; padding: 0; border: 0; min-width: 0; }
+.site-settings-form input { max-width: 10rem; }
+.site-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.site-settings-actions .text-button { margin-top: 0; }
+/* A settings file path is one unbroken word, so it may wrap anywhere rather than widen a narrow page. */
+.site-note code, .ops-facts code { overflow-wrap: anywhere; }
 
 /* Dialogs; element-qualified so the width outranks the shared .action-dialog width. */
 dialog.action-dialog.site-dialog { width: min(calc(100% - 2rem), 40rem); }

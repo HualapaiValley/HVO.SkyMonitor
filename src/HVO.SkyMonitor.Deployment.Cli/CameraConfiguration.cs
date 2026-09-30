@@ -111,7 +111,7 @@ internal static class CameraConfiguration
             968,
             608,
             595.84,
-            HorizontalFlip: false,
+            HorizontalFlip: true,
             CalibrationVersion: "virtual-fisheye-180-equidistant-v1"),
         new RigOrientation(90, 0, 0),
         new PipelineExposureProfile(
@@ -135,7 +135,7 @@ internal static class CameraConfiguration
             ExposureControl = AutomaticControlOwnership.Disabled,
             GainControl = AutomaticControlOwnership.Disabled
         },
-        ProfileVersion: "installer-virtualsky-v3",
+        ProfileVersion: "installer-virtualsky-v4",
         Readout: new SensorReadoutProfile(
             new SensorCrop(0, 0, 1936, 1216),
             1, 1, FrameBinningAlgorithm.IdentityV1,

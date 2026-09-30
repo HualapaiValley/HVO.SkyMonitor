@@ -78,7 +78,8 @@ The catalog phase records target, catalog ID, package version, and checksum.
 ## Backup Unit
 
 Back up an instance's `instance-manifest.json`, `config/`, and `state/` together.
-For CameraAgent this includes Identity, Data Protection keys, provisioning
+For CameraAgent this includes Identity, the operator settings file
+(`state/identity/appsettings.local.json`), Data Protection keys, provisioning
 secrets, protected deployment-location history, schedule/profile revisions, raw
 ingress and capture sequence, frames, processing/outbox state, calibration, and
 local secrets. Restoring only part of that set can invalidate protected data,

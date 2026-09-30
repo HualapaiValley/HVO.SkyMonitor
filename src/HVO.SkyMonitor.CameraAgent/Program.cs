@@ -70,7 +70,16 @@ public class Program
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+        var localSettings = DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+        if (localSettings is not null)
+        {
+            builder.Services.AddSingleton(provider => new OperatorSettingsFile(
+                localSettings.FilePath,
+                localSettings.Reload,
+                localSettings.FindOverriddenKeys,
+                provider.GetRequiredService<ILogger<OperatorSettingsFile>>()));
+        }
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)

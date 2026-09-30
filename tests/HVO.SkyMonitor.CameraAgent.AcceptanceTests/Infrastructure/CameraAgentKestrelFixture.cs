@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -60,6 +61,9 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         ?? throw new InvalidOperationException("The Kestrel fixture has no base address.");
 
     internal string Root => _root;
+
+    /// <summary>The operator settings file the host loads, as an installer deployment loads its own.</summary>
+    internal string SettingsFilePath => Path.Combine(_root, DeploymentLocalSettings.FileName);
 
     internal string RecoverySocketPath => Path.Combine(
         _root,
@@ -439,6 +443,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.UseSetting(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
             // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
             foreach (var setting in overrides.Where(static setting =>
                          setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal) ||

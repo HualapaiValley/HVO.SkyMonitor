@@ -9,8 +9,15 @@ using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
@@ -179,6 +186,249 @@ public sealed class CameraCaptureServiceTests
         finally { Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    public async Task NamedRig_QuickEditFlipIsRespectedAfterHostedRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-named-rig-flip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new FixedClock(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            // A sensor large enough that east and west land on visibly different pixels.
+            var config = CreateConfig() with
+            {
+                AgentId = "rig-flip-test",
+                Rig = CreateConfig().Rig with
+                {
+                    Sensor = new SensorProfile("Test", 64, 64, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8)
+                },
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new CaptureScheduleDefinition("capture-schedule-v1",
+                    [new CaptureScheduleSetpointProfile("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new CaptureWeeklyScheduleWindow("monday", DayOfWeek.Monday,
+                        new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                        new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            Assert.IsFalse(config.Rig.Optics.HorizontalFlip);
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 5
+            });
+            var pipeline = new EmptyPipelineFactory();
+            string composedId;
+            using (var ingress = CreateDurableIngress(options, clock))
+            using (var store = new SqliteCaptureScheduleStore(ingress, options, clock))
+            using (var telemetry = new CaptureControlTelemetry())
+            using (var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry))
+            using (var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock))
+            {
+                var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+                await new CameraAgentConfigurationInitializer(new StaticLoader(config), new CameraAgentConfigurationAccessor(),
+                    pipeline, NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                    .StartAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await runtime.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+                var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+                var active = catalog.Revisions.Single(revision => revision.RevisionId == catalog.Selection.ActiveRevisionId);
+                var edit = await NamedRigQuickEditServiceTests.OwnerService(named, runtime).ApplyActiveRigEditAsync(
+                    new ActiveRigEditRequest(active.RevisionId, catalog.Selection.Version, HorizontalFlip: true,
+                        active.Rig.Optics.FieldOfViewDegrees, active.Rig.Optics.FocalLengthMillimeters,
+                        active.Rig.Orientation.BoresightAltitudeDegrees, active.Rig.Orientation.BoresightAzimuthDegrees,
+                        active.Rig.Orientation.RollAdjustmentDegrees), CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ActiveRigEditStatus.Staged, edit.Value?.Status, edit.Value?.Failure ?? edit.Message);
+                composedId = edit.Value!.ComposedRevisionId!;
+                Assert.IsFalse(runtime.Snapshot!.Configuration.Rig.Optics.HorizontalFlip,
+                    "A staged flip must not change the running rig before restart.");
+            }
+
+            using (var ingress = CreateDurableIngress(options, clock))
+            using (var store = new SqliteCaptureScheduleStore(ingress, options, clock))
+            using (var telemetry = new CaptureControlTelemetry())
+            using (var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry))
+            using (var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock))
+            using (var lifetime = new TestHostApplicationLifetime())
+            {
+                var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+                var accessor = new CameraAgentConfigurationAccessor();
+                await new CameraAgentConfigurationInitializer(new StaticLoader(config), accessor, pipeline,
+                    NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                    .StartAsync(CancellationToken.None).ConfigureAwait(false);
+                var module = new RigRecordingModule(clock);
+                var service = CreateHostedService(accessor, module, ingress, telemetry, admission, runtime, named, lifetime, clock);
+                await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                lifetime.NotifyStarted();
+                var captured = await ingress.Captured.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+                var catalog = await named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(composedId, catalog.Selection.ActiveRevisionId);
+                Assert.IsNull(catalog.Selection.PendingRevisionId);
+                Assert.IsTrue(module.InitializedConfig!.Rig.Optics.HorizontalFlip, "The camera module was initialized unflipped.");
+                var running = runtime.Snapshot!.Configuration;
+                Assert.IsTrue(running.Rig.Optics.HorizontalFlip, "The runtime configuration read by the sky map is unflipped.");
+                Assert.IsTrue(RigProjectionContextFactory.Create(running.Rig).HorizontalFlip, "The rig projection is unflipped.");
+                Assert.IsTrue((await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false))
+                    .ActiveRevision.Profile.Rig.Optics.HorizontalFlip);
+
+                // The capture records the flipped rig rather than the one the camera was configured with.
+                Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(running.Rig), captured.Manifest.Descriptor.Profiles.Rig.Sha256);
+                Assert.AreNotEqual(CameraRigProfileIdentity.ComputeSha256(config.Rig), captured.Manifest.Descriptor.Profiles.Rig.Sha256);
+
+                // The annotation step, given the configuration carried alongside the capture as the processing worker
+                // gives it, draws east and west mirrored against the rig the camera was configured with.
+                var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
+                var entry = (await journal.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+                    .Single(item => item.CaptureId == captured.Manifest.Descriptor.Capture.CaptureId);
+                var envelope = await journal.ReadRecoveredLaneEnvelopeAsync(entry, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(envelope!.Configuration.Rig.Optics.HorizontalFlip, "The capture carries an unflipped rig.");
+                var configuredAnnotation = await AnnotateAsync(config, envelope.Submission, captured).ConfigureAwait(false);
+                var shownAnnotation = await AnnotateAsync(envelope.Configuration, envelope.Submission, captured)
+                    .ConfigureAwait(false);
+                Assert.AreNotEqual(configuredAnnotation.Overlay.East.X, shownAnnotation.Overlay.East.X, 1,
+                    "The annotation east mark did not move with the flip.");
+                AssertMirrored(configuredAnnotation.Overlay.East.X, configuredAnnotation.Overlay.East.Y,
+                    shownAnnotation.Overlay.East.X, shownAnnotation.Overlay.East.Y, "annotation east");
+                AssertMirrored(configuredAnnotation.Overlay.West.X, configuredAnnotation.Overlay.West.Y,
+                    shownAnnotation.Overlay.West.X, shownAnnotation.Overlay.West.Y, "annotation west");
+                // The drawn letters trade sides: the one at the right edge of the configured image is the one at the left
+                // edge of the annotated capture, and the other way round.
+                var configuredLeft = LetterAt(configuredAnnotation.Drawn, 0, 16);
+                var configuredRight = LetterAt(configuredAnnotation.Drawn, 48, 64);
+                Assert.IsFalse(string.IsNullOrEmpty(configuredLeft), "No letter is drawn at the left edge.");
+                Assert.IsFalse(string.IsNullOrEmpty(configuredRight), "No letter is drawn at the right edge.");
+                Assert.AreNotEqual(configuredLeft, configuredRight, "East and west are drawn as the same letter.");
+                Assert.AreEqual(configuredRight, LetterAt(shownAnnotation.Drawn, 0, 16), "The left edge letter was not flipped.");
+                Assert.AreEqual(configuredLeft, LetterAt(shownAnnotation.Drawn, 48, 64), "The right edge letter was not flipped.");
+
+                // The sky map projects the running rig, so its stars and compass points are mirrored too. Orion is
+                // overhead at this instant, which puts the fixture stars inside the image.
+                var stars = CameraAgentSkyMapProjectionTests.CreateCatalog(CameraAgentSkyMapProjectionTests.BrightStars());
+                var orionOverhead = new DateTimeOffset(2026, 9, 29, 5, 0, 0, TimeSpan.Zero);
+                var configuredSky = await new CameraAgentSkyMapProjection(new ConfigurationAccessor(config), stars, clock)
+                    .ProjectAsync(orionOverhead, CancellationToken.None).ConfigureAwait(false);
+                var shownSky = await new CameraAgentSkyMapProjection(accessor, stars, clock, scheduleRuntime: runtime)
+                    .ProjectAsync(orionOverhead, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(shownSky.Geometry.HorizontalFlip, "The sky map reports an unflipped rig.");
+                Assert.IsNotEmpty(shownSky.Objects);
+                Assert.HasCount(configuredSky.Objects.Count, shownSky.Objects);
+                foreach (var shown in shownSky.Objects)
+                {
+                    var configured = configuredSky.Objects.Single(item => item.Id == shown.Id);
+                    AssertMirrored(configured.PixelX, configured.PixelY, shown.PixelX, shown.PixelY, shown.DisplayName);
+                }
+                var shownEastWest = shownSky.Geometry.Cardinals.Where(item => item.Name is "East" or "West").ToArray();
+                Assert.HasCount(2, shownEastWest);
+                foreach (var shown in shownEastWest)
+                {
+                    var configured = configuredSky.Geometry.Cardinals.Single(item => item.Name == shown.Name);
+                    AssertMirrored(configured.PixelX!.Value, configured.PixelY!.Value, shown.PixelX!.Value, shown.PixelY!.Value,
+                        $"sky map {shown.Name}");
+                }
+
+                // The copied optics now belong only to the operator's rig, so a further edit revises them in place.
+                var active = catalog.Revisions.Single(revision => revision.RevisionId == composedId);
+                var revise = await NamedRigQuickEditServiceTests.OwnerService(named, runtime).ApplyActiveRigEditAsync(
+                    new ActiveRigEditRequest(active.RevisionId, catalog.Selection.Version, HorizontalFlip: true, 170,
+                        active.Rig.Optics.FocalLengthMillimeters, active.Rig.Orientation.BoresightAltitudeDegrees,
+                        active.Rig.Orientation.BoresightAzimuthDegrees, active.Rig.Orientation.RollAdjustmentDegrees),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ActiveRigEditStatus.Staged, revise.Value?.Status, revise.Value?.Failure ?? revise.Message);
+                Assert.AreEqual("Saved optics \"Installed optics copy\" revision 2.", revise.Value!.Recorded[0]);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    // A horizontal flip mirrors the image about its vertical centre line, x = 32 on the flip test's 64-pixel sensor.
+    private static void AssertMirrored(double configuredX, double configuredY, double shownX, double shownY, string what)
+    {
+        Assert.AreEqual(64 - configuredX, shownX, 1e-6, $"The {what} is not mirrored east to west.");
+        Assert.AreEqual(configuredY, shownY, 1e-6, $"The {what} moved vertically.");
+    }
+
+    // Runs the annotation step over the committed capture the way the processing worker does: the raw frame is rebuilt
+    // from the stored evidence and the step reads its rig from the configuration it is given.
+    private static async Task<(ProjectedAnnotationOverlay Overlay, bool[] Drawn)> AnnotateAsync(
+        CameraModuleConfig configuration, CaptureLoopSubmission submission, RawCaptureReceipt capture)
+    {
+        var payload = await File.ReadAllBytesAsync(capture.StoredFrame.AbsolutePath).ConfigureAwait(false);
+        var reconstruction = FrameReconstructor.TryReconstruct(capture.Manifest.Descriptor, payload, out var raw);
+        Assert.IsTrue(reconstruction.IsValid, reconstruction.ReasonCode);
+        var artifact = new FrameArtifact(capture.Manifest.Descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, raw!,
+            recipeVersion: ProcessingIdentity.CreateRecipeIdentity(capture.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
+        var context = new CaptureProcessingContext(configuration,
+            submission with { Result = submission.Result with { Frame = raw, Artifacts = new FrameArtifactSet(artifact) } },
+            capture);
+        var executor = new RecordingRecipeExecutor();
+        var adapter = new CameraAgentRecipeExecutionAdapter(executor);
+        await new PreviewCaptureProcessingStep(new CaptureProcessingStepMetadata("Preview", "Preview", 0),
+            new PreviewProcessingStepOptions(), adapter).ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        var step = new AnnotationCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("Annotation", "Annotation", 1),
+            new AnnotationProcessingStepOptions { DrawLabels = false, DrawCardinalDirections = true, CardinalScale = 1 },
+            new ProjectedSceneStore(), new NoAnnotationSceneProvider(), adapter);
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        var overlay = executor.Requests.Single(request => request.Annotation is not null).Annotation!.ProjectionOverlay;
+        Assert.IsNotNull(overlay, "The annotation step drew no projection overlay.");
+        var preview = context.Artifacts![FrameArtifactRole.Preview].Frame.PixelData.ToArray();
+        var annotated = context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelData.ToArray();
+        Assert.HasCount(preview.Length, annotated);
+        // Only what annotation drew over the preview.
+        return (overlay, annotated.Select((value, index) => value != preview[index]).ToArray());
+    }
+
+    // The shape of the mark drawn between two columns of the 64-pixel annotation, independent of where it sits.
+    private static string LetterAt(bool[] drawn, int fromX, int toX)
+    {
+        var lit = Enumerable.Range(0, 64)
+            .SelectMany(y => Enumerable.Range(fromX, toX - fromX).Select(x => (X: x, Y: y)))
+            .Where(point => drawn[point.Y * 64 + point.X])
+            .ToArray();
+        if (lit.Length == 0)
+        {
+            return string.Empty;
+        }
+        var left = lit.Min(point => point.X);
+        var top = lit.Min(point => point.Y);
+        var rows = lit.Max(point => point.Y) - top + 1;
+        var columns = lit.Max(point => point.X) - left + 1;
+        return string.Join('/', Enumerable.Range(top, rows).Select(y => new string(Enumerable.Range(left, columns)
+            .Select(x => drawn[y * 64 + x] ? '#' : '.').ToArray())));
+    }
+
+    private sealed class RecordingRecipeExecutor : IProcessingRecipeExecutor
+    {
+        private readonly ProcessingRecipeExecutor _inner = new();
+
+        public List<ProcessingExecutionRequest> Requests { get; } = [];
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request, CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            return _inner.ExecuteAsync(request, cancellationToken);
+        }
+    }
+
+    private sealed class NoAnnotationSceneProvider : IAnnotationSceneProvider
+    {
+        public ValueTask<AnnotationSceneResult> BuildAsync(
+            CameraModuleConfig config,
+            ReconstructionDescriptor? descriptor,
+            CameraFrame rawFrame,
+            IReadOnlyList<string> constellationIds,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromException<AnnotationSceneResult>(
+                new InvalidOperationException("The cardinal annotation should not build a sky scene."));
+    }
+
     private static RecordingIngress CreateDurableIngress(IOptions<CameraAgentHostOptions> options, TimeProvider clock)
     {
         var state = new RawIngressState(clock);
@@ -260,8 +510,12 @@ public sealed class CameraCaptureServiceTests
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
                 throw new InvalidOperationException("Capture was not cancelled.");
             }
-            var frame = new CameraFrame(clock.GetUtcNow().AddSeconds(-2), 1, 1, CameraPixelFormat.Mono8,
-                new byte[] { 1 }, new FrameMetadata(TimeSpan.FromMilliseconds(1), 0, 0, Guid.NewGuid().ToString("N")));
+            // The frame is the size of the configured sensor, so annotation can draw on it.
+            var sensor = InitializedConfig!.Rig.Sensor;
+            var pixels = new byte[sensor.WidthPixels * sensor.HeightPixels];
+            Array.Fill(pixels, (byte)1);
+            var frame = new CameraFrame(clock.GetUtcNow().AddSeconds(-2), sensor.WidthPixels, sensor.HeightPixels,
+                CameraPixelFormat.Mono8, pixels, new FrameMetadata(TimeSpan.FromMilliseconds(1), 0, 0, Guid.NewGuid().ToString("N")));
             return new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromMilliseconds(1), 0, null, null),
                 TimeSpan.Zero, CaptureMode.Still, false);
         }

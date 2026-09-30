@@ -72,8 +72,8 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public string? AgentId { get; init; }
 
     /// <summary>
-    /// The operator-facing name of this camera. The operations workspace shows it wherever it would otherwise show
-    /// the agent identifier, and the local site profile uses it as the camera name until an operator records one.
+    /// The camera name an earlier installer configured. The site profile in the operator settings file now holds
+    /// the name; this value is moved into it once, and shown only while the file has no site section.
     /// </summary>
     [MaxLength(SiteProfileLimits.MaximumNameLength)]
     public string? DisplayName { get; init; }
@@ -324,6 +324,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
 /// <summary>Bounds for the operator sky-map projection shown on the Observatory &amp; location page.</summary>
 public sealed class SkyMapOptions
 {
+    /// <summary>The configuration key of <see cref="MaximumObjects"/>, which the operator UI edits.</summary>
+    public const string MaximumObjectsKey = "CameraAgent:SkyMap:MaximumObjects";
+
     /// <summary>
     /// The largest number of catalog objects one projection returns, brightest first. The page pages through the
     /// result, so this bounds projection cost rather than what fits on screen.

@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -147,6 +149,31 @@ services:
         max-file: "3"
 """;
 
+    /// <summary>
+    /// Seeds a new instance's operator settings file with the friendly name as the installer-configured camera name,
+    /// <c>CameraAgent:DisplayName</c>, which CameraAgent moves into its site profile on first start. The seed leaves
+    /// the <c>CameraAgent:Site</c> section to CameraAgent because that section marks the profile as settled: seeding
+    /// it would stop a profile recorded by an earlier release from moving into the file. An existing file belongs to
+    /// the operator and is never rewritten, so a reinstall keeps every name and setting changed since. A manifest
+    /// written before the install bound existed may carry a name longer than CameraAgent accepts; such a camera
+    /// starts unnamed until the operator names it on the Observatory &amp; location page.
+    /// </summary>
+    internal static void SeedOperatorSettings(string path, string friendlyName)
+    {
+        if (File.Exists(path) || new FileInfo(path).LinkTarget is not null)
+        {
+            return;
+        }
+        var settings = new JsonObject();
+        if (friendlyName.Trim() is { Length: > 0 and <= InstallRequest.MaximumFriendlyNameLength } cameraName)
+        {
+            settings["CameraAgent"] = new JsonObject { ["DisplayName"] = cameraName };
+        }
+        SafeFileSystem.WriteTextAtomic(path, settings.ToJsonString(IndentedJson) + "\n");
+    }
+
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+
     public static ComposeFiles Write(
         InstallRequest request,
         InstallationPaths paths,
@@ -211,17 +238,14 @@ services:
             ["LifecycleControl__Token"] = lifecycleControlToken,
             ["DeviceProvisioning__StateDirectory"] = "/app/data/provisioning"
         };
-        // The friendly name becomes the camera's operator-facing name. A manifest written before the install
-        // bound existed may carry a longer one, and CameraAgent would refuse to start with it, so such a camera
-        // shows no configured name until the operator records one on the Observatory & location page.
-        if (request.FriendlyName.Trim() is { Length: > 0 and <= InstallRequest.MaximumFriendlyNameLength } displayName)
-        {
-            settings["CameraAgent__DisplayName"] = displayName;
-        }
-        else
-        {
-            File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
-        }
+        // The camera name is operator-editable, so it lives only in the operator settings file the camera's UI
+        // writes. An earlier installer also wrote it here as a read-only setting, which is removed.
+        File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
+        // A state reset interrupted before it wrote the operator's settings back left them only in its carried copy;
+        // they are put back before the seed, which would otherwise write a fresh file in their place.
+        var operatorSettingsPath = CameraAgentStateLayout.OperatorSettingsPath(outputPaths.StateRoot);
+        CameraAgentStateResetManager.RecoverOperatorSettings(outputPaths.OperationsRoot, instanceId, operatorSettingsPath);
+        SeedOperatorSettings(operatorSettingsPath, request.FriendlyName);
         settings["CameraAgent__ProcessingGraphs__ReplayProfile"] = request.ReplayProfile.ToString();
         settings["CameraAgent__ProcessingGraphs__LocalRunner__SocketPath"] = "/run/hvo-replay/runner.sock";
         settings["CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile"] =

@@ -1,0 +1,11 @@
+/* Restart-to-apply row inside a pending-change banner; wraps rather than scrolling at narrow widths. */
+.restart-to-apply { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem .75rem; min-width: 0; }
+.restart-to-apply p { flex: 1 1 14rem; min-width: 0; margin: 0; color: var(--muted-strong); font-size: .62rem; line-height: 1.45; overflow-wrap: anywhere; }
+.restart-to-apply p strong { color: var(--text); }
+/* Element-qualified so the 44px target outranks the shared .button minimum height. */
+.restart-to-apply button.button.restart-now { min-height: 2.75rem; flex: 0 0 auto; }
+.restart-to-apply-error { margin: .45rem 0 0; color: var(--red); font-size: .62rem; line-height: 1.45; overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+    .restart-to-apply button.button.restart-now { flex: 1 1 100%; }
+}

@@ -962,6 +962,15 @@ public sealed class OperationsPageTests
 
         public ValueTask<OperatorUiResult<NamedRigStageReceipt>> CancelAsync(string revisionId, long version, string key,
             CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<ActiveRigEditOutcome>> ApplyActiveRigEditAsync(ActiveRigEditRequest request,
+            CancellationToken token) => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CameraAgentRestartStatus>> GetRestartStatusAsync(CancellationToken token)
+            => throw new NotSupportedException();
+
+        public ValueTask<OperatorUiResult<CameraAgentRestartDisposition>> RequestRestartAsync(CancellationToken token)
+            => throw new NotSupportedException();
     }
 
     /// <summary>A clock whose timers fire only when a test advances it.</summary>

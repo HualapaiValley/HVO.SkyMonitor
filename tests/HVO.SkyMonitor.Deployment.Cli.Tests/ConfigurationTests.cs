@@ -45,7 +45,7 @@ public sealed class ConfigurationTests
         Assert.AreEqual(1936, sensor.GetProperty("widthPixels").GetInt32());
         Assert.AreEqual(1216, sensor.GetProperty("heightPixels").GetInt32());
         Assert.AreEqual(3872, sensor.GetProperty("strideBytes").GetInt32());
-        Assert.AreEqual("installer-virtualsky-v3", rig.GetProperty("profileVersion").GetString());
+        Assert.AreEqual("installer-virtualsky-v4", rig.GetProperty("profileVersion").GetString());
         Assert.AreEqual(1, readout.GetProperty("binX").GetInt32());
         Assert.AreEqual(1, readout.GetProperty("binY").GetInt32());
         Assert.AreEqual("IdentityV1", readout.GetProperty("binningAlgorithm").GetString());
@@ -56,7 +56,7 @@ public sealed class ConfigurationTests
         Assert.AreEqual(968, rig.GetProperty("optics").GetProperty("principalPointX").GetInt32());
         Assert.AreEqual(608, rig.GetProperty("optics").GetProperty("principalPointY").GetInt32());
         Assert.AreEqual(595.84, rig.GetProperty("optics").GetProperty("imageCircleRadiusPixels").GetDouble());
-        Assert.IsFalse(rig.GetProperty("optics").GetProperty("horizontalFlip").GetBoolean());
+        Assert.IsTrue(rig.GetProperty("optics").GetProperty("horizontalFlip").GetBoolean());
         Assert.IsFalse(json.RootElement.TryGetProperty("observatory", out _));
         Assert.IsFalse(json.RootElement.TryGetProperty("moduleType", out _));
         Assert.AreEqual(7, schedule.GetProperty("weeklyWindows").GetArrayLength());

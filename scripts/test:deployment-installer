@@ -511,6 +511,13 @@ fi
 test ! -s "$root/reset-refused.json"
 test "$(jq -er '.errorCode' "$root/reset-refused-error.json")" = usage
 test -f "$identity_root/cameraagent_identity.db"
+# The operator's settings file is the one thing a reset carries across the identity directory's deletion. It is
+# edited first, as an operator would, so the carried file can be told apart from a freshly seeded one.
+operator_settings_path="$identity_root/appsettings.local.json"
+test -f "$operator_settings_path"
+jq '.CameraAgent.SkyMap.MaximumObjects = 321' "$operator_settings_path" >"$root/operator-settings-edit.json"
+install -m 600 "$root/operator-settings-edit.json" "$operator_settings_path"
+operator_settings_sha256="$(sha256sum "$operator_settings_path" | cut -d' ' -f1)"
 
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
   --instance-id "$instance_id" \
@@ -523,6 +530,7 @@ test -f "$identity_root/cameraagent_identity.db"
 jq -e --arg path "$identity_root" '.deletedPaths | index($path) != null' "$root/reset-plan.json" >/dev/null
 jq -e --arg path "$instance_root/instance-manifest.json" '.preservedPaths | index($path) != null' \
   "$root/reset-plan.json" >/dev/null
+jq -e --arg path "$operator_settings_path" '.preservedPaths | index($path) != null' "$root/reset-plan.json" >/dev/null
 
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
   --instance-id "$instance_id" \
@@ -541,9 +549,18 @@ test -n "$(ls -A "$instance_root/config/secrets")"
 test ! -f "$instance_root/state/deployment/installation-result.json"
 test -d "$root/product/catalogs/hyg-v42-production"
 for bind_source in identity data-protection provisioning raw archive replay-runner; do
-  test -z "$(ls -A "$instance_root/state/$bind_source")"
+  if [ "$bind_source" = identity ]; then
+    test "$(ls -A "$instance_root/state/$bind_source")" = appsettings.local.json
+  else
+    test -z "$(ls -A "$instance_root/state/$bind_source")"
+  fi
   test "$(stat -c '%a' "$instance_root/state/$bind_source")" = 700
 done
+test "$(sha256sum "$operator_settings_path" | cut -d' ' -f1)" = "$operator_settings_sha256"
+test "$(stat -c '%a' "$operator_settings_path")" = 600
+test "$(stat -c '%u:%g' "$operator_settings_path")" = "$(id -u):$(id -g)"
+# The copy the reset carried the file in is removed once the file is back.
+test -z "$(find "$root/product/operations" -maxdepth 1 -name "cameraagent-$instance_id.state-reset-*.appsettings.local.json" -print -quit)"
 
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/post-reset.json"
 test "$(jq -er '.healthy' "$root/post-reset.json")" = true
@@ -555,6 +572,8 @@ test -f "$identity_root/cameraagent_identity.db"
 sqlite3 "$identity_root/cameraagent_identity.db" \
   "SELECT MigrationId FROM __EFMigrationsHistory;" >"$root/post-reset-identity-migrations.txt"
 test "$(wc -l <"$root/post-reset-identity-migrations.txt")" = 1
+# Reinstalling after the reset keeps the carried settings instead of seeding a fresh file over them.
+test "$(jq -er '.CameraAgent.SkyMap.MaximumObjects' "$operator_settings_path")" = 321
 
 printf 'CameraAgent state preflight and operator-confirmed reset contract passed for instance %s.\n' "$instance_id"
 

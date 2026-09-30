@@ -4,6 +4,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Common.SiteProfile
+@using HVO.SkyMonitor.CameraAgent.Common.SkyMap
 @using HVO.SkyMonitor.CameraAgent.Services
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -47,7 +48,17 @@ else
 {
     var observer = _state.Observer;
     var banner = LocationBanner;
-    <section class="ops-note-banner" aria-label="Location state"><span class="status-icon @banner.Icon" aria-hidden="true"></span><span><strong>@banner.Title</strong> @banner.Text</span></section>
+    <section class="ops-note-banner site-location-banner" aria-label="Location state">
+        <span class="status-icon @banner.Icon" aria-hidden="true"></span>
+        @if (banner.AppliesAtRestart)
+        {
+            <div><span><strong>@banner.Title</strong> @banner.Text</span><RestartToApply Subject="the staged location" /></div>
+        }
+        else
+        {
+            <span><strong>@banner.Title</strong> @banner.Text</span>
+        }
+    </section>
 
     <div class="ops-grid sidebar-right">
         <section class="ops-panel" aria-labelledby="site-location-heading">
@@ -85,10 +96,10 @@ else
         </section>
 
         <section class="ops-panel" aria-labelledby="site-profile-heading">
-            <header class="ops-panel-heading"><div><h2 id="site-profile-heading">Local site profile</h2><p>Available even when standalone or disconnected.</p></div><span class="state-chip @(_site?.Profile.Version > 0 ? "success" : "pending")">@(_site?.Profile.Version > 0 ? "Active" : "Not set")</span></header>
+            <header class="ops-panel-heading"><div><h2 id="site-profile-heading">Local site profile</h2><p>Available even when standalone or disconnected.</p></div><span class="state-chip @(ProfileSet ? "success" : "pending")">@(ProfileSet ? "Active" : "Not set")</span></header>
             <dl class="ops-facts">
                 <div class="full"><dt>Observatory</dt><dd>@(_site?.Profile.Profile.ObservatoryName ?? "Not named")</dd></div>
-                <div class="full"><dt>Camera</dt><dd>@(_site?.Profile.EffectiveCameraName ?? "Not named")@if (_site?.Profile is { Profile.CameraName: null, ConfiguredCameraName: not null }) {<small class="site-muted"> from installation</small>}</dd></div>
+                <div class="full"><dt>Camera</dt><dd>@(_site?.Profile.EffectiveCameraName ?? "Not named")@if (_site?.Profile is { Profile.CameraName: null, EffectiveCameraName: not null }) {<small class="site-muted"> from installation</small>}</dd></div>
                 <div><dt>Owner</dt><dd>@(_site?.Profile.Profile.OwnerName ?? "Not recorded")</dd></div>
                 <div><dt>Contact</dt><dd>@(_site?.Profile.Profile.OwnerContact ?? "Not recorded")</dd></div>
                 <div><dt>Latitude</dt><dd>@Latitude(observer.LatitudeDegrees)</dd></div>
@@ -103,11 +114,15 @@ else
             }
             else
             {
-                @if (_site.Profile.UpdatedAtUtc is { } updatedAt)
+                @if (_site.Profile.Problem is { } problem)
                 {
-                    <p class="site-note">Profile updated @Timestamp(updatedAt) by @ActorName(_site.Profile.UpdatedBy).</p>
+                    <p class="site-note">@problem</p>
                 }
-                <button id="@ProfileTriggerId" type="button" class="text-button" disabled="@(_busy || _loading)" @onclick="OpenProfileDialog">Edit profile</button>
+                else
+                {
+                    <p class="site-note">Saved in the operator settings file, <code>@_site.Profile.SettingsFilePath</code>.</p>
+                }
+                <button id="@ProfileTriggerId" type="button" class="text-button" disabled="@(_busy || _loading || _site.Profile.SettingsFilePath is null)" @onclick="OpenProfileDialog">Edit profile</button>
             }
         </section>
     </div>
@@ -178,7 +193,7 @@ else
                 <div><dt>Scene object limit</dt><dd>@_state.MaximumObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) brightest</dd></div>
                 <div class="full"><dt>License</dt><dd>@_state.Catalog.License</dd></div>
             </dl>
-            <p class="site-note">Only the active catalog is shown. Other installed versions are selected on the host with <code>hvo-skymonitor catalog select</code>, which restarts CameraAgent on the chosen version. The object limit is the <code>CameraAgent:SkyMap:MaximumObjects</code> setting.</p>
+            <p class="site-note">Only the active catalog is shown. Other installed versions are selected on the host with <code>hvo-skymonitor catalog select</code>, which restarts CameraAgent on the chosen version. The object limit is set under Operator settings below.</p>
         </section>
 
         <section class="ops-panel" aria-labelledby="site-rig-heading">
@@ -208,7 +223,7 @@ else
         </form>
         @if (_state.ObjectsAtBound)
         {
-            <div class="ops-note-banner compact"><span class="status-icon warning" aria-hidden="true"></span><span>Only the @_state.MaximumObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) brightest objects are projected. Raise <code>CameraAgent:SkyMap:MaximumObjects</code> to include fainter ones.</span></div>
+            <div class="ops-note-banner compact"><span class="status-icon warning" aria-hidden="true"></span><span>Only the @_state.MaximumObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) brightest objects are projected. Raise the object limit under Operator settings to include fainter ones.</span></div>
         }
         @if (_state.Objects.Count == 0)
         {
@@ -223,12 +238,13 @@ else
                         <label class="ops-field">Find object<input id="site-scene-search" type="search" autocomplete="off" @bind="_search" @bind:event="oninput" @bind:after="ResetScenePage" /></label>
                         <label class="ops-field">Brightness<select id="site-scene-magnitude" @bind="_magnitudeFilter" @bind:after="ResetScenePage"><option value="">Any magnitude</option>@foreach (var limit in MagnitudeLimits) { <option value="@limit">Magnitude @limit or brighter</option> }</select></label>
                     </div>
-                    <div class="ops-table-wrap site-scene-wrap">
+                    <div class="ops-table-wrap site-scene-wrap" @ref="_sceneWrap">
                         <table class="ops-table">
-                            <caption class="visually-hidden">Visible catalog objects, @SortDescription</caption>
+                            <caption class="visually-hidden">Visible objects, @SortDescription. Select an object's name to label it on the sky plot.</caption>
                             <thead>
                                 <tr>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Name)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Name)">Object</button></th>
+                                    <th scope="col">Type</th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Magnitude)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Magnitude)">Magnitude</button></th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Altitude)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Altitude)">Altitude</button></th>
                                     <th scope="col" aria-sort="@AriaSort(SceneSort.Azimuth)"><button type="button" class="site-sort" @onclick="() => SortBy(SceneSort.Azimuth)">Azimuth</button></th>
@@ -238,8 +254,10 @@ else
                             <tbody>
                                 @foreach (var item in scene.Items)
                                 {
-                                    <tr @key="item.Id">
-                                        <td><strong>@item.DisplayName</strong></td>
+                                    var selected = item.Id == _selectedId;
+                                    <tr @key="item.Id" class="@(selected ? "selected" : null)">
+                                        <td class="site-object-cell"><button type="button" class="site-object" aria-pressed="@(selected ? "true" : "false")" @onclick="() => SelectObject(item.Id)"><strong>@item.DisplayName</strong><span class="visually-hidden">, label on the sky plot</span></button></td>
+                                        <td>@item.Kind</td>
                                         <td>@Number(item.Magnitude, 2)</td>
                                         <td>@Number(item.AltitudeDegrees, 1)&deg;</td>
                                         <td>@Number(item.AzimuthDegrees, 1)&deg;</td>
@@ -261,40 +279,52 @@ else
                     </nav>
                 </div>
                 <div class="site-scene-side">
-                    <svg class="site-dial" viewBox="0 0 200 200" role="img" aria-label="Sky plot of the visible objects: the outer ring is the horizon, the centre is straight overhead, north is up and east is right.">
-                        <circle cx="100" cy="100" r="92" class="site-dial-horizon" />
-                        <circle cx="100" cy="100" r="61.33" class="site-dial-ring" />
-                        <circle cx="100" cy="100" r="30.67" class="site-dial-ring" />
-                        <line x1="100" y1="8" x2="100" y2="192" class="site-dial-ring" />
-                        <line x1="8" y1="100" x2="192" y2="100" class="site-dial-ring" />
-                        @foreach (var item in _state.Objects)
-                        {
-                            <circle cx="@Number(DialX(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
-                                    cy="@Number(DialY(item.AltitudeDegrees, item.AzimuthDegrees), 2)"
-                                    r="@Number(DialRadius(item.Magnitude), 2)"
-                                    class="site-dial-object @(scene.OnPage.Contains(item.Id) ? "on-page" : null)">
-                                <title>@item.DisplayName (magnitude @Number(item.Magnitude, 2))</title>
-                            </circle>
-                        }
-                        <text x="100" y="6" class="site-dial-label" text-anchor="middle">N</text>
-                        <text x="198" y="103" class="site-dial-label" text-anchor="end">E</text>
-                        <text x="100" y="200" class="site-dial-label" text-anchor="middle">S</text>
-                        <text x="2" y="103" class="site-dial-label" text-anchor="start">W</text>
-                    </svg>
-                    <p class="site-note">Rings mark 30&deg; and 60&deg; altitude. Objects on the current table page are highlighted.</p>
-                    <h3>Constellations</h3>
-                    @if (_state.Constellations.Count == 0)
+                    <ObservatorySkyDial Scene="_state" OnPage="scene.OnPage" SelectedId="@_selectedId" Figures="_figures" ObjectSelected="RevealObject" />
+                    <div class="site-selection">
+                        <p role="status">
+                            @if (SelectedObject is { } chosen)
+                            {
+                                <span>Labelled: <strong>@chosen.DisplayName</strong>, @chosen.Kind.ToLowerInvariant(), magnitude @Number(chosen.Magnitude, 2), altitude @Number(chosen.AltitudeDegrees, 1)&deg;, azimuth @Number(chosen.AzimuthDegrees, 1)&deg; (@Compass(chosen.AzimuthDegrees)).</span>
+                            }
+                            else
+                            {
+                                <span>No object is labelled.</span>
+                            }
+                        </p>
+                        <button type="button" class="text-button" disabled="@(SelectedObject is null)" @onclick="ClearSelection">Clear label</button>
+                    </div>
+                    <div class="site-figures-heading">
+                        <h3 id="site-figures-heading">Constellations</h3>
+                        <button type="button" class="text-button" disabled="@(_figures.Count == 0)" @onclick="ClearFigures">Clear figures</button>
+                    </div>
+                    @if (ConstellationChoices is { Count: > 0 } choices)
                     {
-                        <p class="site-note">No constellation figure crosses the image at this instant.</p>
+                        <p class="site-note site-figures-note">@(_state.Constellations.Count == 0
+                            ? "No constellation figure crosses the image at this instant."
+                            : "Select figures to draw their lines on the plot. Figures outside the image at this instant are unavailable.")</p>
+                        <div class="site-constellations" role="group" aria-labelledby="site-figures-heading">
+                            @foreach (var choice in choices)
+                            {
+                                var id = choice.Id;
+                                <button type="button"
+                                        class="site-constellation"
+                                        data-constellation="@id"
+                                        aria-pressed="@(_figures.Contains(id) ? "true" : "false")"
+                                        disabled="@(!choice.InImage)"
+                                        title="@(choice.InImage ? $"Draw {choice.Name} on the sky plot" : $"{choice.Name} is not in the image at this instant")"
+                                        @onclick="() => ToggleFigure(id)">
+                                    @choice.Name
+                                    @if (!choice.InImage)
+                                    {
+                                        <span class="visually-hidden">, not in the image at this instant</span>
+                                    }
+                                </button>
+                            }
+                        </div>
                     }
                     else
                     {
-                        <ul class="site-constellations">
-                            @foreach (var constellation in _state.Constellations)
-                            {
-                                <li>@constellation.ConstellationId</li>
-                            }
-                        </ul>
+                        <p class="site-note">The installed catalog carries no constellation figures, so none can be drawn.</p>
                     }
                 </div>
             </div>
@@ -335,31 +365,41 @@ else
             }
         </section>
 
-        <section class="ops-panel" aria-labelledby="site-profile-history-heading">
-            <header class="ops-panel-heading"><div><h2 id="site-profile-history-heading">Profile changes</h2><p>Every saved profile is kept as a numbered revision.</p></div><span>@(_site?.Profile.History.Count ?? 0) shown</span></header>
-            @if (_site is null || _site.Profile.History.Count == 0)
+        <section class="ops-panel" aria-labelledby="site-settings-heading">
+            <header class="ops-panel-heading"><div><h2 id="site-settings-heading">Operator settings</h2><p>One file holds every setting changed on this camera.</p></div><span class="state-chip @(SettingsFileState.Tone)">@SettingsFileState.Label</span></header>
+            @if (_site is null)
             {
-                <p class="site-note">@(_site is null ? "The site profile could not be read." : "No site profile has been saved yet.")</p>
+                <p class="site-note">The operator settings could not be read. Refresh to try again.</p>
+            }
+            else if (_site.Profile.SettingsFilePath is not { } settingsPath)
+            {
+                <p class="site-note">This host loads no operator settings file, so settings are changed in its own configuration instead.</p>
             }
             else
             {
-                <div class="ops-table-wrap site-history-wrap">
-                    <table class="ops-table">
-                        <thead><tr><th scope="col">Revision</th><th scope="col">Recorded</th><th scope="col">By</th><th scope="col">Profile</th><th scope="col">Reason</th></tr></thead>
-                        <tbody>
-                            @foreach (var revision in _site.Profile.History)
-                            {
-                                <tr @key="revision.Version">
-                                    <td><strong>@revision.Version</strong></td>
-                                    <td>@Timestamp(revision.RecordedAtUtc)</td>
-                                    <td>@ActorName(revision.Actor)</td>
-                                    <td>@ProfileSummary(revision.Profile)</td>
-                                    <td>@(revision.Reason ?? "Not recorded")</td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
+                <dl class="ops-facts">
+                    <div class="full"><dt>File</dt><dd><code>@settingsPath</code></dd></div>
+                </dl>
+                @if (_site.Profile.Problem is { } settingsProblem)
+                {
+                    <p class="site-note">@settingsProblem</p>
+                }
+                @if (_site.ObjectLimit is { } objectLimit)
+                {
+                    <fieldset class="site-settings-form" disabled="@(_busy || _loading || _site.Profile.Problem is not null)">
+                        <legend class="visually-hidden">Scene object limit</legend>
+                        <label class="ops-field">Scene object limit (brightest objects, 1 to @CameraAgentSkyMapProjection.MaximumConfigurableObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture))<input id="site-object-limit" inputmode="numeric" autocomplete="off" placeholder="@CameraAgentSkyMapProjection.DefaultMaximumObjects.ToString(System.Globalization.CultureInfo.InvariantCulture)" @bind="_objectLimitInput" @bind:after="ObjectLimitFormChanged" /></label>
+                        <div class="site-settings-actions">
+                            <button type="button" class="button secondary" @onclick="() => SaveObjectLimitAsync(useDefault: false)">Save limit</button>
+                            <button type="button" class="text-button" disabled="@(objectLimit.SavedValue is null)" @onclick="() => SaveObjectLimitAsync(useDefault: true)">Use default</button>
+                        </div>
+                    </fieldset>
+                    @if (objectLimit.Overridden)
+                    {
+                        <p class="site-note">Another setting source supplies the object limit, so the value saved here has no effect until that source no longer sets it.</p>
+                    }
+                }
+                <p class="site-note">Other settings can be added to this file by hand; it loads over the image's defaults and survives upgrades. On an installer deployment it is <code>state/identity/appsettings.local.json</code> in the instance directory. The object limit and site profile apply at once; most other settings take effect at the next CameraAgent start.</p>
             }
         </section>
     </div>
@@ -406,12 +446,12 @@ else
         }
         else if (_dialog == SiteDialog.Profile && _site is { } site)
         {
-            <p class="dialog-intro">Names and contact details label this camera in the workspace. They stay on this CameraAgent; capture, geometry, and LogicHost registration never read them. Each save is kept as a numbered revision.</p>
+            <p class="dialog-intro">Names and contact details label this camera in the workspace. They stay on this CameraAgent; capture, geometry, and LogicHost registration never read them. Saving writes them to the operator settings file, which can also be edited by hand.</p>
             <fieldset disabled="@_busy">
                 <legend class="visually-hidden">Site profile</legend>
                 <div class="site-dialog-grid">
                     <label class="ops-field">Observatory name<input id="site-observatory-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_observatoryNameInput" @bind:after="ProfileFormChanged" /></label>
-                    <label class="ops-field">Camera name<input id="site-camera-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" placeholder="@site.Profile.ConfiguredCameraName" @bind="_cameraNameInput" @bind:after="ProfileFormChanged" /></label>
+                    <label class="ops-field">Camera name<input id="site-camera-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_cameraNameInput" @bind:after="ProfileFormChanged" /></label>
                     <label class="ops-field">Owner name<input id="site-owner-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_ownerNameInput" @bind:after="ProfileFormChanged" /></label>
                     <label class="ops-field">Owner contact<input id="site-owner-contact" autocomplete="off" maxlength="@SiteProfileLimits.MaximumContactLength" @bind="_ownerContactInput" @bind:after="ProfileFormChanged" /></label>
                 </div>
@@ -419,9 +459,8 @@ else
                 {
                     <button type="button" class="text-button site-use-email" @onclick="() => UseOwnerEmail(email)">Use sign-in email @email</button>
                 }
-                <label class="ops-field">Reason (optional)<input id="site-profile-reason" autocomplete="off" maxlength="@SiteProfileLimits.MaximumReasonLength" @bind="_profileReasonInput" @bind:after="ProfileFormChanged" /></label>
             </fieldset>
-            <div class="dialog-note"><span>Leave a field empty to clear it. An empty camera name falls back to @(site.Profile.ConfiguredCameraName is { } configured ? $"the installation name, {configured}" : "\"This camera\"").</span></div>
+            <div class="dialog-note"><span>Leave a field empty to clear it. An empty camera name shows as "This camera".</span></div>
         }
         @if (_notice is not null)
         {

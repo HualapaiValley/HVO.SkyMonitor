@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
@@ -246,11 +247,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
     [TestMethod]
     public async Task GetSiteAsync_ForAStandaloneCamera_ReportsNoAssignmentAndNamesEveryActorAsync()
     {
-        var profiles = new RecordingSiteProfileStore
-        {
-            State = ProfileState(
-                new SiteProfileRevision(1, Now, "owner-id", null, "key-1", SiteProfileValues.Empty))
-        };
+        var profiles = new RecordingSiteProfileStore();
         var locations = new RecordingDeploymentLocationStore
         {
             History =
@@ -299,10 +296,9 @@ public sealed class CameraAgentSkyMapUiServiceTests
                 true, "https://tiles.example.test/{z}/{x}/{y}.png", "Example tiles",
                 new Uri("https://tiles.example.test/terms"), 9),
             site.Map);
-        // The profile and manual-location audits share one name lookup; an account that no longer exists stays
-        // unnamed rather than falling back to its identifier.
-        Assert.HasCount(2, site.ActorNames);
-        Assert.AreEqual("owner@home.lan", site.ActorNames["owner-id"]);
+        Assert.IsNull(site.ObjectLimit);
+        // An account that no longer exists stays unnamed rather than falling back to its identifier.
+        Assert.HasCount(1, site.ActorNames);
         Assert.AreEqual("night-operator", site.ActorNames["operator-id"]);
         Assert.IsFalse(site.ActorNames.ContainsKey("removed-id"));
         secrets.Verify(store => store.GetAsync(It.IsAny<CancellationToken>()), Times.Never);
@@ -426,19 +422,18 @@ public sealed class CameraAgentSkyMapUiServiceTests
         var result = await SaveAsync(service).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
-        Assert.AreEqual(
-            new SiteProfileRequest(SavedProfile, 3, "profile-key", "owner-id", "renamed"),
-            profiles.Requests.Single());
+        Assert.AreEqual(new SiteProfileRequest(SavedProfile, "version-3", "owner-id"), profiles.Requests.Single());
     }
 
     [TestMethod]
     [DataRow(SiteProfileStatus.Conflict, SiteProfileLimits.ExpectedVersionConflictReasonCode, null, "changed since this page was read")]
-    [DataRow(SiteProfileStatus.Conflict, SiteProfileLimits.IdempotencyKeyConflictReasonCode, null, "already recorded with a different profile")]
+    [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.UnreadableReasonCode, null, "not valid settings JSON")]
+    [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.UnavailableReasonCode, null, "loads no operator settings file")]
     [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidFieldReasonCode, "observatoryName", "Observatory name must be at most 80")]
     [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidFieldReasonCode, "cameraName", "Camera name must be at most 80")]
     [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidFieldReasonCode, "ownerName", "Owner name must be at most 80")]
     [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidFieldReasonCode, "ownerContact", "Owner contact must be at most 200")]
-    [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidCommandReasonCode, "reason", "rejected before anything durable changed")]
+    [DataRow(SiteProfileStatus.Invalid, SiteProfileLimits.InvalidCommandReasonCode, "actor", "rejected before anything durable changed")]
     public async Task SaveSiteProfileAsync_MapsRejectedCommandsToFixedGuidanceAsync(
         SiteProfileStatus status,
         string reasonCode,
@@ -475,15 +470,132 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.AreEqual("The site profile change could not be completed.", result.Message);
     }
 
+    [TestMethod]
+    public async Task SaveObjectLimitAsync_WhenTheMutatePolicyFails_DeniesWithoutWritingAsync()
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: false);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var result = await service.SaveObjectLimitAsync(900, OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, result.Kind);
+        Assert.IsFalse(System.IO.File.Exists(settings.Path));
+    }
+
+    [TestMethod]
+    public async Task SaveObjectLimitAsync_WritesTheLimitAndThenRemovesItForTheDefaultAsync()
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var saved = await service.SaveObjectLimitAsync(900, OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, saved.Kind);
+        Assert.AreEqual("900", saved.Value!.SavedValue);
+        Assert.IsFalse(saved.Value.Overridden);
+        Assert.AreEqual(1, settings.Reloads);
+        Assert.Contains("\"MaximumObjects\": 900", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false), StringComparison.Ordinal);
+
+        var cleared = await service.SaveObjectLimitAsync(null, saved.Value.Version, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, cleared.Kind);
+        Assert.IsNull(cleared.Value!.SavedValue);
+        Assert.AreEqual("{}\n", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task SaveObjectLimitAsync_WhenAnotherSourceSetsTheLimit_SaysSoAsync()
+    {
+        using var settings = new TemporarySettingsFile(overridden: [SkyMapOptions.MaximumObjectsKey]);
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var result = await service.SaveObjectLimitAsync(900, OperatorSettingsFile.AbsentVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.IsTrue(result.Value!.Overridden);
+    }
+
+    [TestMethod]
+    [DataRow(0, "absent")]
+    [DataRow(CameraAgentSkyMapProjection.MaximumConfigurableObjects + 1, "absent")]
+    [DataRow(900, " ")]
+    public async Task SaveObjectLimitAsync_WithAnInvalidCommand_WritesNothingAsync(int limit, string expectedVersion)
+    {
+        using var settings = new TemporarySettingsFile();
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal, authorization.Object, new RecordingSiteProfileStore(), settingsFile: settings.File);
+
+        var result = await service.SaveObjectLimitAsync(limit, expectedVersion, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, result.Kind);
+        Assert.Contains("whole number from 1 to 5,000", result.Message!, StringComparison.Ordinal);
+        Assert.IsFalse(System.IO.File.Exists(settings.Path));
+    }
+
+    [TestMethod]
+    [DataRow("stale", "changed since this page was read", "Conflict")]
+    [DataRow("unreadable", "not valid settings JSON", "Invalid")]
+    [DataRow("no-file", "loads no operator settings file", "Unavailable")]
+    public async Task SaveObjectLimitAsync_WhenTheFileCannotTakeTheEdit_LeavesItAsItIsAsync(
+        string scenario,
+        string expected,
+        string kind)
+    {
+        using var settings = new TemporarySettingsFile();
+        const string content = "{ \"CameraAgent\": ";
+        await System.IO.File.WriteAllTextAsync(settings.Path, scenario == "unreadable" ? content : "{}").ConfigureAwait(false);
+        var version = (await settings.File.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Version;
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(
+            principal,
+            authorization.Object,
+            new RecordingSiteProfileStore(),
+            settingsFile: scenario == "no-file" ? null : settings.File);
+
+        var result = await service.SaveObjectLimitAsync(
+            900, scenario == "stale" ? OperatorSettingsFile.AbsentVersion : version, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(Enum.Parse<OperatorUiResultKind>(kind), result.Kind);
+        Assert.Contains(expected, result.Message!, StringComparison.Ordinal);
+        Assert.AreEqual(scenario == "unreadable" ? content : "{}", await System.IO.File.ReadAllTextAsync(settings.Path).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task GetSiteAsync_ReportsTheSavedObjectLimitAtTheProfilesVersionAsync()
+    {
+        using var settings = new TemporarySettingsFile();
+        await System.IO.File.WriteAllTextAsync(settings.Path, """{ "CameraAgent": { "SkyMap": { "MaximumObjects": 750 } } }""").ConfigureAwait(false);
+        var profiles = new RecordingSiteProfileStore { State = ProfileState("profile-version") };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(principal, authorization.Object, profiles, settingsFile: settings.File);
+
+        var result = await service.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // The limit carries the version the profile was read at, so a save after a hand edit conflicts.
+        Assert.AreEqual(new CameraAgentObjectLimitSetting("profile-version", "750", false), result.Value!.ObjectLimit);
+    }
+
     private static readonly SiteProfileValues SavedProfile = new(
         "Hualapai Valley Observatory", "East dome", "Night Owner", "owner@home.lan");
 
     private static async Task<OperatorUiResult<SiteProfileResult>> SaveAsync(CameraAgentSkyMapUiService service)
-        => await service.SaveSiteProfileAsync(SavedProfile, 3, "profile-key", "renamed", CancellationToken.None)
+        => await service.SaveSiteProfileAsync(SavedProfile, "version-3", CancellationToken.None)
             .ConfigureAwait(false);
 
-    private static SiteProfileState ProfileState(params SiteProfileRevision[] history)
-        => new(history.Length, history.FirstOrDefault()?.Profile ?? SiteProfileValues.Empty, null, null, null, null, history);
+    private static SiteProfileState ProfileState(string version = "absent")
+        => new(version, SiteProfileValues.Empty, null, null, null);
 
     private static CameraAgentSkyMapUiService CreateSiteService(
         ClaimsPrincipal principal,
@@ -493,7 +605,8 @@ public sealed class CameraAgentSkyMapUiServiceTests
         CameraAgentHostOptions? options = null,
         IDeviceSecretStore? secrets = null,
         Dictionary<string, ApplicationUser>? users = null,
-        DeploymentLocationReconciliationState? reconciliation = null)
+        DeploymentLocationReconciliationState? reconciliation = null,
+        OperatorSettingsFile? settingsFile = null)
     {
         var userStore = new Mock<IUserStore<ApplicationUser>>();
         userStore
@@ -517,7 +630,8 @@ public sealed class CameraAgentSkyMapUiServiceTests
             reconciliation,
             new UserManager<ApplicationUser>(
                 userStore.Object, null!, null!, null!, null!, null!, null!, null!,
-                NullLogger<UserManager<ApplicationUser>>.Instance));
+                NullLogger<UserManager<ApplicationUser>>.Instance),
+            settingsFile);
     }
 
     private static async Task<OperatorUiResult<ManualDeploymentLocationResult>> ApplyAsync(
@@ -665,6 +779,35 @@ public sealed class CameraAgentSkyMapUiServiceTests
             }
             Requests.Add(request);
             return ValueTask.FromResult(new SiteProfileResult(Status, ReasonCode, FieldPath, State));
+        }
+    }
+
+    /// <summary>An operator settings file in its own temporary directory.</summary>
+    private sealed class TemporarySettingsFile : IDisposable
+    {
+        private readonly string _root = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), "hvo-sky-map-ui-settings", Guid.NewGuid().ToString("N"));
+
+        internal TemporarySettingsFile(IReadOnlyList<string>? overridden = null)
+        {
+            Directory.CreateDirectory(_root);
+            Path = System.IO.Path.Combine(_root, "appsettings.local.json");
+            File = new OperatorSettingsFile(
+                Path,
+                () => Reloads++,
+                keys => keys.Where(key => overridden?.Contains(key) == true).ToArray());
+        }
+
+        internal string Path { get; }
+
+        internal OperatorSettingsFile File { get; }
+
+        internal int Reloads { get; private set; }
+
+        public void Dispose()
+        {
+            File.Dispose();
+            Directory.Delete(_root, recursive: true);
         }
     }
 

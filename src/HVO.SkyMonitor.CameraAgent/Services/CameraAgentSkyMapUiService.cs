@@ -1,7 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
@@ -40,24 +42,42 @@ internal interface ICameraAgentSkyMapUiService
 
     ValueTask<OperatorUiResult<SiteProfileResult>> SaveSiteProfileAsync(
         SiteProfileValues profile,
-        long expectedVersion,
-        string idempotencyKey,
-        string? reason,
+        string expectedVersion,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Writes the sky map object bound to the operator settings file, or removes it so the default applies when
+    /// <paramref name="maximumObjects"/> is null. The next projection uses it.
+    /// </summary>
+    ValueTask<OperatorUiResult<CameraAgentObjectLimitSetting>> SaveObjectLimitAsync(
+        int? maximumObjects,
+        string expectedVersion,
         CancellationToken cancellationToken);
 }
 
 /// <summary>Everything the Observatory &amp; location page shows besides geometry and the projected scene.</summary>
 /// <param name="OwnerLoginEmail">The local owner account's email, offered as the default owner contact.</param>
+/// <param name="ObjectLimit">The sky map object bound in the settings file, or null when this host loads none.</param>
 /// <param name="ActorNames">
-/// The sign-in name of every account that recorded a profile or manual location change, keyed by the account
-/// identifier the audit stores, so history shows who acted without exposing the identifier.
+/// The sign-in name of every account that recorded a manual location change, keyed by the account identifier the
+/// audit stores, so history shows who acted without exposing the identifier.
 /// </param>
 internal sealed record CameraAgentSiteView(
     SiteProfileState Profile,
     string? OwnerLoginEmail,
     CameraAgentSiteAssignment Assignment,
     CameraAgentSiteMapSettings Map,
+    CameraAgentObjectLimitSetting? ObjectLimit,
     IReadOnlyDictionary<string, string> ActorNames);
+
+/// <summary>The sky map object bound as the operator settings file holds it.</summary>
+/// <param name="Version">The settings file version a save must name.</param>
+/// <param name="SavedValue">The value the file sets, as written, or null when it sets none and the default applies.</param>
+/// <param name="Overridden">
+/// A source above the settings file, such as an environment variable, supplies the bound, so a saved value has no
+/// effect until that source is removed.
+/// </param>
+internal sealed record CameraAgentObjectLimitSetting(string Version, string? SavedValue, bool Overridden);
 
 internal enum CameraAgentSiteAssignmentState
 {
@@ -112,8 +132,16 @@ internal sealed class CameraAgentSkyMapUiService(
     IOptions<LocalIdentityOptions>? localIdentityOptions = null,
     IDeviceSecretStore? deviceSecretStore = null,
     DeploymentLocationReconciliationState? reconciliationState = null,
-    UserManager<ApplicationUser>? userManager = null) : ICameraAgentSkyMapUiService
+    UserManager<ApplicationUser>? userManager = null,
+    OperatorSettingsFile? settingsFile = null) : ICameraAgentSkyMapUiService
 {
+    private const string SettingsConflictMessage =
+        "The settings file changed since this page was read. Refresh before retrying.";
+    private const string SettingsUnreadableMessage =
+        "The settings file is not valid settings JSON. Correct it, then refresh before retrying.";
+    private const string NoSettingsFileMessage =
+        "This host loads no operator settings file, so this setting cannot be saved here.";
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentSkyMapProjectionResult>> GetSkyMapAsync(
@@ -250,15 +278,19 @@ internal sealed class CameraAgentSkyMapUiService(
             var options = hostOptions?.Value ?? new CameraAgentHostOptions();
             var map = options.SiteMap;
             var ownerEmail = localIdentityOptions?.Value.AdminEmail;
+            // Read after the profile: were the file to change between the two reads, a save naming the profile's
+            // older version is refused as a conflict rather than overwriting the newer value shown here.
+            var objectLimit = settingsFile is null
+                ? null
+                : ReadObjectLimit(await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false));
             return OperatorUiResult<CameraAgentSiteView>.Success(new CameraAgentSiteView(
                 profile,
                 string.IsNullOrWhiteSpace(ownerEmail) ? null : ownerEmail.Trim(),
                 await ReadAssignmentAsync(options, cancellationToken).ConfigureAwait(false),
                 new CameraAgentSiteMapSettings(
                     map.Enabled, map.TileTemplate, map.Attribution, map.AttributionLink, map.Zoom),
-                await ResolveActorNamesAsync(
-                    profile.History.Select(revision => revision.Actor)
-                        .Concat(deploymentLocationStore.Manual.History.Select(entry => entry.Actor)))
+                objectLimit is null ? null : objectLimit with { Version = profile.Version },
+                await ResolveActorNamesAsync(deploymentLocationStore.Manual.History.Select(entry => entry.Actor))
                     .ConfigureAwait(false)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -277,9 +309,7 @@ internal sealed class CameraAgentSkyMapUiService(
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
     public async ValueTask<OperatorUiResult<SiteProfileResult>> SaveSiteProfileAsync(
         SiteProfileValues profile,
-        long expectedVersion,
-        string idempotencyKey,
-        string? reason,
+        string expectedVersion,
         CancellationToken cancellationToken)
     {
         var principal = await GetAuthorizedPrincipalAsync(
@@ -298,7 +328,7 @@ internal sealed class CameraAgentSkyMapUiService(
         try
         {
             var result = await siteProfileStore.ApplyAsync(
-                new SiteProfileRequest(profile, expectedVersion, idempotencyKey, actor, reason),
+                new SiteProfileRequest(profile, expectedVersion, actor),
                 cancellationToken).ConfigureAwait(false);
             return result.Status switch
             {
@@ -321,16 +351,79 @@ internal sealed class CameraAgentSkyMapUiService(
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentObjectLimitSetting>> SaveObjectLimitAsync(
+        int? maximumObjects,
+        string expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var principal = await GetAuthorizedPrincipalAsync(
+            CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
+        if (string.IsNullOrWhiteSpace(actor))
+        {
+            return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        if (settingsFile is null)
+        {
+            return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                OperatorUiResultKind.Unavailable, NoSettingsFileMessage);
+        }
+        if (maximumObjects is < 1 or > CameraAgentSkyMapProjection.MaximumConfigurableObjects ||
+            string.IsNullOrWhiteSpace(expectedVersion))
+        {
+            return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                OperatorUiResultKind.Invalid,
+                $"The object limit must be a whole number from 1 to {CameraAgentSkyMapProjection.MaximumConfigurableObjects:N0}.");
+        }
+        try
+        {
+            var result = await settingsFile.WriteAsync(
+                expectedVersion,
+                new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
+                {
+                    [SkyMapOptions.MaximumObjectsKey] = maximumObjects is { } value ? JsonValue.Create(value) : null
+                },
+                actor,
+                cancellationToken).ConfigureAwait(false);
+            return result.Status switch
+            {
+                OperatorSettingsWriteStatus.Conflict => OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                    OperatorUiResultKind.Conflict, SettingsConflictMessage),
+                OperatorSettingsWriteStatus.Unreadable => OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                    OperatorUiResultKind.Invalid, SettingsUnreadableMessage),
+                _ => OperatorUiResult<CameraAgentObjectLimitSetting>.Success(ReadObjectLimit(result.Snapshot))
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent object limit change failed.");
+            return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
+                OperatorUiResultKind.Unavailable, "The object limit change could not be completed.");
+        }
+    }
+
+    private CameraAgentObjectLimitSetting ReadObjectLimit(OperatorSettingsSnapshot snapshot)
+        => new(
+            snapshot.Version,
+            snapshot.GetValue(SkyMapOptions.MaximumObjectsKey),
+            settingsFile?.FindOverriddenKeys([SkyMapOptions.MaximumObjectsKey]).Count > 0);
+
     /// <summary>Maps a rejected profile command to fixed operator-facing guidance.</summary>
     internal static string DescribeProfileFailure(SiteProfileResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
         return (result.ReasonCode, result.FieldPath) switch
         {
-            (SiteProfileLimits.ExpectedVersionConflictReasonCode, _) =>
-                "The site profile changed since this page was read. Refresh before retrying.",
-            (SiteProfileLimits.IdempotencyKeyConflictReasonCode, _) =>
-                "This command identifier was already recorded with a different profile. Refresh before retrying.",
+            (SiteProfileLimits.ExpectedVersionConflictReasonCode, _) => SettingsConflictMessage,
+            (SiteProfileLimits.UnreadableReasonCode, _) => SettingsUnreadableMessage,
+            (SiteProfileLimits.UnavailableReasonCode, _) => NoSettingsFileMessage,
             (_, "observatoryName") =>
                 $"Observatory name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
             (_, "cameraName") =>

@@ -33,18 +33,25 @@ public sealed class CameraAgentOperatorUiServiceTests
     [DataRow("no-store", "  North Camera  ", "North Camera")]
     [DataRow("no-store", "   ", null)]
     [DataRow("recorded", "North Camera", "East dome")]
+    [DataRow("cleared", "North Camera", null)]
     [DataRow("unreadable", " North Camera ", "North Camera")]
     [DataRow("unreadable", null, null)]
-    public async Task ReadDisplayNameAsync_PrefersTheRecordedNameAndDegradesToTheConfiguredOneAsync(
+    public async Task ReadDisplayNameAsync_PrefersTheSavedNameAndDegradesToTheConfiguredOneAsync(
         string scenario,
         string? configured,
         string? expected)
     {
         var store = new Mock<ISiteProfileStore>(MockBehavior.Strict);
-        if (scenario == "recorded")
+        if (scenario is "recorded" or "cleared")
         {
+            // Once the settings file names the camera, or clears the name, the installer name no longer applies.
+            var cameraName = scenario == "recorded" ? "East dome" : null;
             store.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new SiteProfileState(
-                1, new SiteProfileValues(null, "East dome", null, null), "East dome", configured, null, null, []));
+                "version-1",
+                new SiteProfileValues("Hualapai Valley Observatory", cameraName, null, null),
+                cameraName,
+                "/srv/hvo/App_Data/appsettings.local.json",
+                null));
         }
         else
         {
