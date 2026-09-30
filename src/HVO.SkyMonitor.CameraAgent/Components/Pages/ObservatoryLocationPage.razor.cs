@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
@@ -121,9 +122,11 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         int First,
         int Last);
 
-    private sealed record Banner(string Icon, string Title, string Text);
+    /// <summary>The location state banner; <paramref name="AppliesAtRestart"/> offers the restart that applies it.</summary>
+    private sealed record Banner(string Icon, string Title, string Text, bool AppliesAtRestart = false);
 
-    private sealed record ConstellationChoice(string Id, bool InImage);
+    /// <summary>A constellation pill: the figure's identifier, the name it is shown by, and whether it crosses the image.</summary>
+    private sealed record ConstellationChoice(string Id, string Name, bool InImage);
 
     protected override async Task OnInitializedAsync() => await LoadAsync().ConfigureAwait(false);
 
@@ -620,13 +623,15 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
                 var staged = _manual?.PendingVersion is { } version ? $"Location version {version}" : "A new location version";
                 return new("running", "Acknowledged version staged.",
                     $"{staged} was acknowledged by LogicHost and activates at the next CameraAgent start. "
-                    + $"Version {_manual?.ActiveVersion ?? observer.Version} governs until then.");
+                    + $"Version {_manual?.ActiveVersion ?? observer.Version} governs until then.",
+                    AppliesAtRestart: true);
             }
             if (_manual is { Override.PendingRestart: true, PendingVersion: null } waiting)
             {
                 return new("running", "Local draft awaiting restart.",
                     $"Location version {waiting.NextVersion} was recorded {Timestamp(waiting.Override!.RecordedAtUtc)} "
-                    + $"and activates at the next CameraAgent start. Version {waiting.ActiveVersion} governs until then.");
+                    + $"and activates at the next CameraAgent start. Version {waiting.ActiveVersion} governs until then.",
+                    AppliesAtRestart: true);
             }
             if (!observer.EffectiveAtInstant)
             {
@@ -854,9 +859,9 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
             var inImage = _state.Constellations.Select(static item => item.ConstellationId).ToHashSet(StringComparer.Ordinal);
             return _state.InstalledConstellationIds
                 .Union(inImage, StringComparer.Ordinal)
-                .Select(id => new ConstellationChoice(id, inImage.Contains(id)))
+                .Select(id => new ConstellationChoice(id, ConstellationNames.Find(id) ?? id, inImage.Contains(id)))
                 .OrderBy(static choice => choice.InImage ? 0 : 1)
-                .ThenBy(static choice => choice.Id, StringComparer.Ordinal)
+                .ThenBy(static choice => choice.Name, StringComparer.Ordinal)
                 .ToList();
         }
     }

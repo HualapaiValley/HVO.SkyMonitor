@@ -1,3 +1,4 @@
+@using HVO.SkyMonitor.Astronomy
 @using HVO.SkyMonitor.CameraAgent.Common.SkyMap
 <svg class="site-dial" viewBox="0 0 200 200" role="img" aria-label="@AriaLabel">
     @if (_frame.Cropped)
@@ -26,6 +27,7 @@
     @foreach (var figure in DrawnFigures)
     {
         <g class="site-dial-figure" data-constellation="@figure.ConstellationId">
+            <title>@(ConstellationNames.Find(figure.ConstellationId) ?? figure.ConstellationId)</title>
             @foreach (var line in figure.Lines)
             {
                 <polyline points="@Points(line)" />

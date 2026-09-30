@@ -48,7 +48,17 @@ else
 {
     var observer = _state.Observer;
     var banner = LocationBanner;
-    <section class="ops-note-banner" aria-label="Location state"><span class="status-icon @banner.Icon" aria-hidden="true"></span><span><strong>@banner.Title</strong> @banner.Text</span></section>
+    <section class="ops-note-banner site-location-banner" aria-label="Location state">
+        <span class="status-icon @banner.Icon" aria-hidden="true"></span>
+        @if (banner.AppliesAtRestart)
+        {
+            <div><span><strong>@banner.Title</strong> @banner.Text</span><RestartToApply Subject="the staged location" /></div>
+        }
+        else
+        {
+            <span><strong>@banner.Title</strong> @banner.Text</span>
+        }
+    </section>
 
     <div class="ops-grid sidebar-right">
         <section class="ops-panel" aria-labelledby="site-location-heading">
@@ -298,11 +308,12 @@ else
                                 var id = choice.Id;
                                 <button type="button"
                                         class="site-constellation"
+                                        data-constellation="@id"
                                         aria-pressed="@(_figures.Contains(id) ? "true" : "false")"
                                         disabled="@(!choice.InImage)"
-                                        title="@(choice.InImage ? $"Draw {id} on the sky plot" : $"{id} is not in the image at this instant")"
+                                        title="@(choice.InImage ? $"Draw {choice.Name} on the sky plot" : $"{choice.Name} is not in the image at this instant")"
                                         @onclick="() => ToggleFigure(id)">
-                                    @id
+                                    @choice.Name
                                     @if (!choice.InImage)
                                     {
                                         <span class="visually-hidden">, not in the image at this instant</span>

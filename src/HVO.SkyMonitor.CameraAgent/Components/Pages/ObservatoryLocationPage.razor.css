@@ -8,6 +8,8 @@
 .site-note { margin: .7rem 0 0; color: var(--muted); font-size: .6rem; line-height: 1.45; }
 .site-note code, .ops-note-banner code { color: #c4dcfa; font-size: .92em; }
 .site-muted { color: var(--muted); font-weight: 500; }
+/* A staged location stacks its restart control under the banner text. */
+.site-location-banner > div { display: grid; gap: .5rem; min-width: 0; }
 
 /* Current Sky's .text-button, copied so this page does not depend on another page's scoped styles, and
    sized to a 44px target at every width because it is not one of the shared control classes. */

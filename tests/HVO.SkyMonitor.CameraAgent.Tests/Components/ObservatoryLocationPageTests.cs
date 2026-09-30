@@ -27,7 +27,7 @@ public sealed class ObservatoryLocationPageTests
 
     private static readonly string[] FixtureStarNames = ["Sirius", "Vega"];
     private static readonly string[] AddedBodyNames = ["Jupiter", "Moon"];
-    private static readonly string[] FixturePillTexts = ["Lyr", "Ori, not in the image at this instant"];
+    private static readonly string[] FixturePillTexts = ["Lyra", "Orion, not in the image at this instant"];
 
     private static readonly string[] ExpectedDialogNotes =
     [
@@ -434,7 +434,7 @@ public sealed class ObservatoryLocationPageTests
         Assert.IsFalse(Pill(cut, "Lyr").HasAttribute("disabled"));
         Assert.AreEqual("false", Pill(cut, "Lyr").GetAttribute("aria-pressed"));
         Assert.IsTrue(Pill(cut, "Ori").HasAttribute("disabled"));
-        Assert.AreEqual("Ori is not in the image at this instant", Pill(cut, "Ori").GetAttribute("title"));
+        Assert.AreEqual("Orion is not in the image at this instant", Pill(cut, "Ori").GetAttribute("title"));
         Assert.IsEmpty(cut.FindAll("svg.site-dial .site-dial-figure"));
         Assert.IsTrue(TextButton(cut, "Clear figures").HasAttribute("disabled"));
 
@@ -442,6 +442,7 @@ public sealed class ObservatoryLocationPageTests
 
         Assert.AreEqual("true", Pill(cut, "Lyr").GetAttribute("aria-pressed"));
         var figure = cut.Find("svg.site-dial g.site-dial-figure[data-constellation='Lyr']");
+        Assert.AreEqual("Lyra", figure.QuerySelector("title")!.TextContent);
         var points = figure.QuerySelector("polyline")!.GetAttribute("points")!.Split(' ');
         Assert.HasCount(3, points);
         // The figure shares the objects' image space, so its first vertex is Vega's plotted position.
@@ -594,6 +595,8 @@ public sealed class ObservatoryLocationPageTests
         var banner = cut.WaitForElement("section[aria-label='Location state']");
         Assert.AreEqual(title, banner.QuerySelector("strong")!.TextContent);
         Assert.Contains(text, banner.TextContent, StringComparison.Ordinal);
+        // Only a version that is waiting for the next start is applied by restarting.
+        Assert.AreEqual(scenario is "staged" or "restart", banner.QuerySelector("button.restart-now") is not null);
     }
 
     [TestMethod]
@@ -1201,6 +1204,8 @@ public sealed class ObservatoryLocationPageTests
             rigFailure is { } inventoryFailure
                 ? OperatorUiResult<NamedRigInventory>.Failure(inventoryFailure, "Inventory unavailable")
                 : OperatorUiResult<NamedRigInventory>.Success(new([new NamedRigProfile("rig", "Installed rig")], []))));
+        rig.Setup(service => service.GetRestartStatusAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OperatorUiResult<CameraAgentRestartStatus>.Success(new(Supervised: true, CanRequest: true, Restarting: false)));
         context.Services.AddSingleton(rig.Object);
         return context;
     }
@@ -1238,7 +1243,7 @@ public sealed class ObservatoryLocationPageTests
         => cut.FindAll("svg.site-dial g.site-dial-item").Single(item => item.TextContent == name);
 
     private static AngleSharp.Dom.IElement Pill(IRenderedComponent<ObservatoryLocationPage> cut, string id)
-        => cut.FindAll(".site-constellations button.site-constellation").Single(pill => pill.TextContent.Trim().StartsWith(id, StringComparison.Ordinal));
+        => cut.Find($".site-constellations button.site-constellation[data-constellation='{id}']");
 
     private static string CardinalPosition(IRenderedComponent<ObservatoryLocationPage> cut, string name)
     {
