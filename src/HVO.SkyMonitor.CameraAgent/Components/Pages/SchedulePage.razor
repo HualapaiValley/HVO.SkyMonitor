@@ -2,7 +2,9 @@
 @page "/operations/schedule"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.AgentCore
+@using HVO.SkyMonitor.CameraAgent.Common.Scheduling
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -10,340 +12,583 @@
 
 <PageTitle>Schedule</PageTitle>
 
-<div class="schedule-console">
-    <header class="schedule-header">
+<OperationsPageHeading Eyebrow="Capture / deterministic admission" Title="Schedule" HeadingId="schedule-heading"
+                       Description="Define when capture may start, then apply exposure setpoints without catch-up captures. Changes are saved as a draft revision and take effect only when you apply it.">
+    <Actions>
+        <button type="button" id="schedule-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="RefreshAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        <button type="button" id="schedule-override-open" class="button secondary" disabled="@(_state is null || _busy)" @onclick="OpenOverrideDialog">Temporary override</button>
+        <button type="button" id="schedule-edit-open" class="button primary" disabled="@(_state is null || _model is null)" @onclick="OpenEditor">@(_editorDirty ? "Continue draft" : "Edit draft")</button>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading durable schedule state.</span></div>
+}
+else if (_state is null)
+{
+    <div class="ops-note-banner schedule-message" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Schedule unavailable.</strong> @_message</span></div>
+}
+else
+{
+    var decision = _state.Decision;
+    @if (_message is not null && _dialog == ScheduleDialog.None)
+    {
+        <div class="ops-note-banner schedule-message" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div>
+    }
+
+    <section class="ops-profile-banner schedule-state" aria-label="Current admission">
         <div>
-            <p class="eyebrow">Local acquisition authority</p>
-            <h1 id="schedule-heading" tabindex="-1">Capture schedule</h1>
-            <p>Durable profile revisions, effective UTC windows, and standalone admission state.</p>
+            <span class="status-icon @(decision.Admitted ? "success" : "warning")" aria-hidden="true"></span>
+            <span>
+                <strong>Revision @_state.ActiveRevision.RevisionNumber is @(decision.Admitted ? "open" : "closed")</strong>
+                <small>@DecisionSummary</small>
+            </span>
         </div>
-        <button class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
-    </header>
+        <dl>
+            <div><dt>Local timezone</dt><dd>@_timeZoneId</dd></div>
+            <div><dt>Next transition</dt><dd>@(decision.NextTransitionUtc is { } next ? DayClock(next) : "None scheduled")</dd></div>
+            <div><dt>Active setpoint</dt><dd>@(decision.SetpointProfileId ?? "None")</dd></div>
+        </dl>
+    </section>
 
-    @if (_loading)
+    @if (_state.PendingRevision is { } pending)
     {
-        <section class="schedule-banner" role="status">Loading durable schedule state.</section>
-    }
-    else if (_state is null)
-    {
-        <section class="schedule-banner schedule-banner--error" role="alert">
-            <strong>Schedule unavailable</strong><span>@_message</span>
-        </section>
-    }
-    else
-    {
-        @if (_message is not null)
-        {
-            <section class="schedule-banner @(_messageIsError ? "schedule-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">@_message</section>
-        }
-
-        <section class="schedule-grid" aria-label="Current schedule state">
-            <article class="schedule-card schedule-card--hero">
-                <p class="eyebrow">Current admission</p>
-                <div class="decision-line">
-                    <h2>@(_state.Decision.Admitted ? "Open" : "Closed")</h2>
-                    <span class="decision-chip @(_state.Decision.Admitted ? "decision-chip--open" : "decision-chip--closed")">@Split(_state.Decision.Reason.ToString())</span>
-                </div>
-                <dl>
-                    <div><dt>Setpoint</dt><dd>@(_state.Decision.SetpointProfileId ?? "None")</dd></div>
-                    <div><dt>Effective interval</dt><dd>@FormatInterval(_state.Decision.Interval?.StartUtc, _state.Decision.Interval?.EndUtc)</dd></div>
-                    <div><dt>Next transition</dt><dd>@FormatUtc(_state.Decision.NextTransitionUtc)</dd></div>
-                    <div><dt>State version</dt><dd>@_state.StateVersion</dd></div>
-                </dl>
-            </article>
-
-            <article class="schedule-card">
-                <p class="eyebrow">Active immutable profile</p>
-                <h2>Revision @_state.ActiveRevision.RevisionNumber</h2>
-                <code>@ShortHash(_state.ActiveRevision.ProfileSha256)</code>
-                <p>@_state.ActiveRevision.Source / @_state.ActiveRevision.CreatedUtc.ToString("u")</p>
-            </article>
-
-            <article class="schedule-card">
-                <p class="eyebrow">Pending candidate</p>
-                @if (_state.PendingRevision is null)
+        var rollback = pending.RevisionNumber < _state.ActiveRevision.RevisionNumber;
+        <section class="ops-note-banner schedule-pending" aria-label="Saved draft">
+            <span class="status-icon warning" aria-hidden="true"></span>
+            <div>
+                @if (PendingRigSchedule)
                 {
-                    <h2>No draft</h2><p>Active state changes only after a validated draft is explicitly applied.</p>
+                    <p><strong>Revision @pending.RevisionNumber carries a named rig awaiting restart.</strong> It cannot be applied as a schedule draft; restart CameraAgent to apply it, or cancel the pending rig.</p>
+                    <div class="schedule-pending-actions">
+                        <a class="button secondary small" href="/operations/camera">View or cancel the pending rig</a>
+                        <RestartToApply Subject="the staged rig" />
+                    </div>
                 }
                 else
                 {
-                    var rollback = _state.PendingRevision.RevisionNumber < _state.ActiveRevision.RevisionNumber;
-                    <h2>Revision @_state.PendingRevision.RevisionNumber</h2>
-                    <code>@ShortHash(_state.PendingRevision.ProfileSha256)</code>
-                    @if (PendingRigSchedule)
+                    <p><strong>Draft revision @pending.RevisionNumber is saved but not active.</strong> @(rollback ? "Applying it rolls the schedule back to an earlier revision." : "Review it and apply it at the next capture boundary.")</p>
+                    @if (!ScheduleActionsBlocked)
                     {
-                        <p role="status">Named rig awaiting restart. This revision cannot be applied as a schedule draft.</p>
-                        <a href="/operations/camera">View or cancel the pending rig</a>
-                        <RestartToApply Subject="the staged rig" />
-                    }
-                    else if (!ScheduleActionsBlocked)
-                    {
-                        <button id="@PendingActivationTriggerId(_state.PendingRevision.RevisionId)" class="btn btn-primary" disabled="@_busy" @onclick="() => BeginActivation(_state.PendingRevision.RevisionId, PendingActivationTriggerId(_state.PendingRevision.RevisionId), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
+                        <div class="schedule-pending-actions">
+                            <button type="button" id="@PendingActivationTriggerId(pending.RevisionId)" class="button primary small" disabled="@_busy" @onclick="() => BeginActivation(pending.RevisionId, PendingActivationTriggerId(pending.RevisionId), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
+                        </div>
                     }
                 }
-            </article>
+            </div>
         </section>
+    }
 
-        <section class="pipeline-console" aria-labelledby="pipeline-heading">
-            <header><div><p class="eyebrow">Versioned processing authority</p><h2 id="pipeline-heading">Desired and effective graph</h2></div>@if (_pipelinePlan is not null) { <dl><div><dt>Desired SHA-256</dt><dd><code>@ShortHash(_pipelinePlan.DesiredSha256)</code></dd></div><div><dt>Effective SHA-256</dt><dd><code>@ShortHash(_pipelinePlan.EffectiveSha256)</code></dd></div></dl> }</header>
-            @if (_pipelinePlan is null)
+    <section class="ops-panel" aria-labelledby="schedule-tonight-heading">
+        <header class="ops-panel-heading">
+            <div><h3 id="schedule-tonight-heading">Tonight</h3><p>Planned admission for the current local night from the active revision. Live safety and pause are shown above.</p></div>
+            @if (Tonight is { } tonightHeader)
             {
-                <p class="pipeline-unavailable">The processing graph preview is unavailable. Validate the canonical profile editor.</p>
+                <span>@tonightHeader.LocalDate.ToString("d MMM", Invariant) / local time</span>
+            }
+        </header>
+        @if (Tonight is { } tonight)
+        {
+            <div class="schedule-clock" aria-hidden="true">
+                @foreach (var segment in tonight.Segments.Where(static item => SegmentClass(item) is not null))
+                {
+                    <i class="schedule-segment @SegmentClass(segment)" style="@SegmentStyle(tonight, segment)"></i>
+                }
+                @if (NowFraction(tonight) is { } now)
+                {
+                    <b class="schedule-now" style="left: @Percent(now)"></b>
+                }
+                <strong>@TonightLabel(tonight)</strong>
+                @foreach (var tick in Ticks(tonight))
+                {
+                    <span style="left: @Percent(tick.Fraction)">@tick.Label</span>
+                }
+            </div>
+            <ul class="schedule-window-list" aria-label="Capture windows tonight">
+                @{ var open = tonight.Segments.Where(static item => item.Admitted).ToArray(); }
+                @if (open.Length == 0)
+                {
+                    <li><strong>No capture window tonight.</strong><span>@ClosedReason(tonight)</span></li>
+                }
+                @foreach (var segment in open)
+                {
+                    <li class="@SegmentClass(segment)"><strong>@Clock(segment.StartUtc) to @Clock(segment.EndUtc)</strong><span>@SegmentDetail(segment)</span></li>
+                }
+            </ul>
+        }
+        else
+        {
+            <div class="ops-note-banner compact" role="status"><span class="status-icon warning" aria-hidden="true"></span><span>@(_calendarMessage ?? "The schedule calendar is unavailable.") Refresh to try again.</span></div>
+        }
+    </section>
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="schedule-regimes-heading">
+            <header class="ops-panel-heading"><div><h3 id="schedule-regimes-heading">Capture regimes</h3><p>A setpoint is selected when each exposure is admitted.</p></div><span>r@(_state.ActiveRevision.RevisionNumber)</span></header>
+            <div class="ops-regime-grid">
+                @foreach (var setpoint in _state.ActiveRevision.Definition.SetpointProfiles)
+                {
+                    var active = decision.Admitted && string.Equals(decision.SetpointProfileId, setpoint.Id, StringComparison.Ordinal);
+                    <article class="ops-regime-card @(active ? "active" : null)">
+                        <span>@(active ? "Active now" : "Standby")</span>
+                        <h4>@setpoint.Id</h4>
+                        <dl>
+                            <div><dt>Exposure</dt><dd>@Seconds(setpoint.Exposure)</dd></div>
+                            <div><dt>Gain</dt><dd>@Number(setpoint.Gain)</dd></div>
+                            <div class="full"><dt>Cadence</dt><dd>@CadenceText(setpoint)</dd></div>
+                            <div class="full"><dt>Windows</dt><dd>@WindowSummary(setpoint.Id)</dd></div>
+                        </dl>
+                    </article>
+                }
+            </div>
+        </section>
+        <section class="ops-panel" aria-labelledby="schedule-week-heading">
+            <header class="ops-panel-heading">
+                <div><h3 id="schedule-week-heading">Weekly availability</h3><p>Each row is one local night, noon to noon, with solar boundaries, date exceptions, blackouts and overrides resolved.</p></div>
+                @if (_calendar is not null)
+                {
+                    <span>@_calendar.Nights.Count(static night => night.Segments.Any(static item => item.Admitted)) of @_calendar.Nights.Count open</span>
+                }
+            </header>
+            @if (_calendar is null)
+            {
+                <p class="schedule-muted">The schedule calendar is unavailable.</p>
             }
             else
             {
-                @if (!_pipelineCanToggle)
-                {
-                    <p class="pipeline-unavailable">This immutable revision uses legacy graph inference. Stage a cameraagent-local-profile-v2 revision before using node toggles.</p>
-                }
-                <div class="pipeline-columns">
-                    <article><h3>Desired graph</h3><p>Disabled nodes remain visible here and are absent from the effective graph.</p><ol>@foreach (var node in _pipelinePlan.DesiredNodes) { <li><div><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small></div><button class="btn btn-sm @(node.Enabled ? "btn-outline-warning" : "btn-outline-light")" disabled="@(_busy || !_pipelineCanToggle)" @onclick="() => TogglePipelineAsync(node.Id, !node.Enabled)">@(node.Enabled ? "Disable" : "Enable")</button></li> }</ol></article>
-                    <article><h3>Effective graph</h3><p>Validated execution order for the next activated profile revision.</p><ol>@foreach (var node in _pipelinePlan.EffectiveNodes) { <li><div><strong>@node.Id</strong><span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span><small>@(node.Dependencies is null ? "No declared dependencies" : string.Join(" <- ", node.Dependencies))</small></div></li> }</ol></article>
+                <div class="ops-week">
+                    @foreach (var night in _calendar.Nights)
+                    {
+                        <div class="ops-week-row">
+                            <span>@night.LocalDate.ToString("ddd d", Invariant)</span>
+                            <span class="ops-week-bar" aria-hidden="true">
+                                @foreach (var segment in night.Segments.Where(static item => SegmentClass(item) is not null))
+                                {
+                                    <i class="schedule-segment @SegmentClass(segment)" style="@SegmentStyle(night, segment)"></i>
+                                }
+                            </span>
+                            <small>@NightSummary(night)</small>
+                        </div>
+                    }
+                </div>
+                <ul class="schedule-legend" aria-label="Legend">
+                    <li><i class="schedule-segment open"></i>Schedule window</li>
+                    <li><i class="schedule-segment override-open"></i>Override open</li>
+                    <li><i class="schedule-segment blackout"></i>Blackout or forced closed</li>
+                </ul>
+            }
+        </section>
+    </div>
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="schedule-exceptions-heading">
+            <header class="ops-panel-heading">
+                <div><h3 id="schedule-exceptions-heading">Exceptions &amp; overrides</h3><p>Blackouts outrank temporary overrides, which outrank date exceptions and the repeating week.</p></div>
+                <button type="button" id="schedule-exceptions-edit" class="button secondary small" disabled="@(_model is null)" @onclick="@(() => OpenEditorAt(EditorStep.Blackouts, "schedule-exceptions-edit"))">Edit blackouts</button>
+            </header>
+            @{ var rules = ExceptionRows(); }
+            @if (rules.Count == 0 && _state.Overrides.Count == 0)
+            {
+                <p class="schedule-muted">No date exceptions, blackouts or temporary overrides. The repeating week applies.</p>
+            }
+            else
+            {
+                <div class="ops-table-wrap">
+                    <table class="ops-table schedule-exceptions">
+                        <thead><tr><th scope="col">Starts</th><th scope="col">Rule</th><th scope="col">Detail</th><th scope="col">Ends</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                        <tbody>
+                            @foreach (var rule in rules)
+                            {
+                                <tr><td>@rule.Starts</td><td><strong>@rule.Rule</strong></td><td>@rule.Detail</td><td>@rule.Ends</td><td></td></tr>
+                            }
+                            @foreach (var item in _state.Overrides)
+                            {
+                                <tr>
+                                    <td>@DayClock(item.StartUtc)</td>
+                                    <td><strong>@(item.Mode == CaptureScheduleOverrideMode.ForceOpen ? "Force open" : "Force closed")</strong></td>
+                                    <td>Temporary override@(item.SetpointProfileId is null ? null : $" / {item.SetpointProfileId}")@(item.OneShot ? " / one capture" : null)</td>
+                                    <td>@DayClock(item.EndUtc)</td>
+                                    <td class="schedule-row-action"><button type="button" class="button secondary small" aria-label="Clear override @OverrideLabel(item)" disabled="@_busy" @onclick="() => ClearOverrideAsync(item.Id)">Clear</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
                 </div>
             }
         </section>
-
-        @if (_confirmRevisionId is not null)
-        {
-            <dialog class="confirmation-panel" aria-labelledby="apply-heading" aria-describedby="apply-description"
-                    @oncancel="CancelActivation" @ref="_confirmationDialog">
-                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">@(_confirmRollback ? "Rollback revision?" : "Apply revision?")</h2><p id="apply-description">The current admitted capture will finish durable publication before this revision becomes active.</p></div>
-                <div><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_confirmRollback ? "Confirm rollback" : "Confirm apply")</button><button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelActivation">Cancel</button></div>
-            </dialog>
-        }
-
-        <section class="editor-layout">
-            <article class="schedule-card editor-card" aria-labelledby="schedule-editor-heading">
-                <header><div><p class="eyebrow">Validated profile editor</p><h2 id="schedule-editor-heading">Schedule draft</h2></div><span>Basis revision @((_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber)</span></header>
-                @if (_model is not null)
+        <section class="ops-panel" aria-labelledby="schedule-precedence-heading">
+            <header class="ops-panel-heading"><div><h3 id="schedule-precedence-heading">Admission precedence</h3><p>The first blocking condition wins and remains reason-coded.</p></div></header>
+            <ol class="ops-progress-steps">
+                @foreach (var step in PrecedenceSteps())
                 {
-                    <p class="editor-note">Typed fields rewrite only what they show. @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), module options, and every other field carry over from the basis revision unchanged. Changes take effect only after saving and applying a revision.</p>
+                    <li class="ops-progress-step @step.State"><strong>@step.Title</strong><span>@step.Detail</span></li>
+                }
+            </ol>
+        </section>
+    </div>
 
-                    <fieldset class="editor-group" disabled="@_busy">
-                        <legend>Exposure and cadence policy</legend>
+    <section class="ops-panel ops-grid" aria-labelledby="schedule-history-heading">
+        <header class="ops-panel-heading"><div><h3 id="schedule-history-heading">Revision history</h3><p>Applying or rolling back never rewrites the revision bound to earlier captures.</p></div><span>@_state.History.Count revisions</span></header>
+        <div class="ops-table-wrap">
+            <table class="ops-table">
+                <thead><tr><th scope="col">Revision</th><th scope="col">State</th><th scope="col">Source</th><th scope="col">Created</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                <tbody>
+                    @foreach (var revision in _state.History)
+                    {
+                        var isActive = revision.RevisionId == _state.ActiveRevision.RevisionId;
+                        var isPending = revision.RevisionId == _state.PendingRevision?.RevisionId;
+                        <tr class="@(isActive ? "current-row" : null)">
+                            <td><strong>Revision @revision.RevisionNumber</strong> <code>@ShortHash(revision.ProfileSha256)</code></td>
+                            <td>
+                                @if (isActive)
+                                {
+                                    <span class="state-chip success">Active</span>
+                                }
+                                else if (isPending)
+                                {
+                                    <span class="state-chip warning">Draft</span>
+                                }
+                                else
+                                {
+                                    @(revision.RevisionNumber < _state.ActiveRevision.RevisionNumber ? "Superseded" : "Not applied")
+                                }
+                            </td>
+                            <td>@revision.Source</td>
+                            <td>@DayClock(revision.CreatedUtc)</td>
+                            <td class="schedule-row-action">
+                                @if (!isActive && !ScheduleActionsBlocked && revision.RevisionId != _rigSelection?.PendingScheduleRevisionId)
+                                {
+                                    var rollback = revision.RevisionNumber < _state.ActiveRevision.RevisionNumber;
+                                    <button type="button" id="@HistoryActivationTriggerId(revision)" class="button secondary small" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision), rollback)">@(rollback ? "Review rollback" : "Review apply")</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    @if (_dialog == ScheduleDialog.Editor && _model is not null)
+    {
+        <dialog class="action-dialog operations-dialog schedule-dialog schedule-editor" aria-labelledby="schedule-editor-heading" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Schedule draft / basis revision @((_state.PendingRevision ?? _state.ActiveRevision).RevisionNumber)</p><h2 id="schedule-editor-heading">Edit schedule draft</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <nav class="schedule-steps" aria-label="Draft sections">
+                <ol>
+                    @foreach (var step in EditorSteps)
+                    {
+                        var index = Array.IndexOf(EditorSteps, step) + 1;
+                        <li><button type="button" aria-current="@(_step == step ? "step" : null)" @onclick="() => _step = step"><span>@index</span>@StepTitle(step)</button></li>
+                    }
+                </ol>
+            </nav>
+            @if (ScheduleActionsBlocked)
+            {
+                <div class="dialog-note"><strong>Saving is disabled.</strong><span>@(RigPendingRestart ? "A named rig is waiting for CameraAgent to restart. Restart or cancel it before saving schedule changes." : "Named rig selection is unavailable. Close this dialog and refresh before saving.")</span></div>
+            }
+
+            <section class="schedule-step" hidden="@(_step != EditorStep.Policy)" aria-labelledby="schedule-step-policy">
+                <h3 id="schedule-step-policy" class="visually-hidden">Capture policy</h3>
+                <p class="dialog-intro">The day and night values apply when no setpoint window is open. Typed fields rewrite only what they show; @_model.ProcessingStepCount processing step@(_model.ProcessingStepCount == 1 ? "" : "s"), @_model.DateExceptionCount date exception@(_model.DateExceptionCount == 1 ? "" : "s"), and module options carry over unchanged.</p>
+                <fieldset class="editor-group" disabled="@_busy">
+                    <legend>Exposure and cadence policy</legend>
+                    <div class="policy-fields">
+                        <label class="ops-field">Capture interval s<input inputmode="decimal" @bind="_model.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
+                        <label class="ops-field">Cadence mode<select @bind="_model.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                        <label class="ops-field">Day exposure ms<input inputmode="decimal" @bind="_model.DayExposureMilliseconds" @bind:after="FormChanged" /></label>
+                        <label class="ops-field">Night exposure ms<input inputmode="decimal" @bind="_model.NightExposureMilliseconds" @bind:after="FormChanged" /></label>
+                        <label class="ops-field">Day gain<input inputmode="decimal" @bind="_model.DayGain" @bind:after="FormChanged" /></label>
+                        <label class="ops-field">Night gain<input inputmode="decimal" @bind="_model.NightGain" @bind:after="FormChanged" /></label>
+                    </div>
+                    @if (_model.HasEnvelope)
+                    {
+                        <p class="editor-note">Metered exposure envelope</p>
                         <div class="policy-fields">
-                            <label>Capture interval s<input class="form-control" inputmode="decimal" @bind="_model.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
-                            <label>Cadence mode<select class="form-select" @bind="_model.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
-                            <label>Day exposure ms<input class="form-control" inputmode="decimal" @bind="_model.DayExposureMilliseconds" @bind:after="FormChanged" /></label>
-                            <label>Night exposure ms<input class="form-control" inputmode="decimal" @bind="_model.NightExposureMilliseconds" @bind:after="FormChanged" /></label>
-                            <label>Day gain<input class="form-control" inputmode="decimal" @bind="_model.DayGain" @bind:after="FormChanged" /></label>
-                            <label>Night gain<input class="form-control" inputmode="decimal" @bind="_model.NightGain" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Minimum exposure ms<input inputmode="decimal" @bind="_model.MinimumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Maximum exposure ms<input inputmode="decimal" @bind="_model.MaximumExposureMilliseconds" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Minimum gain<input inputmode="decimal" @bind="_model.MinimumGain" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Maximum gain<input inputmode="decimal" @bind="_model.MaximumGain" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Target ADU level<input inputmode="decimal" @bind="_model.TargetAduLevel" @bind:after="FormChanged" /></label>
+                            <label class="ops-field">Adjustment order<select @bind="_model.ExposurePreference" @bind:after="FormChanged">@foreach (var preference in Enum.GetNames<ExposureGainPreference>()) { <option value="@preference">@Split(preference)</option> }</select></label>
                         </div>
-                        @if (_model.HasEnvelope)
-                        {
-                            <p class="editor-note">Metered exposure envelope</p>
-                            <div class="policy-fields">
-                                <label>Minimum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MinimumExposureMilliseconds" @bind:after="FormChanged" /></label>
-                                <label>Maximum exposure ms<input class="form-control" inputmode="decimal" @bind="_model.MaximumExposureMilliseconds" @bind:after="FormChanged" /></label>
-                                <label>Minimum gain<input class="form-control" inputmode="decimal" @bind="_model.MinimumGain" @bind:after="FormChanged" /></label>
-                                <label>Maximum gain<input class="form-control" inputmode="decimal" @bind="_model.MaximumGain" @bind:after="FormChanged" /></label>
-                                <label>Target ADU level<input class="form-control" inputmode="decimal" @bind="_model.TargetAduLevel" @bind:after="FormChanged" /></label>
-                                <label>Adjustment order<select class="form-select" @bind="_model.ExposurePreference" @bind:after="FormChanged">@foreach (var preference in Enum.GetNames<ExposureGainPreference>()) { <option value="@preference">@Split(preference)</option> }</select></label>
-                            </div>
-                        }
-                        else
-                        {
-                            <p class="editor-note">This profile has no metered exposure envelope; day and night values apply directly.</p>
-                        }
-                    </fieldset>
+                    }
+                    else
+                    {
+                        <p class="editor-note">This profile has no metered exposure envelope; day and night values apply directly.</p>
+                    }
+                </fieldset>
+                <fieldset class="editor-group" disabled="@_busy">
+                    <legend>Automatic control policy</legend>
+                    <div class="policy-fields">
+                        <label class="ops-field">Exposure control<select @bind="_model.ExposureControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                        <label class="ops-field">Gain control<select @bind="_model.GainControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
+                        <label class="ops-field">Temperature mode<select @bind="_model.TemperatureMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<TemperatureControlMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                        <label class="ops-field">Temperature target C<input inputmode="decimal" placeholder="none" @bind="_model.TemperatureTargetC" @bind:after="FormChanged" /></label>
+                    </div>
+                </fieldset>
+            </section>
 
-                    <fieldset class="editor-group" disabled="@_busy">
-                        <legend>Automatic control policy</legend>
-                        <div class="policy-fields">
-                            <label>Exposure control<select class="form-select" @bind="_model.ExposureControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
-                            <label>Gain control<select class="form-select" @bind="_model.GainControl" @bind:after="FormChanged">@foreach (var ownership in Enum.GetNames<AutomaticControlOwnership>()) { <option value="@ownership">@Split(ownership)</option> }</select></label>
-                            <label>Temperature mode<select class="form-select" @bind="_model.TemperatureMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<TemperatureControlMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
-                            <label>Temperature target C<input class="form-control" inputmode="decimal" placeholder="none" @bind="_model.TemperatureTargetC" @bind:after="FormChanged" /></label>
-                        </div>
-                    </fieldset>
-
-                    <fieldset class="editor-group" disabled="@_busy">
-                        <legend>Setpoint profiles</legend>
-                        <div class="editor-table" role="table" aria-label="Setpoint profiles">
-                            <div class="editor-row editor-row--head" role="row"><span role="columnheader">Identifier</span><span role="columnheader">Exposure ms</span><span role="columnheader">Gain</span><span role="columnheader">Interval s</span><span role="columnheader">Cadence</span><span role="columnheader">Target FPS</span><span role="columnheader" aria-label="Actions"></span></div>
-                            @foreach (var row in _model.Setpoints)
-                            {
-                                <div class="editor-row" role="row" @key="row">
-                                    <span role="cell"><input class="form-control" aria-label="Setpoint identifier" @bind="row.Id" @bind:after="FormChanged" /></span>
-                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint exposure milliseconds" @bind="row.ExposureMilliseconds" @bind:after="FormChanged" /></span>
-                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint gain" @bind="row.Gain" @bind:after="FormChanged" /></span>
-                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint capture interval seconds" @bind="row.CaptureIntervalSeconds" @bind:after="FormChanged" /></span>
-                                    <span role="cell"><select class="form-select" aria-label="Setpoint cadence mode" @bind="row.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></span>
-                                    <span role="cell"><input class="form-control" inputmode="decimal" aria-label="Setpoint target frames per second" placeholder="none" @bind="row.TargetFps" @bind:after="FormChanged" /></span>
-                                    <span role="cell"><button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove setpoint @row.Id" @onclick="() => RemoveSetpoint(row)">Remove</button></span>
-                                </div>
-                            }
-                        </div>
-                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddSetpoint">Add setpoint profile</button>
-                    </fieldset>
-
-                    <fieldset class="editor-group" disabled="@_busy">
-                        <legend>Weekly windows</legend>
-                        @if (_model.WeeklyWindows.Count == 0)
+            <section class="schedule-step" hidden="@(_step != EditorStep.Setpoints)" aria-labelledby="schedule-step-setpoints">
+                <h3 id="schedule-step-setpoints" class="visually-hidden">Setpoints</h3>
+                <p class="dialog-intro">A setpoint is the exposure, gain and cadence a schedule window captures with. Weekly windows and overrides refer to setpoints by identifier.</p>
+                <fieldset class="editor-group" disabled="@_busy">
+                    <legend>Setpoint profiles</legend>
+                    <ul class="setpoint-list">
+                        @foreach (var row in _model.Setpoints)
                         {
-                            <p class="editor-note">A canonical profile needs at least one weekly window.</p>
+                            <li class="editor-card" @key="row">
+                                <label class="ops-field">Identifier<input aria-label="Setpoint identifier" @bind="row.Id" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Exposure ms<input inputmode="decimal" aria-label="Setpoint exposure milliseconds" @bind="row.ExposureMilliseconds" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Gain<input inputmode="decimal" aria-label="Setpoint gain" @bind="row.Gain" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Interval s<input inputmode="decimal" aria-label="Setpoint capture interval seconds" @bind="row.CaptureIntervalSeconds" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Cadence<select aria-label="Setpoint cadence mode" @bind="row.CadenceMode" @bind:after="FormChanged">@foreach (var mode in Enum.GetNames<CaptureCadenceMode>()) { <option value="@mode">@Split(mode)</option> }</select></label>
+                                <label class="ops-field">Target FPS<input inputmode="decimal" aria-label="Setpoint target frames per second" placeholder="none" @bind="row.TargetFps" @bind:after="FormChanged" /></label>
+                                <button type="button" class="button secondary small" aria-label="Remove setpoint @row.Id" @onclick="() => RemoveSetpoint(row)">Remove</button>
+                            </li>
                         }
-                        <ul class="window-list">
-                            @foreach (var window in _model.WeeklyWindows)
-                            {
-                                <li class="window-item" @key="window">
-                                    <div class="window-item__head">
-                                        <div class="window-days" role="group" aria-label="Days for window @window.Id">
-                                            <span>Days</span>
-                                            @foreach (var day in Enum.GetValues<DayOfWeek>())
-                                            {
-                                                var selectedDay = day;
-                                                <label class="check"><input type="checkbox" checked="@window.Days.Contains(day)" @onchange="e => SetWindowDay(window, selectedDay, e.Value is true)" />@day</label>
-                                            }
-                                        </div>
-                                        <label>Setpoint profile<select class="form-select" @bind="window.SetpointProfileId" @bind:after="FormChanged">@foreach (var setpoint in _model.Setpoints) { <option value="@setpoint.Id">@setpoint.Id</option> }</select></label>
-                                        <button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove window for @(string.Join(", ", window.Days.Order()))" @onclick="() => RemoveWindow(window)">Remove</button>
+                    </ul>
+                    <div><button type="button" class="button secondary small" @onclick="AddSetpoint">Add setpoint profile</button></div>
+                </fieldset>
+            </section>
+
+            <section class="schedule-step" hidden="@(_step != EditorStep.Windows)" aria-labelledby="schedule-step-windows">
+                <h3 id="schedule-step-windows" class="visually-hidden">Weekly windows</h3>
+                <p class="dialog-intro">Each window opens on the checked start days and may end the next morning. Solar boundaries resolve for the site location each night; times are local to @_timeZoneId.</p>
+                <fieldset class="editor-group" disabled="@_busy">
+                    <legend>Weekly windows</legend>
+                    @if (_model.WeeklyWindows.Count == 0)
+                    {
+                        <p class="editor-note">A canonical profile needs at least one weekly window.</p>
+                    }
+                    <ul class="window-list">
+                        @foreach (var window in _model.WeeklyWindows)
+                        {
+                            <li class="window-item editor-card" @key="window">
+                                <div class="window-item__head">
+                                    <div class="window-days" role="group" aria-label="Days for window @window.Id">
+                                        <span>Start days</span>
+                                        @foreach (var day in Enum.GetValues<DayOfWeek>())
+                                        {
+                                            var selectedDay = day;
+                                            <label class="check"><input type="checkbox" checked="@window.Days.Contains(day)" @onchange="e => SetWindowDay(window, selectedDay, e.Value is true)" /><span title="@day">@day.ToString()[..3]</span></label>
+                                        }
                                     </div>
-                                    <div class="window-identifiers">
+                                    <label class="ops-field">Setpoint profile<select @bind="window.SetpointProfileId" @bind:after="FormChanged">@foreach (var setpoint in _model.Setpoints) { <option value="@setpoint.Id">@setpoint.Id</option> }</select></label>
+                                    <button type="button" class="button secondary small" aria-label="Remove window for @(string.Join(", ", window.Days.Order()))" @onclick="() => RemoveWindow(window)">Remove</button>
+                                </div>
+                                <div class="boundary-grid">
+                                    @BoundaryFields(("Start", window.Start))
+                                    @BoundaryFields(("End", window.End))
+                                </div>
+                                <details class="window-identifiers">
+                                    <summary>Window identifiers</summary>
+                                    <div>
                                         @foreach (var day in window.Days.Order())
                                         {
                                             <div @key="day">
-                                                <label>@day identifier<input class="form-control" @bind="window.DayIds[day]" @bind:after="FormChanged" /></label>
+                                                <label class="ops-field">@day identifier<input @bind="window.DayIds[day]" @bind:after="FormChanged" /></label>
                                                 @if (window.Days.Count > 1)
                                                 {
-                                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Split @day from window @window.Id" @onclick="() => SplitWindow(window, day)">Split @day</button>
+                                                    <button type="button" class="button secondary small" aria-label="Split @day from window @window.Id" @onclick="() => SplitWindow(window, day)">Split @day</button>
                                                 }
                                             </div>
                                         }
                                     </div>
-                                    <div class="boundary-grid">
-                                        @BoundaryFields(("Start", window.Start))
-                                        @BoundaryFields(("End", window.End))
-                                    </div>
-                                </li>
-                            }
-                        </ul>
-                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddWindow">Add weekly window</button>
-                    </fieldset>
-
-                    <fieldset class="editor-group" disabled="@_busy">
-                        <legend>Blackouts</legend>
-                        @if (_model.Blackouts.Count == 0)
-                        {
-                            <p class="editor-note">No blackout closes the schedule regardless of windows.</p>
+                                </details>
+                            </li>
                         }
-                        <ul class="blackout-list">
-                            @foreach (var blackout in _model.Blackouts)
+                    </ul>
+                    <div><button type="button" class="button secondary small" @onclick="AddWindow">Add weekly window</button></div>
+                </fieldset>
+            </section>
+
+            <section class="schedule-step" hidden="@(_step != EditorStep.Blackouts)" aria-labelledby="schedule-step-blackouts">
+                <h3 id="schedule-step-blackouts" class="visually-hidden">Blackouts</h3>
+                <p class="dialog-intro">A blackout closes capture for a fixed span regardless of windows and overrides. Enter instants in UTC, for example 2026-10-05T18:00:00Z.</p>
+                <fieldset class="editor-group" disabled="@_busy">
+                    <legend>Blackouts</legend>
+                    @if (_model.Blackouts.Count == 0)
+                    {
+                        <p class="editor-note">No blackout closes the schedule regardless of windows.</p>
+                    }
+                    <ul class="blackout-list">
+                        @foreach (var blackout in _model.Blackouts)
+                        {
+                            <li class="editor-card" @key="blackout">
+                                <label class="ops-field">Identifier<input @bind="blackout.Id" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Start UTC<input @bind="blackout.StartUtc" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">End UTC<input @bind="blackout.EndUtc" @bind:after="FormChanged" /></label>
+                                <button type="button" class="button secondary small" aria-label="Remove blackout @blackout.Id" @onclick="() => RemoveBlackout(blackout)">Remove</button>
+                            </li>
+                        }
+                    </ul>
+                    <div><button type="button" class="button secondary small" @onclick="AddBlackout">Add blackout</button></div>
+                </fieldset>
+            </section>
+
+            <section class="schedule-step" hidden="@(_step != EditorStep.Processing)" aria-labelledby="schedule-step-processing">
+                <h3 id="schedule-step-processing" class="visually-hidden">Processing graph</h3>
+                <p class="dialog-intro">Disable optional processing steps for this revision. Disabled steps stay in the desired graph and are left out of the effective graph.</p>
+                <div class="pipeline-console" aria-labelledby="pipeline-heading">
+                    <header>
+                        <h4 id="pipeline-heading">Desired and effective graph</h4>
+                        @if (_pipelinePlan is not null)
+                        {
+                            <dl><div><dt>Desired</dt><dd><code>@ShortHash(_pipelinePlan.DesiredSha256)</code></dd></div><div><dt>Effective</dt><dd><code>@ShortHash(_pipelinePlan.EffectiveSha256)</code></dd></div></dl>
+                        }
+                    </header>
+                    @if (_pipelinePlan is null)
+                    {
+                        <p class="editor-note">The graph preview is out of date. Use Validate and preview on the Review step to refresh it.</p>
+                    }
+                    else
+                    {
+                        @if (!_pipelineCanToggle)
+                        {
+                            <p class="editor-note">This revision uses legacy graph inference. Save a cameraagent-local-profile-v2 revision before using step toggles.</p>
+                        }
+                        <div class="pipeline-columns">
+                            <article><h5>Desired graph</h5><ol>@foreach (var node in _pipelinePlan.DesiredNodes) { <li><div><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small></div><button type="button" class="button secondary small" disabled="@(_busy || !_pipelineCanToggle)" @onclick="() => TogglePipelineAsync(node.Id, !node.Enabled)">@(node.Enabled ? "Disable" : "Enable")</button></li> }</ol></article>
+                            <article><h5>Effective graph</h5><ol>@foreach (var node in _pipelinePlan.EffectiveNodes) { <li><div><strong>@node.Id</strong><span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span><small>@(node.Dependencies is null ? "No declared dependencies" : string.Join(" <- ", node.Dependencies))</small></div></li> }</ol></article>
+                        </div>
+                    }
+                </div>
+            </section>
+
+            <section class="schedule-step" hidden="@(_step != EditorStep.Review)" aria-labelledby="schedule-step-review">
+                <h3 id="schedule-step-review" class="visually-hidden">Review</h3>
+                <p class="dialog-intro">Validate the draft to see the windows it opens over the next seven days. Saving creates an immutable draft revision; nothing changes until you apply it.</p>
+                <div class="schedule-review-actions"><button type="button" class="button secondary" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button></div>
+                <div class="schedule-preview" aria-live="polite">
+                    @if (_preview is null)
+                    {
+                        <p class="editor-note">Not validated since the last change.</p>
+                    }
+                    else if (_preview.Intervals.Count == 0)
+                    {
+                        <p class="editor-note">No open or closed intervals occur in the next seven days.</p>
+                    }
+                    else
+                    {
+                        <ol>
+                            @foreach (var interval in _preview.Intervals.Take(20))
                             {
-                                <li @key="blackout">
-                                    <label>Identifier<input class="form-control" @bind="blackout.Id" @bind:after="FormChanged" /></label>
-                                    <label>Start UTC<input class="form-control" @bind="blackout.StartUtc" @bind:after="FormChanged" /></label>
-                                    <label>End UTC<input class="form-control" @bind="blackout.EndUtc" @bind:after="FormChanged" /></label>
-                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Remove blackout @blackout.Id" @onclick="() => RemoveBlackout(blackout)">Remove</button>
-                                </li>
+                                <li class="@(interval.Disposition == ExpandedScheduleDisposition.Open ? "open" : "closed")"><strong>@(interval.SetpointProfileId ?? "Closed")</strong><span>@DayClock(interval.StartUtc) to @DayClock(interval.EndUtc)</span><small>@Split(interval.Source.ToString())</small></li>
+                            }
+                        </ol>
+                    }
+                    @if (_preview is not null && _preview.UnavailableWindows.Count > 0)
+                    {
+                        <h4>Nights without the solar event</h4>
+                        <ul class="unavailable-list">
+                            @foreach (var window in _preview.UnavailableWindows)
+                            {
+                                <li><strong>@window.LocalDate.ToString("ddd d MMM", Invariant): closed</strong><span>@Split(window.ReasonCode)</span></li>
                             }
                         </ul>
-                        <button type="button" class="btn btn-sm btn-outline-light" @onclick="AddBlackout">Add blackout</button>
-                    </fieldset>
-                }
-
+                    }
+                </div>
                 <details class="editor-advanced">
                     <summary>Advanced canonical JSON</summary>
-                    <p class="editor-note">Edits here replace the typed fields until you change a typed field above, which rewrites this text from the form. Opaque module and step options are restored from the basis revision by the server.</p>
+                    <p class="editor-note">Edits here replace the typed fields until you change a typed field, which rewrites this text from the form. Opaque module and step options are restored from the basis revision by the server.</p>
                     <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="JsonChanged" disabled="@_busy" spellcheck="false"></textarea>
                     <span>@_editorJson.Length chars</span>
                 </details>
-                <div class="editor-actions">
-                    <button class="btn btn-outline-light" disabled="@_busy" @onclick="PreviewAsync">Validate and preview</button>
-                    <button class="btn btn-primary" disabled="@(_busy || ScheduleActionsBlocked)" @onclick="StageAsync">Save immutable draft</button>
+            </section>
+
+            @if (_message is not null)
+            {
+                @* The open modal makes the page behind it inert, so outcomes are announced inside the dialog. *@
+                <div class="schedule-dialog-message"><div class="ops-note-banner compact schedule-message" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
+            }
+            <footer>
+                @if (_editorDirty)
+                {
+                    <button type="button" class="button secondary schedule-discard" disabled="@_busy" @onclick="DiscardEditsAsync">Discard edits</button>
+                }
+                <button type="button" class="button secondary" disabled="@(_step == EditorSteps[0])" @onclick="() => MoveStep(-1)">Back</button>
+                @if (_step != EditorSteps[^1])
+                {
+                    <button type="button" class="button secondary" @onclick="() => MoveStep(1)">Next</button>
+                }
+                <button type="button" class="button primary" disabled="@(_busy || ScheduleActionsBlocked)" @onclick="StageAsync">Save draft</button>
+            </footer>
+        </dialog>
+    }
+    else if (_dialog == ScheduleDialog.Override)
+    {
+        <dialog class="action-dialog operations-dialog schedule-dialog" aria-labelledby="schedule-override-heading" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Bounded operator override</p><h2 id="schedule-override-heading">Temporary override</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p class="dialog-intro">Open or close capture for a bounded span without editing the schedule. The override is bound to active revision @_state.ActiveRevision.RevisionNumber, and blackouts still win.</p>
+            <fieldset disabled="@_busy">
+                <legend class="visually-hidden">Override settings</legend>
+                <label class="ops-field">Override<select id="schedule-override-mode" @bind="_overrideMode"><option value="ForceClosed">Force closed: stop admitting captures</option><option value="ForceOpen">Force open: admit captures</option></select></label>
+                <div class="schedule-dialog-grid">
+                    <label class="ops-field">Starts (@_timeZoneId)<input type="datetime-local" step="60" @bind="_overrideStart" /></label>
+                    <label class="ops-field">Ends (@_timeZoneId)<input type="datetime-local" step="60" @bind="_overrideEnd" /></label>
                 </div>
-            </article>
-
-            <article class="schedule-card preview-card" aria-labelledby="schedule-preview-heading" aria-live="polite">
-                <p class="eyebrow">Future UTC expansion</p><h2 id="schedule-preview-heading">Preview</h2>
-                @if (_preview is null)
-                {
-                    <p>Validate the editor to inspect effective windows before staging.</p>
-                }
-                else if (_preview.Intervals.Count == 0)
-                {
-                    <p>No open or closed intervals occur in this preview range.</p>
-                }
-                else
-                {
-                    <ol>
-                        @foreach (var interval in _preview.Intervals.Take(20))
-                        {
-                            <li><span>@Split(interval.Source.ToString())</span><strong>@(interval.SetpointProfileId ?? "Closed")</strong><span>Start <time datetime="@interval.StartUtc.ToString("O")">@interval.StartUtc.ToString("u")</time></span><span>End <time datetime="@interval.EndUtc.ToString("O")">@interval.EndUtc.ToString("u")</time></span></li>
-                        }
-                    </ol>
-                }
-                @if (_preview is not null && _preview.UnavailableWindows.Count > 0)
-                {
-                    <h3>Unavailable solar windows</h3>
-                    <ul class="unavailable-list">
-                        @foreach (var window in _preview.UnavailableWindows)
-                        {
-                            <li><strong>@window.LocalDate: closed</strong><span>@Split(window.Source.ToString())</span><span>@Split(window.ReasonCode)</span><span>Start <time datetime="@window.LocalDayStartUtc.ToString("O")">@window.LocalDayStartUtc.ToString("u")</time></span><span>End <time datetime="@window.LocalDayEndUtc.ToString("O")">@window.LocalDayEndUtc.ToString("u")</time></span></li>
-                        }
-                    </ul>
-                }
-            </article>
-        </section>
-
-        <section class="schedule-grid lower-grid">
-            <article class="schedule-card">
-                <p class="eyebrow">Bounded operator override</p><h2>Create override</h2>
-                <label>Mode<select class="form-select" @bind="_overrideMode"><option value="ForceClosed">Force closed</option><option value="ForceOpen">Force open</option></select></label>
-                <label>Start UTC<input class="form-control" @bind="_overrideStart" /></label>
-                <label>End UTC<input class="form-control" @bind="_overrideEnd" /></label>
                 @if (_overrideMode == "ForceOpen")
                 {
-                    <label>Setpoint profile<input class="form-control" @bind="_overrideProfile" /></label>
-                    <label class="check"><input type="checkbox" @bind="_overrideOneShot" /> Consume on first admission</label>
+                    <label class="ops-field">Setpoint profile<select @bind="_overrideProfile">@foreach (var setpoint in _state.ActiveRevision.Definition.SetpointProfiles) { <option value="@setpoint.Id">@setpoint.Id</option> }</select></label>
+                    <label class="schedule-check"><input type="checkbox" @bind="_overrideOneShot" /> End after the first admitted capture</label>
                 }
-                <button class="btn btn-outline-warning" disabled="@_busy" @onclick="AddOverrideAsync">Create durable override</button>
-            </article>
-
-            <article class="schedule-card">
-                <p class="eyebrow">Active and upcoming</p><h2>Overrides</h2>
-                @if (_state.Overrides.Count == 0)
-                {
-                    <p>No durable overrides are active or upcoming.</p>
-                }
-                else
-                {
-                    <ul class="override-list">
-                        @foreach (var item in _state.Overrides)
-                        {
-                            <li><div><strong>@Split(item.Mode.ToString())</strong><span>@item.StartUtc.ToString("u") to @item.EndUtc.ToString("u")</span></div><button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => ClearOverrideAsync(item.Id)">Clear</button></li>
-                        }
-                    </ul>
-                }
-            </article>
-
-            <article class="schedule-card history-card">
-                <p class="eyebrow">Immutable history</p><h2>Revision history</h2>
-                <ol>
-                    @foreach (var revision in _state.History)
-                    {
-                        <li><div><strong>Revision @revision.RevisionNumber</strong><code>@ShortHash(revision.ProfileSha256)</code><span>@revision.CreatedUtc.ToString("u")</span></div>@if (revision.RevisionId != _state.ActiveRevision.RevisionId && !ScheduleActionsBlocked && revision.RevisionId != _rigSelection?.PendingScheduleRevisionId) { var rollback = revision.RevisionNumber < _state.ActiveRevision.RevisionNumber; <button id="@HistoryActivationTriggerId(revision)" class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => BeginActivation(revision.RevisionId, HistoryActivationTriggerId(revision), rollback)">@(rollback ? "Review rollback" : "Review apply")</button> }</li>
-                    }
-                </ol>
-            </article>
-        </section>
+            </fieldset>
+            @if (_message is not null)
+            {
+                <div class="schedule-dialog-message"><div class="ops-note-banner compact schedule-message" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
+                <button type="button" class="button primary" disabled="@_busy" @onclick="AddOverrideAsync">Create override</button>
+            </footer>
+        </dialog>
     }
-</div>
+    else if (_dialog == ScheduleDialog.Activation && _confirmRevisionId is not null)
+    {
+        <dialog class="action-dialog operations-dialog schedule-dialog" aria-labelledby="apply-heading" aria-describedby="apply-description" @ref="_dialogElement" @oncancel="CancelActivation">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="apply-heading">@(_confirmRollback ? "Roll back to" : "Apply") revision @_confirmRevisionNumber?</h2></div>
+            </div>
+            <p id="apply-description" class="dialog-intro">The capture in progress finishes durable publication before revision @_confirmRevisionNumber becomes active. Captures already taken keep the revision they were admitted under.</p>
+            @if (_message is not null)
+            {
+                <div class="schedule-dialog-message"><div class="ops-note-banner compact schedule-message" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_busy" autofocus @onclick="CancelActivation">Cancel</button>
+                <button type="button" class="button primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_confirmRollback ? "Confirm rollback" : "Confirm apply")</button>
+            </footer>
+        </dialog>
+    }
+}
 
 @code {
     private RenderFragment<(string Label, CaptureProfileFormModel.BoundaryRow Boundary)> BoundaryFields => context =>
-        @<div class="boundary-fields">
-            <span class="boundary-fields__label">@context.Label</span>
-            <label>Kind<select class="form-select" aria-label="@context.Label boundary kind" @bind="context.Boundary.Kind" @bind:after="FormChanged">@foreach (var kind in Enum.GetNames<CaptureScheduleBoundaryKind>()) { <option value="@kind">@Split(kind)</option> }</select></label>
+        @<fieldset class="boundary-fields">
+            <legend>@context.Label</legend>
+            <label class="ops-field">Event<select aria-label="@context.Label boundary kind" @bind="context.Boundary.Kind" @bind:after="FormChanged">@foreach (var kind in Enum.GetNames<CaptureScheduleBoundaryKind>()) { <option value="@kind">@Split(kind)</option> }</select></label>
             @if (context.Boundary.IsFixed)
             {
-                <label>Local time<input class="form-control" placeholder="18:30" aria-label="@context.Label local time" @bind="context.Boundary.LocalTime" @bind:after="FormChanged" /></label>
+                <label class="ops-field">Local time<input placeholder="18:30" aria-label="@context.Label local time" @bind="context.Boundary.LocalTime" @bind:after="FormChanged" /></label>
             }
             else
             {
-                <label>Offset minutes<input class="form-control" inputmode="decimal" placeholder="0" aria-label="@context.Label offset minutes" @bind="context.Boundary.OffsetMinutes" @bind:after="FormChanged" /></label>
-                <label>No-event fallback<input class="form-control" placeholder="HH:mm" aria-label="@context.Label no-event fallback local time" @bind="context.Boundary.NoEventFallbackLocalTime" @bind:after="FormChanged" /></label>
+                <label class="ops-field">Offset minutes<input inputmode="decimal" placeholder="0" aria-label="@context.Label offset minutes" @bind="context.Boundary.OffsetMinutes" @bind:after="FormChanged" /></label>
+                <label class="ops-field">If no event<input placeholder="HH:mm" aria-label="@context.Label no-event fallback local time" @bind="context.Boundary.NoEventFallbackLocalTime" @bind:after="FormChanged" /></label>
             }
-            <label>Day offset<input class="form-control" inputmode="numeric" placeholder="0" aria-label="@context.Label day offset" @bind="context.Boundary.DayOffset" @bind:after="FormChanged" /></label>
-        </div>;
+            <label class="ops-field">Day offset<input inputmode="numeric" placeholder="0" aria-label="@context.Label day offset" @bind="context.Boundary.DayOffset" @bind:after="FormChanged" /></label>
+        </fieldset>;
 }
