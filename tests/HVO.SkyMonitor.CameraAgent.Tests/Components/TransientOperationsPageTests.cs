@@ -207,7 +207,7 @@ public sealed class TransientOperationsPageTests
         return context;
     }
 
-    private static TransientOperationsView View(TransientOperatingMode mode)
+    internal static TransientOperationsView View(TransientOperatingMode mode)
     {
         var detection = new TransientDetectionOptions { Mode = mode };
         return new(
@@ -256,7 +256,7 @@ public sealed class TransientOperationsPageTests
         Guid.NewGuid(), Guid.NewGuid(), "persisted", eventState, "finalized", Now, Now,
         "Available", "Available", "Available", "Available");
 
-    private sealed class TestTransientOperationsUiService(OperatorUiResult<TransientOperationsView> result)
+    internal sealed class TestTransientOperationsUiService(OperatorUiResult<TransientOperationsView> result)
         : ICameraAgentTransientOperationsUiService
     {
         public TestTransientOperationsUiService(TransientOperationsView view)

@@ -53,7 +53,8 @@ else
     var revision = ShownRevision!;
     var plan = revision.Plan;
     var placements = Arrange(plan);
-    var edges = Edges(placements, _selectedId);
+    var canvas = Layout(placements, _transients is { } lane ? MeteorDetectionLane.Stages(lane.Mode) : []);
+    var selectedKey = SelectedKey;
     var checks = Validate(plan);
     var passed = checks.Count(static check => check.Passed == true);
     var applicable = checks.Count(static check => check.Passed is not null);
@@ -105,27 +106,77 @@ else
             }
             else
             {
-                <div class="ops-pipeline-graph" style="@GridStyle(placements)">
-                    <svg class="ops-pipeline-edges" viewBox="@ViewBox(placements)" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-                        @foreach (var edge in edges)
+                var laneView = _transients;
+                <div class="ops-pipeline-graph" style="@GridStyle(canvas)">
+                    <div class="ops-pipeline-lane-band" style="@BandStyle(canvas)" aria-hidden="true"></div>
+                    <svg class="ops-pipeline-edges" viewBox="@ViewBox(canvas)" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                        @foreach (var edge in canvas.Edges)
                         {
-                            <path class="@EdgeClass(edge)" d="@edge.Path"></path>
+                            <path class="@EdgeClass(edge, selectedKey)" d="@edge.Path"></path>
                         }
                     </svg>
+                    <button type="button" id="pipeline-source-raw" class="@SourceClass(RawKey, selectedKey)" style="grid-column:1;grid-row:1"
+                            aria-pressed="@Pressed(RawKey, selectedKey)" title="Raw frame" @onclick="() => SelectStage(MeteorDetectionLane.RawFrameKey)">
+                        <strong>Raw frame</strong>
+                        <small>Durable ingress</small>
+                        @if (canvas.HasOutput(RawKey))
+                        {
+                            <i class="node-port out" aria-hidden="true"></i>
+                        }
+                    </button>
                     @for (var index = 0; index < placements.Count; index++)
                     {
                         var placement = placements[index];
                         var node = placement.Node;
-                        var active = string.Equals(node.Id, _selectedId, StringComparison.OrdinalIgnoreCase);
-                        var hasDependents = placements.Any(other => other.Dependencies.Any(dependency => string.Equals(dependency, node.Id, StringComparison.OrdinalIgnoreCase)));
+                        var key = StepKey(node.Id);
+                        var active = string.Equals(key, selectedKey, StringComparison.OrdinalIgnoreCase);
                         var id = node.Id;
                         <button type="button" id="@($"pipeline-node-{index}")" class="@NodeClass(node, active)" style="@CellStyle(placement)"
                                 aria-pressed="@(active ? "true" : "false")" title="@node.Id" @onclick="() => SelectNode(id)">
                             <strong>@Label(node.Id)</strong>
                             <small>@StepFacts(node)</small>
-                            @if (hasDependents)
+                            @if (canvas.HasInput(key))
                             {
-                                <i class="node-port" aria-hidden="true"></i>
+                                <i class="node-port in" aria-hidden="true"></i>
+                            }
+                            @if (canvas.HasOutput(key))
+                            {
+                                <i class="node-port out" aria-hidden="true"></i>
+                            }
+                        </button>
+                    }
+                    <p class="ops-pipeline-lane-title" style="@RowStyle(canvas.LaneTitleRow, "2 / -1")">
+                        <strong>Meteor detection</strong>
+                        <small>@LaneSubtitle(laneView)</small>
+                        @if (laneView is not null && canvas.Stages.Count > 0)
+                        {
+                            var state = TransientOperationsPage.Banner(laneView);
+                            <span class="ops-pipeline-lane-state"><span class="status-icon @state.Icon" aria-hidden="true"></span>@state.Title</span>
+                        }
+                    </p>
+                    @if (canvas.Stages.Count == 0)
+                    {
+                        var note = LaneNote(laneView);
+                        <div class="ops-pipeline-lane-note" style="@RowStyle(canvas.LaneRow, "2 / -1")">
+                            <span class="status-icon @note.Icon" aria-hidden="true"></span>
+                            <span><strong>@note.Title</strong> @note.Detail <a href="/operations/transients">Open Transients</a></span>
+                        </div>
+                    }
+                    @foreach (var stage in canvas.Stages)
+                    {
+                        var key = StageKey(stage.Key);
+                        var stageKey = stage.Key;
+                        <button type="button" id="@($"pipeline-stage-{stage.Key}")" class="@StageClass(stage, key, selectedKey)"
+                                style="@StageStyle(canvas, stage)" aria-pressed="@Pressed(key, selectedKey)" title="@stage.Title" @onclick="() => SelectStage(stageKey)">
+                            <strong>@stage.Title</strong>
+                            <small>@stage.Caption</small>
+                            @if (canvas.HasInput(key))
+                            {
+                                <i class="node-port in" aria-hidden="true"></i>
+                            }
+                            @if (canvas.HasOutput(key))
+                            {
+                                <i class="node-port out" aria-hidden="true"></i>
                             }
                         </button>
                     }
@@ -133,7 +184,34 @@ else
             }
         </div>
         <aside class="ops-pipeline-inspector" aria-live="polite" aria-labelledby="pipeline-step-title">
-            @if (selected is null)
+            @if (_selectedStage == MeteorDetectionLane.RawFrameKey)
+            {
+                <p class="eyebrow">Source</p>
+                <h2 id="pipeline-step-title">Raw frame</h2>
+                <p>Each acquired frame is written to durable ingress first. The processing steps and the meteor detection lane read it independently, so neither waits for the other.</p>
+                <dl class="ops-node-facts">
+                    <div><dt>Feeds</dt><dd>@RawConsumers(placements, canvas)</dd></div>
+                    <div><dt>Outputs</dt><dd>Raw frame</dd></div>
+                </dl>
+            }
+            else if (SelectedStage(canvas) is { } stage)
+            {
+                <p class="eyebrow">@(stage.Central ? "Meteor detection / LogicHost" : "Meteor detection / this agent")</p>
+                <h2 id="pipeline-step-title">@stage.Title</h2>
+                <p>@stage.Description</p>
+                <dl class="ops-node-facts">
+                    <div><dt>Stage</dt><dd>@stage.Caption</dd></div>
+                    <div><dt>Inputs</dt><dd>@StageInputs(canvas, stage)</dd></div>
+                    <div><dt>Outputs</dt><dd>@stage.Outputs</dd></div>
+                    <div><dt>Runs on</dt><dd>@(stage.Central ? "LogicHost" : "CameraAgent transient worker")</dd></div>
+                    <div><dt>Live state</dt><dd>@StageState(_transients, stage)</dd></div>
+                </dl>
+                <div class="pipeline-inspector-actions">
+                    <a id="pipeline-open-transients" class="button secondary" href="/operations/transients">Open Transients</a>
+                </div>
+                <p class="ops-inspector-footnote">The detection mode is set in the agent's host configuration. This lane runs beside the processing steps and is not part of the revision.</p>
+            }
+            else if (selected is null)
             {
                 <p class="eyebrow">No step selected</p>
                 <h2 id="pipeline-step-title">Nothing to inspect</h2>
@@ -184,6 +262,16 @@ else
                     </li>
                 }
             </ol>
+            @if (canvas.Stages.Count > 0)
+            {
+                <p class="pipeline-text-lane">Meteor detection, beside the steps:</p>
+                <ol id="pipeline-lane-list">
+                    @foreach (var stage in canvas.Stages)
+                    {
+                        <li><strong>@stage.Title</strong> (@(stage.Central ? "LogicHost" : "this agent")): reads @StageInputs(canvas, stage)</li>
+                    }
+                </ol>
+            }
         </details>
     }
 

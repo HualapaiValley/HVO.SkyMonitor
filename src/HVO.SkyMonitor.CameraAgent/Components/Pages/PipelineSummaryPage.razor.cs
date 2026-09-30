@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -18,11 +19,16 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private const int ExecutionSample = 10;
 
     // Grid geometry in SVG user units, matching the scoped CSS tracks (10rem columns, 2.5rem gaps, 4.25rem rows,
-    // 1rem row gaps) at 16 units per rem, so edges meet the node edges at any root font size.
+    // 1rem row gaps) at 16 units per rem, so edges meet the node edges at any root font size. The lane title row is
+    // 1.5rem.
     private const int ColumnWidth = 160;
     private const int ColumnGap = 40;
     private const int RowHeight = 68;
     private const int RowGap = 16;
+    private const int LaneTitleHeight = 24;
+    private const double UnitsPerRem = 16;
+
+    private static readonly string RawKey = StageKey(MeteorDetectionLane.RawFrameKey);
 
     private readonly CancellationTokenSource _lifetime = new();
     private CameraAgentPipelineOperatorState? _pipeline;
@@ -31,6 +37,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private bool _rigAvailable;
     private ProcessingGraphRegistryState? _registry;
     private CameraAgentProcessingExecutionsView? _executions;
+    private TransientOperationsView? _transients;
     private string? _error;
     private bool _loading = true;
     private bool _disposed;
@@ -38,6 +45,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private bool _showDraft;
     private string? _requestedStep;
     private string? _selectedId;
+    private string? _requestedStage;
+    private string? _selectedStage;
     private string? _message;
     private bool _messageError;
 
@@ -66,11 +75,15 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
     [Inject] internal ICameraAgentNamedRigUiService NamedRigService { get; set; } = default!;
+    [Inject] internal ICameraAgentTransientOperationsUiService TransientService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
 
     [SupplyParameterFromQuery(Name = "step")]
     public string? Step { get; set; }
+
+    [SupplyParameterFromQuery(Name = "stage")]
+    public string? Stage { get; set; }
 
     private CameraAgentPipelineRevisionPlan? ShownRevision => _pipeline is null
         ? null
@@ -82,6 +95,14 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
 
     private CaptureProcessingPlanNode? SelectedNode => ShownNodes.FirstOrDefault(
         node => string.Equals(node.Id, _selectedId, StringComparison.OrdinalIgnoreCase));
+
+    private IReadOnlyList<MeteorLaneStage> LaneStages => _transients is { } transients
+        ? MeteorDetectionLane.Stages(transients.Mode)
+        : [];
+
+    private string? SelectedKey => _selectedStage is { } stage
+        ? StageKey(stage)
+        : _selectedId is { } id ? StepKey(id) : null;
 
     private CameraAgentProcessingExecutionSummary? LatestRun => _executions?.Live
         .OrderByDescending(static execution => execution.AcceptedUtc)
@@ -101,6 +122,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     protected override void OnParametersSet()
     {
         _requestedStep = string.IsNullOrWhiteSpace(Step) ? null : Step.Trim();
+        _requestedStage = string.IsNullOrWhiteSpace(Stage) ? null : Stage.Trim();
         EnsureSelection();
     }
 
@@ -172,12 +194,18 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             {
                 return;
             }
+            var transients = await TransientService.GetOverviewAsync(token);
+            if (IsStale(generation) || Denied(transients.Kind))
+            {
+                return;
+            }
             _pipeline = pipeline.Value;
             _schedule = schedule.IsSuccess ? schedule.Value : null;
             _rigAvailable = rig.IsSuccess && rig.Value is not null;
             _rigSelection = rig.Value?.Selection;
             _registry = registry.IsSuccess ? registry.Value : null;
             _executions = executions.IsSuccess ? executions.Value : null;
+            _transients = transients.IsSuccess ? transients.Value : null;
             if (_pipeline.Pending is null)
             {
                 _showDraft = false;
@@ -216,8 +244,20 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         if (nodes.Count == 0)
         {
             _selectedId = null;
+            _selectedStage = null;
             return;
         }
+        // A lane stage is kept only while the current mode draws it; the lane is read after the plan, so an early
+        // pass leaves the request in place for the pass after loading.
+        if (_requestedStage is { } stage && (
+            string.Equals(stage, MeteorDetectionLane.RawFrameKey, StringComparison.Ordinal) ||
+            LaneStages.Any(candidate => string.Equals(candidate.Key, stage, StringComparison.Ordinal))))
+        {
+            _selectedStage = stage;
+            _selectedId = null;
+            return;
+        }
+        _selectedStage = null;
         var chosen = Find(nodes, _requestedStep) ?? Find(nodes, _selectedId) ?? nodes[0];
         _selectedId = chosen.Id;
 
@@ -231,7 +271,20 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     {
         _requestedStep = id;
         _selectedId = id;
-        NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameter("step", id), replace: true);
+        _requestedStage = null;
+        _selectedStage = null;
+        NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters(
+            new Dictionary<string, object?> { ["step"] = id, ["stage"] = null }), replace: true);
+    }
+
+    private void SelectStage(string key)
+    {
+        _requestedStage = key;
+        _selectedStage = key;
+        _requestedStep = null;
+        _selectedId = null;
+        NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters(
+            new Dictionary<string, object?> { ["stage"] = key, ["step"] = null }), replace: true);
     }
 
     private void ShowRevision(bool draft)
@@ -553,58 +606,134 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     internal static CaptureProcessingPlanNode? Effective(CaptureProcessingPlanPreview plan, string id)
         => plan.EffectiveNodes.FirstOrDefault(node => string.Equals(node.Id, id, StringComparison.OrdinalIgnoreCase));
 
-    internal sealed record PipelineEdge(string Path, bool Off, bool Selected);
+    internal sealed record PipelineCanvasEdge(string Path, string Source, string Target, bool Off, bool Transient);
 
-    internal static IReadOnlyList<PipelineEdge> Edges(IReadOnlyList<PipelineGraphPlacement> placements, string? selectedId)
+    /// <summary>
+    /// Everything the graph draws, in SVG user units on the same grid tracks the CSS lays the boxes on. Column 0 holds
+    /// the raw frame; step ranks and lane columns start at column 1. The processing rows come first, then the lane's
+    /// title row and its stage rows.
+    /// </summary>
+    internal sealed record PipelineCanvas(
+        IReadOnlyList<PipelineGraphPlacement> Steps,
+        IReadOnlyList<MeteorLaneStage> Stages,
+        IReadOnlyList<PipelineCanvasEdge> Edges,
+        IReadOnlyList<GraphTrack> Columns,
+        IReadOnlyList<GraphTrack> Rows,
+        int LaneTitleRow,
+        int LaneRow)
     {
+        internal bool HasInput(string key) => Edges.Any(edge => string.Equals(edge.Target, key, StringComparison.OrdinalIgnoreCase));
+
+        internal bool HasOutput(string key) => Edges.Any(edge => string.Equals(edge.Source, key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static string StepKey(string id) => string.Concat("step:", id);
+
+    internal static string StageKey(string key) => string.Concat("stage:", key);
+
+    /// <summary>
+    /// Lays out the raw frame, the steps and the meteor detection lane, and routes every edge around the boxes. A step
+    /// reading <c>$raw</c> takes an edge from the raw frame; a dependency on a step in the same or a later column is
+    /// not drawn, as before. Processing edges may use a row added below the steps; the lane starts below that.
+    /// </summary>
+    internal static PipelineCanvas Layout(IReadOnlyList<PipelineGraphPlacement> placements, IReadOnlyList<MeteorLaneStage> stages)
+    {
+        ArgumentNullException.ThrowIfNull(placements);
+        ArgumentNullException.ThrowIfNull(stages);
+        var stepColumns = placements.Select(static placement => placement.Rank + 1).DefaultIfEmpty(1).Max();
+        var laneColumns = stages.Select(static stage => stage.Column + 1).DefaultIfEmpty(0).Max();
+        var columnCount = 1 + Math.Max(1, Math.Max(stepColumns, laneColumns));
+        var columns = Enumerable.Range(0, columnCount)
+            .Select(static column => new GraphTrack(column * (ColumnWidth + ColumnGap), ColumnWidth))
+            .ToArray();
+        var stepRows = Math.Max(1, placements.Select(static placement => placement.Row + 1).DefaultIfEmpty(1).Max());
+        var rows = Enumerable.Range(0, stepRows)
+            .Select(static row => new GraphTrack(row * (RowHeight + RowGap), RowHeight))
+            .ToList();
+
+        var occupied = new List<(int Column, int Row)> { (0, 0) };
+        occupied.AddRange(placements.Select(static placement => (placement.Rank + 1, placement.Row)));
+        var router = new PipelineEdgeRouter(columns, rows, RowGap, occupied);
+        var edges = new List<PipelineCanvasEdge>();
         var byId = new Dictionary<string, PipelineGraphPlacement>(StringComparer.OrdinalIgnoreCase);
         foreach (var placement in placements)
         {
             byId.TryAdd(placement.Node.Id, placement);
         }
-        var edges = new List<PipelineEdge>();
         foreach (var target in placements)
         {
+            var targetKey = StepKey(target.Node.Id);
             foreach (var dependency in target.Dependencies)
             {
+                if (PipelineGraphLayout.IsRawInput(dependency))
+                {
+                    var route = router.Route(0, 0, target.Rank + 1, target.Row);
+                    edges.Add(new(PipelineEdgeRouter.Path(route), RawKey, targetKey, !target.Node.Enabled, false));
+                    continue;
+                }
                 if (!byId.TryGetValue(dependency, out var source) || source.Rank >= target.Rank)
                 {
                     continue;
                 }
-                var x1 = (source.Rank * (ColumnWidth + ColumnGap)) + ColumnWidth;
-                var y1 = (source.Row * (RowHeight + RowGap)) + (RowHeight / 2);
-                var x2 = target.Rank * (ColumnWidth + ColumnGap);
-                var y2 = (target.Row * (RowHeight + RowGap)) + (RowHeight / 2);
-                var bend = ColumnGap / 2;
-                var path = string.Create(CultureInfo.InvariantCulture,
-                    $"M{x1} {y1} C{x1 + bend} {y1} {x2 - bend} {y2} {x2} {y2}");
-                var selected = selectedId is not null && (
-                    string.Equals(source.Node.Id, selectedId, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(target.Node.Id, selectedId, StringComparison.OrdinalIgnoreCase));
-                edges.Add(new PipelineEdge(path, !source.Node.Enabled || !target.Node.Enabled, selected));
+                var path = PipelineEdgeRouter.Path(router.Route(source.Rank + 1, source.Row, target.Rank + 1, target.Row));
+                edges.Add(new(path, StepKey(source.Node.Id), targetKey, !source.Node.Enabled || !target.Node.Enabled, false));
             }
         }
-        return edges;
+
+        rows = [.. router.Rows];
+        var laneTitleRow = rows.Count;
+        rows.Add(new GraphTrack(rows[^1].End + RowGap, LaneTitleHeight));
+        var laneRow = rows.Count;
+        var laneRows = Math.Max(1, stages.Select(static stage => stage.Row + 1).DefaultIfEmpty(1).Max());
+        for (var row = 0; row < laneRows; row++)
+        {
+            rows.Add(new GraphTrack(rows[^1].End + RowGap, RowHeight));
+        }
+        if (stages.Count > 0)
+        {
+            occupied.AddRange(Enumerable.Range(1, columnCount - 1).Select(column => (column, laneTitleRow)));
+            occupied.AddRange(stages.Select(stage => (stage.Column + 1, laneRow + stage.Row)));
+            var lane = new PipelineEdgeRouter(columns, rows, RowGap, occupied);
+            var byKey = stages.ToDictionary(static stage => stage.Key, StringComparer.Ordinal);
+            foreach (var target in stages)
+            {
+                foreach (var input in target.Inputs)
+                {
+                    var (column, row, key) = byKey.TryGetValue(input, out var source)
+                        ? (source.Column + 1, laneRow + source.Row, StageKey(source.Key))
+                        : (0, 0, RawKey);
+                    var route = lane.Route(column, row, target.Column + 1, laneRow + target.Row);
+                    edges.Add(new(PipelineEdgeRouter.Path(route), key, StageKey(target.Key), false, true));
+                }
+            }
+            rows = [.. lane.Rows];
+        }
+        return new PipelineCanvas(placements, stages, edges, columns, rows, laneTitleRow, laneRow);
     }
 
-    private static string ViewBox(IReadOnlyList<PipelineGraphPlacement> placements)
+    private static string ViewBox(PipelineCanvas canvas)
+        => string.Create(CultureInfo.InvariantCulture, $"0 0 {canvas.Columns[^1].End} {canvas.Rows[^1].End}");
+
+    private static string GridStyle(PipelineCanvas canvas)
     {
-        var columns = Math.Max(1, placements.Select(static placement => placement.Rank + 1).DefaultIfEmpty(1).Max());
-        var rows = Math.Max(1, placements.Select(static placement => placement.Row + 1).DefaultIfEmpty(1).Max());
-        var width = (columns * ColumnWidth) + ((columns - 1) * ColumnGap);
-        var height = (rows * RowHeight) + ((rows - 1) * RowGap);
-        return string.Create(CultureInfo.InvariantCulture, $"0 0 {width} {height}");
+        var rows = string.Join(' ', canvas.Rows.Select(static row => Rem(row.Size)));
+        return string.Create(CultureInfo.InvariantCulture,
+            $"--pipeline-columns:{canvas.Columns.Count};--pipeline-row-template:{rows}");
     }
 
-    private static string GridStyle(IReadOnlyList<PipelineGraphPlacement> placements)
-    {
-        var columns = Math.Max(1, placements.Select(static placement => placement.Rank + 1).DefaultIfEmpty(1).Max());
-        var rows = Math.Max(1, placements.Select(static placement => placement.Row + 1).DefaultIfEmpty(1).Max());
-        return string.Create(CultureInfo.InvariantCulture, $"--pipeline-columns:{columns};--pipeline-rows:{rows}");
-    }
+    private static string Rem(double units) => string.Concat((units / UnitsPerRem).ToString("0.####", CultureInfo.InvariantCulture), "rem");
 
     private static string CellStyle(PipelineGraphPlacement placement)
-        => string.Create(CultureInfo.InvariantCulture, $"grid-column:{placement.Rank + 1};grid-row:{placement.Row + 1}");
+        => string.Create(CultureInfo.InvariantCulture, $"grid-column:{placement.Rank + 2};grid-row:{placement.Row + 1}");
+
+    private static string StageStyle(PipelineCanvas canvas, MeteorLaneStage stage)
+        => string.Create(CultureInfo.InvariantCulture, $"grid-column:{stage.Column + 2};grid-row:{canvas.LaneRow + stage.Row + 1}");
+
+    private static string RowStyle(int row, string columns)
+        => string.Create(CultureInfo.InvariantCulture, $"grid-column:{columns};grid-row:{row + 1}");
+
+    private static string BandStyle(PipelineCanvas canvas)
+        => string.Create(CultureInfo.InvariantCulture, $"grid-column:1 / -1;grid-row:{canvas.LaneTitleRow + 1} / {canvas.Rows.Count + 1}");
 
     internal sealed record PipelineCheck(string Text, bool? Passed);
 
@@ -693,10 +822,76 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     }
 
     private static string NodeClass(CaptureProcessingPlanNode node, bool active)
-        => string.Concat("ops-pipeline-node", active ? " active" : "", node.Enabled ? "" : " off", node.Required ? "" : " optional");
+        => string.Concat("ops-pipeline-node step", active ? " active" : "", node.Enabled ? "" : " off", node.Required ? "" : " optional");
 
-    private static string EdgeClass(PipelineEdge edge)
-        => string.Concat("pipeline-edge", edge.Off ? " off" : "", edge.Selected ? " selected" : "");
+    private static string EdgeClass(PipelineCanvasEdge edge, string? selectedKey)
+    {
+        var selected = selectedKey is not null && (
+            string.Equals(edge.Source, selectedKey, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(edge.Target, selectedKey, StringComparison.OrdinalIgnoreCase));
+        return string.Concat("pipeline-edge", edge.Transient ? " transient" : "", edge.Off ? " off" : "", selected ? " selected" : "");
+    }
+
+    private static string SourceClass(string key, string? selectedKey)
+        => string.Concat("ops-pipeline-node source", key == selectedKey ? " active" : "");
+
+    private static string StageClass(MeteorLaneStage stage, string key, string? selectedKey)
+        => string.Concat("ops-pipeline-node transient", stage.Central ? " central" : "", key == selectedKey ? " active" : "");
+
+    private static string Pressed(string key, string? selectedKey) => key == selectedKey ? "true" : "false";
+
+    private MeteorLaneStage? SelectedStage(PipelineCanvas canvas)
+        => canvas.Stages.FirstOrDefault(stage => string.Equals(stage.Key, _selectedStage, StringComparison.Ordinal));
+
+    private static string LaneSubtitle(TransientOperationsView? view) => view?.Mode switch
+    {
+        null => "State unavailable",
+        TransientOperatingMode.Edge => "Edge mode / reads every raw frame on its own durable lane",
+        TransientOperatingMode.Hybrid => "Hybrid mode / scans here, validates on LogicHost",
+        TransientOperatingMode.Central => "Central mode / runs on LogicHost",
+        _ => "Off on this agent",
+    };
+
+    private static (string Icon, string Title, string Detail) LaneNote(TransientOperationsView? view) => view is null
+        ? ("warning", "Meteor detection state could not be read.", "The processing steps are unaffected.")
+        : TransientOperationsPage.Banner(view);
+
+    private static string StageInputs(PipelineCanvas canvas, MeteorLaneStage stage)
+        => string.Join(", ", stage.Inputs.Select(input => string.Equals(input, MeteorDetectionLane.RawFrameKey, StringComparison.Ordinal)
+            ? "Raw frame"
+            : canvas.Stages.FirstOrDefault(other => string.Equals(other.Key, input, StringComparison.Ordinal))?.Title ?? input));
+
+    private static string StageState(TransientOperationsView? view, MeteorLaneStage stage)
+    {
+        if (view is null)
+        {
+            return "Unavailable";
+        }
+        return stage.Measure switch
+        {
+            MeteorLaneMeasure.PendingFrames => Waiting(view.Worker.PendingFrames, "frame", "frames"),
+            MeteorLaneMeasure.PendingCandidates => Waiting(view.Worker.PendingCandidates, "candidate", "candidates"),
+            MeteorLaneMeasure.Delivery => string.Concat(
+                Waiting(view.Delivery.PendingCount, "candidate", "candidates"), ", ", Count(view.Delivery.RetryingCount), " retrying"),
+            _ => "Not measured on this agent",
+        };
+
+        static string Waiting(long count, string one, string many)
+            => string.Concat(Count(count), " ", count == 1 ? one : many, " waiting");
+    }
+
+    private static string RawConsumers(IReadOnlyList<PipelineGraphPlacement> placements, PipelineCanvas canvas)
+    {
+        var names = placements
+            .Where(static placement => placement.Dependencies.Any(PipelineGraphLayout.IsRawInput))
+            .Select(static placement => Label(placement.Node.Id))
+            .ToList();
+        if (canvas.Stages.Count > 0)
+        {
+            names.Add("Meteor detection");
+        }
+        return names.Count == 0 ? "No step reads it directly" : string.Join(", ", names);
+    }
 
     private static string CheckClass(PipelineCheck check) => check.Passed switch
     {
@@ -792,7 +987,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private static string Seconds(TimeSpan duration)
         => string.Create(CultureInfo.InvariantCulture, $"{Math.Max(0, duration.TotalSeconds):0.00}s");
 
-    private static string Count(int value) => value.ToString("N0", CultureInfo.InvariantCulture);
+    private static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
     private static string Revision(long number) => number.ToString(CultureInfo.InvariantCulture);
 
