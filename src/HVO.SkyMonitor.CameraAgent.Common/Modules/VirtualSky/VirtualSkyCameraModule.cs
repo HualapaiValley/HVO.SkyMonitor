@@ -410,6 +410,8 @@ public sealed class VirtualSkyCameraModule(
             ["stellarPredictionIdentityVersion"] = StellarExposureRenderPlan.PredictionIdentityVersion,
             ["stellarPredictionsSha256"] = stellarPlan.ComputePredictionsSha256(cancellationToken),
             ["stellarCandidateCount"] = stellarGeometry.CandidateCount.ToString(CultureInfo.InvariantCulture),
+            ["stellarDirectionEvaluations"] = stellarGeometry.DirectionEvaluations.ToString(CultureInfo.InvariantCulture),
+            ["stellarMaximumDirectionEvaluations"] = stellarGeometry.MaximumDirectionEvaluations.ToString(CultureInfo.InvariantCulture),
             ["stellarSupportedCount"] = stellarPlan.Predictions.Count.ToString(CultureInfo.InvariantCulture),
             ["stellarAdmittedCount"] = stellarPlan.Sources.Count.ToString(CultureInfo.InvariantCulture),
             ["stellarTemporalSamples"] = stellarPlan.TemporalSampleCount.ToString(CultureInfo.InvariantCulture),

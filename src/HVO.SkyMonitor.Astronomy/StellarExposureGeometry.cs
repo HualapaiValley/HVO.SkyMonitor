@@ -8,7 +8,8 @@ public sealed record StellarExposureGeometryOptions(
     int MaximumSamplesPerSource = 64,
     double MaximumStepPixels = .15,
     double PsfSupportRadiusPixels = 4,
-    int MinimumSamplesPerSource = 1)
+    int MinimumSamplesPerSource = 1,
+    int MaximumDirectionEvaluations = 16000000)
 {
     /// <summary>Validates bounded candidate, temporal and optical support parameters.</summary>
     public void Validate()
@@ -16,7 +17,8 @@ public sealed record StellarExposureGeometryOptions(
         if (MaximumCandidates is < 1 or > 100000 || MaximumSamplesPerSource is < 1 or > 64 ||
             !double.IsFinite(MaximumStepPixels) || MaximumStepPixels is <= 0 or > .5 ||
             !double.IsFinite(PsfSupportRadiusPixels) || PsfSupportRadiusPixels is <= 0 or > 64 ||
-            MinimumSamplesPerSource < 1 || MinimumSamplesPerSource > MaximumSamplesPerSource)
+            MinimumSamplesPerSource < 1 || MinimumSamplesPerSource > MaximumSamplesPerSource ||
+            MaximumDirectionEvaluations is < 1 or > 100000000)
             throw new ArgumentOutOfRangeException(nameof(StellarExposureGeometryOptions));
     }
 }
@@ -51,13 +53,15 @@ public sealed class StellarExposureObject
 public sealed class StellarExposureGeometry
 {
     internal StellarExposureGeometry(VisibleSceneRequest request, DateTimeOffset startUtc, DateTimeOffset endUtc,
-        int candidateCount, int temporalSlots, StellarExposureGeometryOptions options, List<StellarExposureObject> sources)
+        int candidateCount, int temporalSlots, int directionEvaluations, StellarExposureGeometryOptions options, List<StellarExposureObject> sources)
     {
         Request = request;
         StartUtc = startUtc;
         EndUtc = endUtc;
         CandidateCount = candidateCount;
         TemporalSlots = temporalSlots;
+        DirectionEvaluations = directionEvaluations;
+        MaximumDirectionEvaluations = options.MaximumDirectionEvaluations;
         MaximumStepPixels = options.MaximumStepPixels;
         PsfSupportRadiusPixels = options.PsfSupportRadiusPixels;
         Sources = new ReadOnlyCollection<StellarExposureObject>(sources.ToArray());
@@ -79,6 +83,10 @@ public sealed class StellarExposureGeometry
     public double MaximumStepPixels { get; }
     /// <summary>Gets the source support used for conservative swept selection.</summary>
     public double PsfSupportRadiusPixels { get; }
+    /// <summary>Gets actual direction evaluations, including horizon refinement.</summary>
+    public int DirectionEvaluations { get; }
+    /// <summary>Gets the whole-geometry direction evaluation limit.</summary>
+    public int MaximumDirectionEvaluations { get; }
     /// <summary>Gets sources whose PSF support can intersect the image during the interval.</summary>
     public IReadOnlyList<StellarExposureObject> Sources { get; }
 }
@@ -106,7 +114,7 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         if (catalog is ICelestialCatalogMetadataSource metadataSource && metadataSource.Metadata != request.CatalogMetadata)
             throw new ArgumentException("Catalog provenance does not match the provider.", nameof(request));
         var projection = request.Projection;
-        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, options, []);
+        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, 0, options, []);
         if (request.Refraction.Enabled)
             throw new NotSupportedException("Exposure geometry requires geometric altitude; refracted motion is not bounded by this version.");
         // A source can enter finite support between samples. Include half a motion step
@@ -115,10 +123,16 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         var expanded = ExpandProjection(projection, selectionSupport);
         var speedBound = MaximumProjectionSpeed(expanded, selectionSupport);
         var requiredSlots = Math.Max(options.MinimumSamplesPerSource, Math.Ceiling(exposure.TotalSeconds * speedBound / options.MaximumStepPixels));
+        // A geometric sidereal horizon arc of at most six hours contains at most one
+        // culmination. Near the horizon, explicitly inspect that extremum instead of
+        // inferring visibility solely from the endpoints and midpoint.
+        if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon)
+            requiredSlots = Math.Max(requiredSlots, Math.Ceiling(exposure.TotalHours / 6));
         if (!double.IsFinite(requiredSlots) || requiredSlots > options.MaximumSamplesPerSource)
             throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
         var slots = (int)requiredSlots;
         var sources = new List<StellarExposureObject>();
+        var directionEvaluations = 0;
         // A global magnitude query is deliberately conservative. No instantaneous spatial cap
         // may erase a star that enters the sensor/aperture or contributes only clipped PSF support.
         var queriedCandidates = await catalog.QueryCandidatesAsync(new(request.CatalogQuery.MaximumMagnitude), cancellationToken)
@@ -163,6 +177,10 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
 
             (EquatorialPoint OfDate, AltAzPoint Geometric, AltAzPoint Apparent) Direction(DateTimeOffset utc)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (directionEvaluations >= options.MaximumDirectionEvaluations)
+                    throw new InvalidOperationException("stellar-exposure-direction-budget-exceeded");
+                directionEvaluations++;
                 var position = EquatorialPrecession.PrecessJ2000(new(source.RightAscensionHours, source.DeclinationDegrees), utc);
                 var horizontal = CoordinateTransforms.EquatorialToHorizontal(position, utc,
                     request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
@@ -186,6 +204,24 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
                         if (depth >= 8) throw new InvalidOperationException("stellar-exposure-horizon-refinement-budget-exceeded");
                         AppendInterval(left, middle, depth + 1); AppendInterval(middle, right, depth + 1); return;
                     }
+                    if ((a >= 0) == (b >= 0))
+                    {
+                        var visible = a >= 0;
+                        var motionMarginDegrees = MaximumSkyRadiansPerSecond * 180 / Math.PI * (right - left).TotalSeconds / 4;
+                        if (visible ? Math.Min(a, Math.Min(b, m)) < motionMarginDegrees :
+                            Math.Max(a, Math.Max(b, m)) >= -motionMarginDegrees)
+                        {
+                            var extremum = HorizonExtremum(left, right, a, b, m, maximize: !visible);
+                            if ((extremum.Altitude >= 0) != visible)
+                            {
+                                if (depth >= 8 || extremum.Utc <= left || extremum.Utc >= right)
+                                    throw new InvalidOperationException("stellar-exposure-horizon-refinement-budget-exceeded");
+                                AppendInterval(left, extremum.Utc, depth + 1);
+                                AppendInterval(extremum.Utc, right, depth + 1);
+                                return;
+                            }
+                        }
+                    }
                     if (a < 0 && b < 0) return;
                     if ((a >= 0) != (b >= 0))
                     {
@@ -207,8 +243,57 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
                     throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
                 samples.Add(new(middle, direction, samplePixel, (double)(right - left).Ticks / exposure.Ticks));
             }
+
+            (DateTimeOffset Utc, double Altitude) HorizonExtremum(DateTimeOffset left, DateTimeOffset right,
+                double a, double b, double m, bool maximize)
+            {
+                var best = (Utc: left, Altitude: a);
+                Consider(right, b);
+                Consider(left.AddTicks((right - left).Ticks / 2), m);
+                const double fraction = .3819660112501051;
+                var low = left;
+                var high = right;
+                var first = low.AddTicks((long)Math.Round((high - low).Ticks * fraction));
+                var second = high.AddTicks(-(long)Math.Round((high - low).Ticks * fraction));
+                var firstValue = Evaluate(first);
+                var secondValue = Evaluate(second);
+                // 72 golden-section iterations cover a six-hour interval down to UTC ticks.
+                // The independent direction budget also bounds degenerate near-horizon fields.
+                for (var iteration = 0; iteration < 72 && (high - low).Ticks > 2 && first < second; iteration++)
+                {
+                    if (maximize ? firstValue < secondValue : firstValue > secondValue)
+                    {
+                        low = first;
+                        first = second;
+                        firstValue = secondValue;
+                        second = high.AddTicks(-(long)Math.Round((high - low).Ticks * fraction));
+                        secondValue = Evaluate(second);
+                    }
+                    else
+                    {
+                        high = second;
+                        second = first;
+                        secondValue = firstValue;
+                        first = low.AddTicks((long)Math.Round((high - low).Ticks * fraction));
+                        firstValue = Evaluate(first);
+                    }
+                }
+                return best;
+
+                double Evaluate(DateTimeOffset time)
+                {
+                    var altitude = Direction(time).Geometric.AltitudeDegrees;
+                    Consider(time, altitude);
+                    return altitude;
+                }
+
+                void Consider(DateTimeOffset time, double altitude)
+                {
+                    if (maximize ? altitude > best.Altitude : altitude < best.Altitude) best = (time, altitude);
+                }
+            }
         }
-        return new(request, startUtc, endUtc, candidates.Count, slots, options, sources);
+        return new(request, startUtc, endUtc, candidates.Count, slots, directionEvaluations, options, sources);
     }
 
     private static bool HasSupport(PixelPoint pixel, ProjectionContext projection, double radius)

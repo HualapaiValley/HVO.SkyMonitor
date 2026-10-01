@@ -409,6 +409,12 @@ scenario time. The configured defaults permit at most 64 temporal samples per
 source, a 0.15-native-pixel motion step, 100 million kernel-cell visits per render
 plane, 65,536 sparse aperture entries and 16,777,216 active native buffer pixels.
 An exposure that cannot satisfy a sampling or work bound fails explicitly.
+Near the geometric horizon, bounded extremum checks detect a grazing rise or
+dip between equal-sign endpoints and midpoints. Horizon arcs are at most six
+hours, extremum searches stop after 72 iterations, and the default whole-capture
+budget is 16 million direction evaluations including refinement. Actual work
+and the limit are recorded in frame metadata; exhausting the bound refuses the
+exposure rather than dropping the remaining stars or renormalizing their flux.
 This version supports geometric altitude. Enabled atmospheric refraction is
 refused for positive exposures because its altitude-floor discontinuity and
 motion derivative are outside the geometric sampling bound.

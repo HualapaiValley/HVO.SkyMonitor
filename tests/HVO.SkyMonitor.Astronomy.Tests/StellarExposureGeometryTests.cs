@@ -80,6 +80,14 @@ public sealed class StellarExposureGeometryTests
             new(MaximumCandidates: 2)).ConfigureAwait(false);
         Assert.AreEqual(2, accepted.CandidateCount);
         Assert.HasCount(2, accepted.Sources);
+        var atDirectionBound = await builder.BuildAsync(request, MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20),
+            new(MaximumCandidates: 2, MaximumDirectionEvaluations: accepted.DirectionEvaluations)).ConfigureAwait(false);
+        Assert.AreEqual(accepted.DirectionEvaluations, atDirectionBound.DirectionEvaluations);
+        var directionFailure = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await builder.BuildAsync(request, MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20),
+                new(MaximumCandidates: 2, MaximumDirectionEvaluations: accepted.DirectionEvaluations - 1)).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        StringAssert.Contains(directionFailure.Message, "direction-budget-exceeded", StringComparison.Ordinal);
         var candidateFailure = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await builder.BuildAsync(request, MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20),
                 new(MaximumCandidates: 1)).ConfigureAwait(false)).ConfigureAwait(false);
@@ -100,6 +108,37 @@ public sealed class StellarExposureGeometryTests
             MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         Assert.HasCount(1, geometry.Sources);
         Assert.AreEqual(.5, geometry.Sources[0].Samples.Sum(sample => sample.ExposureFraction), 1e-4);
+        Assert.IsTrue(geometry.Sources[0].Samples.All(sample => sample.Horizontal.AltitudeDegrees >= 0));
+    }
+
+    [TestMethod]
+    [DataRow(180d, 1e-7)]
+    [DataRow(0d, -1e-7)]
+    public async Task GrazingHorizonPassageBetweenEqualSignSampleTimesPreservesVisibleEnergy(double azimuth, double peakAltitude)
+    {
+        var observer = new ObserverLocation(35, 0, 0);
+        var projection = Projection(ProjectionModel.Perspective) with { BoresightAltitudeDegrees = 0, BoresightAzimuthDegrees = azimuth };
+        var peakUtc = MidpointUtc.AddSeconds(2.5);
+        var ofDate = CoordinateTransforms.HorizontalToEquatorial(new(peakAltitude, azimuth), peakUtc,
+            observer.LatitudeDegrees, observer.LongitudeDegrees);
+        var j2000 = EquatorialPrecession.PrecessToJ2000(ofDate, peakUtc);
+        var source = new CelestialCatalogObject("grazing", "grazing", j2000.RightAscensionHours, j2000.DeclinationDegrees, 1);
+        var start = MidpointUtc.AddSeconds(-10);
+        var exposure = TimeSpan.FromSeconds(20);
+        var visible = 0;
+        for (var index = 0; index < 8192; index++)
+        {
+            var time = start.AddTicks(exposure.Ticks * (2 * index + 1) / 16384);
+            var position = EquatorialPrecession.PrecessJ2000(j2000, time);
+            if (CoordinateTransforms.EquatorialToHorizontal(position, time, observer.LatitudeDegrees,
+                observer.LongitudeDegrees).AltitudeDegrees >= 0) visible++;
+        }
+        Assert.IsTrue(visible is > 0 and < 8192, "The independent dense oracle must see a brief grazing passage.");
+        var geometry = await new StellarExposureGeometryBuilder(new InMemoryCelestialCatalog([source])).BuildAsync(
+            new VisibleSceneRequest(MidpointUtc, observer, projection, new(7, 1), Metadata,
+                horizonPolicy: HorizonPolicy.GeometricHorizon), start, exposure).ConfigureAwait(false);
+        Assert.HasCount(1, geometry.Sources);
+        Assert.AreEqual((double)visible / 8192, geometry.Sources[0].Samples.Sum(sample => sample.ExposureFraction), .001);
         Assert.IsTrue(geometry.Sources[0].Samples.All(sample => sample.Horizontal.AltitudeDegrees >= 0));
     }
 
