@@ -12,6 +12,26 @@ public sealed class VisibleSceneCoverageTests
         "Test catalog", "2025.1", new Uri("https://example.test/catalog"), "sha256:fixture", "CC0", "1");
 
     [TestMethod]
+    public void SelectedStarsPreserveNonstellarGeometryTopologyAndComputationIdentity()
+    {
+        var star = new ProjectedCelestialObject("kept", "star", CelestialObjectKind.Star,
+            default, default, default, default, default, new(50, 50), 1, null, "catalog", "projection", "algorithm");
+        var other = star with { Id = "omitted", Pixel = new(51, 51) };
+        var body = star with { Id = "body", Kind = CelestialObjectKind.SolarSystemBody };
+        ProjectedConstellationSegment[] topology = [new("line", "kept", "omitted", star.Pixel, other.Pixel)];
+        var identity = new VisibleSceneComputationProvenance("catalog-query", null, null, null);
+        var original = new VisibleScene(CreateRequest(), [star, other, body], topology, identity);
+        var selected = original.WithSelectedStars(new HashSet<string>(StringComparer.Ordinal) { "kept" });
+        CollectionAssert.AreEqual(new[] { star, body }, selected.Objects.ToArray());
+        CollectionAssert.AreEqual(topology, selected.Segments.ToArray());
+        Assert.AreSame(original.Request, selected.Request);
+        Assert.AreSame(identity, selected.ComputationProvenance);
+        Assert.HasCount(3, original.Objects);
+        CollectionAssert.AreEqual(new[] { body }, original.WithSelectedStars(new HashSet<string>()).Objects.ToArray());
+        Assert.Throws<ArgumentNullException>(() => original.WithSelectedStars(null!));
+    }
+
+    [TestMethod]
     public void ObserverLocation_RejectsEveryInvalidFiniteRange()
     {
         ObserverLocation[] invalid =

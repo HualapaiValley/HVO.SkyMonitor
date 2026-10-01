@@ -15,6 +15,78 @@ public sealed class StellarExposureRenderPlanTests
         ProjectionAperture.Rectangular);
 
     [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16, false)]
+    [DataRow(CameraPixelFormat.Mono16, true)]
+    [DataRow(CameraPixelFormat.Rgb24, false)]
+    [DataRow(CameraPixelFormat.Rgb24, true)]
+    [DataRow(CameraPixelFormat.BayerRggb16, false)]
+    [DataRow(CameraPixelFormat.BayerRggb16, true)]
+    public async Task NativeColorRenderPathsApplyCloudOnceAndRetainTemporalWork(CameraPixelFormat format, bool clouded)
+    {
+        var (geometry, scene) = await Scene(1).ConfigureAwait(false);
+        var cloud = new VirtualCloudRenderContext(new VirtualCloudField(new VirtualCloudScenarioDefinition
+        {
+            ScenarioId = "stellar-color-cloud",
+            EpochUtc = Utc,
+            HorizonFadeDegrees = 0,
+            TemporalSampleCount = 2,
+            Keyframes = [new() { Coverage = 1, MaximumOpacity = .5, ScatterFraction = .1 }]
+        }), Utc.AddSeconds(-.05), TimeSpan.FromSeconds(.1));
+        var response = new MonoSensorResponse
+        {
+            AdcBitDepth = 16,
+            FullWellElectrons = 1e6,
+            ElectronsPerAdu = 1,
+            ReadNoiseElectrons = 0
+        };
+        LinearSceneRenderOptions clear = format switch
+        {
+            CameraPixelFormat.Rgb24 => new Rgb24CompatibilityRenderOptions(),
+            CameraPixelFormat.BayerRggb16 => new BayerRggb16RenderOptions { SensorResponse = response },
+            _ => new Mono16SceneRenderOptions { SensorResponse = response }
+        };
+        clear = clear with
+        {
+            ExposureSeconds = .1,
+            MagnitudeZeroElectronsPerSecond = format == CameraPixelFormat.Rgb24 ? 10000 : 1000000,
+            BackgroundElectronsPerSecond = 100,
+            DarkCurrentElectronsPerSecond = 0,
+            ReadNoiseStandardDeviation = 0
+        };
+        var options = clear with { Cloud = clouded ? cloud : null };
+        var clearPlan = StellarExposureRenderPlan.Prepare(geometry, clear, new(MinimumSignalToNoise: .01));
+        var plan = StellarExposureRenderPlan.Prepare(geometry, options, new(MinimumSignalToNoise: .01));
+        var layout = new ImageLayout(32, 32, format, format == CameraPixelFormat.Rgb24 ? 96 : 64);
+        SceneRenderResult Render(LinearSceneRenderOptions configured, StellarExposureRenderPlan selected)
+            => format switch
+            {
+                CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout,
+                    (Rgb24CompatibilityRenderOptions)configured with { StellarExposure = selected }),
+                CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(scene, layout,
+                    (BayerRggb16RenderOptions)configured with { StellarExposure = selected }),
+                _ => Mono16SceneRenderer.Render(scene, layout,
+                    (Mono16SceneRenderOptions)configured with { StellarExposure = selected })
+            };
+        var result = Render(options, plan);
+        CollectionAssert.AreEqual(result.Pixels.ToArray(), Render(options, plan).Pixels.ToArray());
+        Assert.HasCount(1, result.Objects);
+        Assert.AreSame(plan.Predictions, result.StellarPredictions);
+        Assert.IsNotNull(result.StellarStatistics);
+        var planes = format == CameraPixelFormat.Mono16 ? 1 : 3;
+        Assert.AreEqual(planes, result.StellarStatistics.RenderPlanes);
+        Assert.AreEqual(plan.PredictionKernelCellVisits * planes, result.StellarStatistics.RenderKernelCellVisits);
+        Assert.AreEqual(clearPlan.Predictions[0].Signal.SourceElectrons * (clouded ? .5 : 1),
+            plan.Predictions[0].Signal.SourceElectrons, 1e-6);
+        if (format != CameraPixelFormat.Rgb24)
+        {
+            // This corner is outside the source kernel: 100e/s * 0.1s, or (0.5+0.1)*that under clouds.
+            Assert.AreEqual((ushort)(clouded ? 6 : 10),
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(result.Pixels.Span));
+        }
+        if (clouded) Assert.IsLessThan(Render(clear, clearPlan).Statistics.Maximum, result.Statistics.Maximum);
+    }
+
+    [TestMethod]
     public async Task NativeAperturePredictionMatchesIndependentElectronEquation()
     {
         var (geometry, _) = await Scene(1).ConfigureAwait(false);

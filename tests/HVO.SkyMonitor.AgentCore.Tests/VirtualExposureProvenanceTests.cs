@@ -104,6 +104,45 @@ public sealed class VirtualExposureProvenanceTests
         Assert.AreEqual("scene.virtualExposure", corrupt.Validate().FieldPath);
         corrupt = manifest with { Scene = scene with { VirtualExposure = logical with { ScenarioEndUtc = logical.ScenarioEndUtc.AddTicks(1) } } };
         Assert.IsFalse(CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(corrupt)).IsValid);
+        var otherRequest = VirtualExposureProvenance.Create(request.AddSeconds(1), logical.ScenarioStartUtc,
+            logical.CelestialStartUtc, original.Descriptor.Controls.EffectiveExposure,
+            VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc);
+        Assert.IsFalse((manifest with { Scene = scene with { VirtualExposure = otherRequest } }).Validate().IsValid);
+        Assert.IsFalse((manifest with { Scene = scene with { SceneUtc = null } }).Validate().IsValid);
+        var parameters = CaptureContractJson.SerializeToElement(new
+        {
+            schemaVersion = "v1",
+            scenarioId = "fixture",
+            scenarioVersion = "1",
+            seed = 1,
+            epochUtc = logical.ScenarioStartUtc,
+            temporalSampleCount = 1,
+            skyTracks = Array.Empty<object>(),
+            sensorTracks = Array.Empty<object>()
+        });
+        var transient = new TransientScenarioProvenance("v1", "fixture", "1", "fixture-v1",
+            CaptureContractJson.ComputeCanonicalJsonSha256(parameters), 1, logical.ScenarioStartUtc,
+            logical.ScenarioStartUtc, logical.ScenarioEndUtc, 1, 0, 0, parameters);
+        var timed = manifest with { Scene = scene with { TransientScenario = transient } };
+        Assert.IsTrue(CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(timed)).IsValid);
+        foreach (var mismatch in new[]
+        {
+            transient with { IntegrationStartUtc = transient.IntegrationStartUtc.AddTicks(-1) },
+            transient with { IntegrationEndUtc = transient.IntegrationEndUtc.AddTicks(1) }
+        })
+        {
+            var invalid = timed with { Scene = timed.Scene! with { TransientScenario = mismatch } };
+            Assert.AreEqual("scene.virtualExposure", invalid.Validate().FieldPath);
+            Assert.IsFalse(CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(invalid)).IsValid);
+        }
+        foreach (var producer in new[] { "", new string('P', 129) })
+        {
+            var invalid = manifest with { ProducerStepId = producer };
+            Assert.AreEqual("producerStepId", invalid.Validate().FieldPath);
+        }
+        Assert.IsTrue((manifest with { ProducerStepId = "valid-producer" }).Validate().IsValid);
+        Assert.IsTrue((manifest with { Scene = scene with { VirtualExposure = null } }).Validate().IsValid,
+            "Existing scene provenance also remains readable without a virtual clock.");
         Assert.IsTrue(original.Validate().IsValid, "Existing manifests have no virtual interval requirement.");
     }
 }
