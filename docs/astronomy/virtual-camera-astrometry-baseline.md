@@ -87,6 +87,15 @@ frame times/readouts; inverse rays; local finite-difference pixel scale; and
 support/null results. Withheld accuracy uses sources at least 12 output pixels
 inside both rectangle and aperture; boundaries are checked separately.
 
+Every accepted source frame, including warm assessments and all readout/CFA
+views, has its own 25-point inverse/local-scale grid: 2,250 distinct source
+checks. Separately, each source maps those points to all ten later warm views
+in its season: 22,500 cross-frame rows. The source rows retain independent and
+measured X/Y scales, relative errors, inverse rays and assessment identities.
+Each source and source/target pair must exercise both supported and unsupported
+points; exact source and pair inventories are asserted. Repeated destination
+checks do not increase the reported inverse/local-scale inventory.
+
 Existing solver acceptance remains >=12 fitting and >=4 verification stars,
 >=35% coverage on both axes, fitting RMS <=0.4 and verification RMS <=0.5 pixels.
 Additional limits are association precision 1.0, withheld mapping RMS <=0.5 and

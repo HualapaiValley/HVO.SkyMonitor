@@ -111,11 +111,11 @@ public sealed class VirtualAstrometryQualificationTests
                 }
             }
         }
-        var grids = ScoreMappings(mapCases, failures);
+        var mappings = ScoreMappings(mapCases, failures);
         var path = Path.Combine(resultRoot, "virtual-astrometry-pixels.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            schema = "virtual-astrometry-pixels-v1",
+            schema = "virtual-astrometry-pixels-v2",
             partition,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             snapshot.DatabaseSha256,
@@ -127,11 +127,18 @@ public sealed class VirtualAstrometryQualificationTests
             mappingInteriorMarginPixels = 12,
             finalExposureQualification = "pending-522-1106",
             reports,
-            grids,
+            grids = mappings.Grids,
+            sourceGeometry = mappings.SourceGeometry,
+            sourceCoverage = mappings.SourceCoverage,
+            mappingCoverage = mappings.MappingCoverage,
             failures
         }, VirtualAstrometryFixture.JsonOptions)).ConfigureAwait(false);
         TestContext.AddResultFile(path);
         Assert.AreEqual(partitions.Length * 30, reports.Count, "Every supported camera/derived-phase case must run.");
+        Assert.AreEqual(reports.Count * 25, mappings.SourceGeometry.Count, "Every accepted blind/warm source requires its own grid.");
+        Assert.AreEqual(reports.Count, mappings.SourceCoverage.Count);
+        Assert.AreEqual(reports.Count * 10 * 25, mappings.Grids.Count, "Every source maps to every later warm view in its season.");
+        Assert.AreEqual(reports.Count * 10, mappings.MappingCoverage.Count);
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
@@ -182,58 +189,112 @@ public sealed class VirtualAstrometryQualificationTests
     private sealed record MapCase(string Id, CameraRigConfig Truth, DateTimeOffset SceneUtc,
         AstrometricCalibration Nominal, AstrometricFrameAssessment Assessment);
 
-    private static List<object> ScoreMappings(List<MapCase> cases, List<string> failures)
+    private sealed record MappingEvidence(List<object> Grids, List<object> SourceGeometry,
+        List<object> SourceCoverage, List<object> MappingCoverage);
+
+    private static MappingEvidence ScoreMappings(List<MapCase> cases, List<string> failures)
     {
         var rows = new List<object>();
-        foreach (var source in cases.Where(item => item.Id.EndsWith("mono-native-0", StringComparison.Ordinal)))
+        var geometry = new List<object>();
+        var sourceCoverage = new List<object>();
+        var mappingCoverage = new List<object>();
+        foreach (var source in cases)
         {
             var sourceMapping = new AstrometricMapping(source.Nominal, source.Assessment);
+            var samples = new List<(PixelPoint Pixel, VirtualAstrometryReference.Vector? Ray)>();
+            var supportedSourcePoints = 0;
+            foreach (var fy in new[] { .05, .2, .5, .8, .95 })
+                foreach (var fx in new[] { .05, .2, .5, .8, .95 })
+                {
+                    var pixel = new PixelPoint(fx * source.Nominal.Projection.WidthPixels, fy * source.Nominal.Projection.HeightPixels);
+                    var ray = VirtualAstrometryReference.Unproject(source.Truth, pixel);
+                    samples.Add((pixel, ray));
+                    if (ray is not null) supportedSourcePoints++;
+                    var sky = sourceMapping.PixelToSky(pixel);
+                    if ((sky is null) != (ray is null)) failures.Add($"{source.Id} pixel-to-sky support mismatch at {pixel}");
+                    var expectedRay = ray is null ? (VirtualAstrometryReference.Vector?)null
+                        : VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.FromEnu(ray.Value,
+                            source.SceneUtc, VirtualAstrometryFixture.Observer), source.Assessment.Frame.MidpointUtc, VirtualAstrometryFixture.Observer);
+                    double? rayError = null;
+                    if (expectedRay is not null && sky is not null)
+                    {
+                        var a = VirtualAstrometryReference.Radians(sky.Horizontal.AltitudeDegrees);
+                        var z = VirtualAstrometryReference.Radians(sky.Horizontal.AzimuthDegrees);
+                        var fitted = new VirtualAstrometryReference.Vector(Math.Cos(a) * Math.Sin(z), Math.Cos(a) * Math.Cos(z), Math.Sin(a));
+                        rayError = VirtualAstrometryReference.SeparationDegrees(expectedRay.Value, fitted);
+                        if (rayError > .06) failures.Add($"{source.Id} independent inverse ray error {rayError:R}deg");
+                    }
+                    double? ReferenceScale(PixelPoint p, PixelPoint q)
+                    {
+                        var first = VirtualAstrometryReference.Unproject(source.Truth, p);
+                        var second = VirtualAstrometryReference.Unproject(source.Truth, q);
+                        return first is null || second is null ? null : VirtualAstrometryReference.SeparationDegrees(first.Value, second.Value) * 3600;
+                    }
+                    var sx = ReferenceScale(new(pixel.X - .5, pixel.Y), new(pixel.X + .5, pixel.Y));
+                    var sy = ReferenceScale(new(pixel.X, pixel.Y - .5), new(pixel.X, pixel.Y + .5));
+                    var scale = sourceMapping.LocalPixelScale(pixel);
+                    var errorX = sx is null || scale.XArcsecondsPerPixel is null ? (double?)null : Math.Abs(scale.XArcsecondsPerPixel.Value / sx.Value - 1);
+                    var errorY = sy is null || scale.YArcsecondsPerPixel is null ? (double?)null : Math.Abs(scale.YArcsecondsPerPixel.Value / sy.Value - 1);
+                    if ((sx is null) != (scale.XArcsecondsPerPixel is null) || errorX > .002 ||
+                        (sy is null) != (scale.YArcsecondsPerPixel is null) || errorY > .002)
+                        failures.Add($"{source.Id} independent local pixel scale mismatch at {pixel}");
+                    geometry.Add(new
+                    {
+                        source = source.Id,
+                        source.Assessment.Mode,
+                        source.Assessment.IdentitySha256,
+                        pixel,
+                        expectedRayAtMidpoint = expectedRay,
+                        actualSky = sky,
+                        rayErrorDegrees = rayError,
+                        expectedScaleXArcsecondsPerPixel = sx,
+                        expectedScaleYArcsecondsPerPixel = sy,
+                        actualScaleXArcsecondsPerPixel = scale.XArcsecondsPerPixel,
+                        actualScaleYArcsecondsPerPixel = scale.YArcsecondsPerPixel,
+                        scaleXRelativeError = errorX,
+                        scaleYRelativeError = errorY
+                    });
+                }
+            sourceCoverage.Add(new
+            {
+                source = source.Id,
+                source.Assessment.Mode,
+                points = samples.Count,
+                supportedPoints = supportedSourcePoints,
+                unsupportedPoints = samples.Count - supportedSourcePoints
+            });
+            if (supportedSourcePoints == 0 || supportedSourcePoints == samples.Count)
+                failures.Add($"{source.Id} grid must exercise supported and unsupported inverse/scale points");
             foreach (var target in cases.Where(item => item.Id[..2] == source.Id[..2] && item.Id.EndsWith("-2", StringComparison.Ordinal)))
             {
                 var targetMapping = new AstrometricMapping(target.Nominal, target.Assessment);
-                foreach (var fy in new[] { .05, .2, .5, .8, .95 })
-                    foreach (var fx in new[] { .05, .2, .5, .8, .95 })
-                    {
-                        var pixel = new PixelPoint(fx * source.Nominal.Projection.WidthPixels, fy * source.Nominal.Projection.HeightPixels);
-                        var ray = VirtualAstrometryReference.Unproject(source.Truth, pixel);
-                        var destinationRay = ray is null ? (VirtualAstrometryReference.Vector?)null : VirtualAstrometryReference.ToEnu(
-                            VirtualAstrometryReference.FromEnu(ray.Value, source.SceneUtc, VirtualAstrometryFixture.Observer), target.SceneUtc, VirtualAstrometryFixture.Observer);
-                        var expected = ray is { Z: >= 0 } && destinationRay is { Z: >= 0 }
-                            ? VirtualAstrometryReference.Project(target.Truth, destinationRay.Value) : null;
-                        var actual = sourceMapping.MapPixelTo(pixel, targetMapping);
-                        var residual = actual is null || expected is null ? (double?)null : VirtualAstrometryReference.Distance(actual.Value, expected.Value);
-                        if ((actual is null) != (expected is null) || residual > .75)
-                            failures.Add($"{source.Id}->{target.Id} independent grid mapping failed at {pixel}: expected {expected}, actual {actual}, residual {residual:R}");
-                        var sky = sourceMapping.PixelToSky(pixel);
-                        if ((sky is null) != (ray is null)) failures.Add($"{source.Id} pixel-to-sky support mismatch at {pixel}");
-                        double? rayError = null;
-                        if (ray is not null && sky is not null)
-                        {
-                            var transported = VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.FromEnu(ray.Value,
-                                source.SceneUtc, VirtualAstrometryFixture.Observer), source.Assessment.Frame.MidpointUtc, VirtualAstrometryFixture.Observer);
-                            var a = VirtualAstrometryReference.Radians(sky.Horizontal.AltitudeDegrees);
-                            var z = VirtualAstrometryReference.Radians(sky.Horizontal.AzimuthDegrees);
-                            var fitted = new VirtualAstrometryReference.Vector(Math.Cos(a) * Math.Sin(z), Math.Cos(a) * Math.Cos(z), Math.Sin(a));
-                            rayError = VirtualAstrometryReference.SeparationDegrees(transported, fitted);
-                            if (rayError > .06) failures.Add($"{source.Id} independent inverse ray error {rayError:R}deg");
-                            var scale = sourceMapping.LocalPixelScale(pixel);
-                            double? ReferenceScale(PixelPoint p, PixelPoint q)
-                            {
-                                var first = VirtualAstrometryReference.Unproject(source.Truth, p); var second = VirtualAstrometryReference.Unproject(source.Truth, q);
-                                return first is null || second is null ? null : VirtualAstrometryReference.SeparationDegrees(first.Value, second.Value) * 3600;
-                            }
-                            var sx = ReferenceScale(new(pixel.X - .5, pixel.Y), new(pixel.X + .5, pixel.Y));
-                            var sy = ReferenceScale(new(pixel.X, pixel.Y - .5), new(pixel.X, pixel.Y + .5));
-                            if (sx is not null && (scale.XArcsecondsPerPixel is null || Math.Abs(scale.XArcsecondsPerPixel.Value / sx.Value - 1) > .002) ||
-                                sy is not null && (scale.YArcsecondsPerPixel is null || Math.Abs(scale.YArcsecondsPerPixel.Value / sy.Value - 1) > .002))
-                                failures.Add($"{source.Id} independent local pixel scale mismatch");
-                        }
-                        rows.Add(new { source = source.Id, destination = target.Id, pixel, expected, actual, residualPixels = residual, rayErrorDegrees = rayError });
-                    }
+                var supportedMappings = 0;
+                foreach (var (pixel, ray) in samples)
+                {
+                    var destinationRay = ray is null ? (VirtualAstrometryReference.Vector?)null : VirtualAstrometryReference.ToEnu(
+                        VirtualAstrometryReference.FromEnu(ray.Value, source.SceneUtc, VirtualAstrometryFixture.Observer), target.SceneUtc, VirtualAstrometryFixture.Observer);
+                    var expected = ray is { Z: >= 0 } && destinationRay is { Z: >= 0 }
+                        ? VirtualAstrometryReference.Project(target.Truth, destinationRay.Value) : null;
+                    if (expected is not null) supportedMappings++;
+                    var actual = sourceMapping.MapPixelTo(pixel, targetMapping);
+                    var residual = actual is null || expected is null ? (double?)null : VirtualAstrometryReference.Distance(actual.Value, expected.Value);
+                    if ((actual is null) != (expected is null) || residual > .75)
+                        failures.Add($"{source.Id}->{target.Id} independent grid mapping failed at {pixel}: expected {expected}, actual {actual}, residual {residual:R}");
+                    rows.Add(new { source = source.Id, destination = target.Id, pixel, expected, actual, residualPixels = residual });
+                }
+                mappingCoverage.Add(new
+                {
+                    source = source.Id,
+                    destination = target.Id,
+                    points = samples.Count,
+                    supportedMappings,
+                    unsupportedMappings = samples.Count - supportedMappings
+                });
+                if (supportedMappings == 0 || supportedMappings == samples.Count)
+                    failures.Add($"{source.Id}->{target.Id} grid must exercise supported and unsupported mappings");
             }
         }
-        Assert.IsTrue(rows.Count >= 250);
-        return rows;
+        return new(rows, geometry, sourceCoverage, mappingCoverage);
     }
 
     private static CatalogSnapshotResult Snapshot()
