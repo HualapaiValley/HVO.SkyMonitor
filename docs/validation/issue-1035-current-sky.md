@@ -37,7 +37,7 @@ errors. Regression cases cover four terminal optional layer outcomes arriving
 during full screen, immediate authorization denial, rejected browser full screen,
 and central configuration without an invented acknowledgement.
 
-Fresh per-project Unit discovery is Imaging 240, Processing 210 and CameraAgent
+First-loop per-project Unit discovery was Imaging 240, Processing 210 and CameraAgent
 2,904. The corresponding category inventories and solution Unit total 4,958 are
 updated. These counts are discovery evidence, not a full-suite pass.
 
@@ -50,7 +50,8 @@ browser errors and no overflow. Resizing uses Chromium's CDP viewport override
 while full screen is active, rather than a physical monitor-resolution change.
 The browser probe exposed missing explicit Escape handling; the correction also
 avoids returning focus to the image trigger when opening technical evidence.
-Interactive newly produced layers and their saved stack are still unqualified.
+That first preview did not qualify newly produced interactive layers or their saved stack;
+later evidence below records those products separately.
 
 All four CI-control guards passed on local `08b79fb7`. The classifier on
 `de18e41c..02af878b` selects `mode=full complete=false`, with shared, CameraAgent,
@@ -59,12 +60,13 @@ control results do not replace the complete Tier C candidate gate.
 
 ## Work still required
 
-- Qualify the capture-bound rig, cadence and lineage span changes against native
-  retained data, and complete the transient bottom-card facts.
-- Exercise actual newly retained layered products and saved raster output in the
-  native browser; compare desktop, phone and native overlay bounds and styling.
-- Verify full-screen selection/default/save/Escape/focus/resizing, failure,
-  authorization and disposal behavior in a real browser.
+- Complete the captured site/location facts and remaining overlay typography,
+  fact-card hierarchy and prototype comparisons.
+- Qualify SVG/raster pixel parity on matched retained inputs. Native image/SVG
+  bounds, actual layered products and saved RGB output are recorded below.
+- Complete native failure and authorization checks. Full-screen selection,
+  restore/save, Escape, forward/reverse focus containment and resize now have
+  genuine native evidence; focused tests cover authorization and disposal.
 - Measure matched before/after renderer and host costs under declared limits;
   do not infer safe default-resource adoption from the earlier candidate's tests.
 - Run classifier-selected Tier C candidate gates and independent exact-range
@@ -154,3 +156,49 @@ same shared, CameraAgent, LogicHost, combined and delivery lanes, with
 `mode=full complete=false deployment=false` over 35 paths. The complete Tier C
 candidate gate, independent exact-range review and separate operator page review
 are still outstanding.
+
+
+## Retained detector outcomes and further native checks
+
+Runtime source `127d6763` replaces the stale detector-future wording with an
+independent, authorized read of the displayed capture's exact durable outcome.
+Current mode is labeled as configuration now; absence never becomes a clean
+causal pass. Failed/foreign reads remain unavailable, causal candidates are not
+confirmed events, and authorization denial immediately clears the image. The
+optional read has a two-second deadline and capture/generation/disposal guards.
+All 103 selected Current Sky/operator-service cases passed with warnings as
+errors, including 17 new cases. Fresh CameraAgent Unit discovery is 2,941 and
+solution inventory is 4,995; these counts do not claim a full-suite pass.
+
+The native private preview at LAN port 5132 remains paused on capture #32.
+Its journal records a successful causal pass and one completed candidate, which
+matches the new card at 1440, 390 and 320 pixels. Those native widths passed
+15 reverse Tabs contained in the viewer, retained selection through fullscreen
+resize, restoring defaults and saving from fullscreen, then Escape and trigger
+focus. Normal and fullscreen control ordering differs, so the probe compares
+selection by immutable layer identity. Image/SVG bounds remain equal through
+resize and the base URL stays unchanged. Each saved original still has
+7,062,528 RGB bytes and SHA-256
+`8549fbaa442eeeba380f5c2fe9dd22a8e0baf9f859b0825059d934fc2f438fc8`.
+No overflow or browser errors were observed. `transient-native.json`, screenshots,
+TRX/logs and `transient-capture32-retained.json` are in the local evidence cache.
+These are functional checks, not prototype or resource acceptance.
+
+## CI-control assertion correction
+
+The initial parallel guard run at `127d6763` failed its existing link-depth
+assertion; a same-head serial retry passed. The assertion piped 166 records
+(16,626 bytes) into `grep -q` under `pipefail`. A bounded probe reproduced 99
+writer exits with status 141 while the matcher succeeded across 1,000 attempts.
+Commit `4c715968` consumes the complete input before returning the match result;
+the same 1,000-attempt probe then had zero failures. The corrected classifier
+guard and shell-syntax guard passed. Coordination and PR-review-tool guards
+passed on the preceding application head; all four will run again in the
+complete candidate gate.
+
+Because the correction touches a CI-control script, the authoritative selector
+on `de18e41c..4c715968` now returns `mode=full complete=true deployment=true`,
+including all shared, CameraAgent, LogicHost, combined and delivery lanes and
+the deployment catalog, shard and installer selections over 38 changed paths.
+This expands the candidate evidence required; no full gate, PR, independent
+review, operator page acceptance or rollout is claimed yet.
