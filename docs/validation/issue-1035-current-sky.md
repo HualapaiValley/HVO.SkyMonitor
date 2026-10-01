@@ -1,8 +1,10 @@
 # Current Sky fidelity — issue #1035
 
 This is the active local evidence record for the remaining work under epic #1110.
-The issue remains open. Operator page acceptance, full candidate validation,
-independent review and release are not complete.
+The issue remains open. The operator accepted the Current Sky sizing and
+authorized merging the current work on 2026-10-01, with Archive image containment
+and catalog-star visibility tracked in #1117. Full candidate validation,
+independent review and release remain in progress.
 
 ## Starting point and preserved candidate
 
@@ -368,3 +370,40 @@ shared-path/geometry tests support common layout, while these browser measuremen
 show the actual remaining rasterizer differences. Full visual/resource qualification,
 complete selected candidate gates, independent review and operator acceptance
 remain required before release.
+
+## Candidate and operator checkpoint — 2026-10-01 18:31 UTC
+
+On clean `c11e80e7`, `scripts/ci:classify pull_request de18e41c HEAD` selected
+`mode=full complete=true deployment=true`: all component and deployment lanes,
+45 changed paths. Tool/solution restore, full no-incremental Debug and Release
+builds with warnings as errors, solution format verification, package audit and
+actual category discovery pass. Discovery is 5,011 Unit, 681 Integration,
+153 Manual, one Soak and one Hardware case.
+
+The full Unit run passed Astronomy (219) and Imaging (242), then found four
+Processing projection assertions that still encoded the retired bitmap-label
+top-left offset. Their fixtures are now 200×500 rather than 20×50 so that an
+18 px glyph and 38×25 plate fit. The assertions independently transform each
+sky landmark and check that its actual pinned glyph is centered within half a
+pixel; unequal binning, quarter rotations, mirrors and crop exclusions remain
+covered. All four corrected cases pass. This changes tests, not production
+projection or the accepted native image. Remaining full gates are pending.
+
+A separate SVG-alpha edge probe refines the exact-base comparison above: every
+one of the 355 pixels with a maximum channel error greater than eight lies
+within one pixel of an alpha edge (3×3 alpha gradient at least four). There are
+zero such errors away from those edges. The maximum difference remains 34;
+this records Chromium/Skia antialiasing variance and does not claim identical
+pixels or establish a general tolerance for arbitrary payloads. The probe uses
+the exact retained base bytes and capture #42's actual SVG and saved RGB output.
+
+The operator accepted Current Sky sizing in the native preview and authorized
+merging the current changes after required review and validation. Follow-up
+[#1117](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1117) owns the
+reported Archive image containment and catalog-star visibility observations.
+Archive overflow is reproduced at 1440/390/320: the child image retains its
+1936×1216 intrinsic size in slots only 444.5/367.2/297.2 px wide. The existing
+scoped selector does not reach `RetainedPreviewImage`'s child `<img>`. No Archive
+fix is included in this branch. Full HYG is already loaded; missing visible stars
+requires examining actual generation/display inputs rather than inferring a
+catalog absence from labels. Capture #42's Sun altitude is about 45.34°.
