@@ -468,6 +468,41 @@ include their catalog queries, whose separately measured CPU must be accounted
 for rather than added twice. Baseline uninstrumented stage CPU remains explicitly
 unavailable.
 
+The [#522 resource comparison](validation/issue-522-stellar-resources.json)
+retains the nine-workload before/after results, source revisions, configuration
+and raw-evidence hashes, CPU, allocations, I/O, throughput and stage counters.
+Each workload uses a fresh Release process, five warmups and 30 measured captures
+with tiered compilation disabled. All predeclared budgets passed: p95 at most
+10 seconds for Mono or 40 seconds for Bayer, and cumulative process peak below
+2 GiB. This is x64 virtual capture evidence; no queue/backlog or physical/ARM
+qualification is inferred.
+
+| Workload | Before p95 ms | After p95 ms | Ratio | After peak GiB |
+| --- | ---: | ---: | ---: | ---: |
+| mono-short | 82.65 | 175.73 | 2.13x | 0.341 |
+| mono-long | 87.28 | 469.57 | 5.38x | 0.357 |
+| mono-day | 86.95 | 366.92 | 4.22x | 0.358 |
+| cfa-short | 763.03 | 592.06 | 0.78x | 1.048 |
+| cfa-long | 906.94 | 945.65 | 1.04x | 0.879 |
+| cfa-day | 557.51 | 1087.35 | 1.95x | 0.734 |
+| asi676-short | 920.09 | 1041.99 | 1.13x | 1.787 |
+| asi676-long | 1150.66 | 1575.62 | 1.37x | 1.444 |
+| asi676-day | 1099.14 | 1886.01 | 1.72x | 1.195 |
+
+The 5.38x Mono long-exposure latency increase includes the larger complete
+8,920-candidate selection, a median 4,183.5 retained sources and 25,202.5 temporal
+samples, versus the old 300-object stationary scene. Median process CPU rose
+from 91.47 to 293.17 ms; prediction and rendering visited about 3.23 and 3.21
+million kernel cells. Short Mono also evaluates complete candidate apertures
+before rejecting faint sources. These additional work and allocation costs are
+reported alongside the passing absolute budgets. The nine workloads measured
+270 captures per version and introduce no forced garbage collection.
+
+Increasing the standalone W6 profiles' catalog safety cap from 300 to 32,768
+changes their local capture-profile identities. Tests pin both the new identities
+and the original identities reconstructed with only the historical cap restored;
+rig, schedule and processing-plan identity checks remain unchanged.
+
 The unchanged `hualapai-asi174-conformance-v1.json` retains independent astronomy
 and orientation references and historical instantaneous pixels. The separate
 `hualapai-asi174-temporal-conformance-v2.json` fixes exact exposure intervals and
