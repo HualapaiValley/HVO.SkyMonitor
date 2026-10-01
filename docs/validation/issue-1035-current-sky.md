@@ -41,6 +41,22 @@ Fresh per-project Unit discovery is Imaging 240, Processing 210 and CameraAgent
 2,904. The corresponding category inventories and solution Unit total 4,958 are
 updated. These counts are discovery evidence, not a full-suite pass.
 
+The source-bound `02af878b` native preview passes health at the LAN address.
+Initial before/after views at all three widths retain capture #543 and identical
+image URLs; the image-stage PNGs are byte-identical, proving that its prior
+flattened image was preserved. Native full screen then passed at all three
+widths with the same image DOM element, Escape and trigger-focus return, no
+browser errors and no overflow. Resizing uses Chromium's CDP viewport override
+while full screen is active, rather than a physical monitor-resolution change.
+The browser probe exposed missing explicit Escape handling; the correction also
+avoids returning focus to the image trigger when opening technical evidence.
+Interactive newly produced layers and their saved stack are still unqualified.
+
+All four CI-control guards passed on local `08b79fb7`. The classifier on
+`de18e41c..02af878b` selects `mode=full complete=false`, with shared, CameraAgent,
+LogicHost, combined and delivery lanes; deployment is false. These focused and
+control results do not replace the complete Tier C candidate gate.
+
 ## Work still required
 
 - Complete the capture-bound rig, cadence, lineage span and bottom-card facts.
