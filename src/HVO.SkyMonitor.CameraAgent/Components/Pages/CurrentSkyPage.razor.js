@@ -5,6 +5,8 @@ export async function openTechnicalEvidence(root) {
     const evidence = root?.closest('.detail-page')?.querySelector('#technical-evidence');
     if (!evidence) return;
     if (document.fullscreenElement && root.contains(document.fullscreenElement)) {
+        const binding = fullScreenBindings.get(document.fullscreenElement);
+        if (binding) binding.skipFocus = true;
         await document.exitFullscreen();
         // Let the fullscreen-exit listener restore its trigger before focusing the evidence tabs.
         await new Promise(resolve => requestAnimationFrame(resolve));
@@ -31,21 +33,31 @@ export async function requestFullScreen(figure, reference) {
     if (!figure?.isConnected || !figure.requestFullscreen) return false;
     if (document.fullscreenElement === figure) return true;
     const trigger = figure.querySelector('.image-tool');
+    const exitOnEscape = event => {
+        if (event.key === 'Escape' && document.fullscreenElement === figure) {
+            event.preventDefault();
+            document.exitFullscreen().catch(() => {});
+        }
+    };
     const restoreFocus = () => {
         if (document.fullscreenElement === figure) return;
         document.removeEventListener('fullscreenchange', restoreFocus);
+        document.removeEventListener('keydown', exitOnEscape, true);
         fullScreenBindings.delete(figure);
         reference.invokeMethodAsync('ViewerClosedAsync').then(() => {
-            if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+            if (!binding.skipFocus && trigger?.isConnected) trigger.focus({ preventScroll: true });
         }).catch(() => {});
     };
+    const binding = { restoreFocus, exitOnEscape, skipFocus: false };
     try {
         document.addEventListener('fullscreenchange', restoreFocus);
-        fullScreenBindings.set(figure, restoreFocus);
+        document.addEventListener('keydown', exitOnEscape, true);
+        fullScreenBindings.set(figure, binding);
         await figure.requestFullscreen();
         return true;
     } catch {
         document.removeEventListener('fullscreenchange', restoreFocus);
+        document.removeEventListener('keydown', exitOnEscape, true);
         fullScreenBindings.delete(figure);
         return false;
     }
@@ -58,8 +70,11 @@ export async function exitFullScreen(figure) {
 export async function disconnect(root, figure) {
     bindings.get(root)?.abort();
     bindings.delete(root);
-    const restore = fullScreenBindings.get(figure);
-    if (restore) document.removeEventListener('fullscreenchange', restore);
+    const binding = fullScreenBindings.get(figure);
+    if (binding) {
+        document.removeEventListener('fullscreenchange', binding.restoreFocus);
+        document.removeEventListener('keydown', binding.exitOnEscape, true);
+    }
     fullScreenBindings.delete(figure);
     await exitFullScreen(figure);
 }
