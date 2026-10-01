@@ -116,10 +116,20 @@ portfolio initiatives.
 Deferred celestial-fidelity epic [#520](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/520)
 and children [#518](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/518) and
 [#521](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/521)-[#526](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/526)
-also inherit delivered `RM-001`. They are retained product improvements, not
-approved automatic-start work; with `RM-017` delivered they are the leading
-candidates for the next CameraAgent product tranche and await explicit
-scheduling.
+also inherit delivered `RM-001`. The operator authorized the bounded virtual
+HYG/all-sky astrometry and optical-calibration milestone
+[#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098) on
+2026-10-01 UTC, targeting `development/v1`. Its
+[scope, implementation order and acceptance map](planning/virtual-astrometry-qualification.md)
+activate #522 and only the required existing-snapshot, measurement and solution
+portions coordinated with #521/#526/#523. This authorization preserves technical
+dependencies and existing contributor claims; it does not change unrelated
+portfolio priority or activate the remaining celestial backlog. The HYG 4.4
+upgrade/lifecycle, broader application adoption, resolved/extended objects,
+FITS/WCS and physical qualification retain their own gates. Hardware acceptance
+is tracked in [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107)
+under #523 and requires separate scheduling and hardware. Unfinished supported
+virtual work cannot be deferred there to close #1098.
 
 ## Delivered
 
