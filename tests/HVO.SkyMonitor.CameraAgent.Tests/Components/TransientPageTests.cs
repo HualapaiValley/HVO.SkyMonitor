@@ -1,4 +1,5 @@
 using Bunit;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using Moq;
@@ -319,14 +320,57 @@ public sealed class TransientPageTests
         });
     }
 
-    private static void Configure(BunitContext context, TestTransientUiService service)
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void FailedSourcePreviewKeepsExactCandidateAndCaptureLinks(bool detailPage)
     {
-        RetainedPreviewImageTestSupport.Configure(context);
+        using var context = new BunitContext();
+        var detail = Detail();
+        var source = new CameraAgentTransientOperatorSource(0, detail.CandidateEvidence.CenterEvidenceId!.Value,
+            Guid.Parse("00000000-0000-0000-0000-000000000101"), FrameArtifactRole.Raw,
+            Guid.Parse("00000000-0000-0000-0000-000000000001"), 42,
+            OperatorUiTestData.Now, OperatorUiTestData.Now, OperatorUiTestData.Now.AddSeconds(1));
+        detail = detail with { Sources = [source] };
+        Configure(context, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([detail.Candidate], null)),
+            Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail)
+        }, previewFailed: true);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(detailPage ? $"/transients/{detail.Candidate.CandidateId:D}" : "/transients");
+        if (detailPage)
+        {
+            var page = context.Render<TransientDetail>(parameters => parameters.Add(component => component.CandidateId, detail.Candidate.CandidateId));
+            page.WaitForAssertion(() =>
+            {
+                Assert.HasCount(0, page.FindAll(".context-frame img"));
+                StringAssert.Contains(page.Find(".context-frame.reference .context-frame-placeholder").TextContent, "Unavailable", StringComparison.Ordinal);
+                Assert.AreEqual($"/gallery/{source.CaptureId:D}", page.Find(".context-frame.reference a").GetAttribute("href"));
+            });
+        }
+        else
+        {
+            var page = context.Render<TransientPage>();
+            page.WaitForAssertion(() =>
+            {
+                Assert.HasCount(0, page.FindAll(".event-card img"));
+                StringAssert.Contains(page.Find(".event-media-placeholder").TextContent, "unavailable", StringComparison.Ordinal);
+                StringAssert.Contains(page.Find(".event-card-media").GetAttribute("href")!, detail.Candidate.CandidateId.ToString("D"), StringComparison.Ordinal);
+            });
+        }
+    }
+
+    private static void Configure(BunitContext context, TestTransientUiService service, bool previewFailed = false)
+    {
+        RetainedPreviewImageTestSupport.Configure(context, previewFailed);
         context.Services.AddSingleton<ICameraAgentTransientUiService>(service);
         context.Services.AddSingleton<IObservingDayCalendarProvider>(
             new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
+        var runs = new Mock<ICameraAgentProcessingGraphUiService>();
+        runs.Setup(item => item.GetLiveExecutionIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.NotFound, "Not recorded"));
         context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(
-            service, new TestOperatorUiService(), Mock.Of<ICameraAgentProcessingGraphUiService>(), new TestOperatorUiService()));
+            service, new TestOperatorUiService(), runs.Object, new TestOperatorUiService()));
     }
 
     private static CameraAgentTransientOperatorCandidate Candidate() => new(

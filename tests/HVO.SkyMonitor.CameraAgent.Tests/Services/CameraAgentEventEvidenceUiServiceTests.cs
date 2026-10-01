@@ -54,7 +54,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
         Assert.IsTrue(result.IsSuccess);
         Assert.AreEqual(1, captures.Invocations.Count);
         Assert.AreEqual(detail.Sources![2].CaptureId, captures.Invocations[0].Arguments[0]);
-        Assert.AreEqual(nameof(ICameraAgentOperatorUiService.GetGalleryCaptureAsync), captures.Invocations[0].Method.Name);
+        Assert.AreEqual(nameof(ICameraAgentOperatorUiService.GetSourceCaptureAsync), captures.Invocations[0].Method.Name);
         runs.VerifyNoOtherCalls();
     }
 
@@ -81,7 +81,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
     {
         var detail = Detail();
         var captures = new Mock<ICameraAgentOperatorUiService>();
-        captures.Setup(service => service.GetGalleryCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        captures.Setup(service => service.GetSourceCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture(Guid.NewGuid())));
         var result = await Service(detail, captures, new Mock<ICameraAgentProcessingGraphUiService>()).GetAsync(detail.Candidate.CandidateId, false, CancellationToken.None).ConfigureAwait(false);
 
@@ -94,7 +94,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
     {
         var detail = Detail();
         var captures = new Mock<ICameraAgentOperatorUiService>();
-        captures.Setup(service => service.GetGalleryCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        captures.Setup(service => service.GetSourceCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.Unauthorized, "/private/credential"));
         var result = await Service(detail, captures, new Mock<ICameraAgentProcessingGraphUiService>()).GetAsync(detail.Candidate.CandidateId, false, CancellationToken.None).ConfigureAwait(false);
 
@@ -116,7 +116,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
         var service = new Mock<ICameraAgentOperatorUiService>(MockBehavior.Strict);
         foreach (var source in sources)
         {
-            service.Setup(value => value.GetGalleryCaptureAsync(source.CaptureId, It.IsAny<CancellationToken>()))
+            service.Setup(value => value.GetSourceCaptureAsync(source.CaptureId, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Success(View(source).Capture));
         }
         return service;

@@ -29,7 +29,8 @@ public sealed partial class RetainedPreviewImage : ComponentBase, IDisposable
             if (failed && !_disposed && source == Source) await NotifyFailureAsync();
         }
         catch (JSDisconnectedException) { }
-        catch (TaskCanceledException) when (_disposed) { }
+        catch (JSException) { }
+        catch (TaskCanceledException) { }
     }
 
     private Task NotifyFailureAsync() => _disposed ? Task.CompletedTask : OnFailure.InvokeAsync();

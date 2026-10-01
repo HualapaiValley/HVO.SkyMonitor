@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -36,12 +37,15 @@ internal sealed class CameraAgentEventEvidenceUiService(
     ICameraAgentTransientUiService transients,
     ICameraAgentOperatorUiService captures,
     ICameraAgentProcessingGraphUiService runs,
-    ICameraAgentCapturePresentationProjector capturePresentation) : ICameraAgentEventEvidenceUiService
+    ICameraAgentCapturePresentationProjector capturePresentation,
+    ILogger<CameraAgentEventEvidenceUiService>? logger = null) : ICameraAgentEventEvidenceUiService
 {
     public async ValueTask<OperatorUiResult<CameraAgentEventEvidenceView>> GetAsync(
         Guid candidateId, bool includeContext, CancellationToken cancellationToken)
     {
+        var started = Stopwatch.GetTimestamp();
         var result = await transients.GetCandidateAsync(candidateId, cancellationToken).ConfigureAwait(false);
+        var candidateMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         if (!result.IsSuccess || result.Value is not { } detail || detail.Candidate.CandidateId != candidateId)
         {
             return OperatorUiResult<CameraAgentEventEvidenceView>.Failure(
@@ -51,6 +55,8 @@ internal sealed class CameraAgentEventEvidenceUiService(
         }
         var sources = PositionSources(detail);
         var frames = new List<CameraAgentEventContextFrame>(5);
+        double sourceMilliseconds = 0, runMilliseconds = 0;
+        var sourceReads = 0;
         for (var position = -2; position <= 2; position++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -62,7 +68,10 @@ internal sealed class CameraAgentEventEvidenceUiService(
             {
                 // Read retained metadata for this source without reconstructing unrelated products.
                 // The protected preview endpoint validates the exact bytes on the browser request.
-                var captureResult = await captures.GetGalleryCaptureAsync(source.CaptureId, cancellationToken).ConfigureAwait(false);
+                var stageStarted = Stopwatch.GetTimestamp();
+                var captureResult = await captures.GetSourceCaptureAsync(source.CaptureId, cancellationToken).ConfigureAwait(false);
+                sourceMilliseconds += Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
+                sourceReads++;
                 if (captureResult.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     return Denied();
@@ -76,7 +85,9 @@ internal sealed class CameraAgentEventEvidenceUiService(
                 }
                 if (includeContext)
                 {
+                    stageStarted = Stopwatch.GetTimestamp();
                     var run = await runs.GetLiveExecutionIdAsync(source.CaptureId, cancellationToken).ConfigureAwait(false);
+                    runMilliseconds += Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
                     if (run.Kind == OperatorUiResultKind.Unauthorized)
                     {
                         return Denied();
@@ -85,6 +96,12 @@ internal sealed class CameraAgentEventEvidenceUiService(
                 }
             }
             frames.Add(new(position, source, capture, executionId));
+        }
+        if (logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            logger.LogDebug("Event evidence read {CandidateId}, context {IncludeContext}: candidate {CandidateMilliseconds:F3} ms, raw sources {SourceMilliseconds:F3} ms ({SourceReads} reads), runs {RunMilliseconds:F3} ms, total {TotalMilliseconds:F3} ms.",
+                candidateId, includeContext, candidateMilliseconds, sourceMilliseconds, sourceReads, runMilliseconds,
+                Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
         return OperatorUiResult<CameraAgentEventEvidenceView>.Success(new(detail, frames));
     }
