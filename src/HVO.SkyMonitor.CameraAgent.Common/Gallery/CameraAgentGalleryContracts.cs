@@ -182,6 +182,10 @@ public interface ICameraAgentGallery
     ValueTask<CameraAgentGalleryCapture?> GetCaptureAsync(
         Guid captureId,
         CancellationToken cancellationToken);
+
+    /// <summary>Reads raw source identity and manifest facts without traversing processing products.</summary>
+    ValueTask<CameraAgentGalleryCapture?> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetCaptureAsync(captureId, cancellationToken);
 }
 
 public sealed class CameraAgentGalleryQueryException : Exception

@@ -2027,9 +2027,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     {
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/gallery").ConfigureAwait(false);
-        var evidenceBadge = page.Locator(".capture-card .evidence").First;
-        await VisibleAsync(evidenceBadge).ConfigureAwait(false);
-        Assert.AreEqual("Simulated evidence", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
+        var productLabel = page.Locator(".capture-card-heading > div > span").First;
+        await VisibleAsync(productLabel).ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(await productLabel.InnerTextAsync().ConfigureAwait(false)),
+            "Every Archive card identifies its display product.");
         await VisibleAsync(page.GetByText("Older captures", new() { Exact = true })).ConfigureAwait(false);
 
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);

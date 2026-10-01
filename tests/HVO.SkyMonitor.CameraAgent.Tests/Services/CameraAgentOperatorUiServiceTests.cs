@@ -32,6 +32,38 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class CameraAgentOperatorUiServiceTests
 {
     [TestMethod]
+    [DataRow("denied", "Unauthorized")]
+    [DataRow("foreign", "NotFound")]
+    [DataRow("failure", "Unavailable")]
+    [DataRow("exact", "Success")]
+    public async Task SourceCaptureReadPreservesAuthorizationIdentityAndSanitizedFailure(string scenario, string expected)
+    {
+        var capture = OperatorUiTestData.Capture(Guid.NewGuid());
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(scenario == "denied" ? AuthorizationResult.Failed() : AuthorizationResult.Success());
+        var gallery = new Mock<ICameraAgentGallery>(MockBehavior.Strict);
+        if (scenario == "failure")
+            gallery.Setup(value => value.GetSourceCaptureAsync(capture.CaptureId, CancellationToken.None))
+                .ThrowsAsync(new IOException("private-storage-path"));
+        else if (scenario != "denied")
+            gallery.Setup(value => value.GetSourceCaptureAsync(capture.CaptureId, CancellationToken.None))
+                .ReturnsAsync(scenario == "foreign" ? capture with { CaptureId = Guid.NewGuid() } : capture);
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, gallery: gallery.Object);
+
+        var result = await service.GetSourceCaptureAsync(capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, result.Kind.ToString());
+        if (scenario == "exact") Assert.AreSame(capture, result.Value);
+        else Assert.IsNull(result.Value);
+        Assert.IsFalse(result.Message?.Contains("private-storage-path", StringComparison.Ordinal) ?? false);
+        gallery.Verify(value => value.GetSourceCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            scenario == "denied" ? Times.Never() : Times.Once());
+        gallery.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
     [DataRow("no-store", "  North Camera  ", "North Camera")]
     [DataRow("no-store", "   ", null)]
     [DataRow("recorded", "North Camera", "East dome")]

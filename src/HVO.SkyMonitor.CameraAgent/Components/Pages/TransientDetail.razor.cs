@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using Microsoft.AspNetCore.WebUtilities;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -10,12 +12,16 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
-    private CameraAgentTransientOperatorDetail? _detail;
+    private CameraAgentEventEvidenceView? _evidence;
+    private HashSet<Guid> _failedPreviews = [];
+    private CameraAgentTransientOperatorDetail? _detail => _evidence?.Detail;
+    private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
     private string? _errorMessage;
     private bool _isLoading;
     private long _generation;
 
-    [Inject] internal ICameraAgentTransientUiService TransientService { get; set; } = default!;
+    [Inject] internal ICameraAgentEventEvidenceUiService EventEvidence { get; set; } = default!;
+    [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Parameter] public Guid CandidateId { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "returnUrl")]
@@ -49,10 +55,12 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
         }
         _isLoading = true;
         _errorMessage = null;
-        _detail = null;
+        _evidence = null;
+        _failedPreviews = [];
+        _calendar = ObservingDays.Current;
         try
         {
-            var result = await TransientService.GetCandidateAsync(CandidateId, cancellation.Token);
+            var result = await EventEvidence.GetAsync(CandidateId, includeContext: true, cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -61,9 +69,9 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
             }
-            else if (result.IsSuccess && result.Value is not null)
+            else if (result.IsSuccess && result.Value is not null && result.Value.Detail.Candidate.CandidateId == CandidateId)
             {
-                _detail = result.Value;
+                _evidence = result.Value;
             }
             else
             {
@@ -82,16 +90,36 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
         }
     }
 
-    private static string FormatTime(DateTimeOffset? value)
-        => value is null ? "Unavailable" : TransientPage.FormatTime(value.Value);
-    private static string FormatGuid(Guid? value) => value?.ToString("D") ?? "Unavailable";
-    private static string FormatList(IReadOnlyList<string>? values)
-        => values is null || values.Count == 0 ? "None recorded" : string.Join(", ", values);
-    private static string FormatConfidence(int? value)
-        => value is null ? "Unavailable" : FormattableString.Invariant($"{value.Value / 10000d:0.##}%");
-    private static string FormatBoolean(bool? value) => value is null ? "Unavailable" : value.Value ? "Yes" : "No";
+    private string TimeZoneLabel => _calendar.TimeZoneFallback ? "UTC (site time zone unavailable)" : _calendar.TimeZoneId;
+    private string LocalTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss", CultureInfo.InvariantCulture);
+    private static string UtcTime(DateTimeOffset value) => value.UtcDateTime.ToString("d MMM yyyy HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatTime(DateTimeOffset? value) => value is null ? "Not recorded" : $"{LocalTime(value.Value)} ({TimeZoneLabel}) · {UtcTime(value.Value)}";
+    private static string FormatGuid(Guid? value) => value?.ToString("D") ?? "Not recorded";
+    private static string FormatList(IReadOnlyList<string>? values) => values is null || values.Count == 0 ? "None recorded" : string.Join(", ", values);
+    private static string FormatBoolean(bool? value) => value is null ? "Not recorded" : value.Value ? "Yes" : "No";
+    private static string Number(double? value, string unit) => value is null || !double.IsFinite(value.Value) ? "Not recorded" : value.Value.ToString("0.##", CultureInfo.InvariantCulture) + " " + unit;
+    private string ObservingDayUrl => _evidence is null ? "/archive/calendar" : "/archive/day/" + _calendar.Resolve(_evidence.RecordedUtc).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string NearbyUrl
+    {
+        get
+        {
+            if (_evidence is null)
+            {
+                return "/gallery";
+            }
+            var day = _calendar.Resolve(_evidence.RecordedUtc);
+            return QueryHelpers.AddQueryString("/gallery", new Dictionary<string, string?>
+            {
+                ["from"] = day.StartUtc.ToString("O", CultureInfo.InvariantCulture),
+                ["to"] = day.EndUtc.ToString("O", CultureInfo.InvariantCulture)
+            });
+        }
+    }
+    private string Offset(CameraAgentEventContextFrame frame) => frame.Source is null || _evidence?.Reference?.Source is not { } center
+        ? "Unavailable" : (frame.Source.ObservationStartedUtc - center.ObservationStartedUtc).TotalSeconds.ToString("+0.###;-0.###;0", CultureInfo.InvariantCulture) + " s";
+    private static string RunUrl(Guid id) => FormattableString.Invariant($"/operations/pipeline/executions/{id:D}");
     private static string FormatBounds(CameraAgentTransientGeometrySummary geometry)
-        => FormattableString.Invariant($"x={geometry.X:0.##}, y={geometry.Y:0.##}, {geometry.Width:0.##} x {geometry.Height:0.##}");
+        => FormattableString.Invariant($"x={geometry.X:0.##}, y={geometry.Y:0.##}, {geometry.Width:0.##} × {geometry.Height:0.##} px");
 
     public async ValueTask DisposeAsync()
     {

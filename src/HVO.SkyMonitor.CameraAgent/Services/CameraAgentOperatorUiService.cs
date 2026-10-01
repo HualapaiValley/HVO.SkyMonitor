@@ -246,6 +246,9 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetGalleryCaptureAsync(captureId, cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
         CancellationToken cancellationToken);
@@ -700,6 +703,26 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent gallery detail UI read failed.");
             return Unavailable<CameraAgentGalleryCapture>("The capture detail is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentGalleryCapture>();
+        try
+        {
+            var capture = await gallery.GetSourceCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return capture is null || capture.CaptureId != captureId
+                ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.NotFound, "The requested source capture was not found.")
+                : OperatorUiResult<CameraAgentGalleryCapture>.Success(capture);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent source capture UI read failed.");
+            return Unavailable<CameraAgentGalleryCapture>("The source capture is temporarily unavailable.");
         }
     }
 

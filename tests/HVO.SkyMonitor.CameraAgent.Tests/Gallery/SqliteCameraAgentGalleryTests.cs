@@ -24,6 +24,37 @@ public sealed class SqliteCameraAgentGalleryTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
+    public async Task SourceReadKeepsRawIdentityAndManifestWithoutProcessingOrDeliveryTraversal()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null).ConfigureAwait(false);
+        await fixture.AddProcessingOutputAsync(raw, "Preview", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        var full = await fixture.Gallery.GetCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(full);
+        Assert.IsTrue(full.Artifacts.Count > 1);
+        // A source-only read must not traverse the processing tables in the same journal.
+        using (var connection = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, "journal", "raw-ingress.db")}"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE processing_outputs;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var source = await fixture.Gallery.GetSourceCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(source);
+        Assert.AreEqual(raw.Descriptor.Capture.CaptureId, source.CaptureId);
+        Assert.HasCount(1, source.Artifacts);
+        Assert.AreEqual(raw.Descriptor.Artifact.ArtifactId, source.Artifacts[0].ArtifactId);
+        Assert.AreEqual(raw.Descriptor.Artifact.ChecksumSha256, source.Artifacts[0].ChecksumSha256);
+        Assert.AreEqual(FrameArtifactRole.Raw, source.Artifacts[0].Role);
+        Assert.HasCount(0, source.ProcessingNodes);
+        Assert.IsNotNull(source.Detail?.Layout);
+        Assert.HasCount(0, source.Detail.ProcessingNodes);
+        Assert.HasCount(0, source.Detail.ArtifactStates);
+        Assert.IsNull(await fixture.Gallery.GetSourceCaptureAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task PageBoundsAndCursorBindingAreEnforcedAsync()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);

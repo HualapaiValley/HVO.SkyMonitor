@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -121,8 +122,13 @@ public sealed class AuthorizationRevocationComponentTests
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var cards = new Mock<ICameraAgentArchiveCardUiService>();
+        cards.Setup(card => card.GetLinksAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentArchiveCardLinks(null, "Run not recorded", [], false));
+        context.Services.AddSingleton(cards.Object);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
         context.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(service);
         context.Services.AddSingleton(TimeProvider.System);
