@@ -33,13 +33,14 @@ public sealed partial class DeletePersonalData
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
 
+    // The inputs bind Input directly. Blazor names each input after its binding expression, and only Input.* names
+    // bind back to this property on the post.
     [SupplyParameterFromForm]
-    private InputModel? Input { get; set; }
-
-    private InputModel FormModel => Input ??= new();
+    private InputModel Input { get; set; } = default!;
 
     protected override async Task OnInitializedAsync()
     {
+        Input ??= new();
         user = await UserManager.GetUserAsync(HttpContext.User);
         if (user is null)
         {
@@ -52,7 +53,7 @@ public sealed partial class DeletePersonalData
 
     private async Task OnValidSubmitAsync(EditContext editContext)
     {
-        var model = FormModel;
+        var model = Input;
 
         if (user is null)
         {

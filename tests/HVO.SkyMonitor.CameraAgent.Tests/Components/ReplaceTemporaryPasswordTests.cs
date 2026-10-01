@@ -41,6 +41,18 @@ public sealed class ReplaceTemporaryPasswordTests
     }
 
     [TestMethod]
+    public void PendingOwner_RendersOneHeadingInTheAccountShell()
+    {
+        using var fixture = new ComponentFixture();
+
+        var shell = fixture.Component.Find(".account-shell.single");
+
+        Assert.HasCount(1, fixture.Component.FindAll("h1"));
+        Assert.AreEqual("Replace temporary password", shell.QuerySelector(".ops-page-heading h1")!.TextContent);
+        Assert.IsNotNull(shell.QuerySelector(".ops-panel form .account-form-actions button.button.primary[type=submit]"));
+    }
+
+    [TestMethod]
     public void ConfirmationMismatch_DoesNotSubmitPasswordReplacement()
     {
         using var fixture = new ComponentFixture();

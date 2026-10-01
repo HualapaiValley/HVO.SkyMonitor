@@ -2,6 +2,10 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -26,10 +30,15 @@ public sealed class HybridTransientSubmissionTests
 {
     private const int MaximumTemporalPendingTail = 2;
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
-    public async Task CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob()
+    [DataRow(0)]
+    [DataRow(250)]
+    [DataRow(12000)]
+    public async Task CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob(int startupDelayMilliseconds)
     {
-        using var fixture = new CameraAgentIntegrationFixture(hybridTransientMode: true);
+        using var fixture = new CameraAgentIntegrationFixture(hybridTransientMode: true, startupDelayMilliseconds);
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var scope = fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
@@ -54,15 +63,14 @@ public sealed class HybridTransientSubmissionTests
                 progress: () => ReadIngestProgressAsync(fixture.StorageRoot),
                 describeState: fixture.DescribeRuntimeState).ConfigureAwait(false);
             Assert.IsNotNull(submission);
-            var causalTailCompletedUtc = fixture.TransientEpochUtc.AddSeconds(3);
-            var causalTailDelay = causalTailCompletedUtc - DateTimeOffset.UtcNow;
-            if (causalTailDelay > TimeSpan.Zero)
-            {
-                await Task.Delay(causalTailDelay).ConfigureAwait(false);
-            }
-            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(3, submission.Candidate.ContextSources.Count);
             Assert.AreEqual(fixture.DeviceId, submission.Candidate.AgentId);
+            if (startupDelayMilliseconds == 12000)
+            {
+                Assert.IsTrue(submission.Candidate.ContextSources[2].ObservationStartedUtc >
+                    fixture.TransientEpochUtc.AddSeconds(0.5),
+                    "The delayed case must capture after the old wall-clock pulse would have ended.");
+            }
             var submissionBytes = await ReadSubmissionPayloadAsync(
                 fixture.StorageRoot, submission.CandidateId).ConfigureAwait(false);
             CollectionAssert.AreEqual(TransientCandidateDeliveryJson.Serialize(submission), submissionBytes);
@@ -94,6 +102,10 @@ public sealed class HybridTransientSubmissionTests
                 return Convert.ToInt32(await command.ExecuteScalarAsync().ConfigureAwait(false),
                     System.Globalization.CultureInfo.InvariantCulture) == 2;
             }, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+            // Stop only after both actual future inputs are available. Wall time relative
+            // to the virtual epoch cannot establish readiness for a fixed sequence.
+            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
 
             var acknowledged = await journal.ReadAsync(submission.CandidateId, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -153,6 +165,16 @@ public sealed class HybridTransientSubmissionTests
             await centralConnection.OpenAsync().ConfigureAwait(false);
             using var centralCommand = centralConnection.CreateCommand();
             centralCommand.CommandText = """
+                SELECT frame.CaptureSequence
+                FROM CentralArtifacts AS artifact
+                INNER JOIN CentralFrames AS frame ON frame.Id = artifact.CentralFrameId
+                WHERE artifact.ArtifactId = @center;
+                """;
+            AddParameter(centralCommand, "@center", artifactIds[2]);
+            Assert.AreEqual(5L, Convert.ToInt64(
+                await centralCommand.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture));
+            centralCommand.Parameters.Clear();
+            centralCommand.CommandText = """
                 SELECT COUNT(*) FROM CentralTransientValidationJobs
                 WHERE SubmissionIdentitySha256 = @submission;
                 """;
@@ -174,18 +196,9 @@ public sealed class HybridTransientSubmissionTests
                 assertionScope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
                 submission.SubmissionIdentitySha256,
                 CancellationToken.None).ConfigureAwait(false);
-            Assert.AreNotEqual("TerminalFailure", execution.Status, execution.ReasonCode);
-            if (execution.Status == "Skipped")
-            {
-                Assert.IsTrue(execution.ReasonCode is
-                    "transient-validation.hybrid-candidate-not-found" or
-                    "transient-validation.hybrid-candidate-ambiguous");
-            }
-            else
-            {
-                Assert.AreEqual("Produced", execution.Status, execution.ReasonCode);
-                Assert.IsNull(execution.ReasonCode);
-            }
+            TestContext.WriteLine($"Startup delay: {startupDelayMilliseconds} ms; center capture: 5; submission: {submission.SubmissionIdentitySha256}; central outcome: {execution.Status}; reason: {execution.ReasonCode}; virtual event UTC: {fixture.TransientEpochUtc:O}");
+            Assert.AreEqual("Produced", execution.Status, execution.ReasonCode);
+            Assert.IsNull(execution.ReasonCode);
             centralCommand.CommandText = """
                 SELECT job.Status, job.LastError
                 FROM CentralDerivativeJobs AS job
@@ -197,10 +210,193 @@ public sealed class HybridTransientSubmissionTests
             Assert.IsTrue(await outcomeReader.ReadAsync().ConfigureAwait(false));
             Assert.AreEqual("Completed", outcomeReader.GetString(0));
             Assert.IsTrue(await outcomeReader.IsDBNullAsync(1).ConfigureAwait(false));
+            await outcomeReader.DisposeAsync().ConfigureAwait(false);
+            await VerifyDerivativePublicationAsync(fixture, artifactIds[2]).ConfigureAwait(false);
         }
         finally
         {
             await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task VerifyDerivativePublicationAsync(
+        CameraAgentIntegrationFixture fixture, Guid centerArtifactId)
+    {
+        Guid jobId;
+        Guid eventId;
+        int versionsBeforePublication;
+        Guid[] derivativeIds;
+        Dictionary<Guid, (Guid ArtifactId, string Checksum, long ByteLength, string? Generation)> outputIdentities;
+        using (var scope = fixture.CreateHostScope())
+        {
+            var services = scope.ServiceProvider;
+            var db = services.GetRequiredService<ApplicationDbContext>();
+            var bundle = await db.CentralTransientDerivativeJobs.AsNoTracking().SingleAsync().ConfigureAwait(false);
+            jobId = bundle.CentralDerivativeJobId;
+            eventId = bundle.CentralTransientEventId;
+            versionsBeforePublication = await db.CentralTransientEventVersions.CountAsync(
+                item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+            await DeferOtherPendingJobsAsync(db, jobId).ConfigureAwait(false);
+            var lease = await services.GetRequiredService<ICentralDerivativeJobService>().ClaimNextAsync(
+                "combined-transient-products", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(jobId, lease.JobId);
+            Assert.AreEqual(5, lease.Inputs!.Count);
+            var result = await services.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status, result.ReasonCode);
+            Assert.AreEqual("transient-derivative.persisted", result.ReasonCode);
+
+            var intents = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == jobId).ToArrayAsync().ConfigureAwait(false);
+            Assert.AreEqual(5, intents.Length);
+            outputIdentities = intents.ToDictionary(item => item.DerivativeId,
+                item => (item.ArtifactId, item.ChecksumSha256, item.ByteLength, item.StorageETag));
+            CollectionAssert.AreEquivalent(Enum.GetValues<TransientDerivativeKind>(),
+                intents.Select(item => item.Kind).ToArray());
+            var derivatives = await db.CentralTransientDerivatives.AsNoTracking()
+                .Include(item => item.Sources).Include(item => item.Backgrounds)
+                .Where(item => item.CentralDerivativeJobId == jobId).ToArrayAsync().ConfigureAwait(false);
+            Assert.AreEqual(5, derivatives.Length);
+            derivativeIds = derivatives.Select(item => item.DerivativeId).ToArray();
+            foreach (var derivative in derivatives)
+            {
+                Assert.AreEqual(bundle.SourceEventVersionId, derivative.SourceEventVersionId);
+                Assert.AreEqual(centerArtifactId, derivative.Sources.Single().ArtifactId);
+                CollectionAssert.AreEquivalent(lease.Inputs.Where(item => item.ArtifactId != centerArtifactId)
+                    .Select(item => item.ArtifactId).ToArray(),
+                    derivative.Backgrounds.Select(item => item.ArtifactId).ToArray());
+            }
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim("sub", "combined-transient-admin"),
+                new Claim("account_type", "User"),
+                new Claim("scope", "api.admin")
+            ], CanonicalCredentialClaims.BearerAuthenticationType));
+            var retrieval = services.GetRequiredService<ICentralTransientDerivativeRetrievalService>();
+            foreach (var intent in intents)
+            {
+                Assert.AreEqual(CentralArtifactObjectState.Available, intent.ObjectState);
+                Assert.IsNotNull(intent.CommittedAtUtc);
+                await using var content = await retrieval.GetAsync(
+                    principal, eventId, intent.DerivativeId, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CentralTransientDerivativeLookupStatus.Found, content.Status);
+                await using var payload = new MemoryStream();
+                await retrieval.CopyToAsync(content, payload, null, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(intent.ByteLength, payload.Length);
+                Assert.AreEqual(intent.ChecksumSha256, Convert.ToHexString(SHA256.HashData(payload.ToArray())));
+                await using var range = new MemoryStream();
+                var rangeLength = (int)Math.Min(3, payload.Length - 1);
+                await retrieval.CopyToAsync(content, range, new CentralArtifactByteRange(1, rangeLength),
+                    CancellationToken.None).ConfigureAwait(false);
+                CollectionAssert.AreEqual(payload.ToArray().AsSpan(1, rangeLength).ToArray(), range.ToArray());
+            }
+            // Model lost worker completion after durable publication. A fresh lease must
+            // adopt the same immutable objects without appending another event version.
+            await db.CentralDerivativeJobs.Where(item => item.Id == jobId).ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, CentralDerivativeJobStatus.Pending)
+                .SetProperty(item => item.AvailableAtUtc, DateTimeOffset.UtcNow)
+                .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)null)
+                .SetProperty(item => item.StateReasonCode, (string?)null)).ConfigureAwait(false);
+        }
+        using (var scope = fixture.CreateHostScope())
+        {
+            var services = scope.ServiceProvider;
+            var db = services.GetRequiredService<ApplicationDbContext>();
+            await DeferOtherPendingJobsAsync(db, jobId).ConfigureAwait(false);
+            var lease = await services.GetRequiredService<ICentralDerivativeJobService>().ClaimNextAsync(
+                "combined-transient-products-retry", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(jobId, lease.JobId);
+            var result = await services.GetRequiredService<ICentralDerivativeJobExecutor>()
+                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status, result.ReasonCode);
+            Assert.AreEqual("transient-derivative.output-adopted", result.ReasonCode);
+            CollectionAssert.AreEquivalent(derivativeIds, await db.CentralTransientDerivatives.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == jobId).Select(item => item.DerivativeId)
+                .ToArrayAsync().ConfigureAwait(false));
+            var adoptedIntents = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == jobId).ToArrayAsync().ConfigureAwait(false);
+            Assert.AreEqual(outputIdentities.Count, adoptedIntents.Length);
+            foreach (var intent in adoptedIntents)
+            {
+                Assert.AreEqual(outputIdentities[intent.DerivativeId],
+                    (intent.ArtifactId, intent.ChecksumSha256, intent.ByteLength, intent.StorageETag));
+            }
+            Assert.AreEqual(versionsBeforePublication + 1, await db.CentralTransientEventVersions.CountAsync(
+                item => item.CentralTransientEventId == eventId).ConfigureAwait(false));
+            Assert.AreEqual(CentralDerivativeJobStatus.Completed, await db.CentralDerivativeJobs.AsNoTracking()
+                .Where(item => item.Id == jobId).Select(item => item.Status).SingleAsync().ConfigureAwait(false));
+        }
+        await VerifyPayloadReleaseAsync(fixture, eventId, derivativeIds).ConfigureAwait(false);
+    }
+
+    private static Task<int> DeferOtherPendingJobsAsync(ApplicationDbContext db, Guid jobId)
+    {
+        // Artifact delivery can schedule ordinary preview jobs after validation. This
+        // fixture manually drives one worker; preserve unrelated work but make the
+        // intended bundle the next eligible job, including its recovery lease.
+        return db.CentralDerivativeJobs.Where(item => item.Id != jobId &&
+                item.Status == CentralDerivativeJobStatus.Pending)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                item => item.AvailableAtUtc, DateTimeOffset.UtcNow.AddHours(1)));
+    }
+
+    private static async Task VerifyPayloadReleaseAsync(
+        CameraAgentIntegrationFixture fixture, Guid eventId, Guid[] derivativeIds)
+    {
+        using var scope = fixture.CreateHostScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("sub", "combined-transient-admin"),
+            new Claim("account_type", "User"),
+            new Claim("scope", "api.admin")
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
+        var current = await db.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+        var releaseService = new CentralTransientPayloadReleaseService(
+            db, services.GetRequiredService<ICentralArtifactRetentionReferences>(),
+            services.GetRequiredService<IObjectStore>(),
+            Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+            TimeProvider.System);
+        var beforeReview = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-before-review", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Ineligible, beforeReview.Status);
+        var review = await services.GetRequiredService<ICentralTransientReviewService>().ReviewAsync(
+            principal, eventId, current.RowVersion, "combined-review-for-release",
+            new CentralTransientReviewRequest(current.ActiveAssessmentId,
+                TransientReviewDisposition.Rejected, null, ["human.retention-approved"]),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientReviewMutationStatus.Applied, review.Status);
+        current = await db.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+        var retainedVersions = await db.CentralTransientEventVersions.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).OrderBy(item => item.Version)
+            .Select(item => item.CanonicalEventSha256).ToArrayAsync().ConfigureAwait(false);
+        var release = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-release", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, release.Status);
+        Assert.IsNotNull(release.Response);
+        Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, release.Response.State);
+        var replay = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-release", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, replay.Status);
+        Assert.IsNotNull(replay.Response);
+        Assert.AreEqual(release.Response with { Replayed = true }, replay.Response);
+        Assert.AreEqual(1, await db.CentralTransientPayloadReleases.CountAsync(
+            item => item.CentralTransientEventId == eventId).ConfigureAwait(false));
+        CollectionAssert.AreEqual(retainedVersions, await db.CentralTransientEventVersions.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).OrderBy(item => item.Version)
+            .Select(item => item.CanonicalEventSha256).ToArrayAsync().ConfigureAwait(false));
+        CollectionAssert.AreEquivalent(derivativeIds, await db.CentralTransientDerivatives.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).Select(item => item.DerivativeId)
+            .ToArrayAsync().ConfigureAwait(false));
+        var retrieval = services.GetRequiredService<ICentralTransientDerivativeRetrievalService>();
+        foreach (var id in derivativeIds)
+        {
+            await using var content = await retrieval.GetAsync(principal, eventId, id, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.AreEqual(CentralTransientDerivativeLookupStatus.Gone, content.Status);
         }
     }
 

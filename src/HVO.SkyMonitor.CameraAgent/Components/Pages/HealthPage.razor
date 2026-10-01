@@ -54,9 +54,9 @@ else
         <section class="ops-panel" aria-labelledby="health-acquisition-heading">
             <header class="ops-panel-heading"><div><h2 id="health-acquisition-heading">Acquisition</h2><p>Camera and admission path.</p></div><span class="state-chip @acquisition.Css">@acquisition.Text</span></header>
             <dl class="ops-facts">
-                <div><dt>Camera module</dt><dd>@(summary?.Configuration.Value.ModuleType is { Length: > 0 } module ? OperationsPage.SplitWords(module) : "Unknown")</dd></div>
                 <div><dt>Capture</dt><dd>@(summary is null ? "Unknown" : OperationsPage.SplitWords(summary.CaptureControl.Value.State))</dd></div>
                 <div><dt>Last start</dt><dd>@(summary?.CaptureTelemetry.Value.LatestCaptureStartedUtc is { } started ? $"{FormatAge(started)} ago" : "None yet")</dd></div>
+                <div><dt>Clock drift</dt><dd id="health-clock-drift" title="@ClockDriftTitle(health.Clock)">@ClockFormat.HealthFact(health.Clock)</dd></div>
                 <div><dt>Last failure</dt><dd>@(summary?.CaptureRuntime.Value.LastFailedUtc is { } failed ? FormatUtc(failed) : "None since start")</dd></div>
             </dl>
         </section>

@@ -49,6 +49,12 @@ This plan does not assert that an unmeasured profile is supported.
 | V7: integrated qualification and handoff | [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) | All V1–V6 integrated, including #522; pinned final test envelope | Final audit owns closure evidence, not a waiver of upstream requirements |
 | Later physical qualification | [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107), under #523 | Physical hardware, trusted references and separate scheduling authorization | Does not block virtual completion; never absorbs unfinished supported virtual work |
 
+The required combined-host validation exposed an existing nondeterministic
+transient fixture while qualifying #1101. [#1109](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1109)
+is a separate test/evidence prerequisite before #1101 merges. It preserves the
+combined coverage floors and does not activate additional transient product work.
+The catalog issue retains its claim while that dependency is repaired.
+
 The initial execution order is #1100 -> #1101 -> #1102 -> #522 -> #1103 ->
 #1104 -> #1105 -> #1106. #522 may be prepared after #1100 where existing
 contracts suffice; final adoption still requires its numerical and resource
