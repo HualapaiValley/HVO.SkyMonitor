@@ -76,7 +76,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private readonly bool _hybridTransientMode;
     private readonly TimeSpan _startupDelay;
     private readonly EnvironmentalDeliveryCompletionTracker _environmentalDelivery = new();
-    private readonly IntegrationTestFixture _hostFixture = CreateHostFixture();
+    private readonly IntegrationTestFixture _hostFixture;
     private readonly BoundedLogRecorder _logRecorder = new(capacity: 200);
     private readonly object _consumerGate = new();
     private readonly List<string> _consumerHistory = [];
@@ -106,6 +106,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public CameraAgentIntegrationFixture(bool hybridTransientMode = false, int startupDelayMilliseconds = 0)
     {
         _hybridTransientMode = hybridTransientMode;
+        _hostFixture = CreateHostFixture(hybridTransientMode);
         ArgumentOutOfRangeException.ThrowIfNegative(startupDelayMilliseconds);
         _startupDelay = TimeSpan.FromMilliseconds(startupDelayMilliseconds);
     }
@@ -174,6 +175,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             // scheduler phase must not decide whether its half-second lifetime is observed.
             var virtualOptions = captureConfigurationJson["module"]!["options"]!;
             virtualOptions["fixedSequenceStartUtc"] = JsonSerializer.SerializeToNode(TransientEpochUtc.AddSeconds(-2));
+            // Both background windows must contain identical stellar pixels, not merely
+            // noise-free pixels at different sidereal times. Transients retain sequence time.
+            virtualOptions["fixedSceneUtc"] = JsonSerializer.SerializeToNode(TransientEpochUtc);
             // This fixture qualifies transport/identity convergence. Keep the ordinary renderer,
             // but make the causal and centered background windows observe the same quiet field.
             virtualOptions["asi174Sensor"]!["enabled"] = false;
@@ -384,19 +388,24 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             DescribeRuntimeState());
     }
 
-    private static IntegrationTestFixture CreateHostFixture()
+    private static IntegrationTestFixture CreateHostFixture(bool hybridTransientMode)
     {
         var suppressRecurringWorkers = RecurringWorkerSuppressionEvidenceVariables.Any(name => string.Equals(
             Environment.GetEnvironmentVariable(name),
             "1",
             StringComparison.Ordinal));
-        return new IntegrationTestFixture(
-            new Dictionary<string, string?>
-            {
-                ["CentralTransient:Mode"] = "Hybrid",
-                ["CentralTransient:SourceRole"] = "Raw"
-            },
-            suppressRecurringWorkers);
+        var overrides = new Dictionary<string, string?>
+        {
+            ["CentralTransient:Mode"] = "Hybrid",
+            ["CentralTransient:SourceRole"] = "Raw"
+        };
+        if (hybridTransientMode)
+        {
+            // Match the controlled edge fixture. A central-only, physical-time star mask
+            // can change the geometry that exact Hybrid binding must independently recover.
+            overrides["CentralTransient:StarMaximumMagnitude"] = "-30";
+        }
+        return new IntegrationTestFixture(overrides, suppressRecurringWorkers);
     }
 
     /// <summary>

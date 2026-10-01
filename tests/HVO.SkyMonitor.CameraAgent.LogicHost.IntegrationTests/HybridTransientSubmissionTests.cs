@@ -45,6 +45,16 @@ public sealed class HybridTransientSubmissionTests
         var captureService = services.GetServices<IHostedService>().OfType<CameraCaptureService>().Single();
         try
         {
+            using (var configurationScope = fixture.CreateHostScope())
+            {
+                var centralOptions = configurationScope.ServiceProvider
+                    .GetRequiredService<IOptions<CentralTransientOptions>>().Value;
+                var edgeOptions = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
+                Assert.AreEqual(-30d, edgeOptions.TransientDetection.StarMaximumMagnitude);
+                Assert.AreEqual(edgeOptions.TransientDetection.StarMaximumMagnitude,
+                    centralOptions.StarMaximumMagnitude,
+                    "The controlled Hybrid fixture requires identical star-mask selection on both hosts.");
+            }
             TransientCandidateSubmissionEnvelopeV1? submission = null;
             // This budget spans the whole path -- capture, transient detection, durable submission,
             // central acknowledgement, and the envelope becoming readable -- so it is an end-to-end
@@ -161,6 +171,8 @@ public sealed class HybridTransientSubmissionTests
 
             using var assertionScope = fixture.CreateHostScope();
             var centralDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await VerifyQuietSourcePixelsAsync(centralDb,
+                assertionScope.ServiceProvider.GetRequiredService<ICentralArtifactObjectReader>(), artifactIds[2]).ConfigureAwait(false);
             var centralConnection = centralDb.Database.GetDbConnection();
             await centralConnection.OpenAsync().ConfigureAwait(false);
             using var centralCommand = centralConnection.CreateCommand();
@@ -217,6 +229,37 @@ public sealed class HybridTransientSubmissionTests
         {
             await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+    private async Task VerifyQuietSourcePixelsAsync(
+        ApplicationDbContext db, ICentralArtifactObjectReader objectReader, Guid centerArtifactId)
+    {
+        var center = await db.CentralArtifacts.AsNoTracking().Include(item => item.Frame)
+            .SingleAsync(item => item.ArtifactId == centerArtifactId).ConfigureAwait(false);
+        Assert.IsNotNull(center.Frame);
+        var sources = await db.CentralArtifacts.AsNoTracking().Include(item => item.Frame)
+            .Where(item => item.DevicePublicId == center.DevicePublicId && item.Role == center.Role &&
+                item.Frame != null && item.Frame.AgentId == center.Frame.AgentId &&
+                item.Frame.RigId == center.Frame.RigId &&
+                item.Frame.CaptureSequence >= 3 && item.Frame.CaptureSequence <= 7)
+            .OrderBy(item => item.Frame!.CaptureSequence).ToArrayAsync().ConfigureAwait(false);
+        CollectionAssert.AreEqual(new long?[] { 3, 4, 5, 6, 7 },
+            sources.Select(item => item.Frame!.CaptureSequence).ToArray());
+        foreach (var source in sources)
+        {
+            Assert.AreEqual(CentralArtifactObjectState.Available, source.ObjectState);
+            Assert.AreEqual(CentralReconstructionState.Complete, source.ReconstructionState);
+            Assert.AreEqual(center.ByteLength, source.ByteLength);
+            _ = await objectReader.VerifyAsync(source, CancellationToken.None).ConfigureAwait(false);
+            TestContext.WriteLine($"Raw capture {source.Frame!.CaptureSequence}: {source.ChecksumSha256}");
+            if (source.ArtifactId != centerArtifactId)
+            {
+                Assert.AreEqual(sources[0].ChecksumSha256, source.ChecksumSha256,
+                    "Causal and centered windows must receive identical quiet-frame pixel payloads.");
+            }
+        }
+        Assert.AreNotEqual(sources[0].ChecksumSha256, center.ChecksumSha256,
+            "The event frame must differ from the quiet stellar background.");
     }
 
     private static async Task VerifyDerivativePublicationAsync(
