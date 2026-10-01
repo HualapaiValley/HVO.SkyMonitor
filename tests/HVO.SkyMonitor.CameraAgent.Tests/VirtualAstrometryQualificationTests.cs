@@ -62,6 +62,10 @@ public sealed class VirtualAstrometryQualificationTests
                         var measurementMs = clock.Elapsed.TotalMilliseconds;
                         priors.TryGetValue(view.Name, out var prior);
                         var solved = VirtualAstrometryFixture.Solve(input, nominal, catalog, measured, prior);
+                        var expectedMode = index == 0 ? AstrometricSolveMode.Blind : AstrometricSolveMode.Warm;
+                        if (solved.Assessment.Mode != expectedMode) failures.Add($"{caseId}: expected {expectedMode} solve");
+                        if (solved.Metrics.ElapsedMilliseconds > (index == 0 ? 15000 : 500))
+                            failures.Add($"{caseId}: solve exceeded declared cold/warm time budget");
                         var sceneUtc = captured.Frame!.Metadata.Scene!.SceneUtc!.Value;
                         var score = solved.Assessment.HasMeasuredMapping ? VirtualAstrometryReference.Score(view.Config.Rig,
                             sceneUtc, nominal, catalog, measured, solved, failures, caseId) : null;

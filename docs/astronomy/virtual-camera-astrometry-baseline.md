@@ -108,8 +108,15 @@ HVO_ASTROMETRY_CATALOG_ROOT=/absolute/private/test/catalog-root \
 HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
   --no-build --configuration Release \
-  --filter "FullyQualifiedName~ActualPixelsBlindWarmReadouts|FullyQualifiedName~ActualConfiguredResolutionResources" \
+  --filter "FullyQualifiedName~ActualPixelsBlindWarmReadouts" \
   --logger trx --results-directory TestResults/virtual-astrometry
+DOTNET_TieredCompilation=0 \
+HVO_ASTROMETRY_CATALOG_ROOT=/absolute/private/test/catalog-root \
+HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --no-build --configuration Release \
+  --filter "FullyQualifiedName~ActualConfiguredResolutionResources" \
+  --logger trx --results-directory TestResults/virtual-astrometry-resources
 ```
 
 Both manual gates require the requested revision in the built assembly identity.
@@ -124,7 +131,15 @@ Resource evidence uses native mono and native CFA, concurrency 1, Release with
 tiered compilation disabled, five warmups and 30 measurements per workload.
 Record every capture/measurement wall and process CPU sample, allocations,
 process working set/cumulative peak, buffer sizes, throughput, payload hashes
-and Linux I/O counters. Stateless operations have no queue/backlog. Cumulative
+and Linux I/O counters. Run the resource workload in a fresh test process;
+the cumulative peak includes any previously executed tests in that process.
+The first combined invocation inherited a 3,090,255,872-byte peak from the
+90-view qualification and failed the unchanged 2 GiB resource budget.
+The same committed resource workload alone passed with a 1,178,484,736-byte
+peak. Both original records remain evidence; this does not claim that the
+whole qualification runner fits in 2 GiB or measure solver memory separately.
+Resource JSON retains raw measurements before reporting budget failures.
+Stateless operations have no queue/backlog. Cumulative
 process peak is not an operation-local memory measurement. Budgets on the
 qualification host are capture p95 <=10s mono/20s CFA, decode/detection p95 <=2s
 mono/5s CFA, cold <=15s, warm <=500ms and cumulative process peak <=2 GiB.
