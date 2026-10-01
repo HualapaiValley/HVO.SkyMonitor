@@ -152,9 +152,7 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                _page = null;
-                _errorMessage = null;
-                NavigationManager.NavigateTo("/Account/AccessDenied");
+                AccessDenied();
             }
             else if (result.IsSuccess && result.Value is not null)
             {
@@ -164,9 +162,27 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
                 {
                     cancellation.Token.ThrowIfCancellationRequested();
                     links[capture.CaptureId] = await ArchiveCards.GetLinksAsync(capture.CaptureId, cancellation.Token);
+                    if (generation != Volatile.Read(ref _generation))
+                    {
+                        return;
+                    }
+                    if (links[capture.CaptureId].AuthorizationDenied)
+                    {
+                        AccessDenied();
+                        return;
+                    }
                     if (ArchiveCardFacts.DisplayArtifact(capture, CardPresentation(capture)) is { } artifact)
                     {
                         var product = await OperatorService.GetProductDetailAsync(artifact.ArtifactId, cancellation.Token);
+                        if (generation != Volatile.Read(ref _generation))
+                        {
+                            return;
+                        }
+                        if (product.Kind == OperatorUiResultKind.Unauthorized)
+                        {
+                            AccessDenied();
+                            return;
+                        }
                         if (product.IsSuccess && product.Value?.Product is { } retained &&
                             retained.CaptureId == capture.CaptureId && retained.ArtifactId == artifact.ArtifactId)
                         {
@@ -198,6 +214,15 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
                 _isLoading = false;
             }
         }
+    }
+
+    private void AccessDenied()
+    {
+        _page = null;
+        _cardLinks = [];
+        _cardProducts = [];
+        _errorMessage = null;
+        NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
     private bool TryBuildQuery(out CameraAgentGalleryQuery? query, out string? validationMessage)

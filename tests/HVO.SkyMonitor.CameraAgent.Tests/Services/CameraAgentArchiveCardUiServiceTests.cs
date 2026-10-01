@@ -76,6 +76,7 @@ public sealed class CameraAgentArchiveCardUiServiceTests
         Assert.IsNull(links.ExecutionId);
         Assert.AreEqual("The pipeline run identity is unavailable.", links.RunUnavailableReason);
         Assert.IsFalse(links.CandidateLinksAvailable);
+        Assert.IsTrue(links.AuthorizationDenied);
     }
 
     [TestMethod]

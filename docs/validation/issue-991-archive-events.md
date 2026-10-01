@@ -173,3 +173,13 @@ has not been run in full: its fixture binds loopback, while this session's
 operator directs native hosts to bind the LAN IP. The normal native browser
 checks above verify the affected page directly; no complete Manual-chain pass
 is asserted. Protected CI must qualify the exact final reviewed head before merge.
+
+## Pre-review authorization correction
+
+Three regressions reproduce a denial during Archive run, candidate or product
+hydration after the page query succeeds. Every protected denial now clears the
+loaded page/card evidence and redirects to access denied. The new cases increase
+final discovery to Unit 4909; Integration 681 and Manual 150 are unchanged.
+The focused red matrix fails all three cases; the green affected suite passes
+85 cases. Evidence is retained as `archive-card-auth-{red,green}.log`.
+This correction receives the initial independent deep review with the full port.

@@ -555,6 +555,42 @@ public sealed class GalleryPageTests
             artifact.ChecksumSha256, artifact.ByteLength, new("preview", "1", "1", new string('B', 64), new string('C', 64)),
             [], null, null, null, "Available", null, integration, 3, 640, 480, "Live", false);
 
+    [TestMethod]
+    [DataRow("run")]
+    [DataRow("candidate")]
+    [DataRow("product")]
+    public void AuthorizationRevokedDuringCardReadsWithholdsTheLoadedPage(string deniedRead)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+        service.ProductDetailHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentProductDetail>.Failure(
+                deniedRead == "product" ? OperatorUiResultKind.Unauthorized : OperatorUiResultKind.Unavailable, "Unavailable"));
+        var runs = new Mock<ICameraAgentProcessingGraphUiService>();
+        runs.Setup(run => run.GetLiveExecutionIdAsync(capture.CaptureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deniedRead == "run"
+                ? OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+                : OperatorUiResult<CameraAgentLiveRunLink>.Success(new(Guid.NewGuid())));
+        var transients = new Mock<ICameraAgentTransientUiService>();
+        transients.Setup(transient => transient.GetCaptureStagesAsync(capture.CaptureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deniedRead == "candidate"
+                ? OperatorUiResult<TransientCaptureStageView>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+                : OperatorUiResult<TransientCaptureStageView>.Success(new(capture.CaptureId, [])));
+        context.Services.AddSingleton<ICameraAgentArchiveCardUiService>(new CameraAgentArchiveCardUiService(runs.Object, transients.Object));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().Uri
+                .EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+            Assert.HasCount(0, cut.FindAll(".capture-card"));
+        });
+    }
+
     private static TestOperatorUiService Configure(BunitContext context)
     {
         var service = new TestOperatorUiService();

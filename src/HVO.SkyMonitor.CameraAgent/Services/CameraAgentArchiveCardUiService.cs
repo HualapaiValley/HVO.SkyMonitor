@@ -4,7 +4,8 @@ internal sealed record CameraAgentArchiveCardLinks(
     Guid? ExecutionId,
     string RunUnavailableReason,
     IReadOnlyList<Guid> CandidateIds,
-    bool CandidateLinksAvailable);
+    bool CandidateLinksAvailable,
+    bool AuthorizationDenied = false);
 
 internal interface ICameraAgentArchiveCardUiService
 {
@@ -20,6 +21,10 @@ internal sealed class CameraAgentArchiveCardUiService(
     {
         var run = await processing.GetLiveExecutionIdAsync(captureId, cancellationToken).ConfigureAwait(false);
         var stages = await transients.GetCaptureStagesAsync(captureId, cancellationToken).ConfigureAwait(false);
+        if (run.Kind == OperatorUiResultKind.Unauthorized || stages.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            return new(null, "The pipeline run identity is unavailable.", [], false, AuthorizationDenied: true);
+        }
         var stagesAvailable = stages.IsSuccess && stages.Value?.CaptureId == captureId;
         return new(
             run.IsSuccess && run.Value?.ExecutionId is { } id && id != Guid.Empty ? id : null,
