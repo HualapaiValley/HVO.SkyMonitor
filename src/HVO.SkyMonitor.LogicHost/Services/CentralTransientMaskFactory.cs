@@ -158,10 +158,15 @@ internal sealed class CentralTransientMaskFactory(
             {
                 try
                 {
-                    var sceneJson = await dbContext.CentralArtifacts.AsNoTracking()
-                        .Where(item => item.Id == source.CentralArtifactId)
-                        .Select(item => item.Frame!.SceneProvenanceJson)
-                        .SingleAsync(cancellationToken).ConfigureAwait(false);
+                    var capture = await dbContext.CentralFrames.AsNoTracking()
+                        .Where(item => item.Artifacts.Any(artifact => artifact.Id == source.CentralArtifactId))
+                        .Include(item => item.Location)
+                        .ThenInclude(item => item!.DeploymentLocation)
+                        .ThenInclude(item => item!.ObservatoryLocationVersion)
+                        .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                    var captureObserver = ResolveCaptureObserver(capture, source.Descriptor.Location, frame.RegistrationId);
+                    if (captureObserver is null) return null;
+                    var sceneJson = capture!.SceneProvenanceJson;
                     // Read only the capture clock. Per-object renderer truth never enters masks.
                     VirtualExposureProvenance? clock = null;
                     if (sceneJson is not null)
@@ -175,7 +180,7 @@ internal sealed class CentralTransientMaskFactory(
                     var start = VirtualExposureProvenance.ResolveCelestialStartUtc(source.Descriptor, clock);
                     var exposure = source.Descriptor.Controls.EffectiveExposure;
                     var geometry = await new StellarExposureGeometryBuilder(celestialCatalog).BuildAsync(
-                        new VisibleSceneRequest(start.AddTicks(exposure.Ticks / 2), observer, projection,
+                        new VisibleSceneRequest(start.AddTicks(exposure.Ticks / 2), captureObserver.Value, projection,
                             new CatalogQuery(options.StarMaximumMagnitude, options.StarMaximumResults),
                             catalogMetadata.Metadata, horizonPolicy: HorizonPolicy.GeometricHorizon,
                             projectionVersion: rig.Optics.CalibrationVersion), start, exposure,
@@ -238,6 +243,32 @@ internal sealed class CentralTransientMaskFactory(
                     ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", catalogMetadata.Metadata.Checksum),
                 starMask)
         ];
+    }
+
+    private static ObserverLocation? ResolveCaptureObserver(CentralFrame? frame,
+        CaptureLocationProvenance? reported, Guid registrationId)
+    {
+        if (frame is null || frame.RegistrationId != registrationId ||
+            frame.LocationEvidenceState != CentralCaptureLocationEvidenceState.ReportedResolved ||
+            reported is null || !reported.Validate().IsValid || frame.Location is not { } location ||
+            location.CentralFrameId != frame.Id || location.DeploymentLocation is not { } deployment ||
+            location.DeviceDeploymentLocationVersionId != deployment.Id ||
+            deployment.RegistrationId != frame.RegistrationId ||
+            deployment.Status != DeploymentLocationResolutionStatus.Acknowledged ||
+            !DeploymentLocationAuthorityService.AppliesAt(deployment, frame.CapturedAtUtc) ||
+            deployment.ObservatoryLocationVersion is not { } observatory ||
+            !ObservatoryLocationAuthority.AppliesAt(observatory, frame.CapturedAtUtc))
+            return null;
+        var persisted = new CaptureLocationProvenance(location.LocationId, location.Version, location.Source,
+            location.HorizontalAccuracyMeters, location.EffectiveFromUtc, location.EffectiveUntilUtc);
+        var snapshot = new DeploymentLocationSnapshot(deployment.LocationId, deployment.Version,
+            deployment.CanonicalSha256, deployment.Source, deployment.HorizontalAccuracyMeters,
+            deployment.EffectiveFromUtc, deployment.EffectiveUntilUtc, deployment.LatitudeDegrees,
+            deployment.LongitudeDegrees, deployment.ElevationMeters, deployment.TimeZoneId);
+        if (persisted != reported || snapshot.ToProvenance() != reported || !snapshot.Validate().IsValid)
+            return null;
+        // The effective interval binds the real capture, independently of a virtual celestial clock.
+        return new(snapshot.LatitudeDegrees, snapshot.LongitudeDegrees, snapshot.ElevationMeters);
     }
 
     private static void SetMaskBit(byte[] bits, int pixelIndex)

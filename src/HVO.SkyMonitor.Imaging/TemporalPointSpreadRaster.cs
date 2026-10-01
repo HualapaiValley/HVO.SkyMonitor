@@ -39,6 +39,22 @@ public static class TemporalPointSpreadRaster
     /// <summary>Identifies discrete Gaussian normalization and original temporal-weight preservation.</summary>
     public const string AlgorithmVersion = "bounded-temporal-gaussian-native-v1";
 
+    /// <summary>
+    /// Selects temporal resolution for the discrete Gaussian, whose adjacent-photosite
+    /// log weight ratio varies on the sigma-squared scale. Strongly truncated kernels
+    /// are outside the qualified integration envelope; work exhaustion remains explicit.
+    /// </summary>
+    public static double MaximumTemporalStepPixels(double sigmaPixels, double radiusPixels)
+    {
+        if (!double.IsFinite(sigmaPixels) || sigmaPixels is <= 0 or > 64 ||
+            !double.IsFinite(radiusPixels) || radiusPixels is < .75 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(sigmaPixels));
+        if (sigmaPixels > radiusPixels / 4)
+            throw new NotSupportedException("stellar-exposure-psf-support-unqualified");
+        var step = Math.Min(.15, .25 * sigmaPixels * sigmaPixels);
+        return step > 0 ? step : throw new NotSupportedException("stellar-exposure-psf-temporal-resolution-unrepresentable");
+    }
+
     /// <summary>Integrates sparse noiseless optical fractions without allocating full-frame temporal buffers.</summary>
     public static PointSpreadRaster Rasterize(IReadOnlyList<WeightedPointSpreadSample> samples,
         ProjectionContext projection, double sigmaPixels, double radiusPixels,

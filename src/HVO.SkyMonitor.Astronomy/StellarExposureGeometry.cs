@@ -53,7 +53,8 @@ public sealed class StellarExposureObject
 public sealed class StellarExposureGeometry
 {
     internal StellarExposureGeometry(VisibleSceneRequest request, DateTimeOffset startUtc, DateTimeOffset endUtc,
-        int candidateCount, int temporalSlots, int directionEvaluations, StellarExposureGeometryOptions options, List<StellarExposureObject> sources)
+        int candidateCount, int temporalSlots, int directionEvaluations, double maximumSampleMotionPixels,
+        StellarExposureGeometryOptions options, List<StellarExposureObject> sources)
     {
         Request = request;
         StartUtc = startUtc;
@@ -63,6 +64,7 @@ public sealed class StellarExposureGeometry
         DirectionEvaluations = directionEvaluations;
         MaximumDirectionEvaluations = options.MaximumDirectionEvaluations;
         MaximumStepPixels = options.MaximumStepPixels;
+        MaximumSampleMotionPixels = maximumSampleMotionPixels;
         PsfSupportRadiusPixels = options.PsfSupportRadiusPixels;
         Sources = new ReadOnlyCollection<StellarExposureObject>(sources.ToArray());
     }
@@ -81,6 +83,8 @@ public sealed class StellarExposureGeometry
     public int TemporalSlots { get; }
     /// <summary>Gets the declared motion bound between uniform samples.</summary>
     public double MaximumStepPixels { get; }
+    /// <summary>Gets the conservative projected motion across the longest actual uniform interval.</summary>
+    public double MaximumSampleMotionPixels { get; }
     /// <summary>Gets the source support used for conservative swept selection.</summary>
     public double PsfSupportRadiusPixels { get; }
     /// <summary>Gets actual direction evaluations, including horizon refinement.</summary>
@@ -114,7 +118,7 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         if (catalog is ICelestialCatalogMetadataSource metadataSource && metadataSource.Metadata != request.CatalogMetadata)
             throw new ArgumentException("Catalog provenance does not match the provider.", nameof(request));
         var projection = request.Projection;
-        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, 0, options, []);
+        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, 0, 0, options, []);
         if (request.Refraction.Enabled)
             throw new NotSupportedException("Exposure geometry requires geometric altitude; refracted motion is not bounded by this version.");
         // A source can enter finite support between samples. Include half a motion step
@@ -131,6 +135,7 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         if (!double.IsFinite(requiredSlots) || requiredSlots > options.MaximumSamplesPerSource)
             throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
         var slots = (int)requiredSlots;
+        var maximumSampleMotion = speedBound * ((exposure.Ticks + slots - 1) / slots) / TimeSpan.TicksPerSecond;
         var sources = new List<StellarExposureObject>();
         var directionEvaluations = 0;
         // A global magnitude query is deliberately conservative. No instantaneous spatial cap
@@ -293,7 +298,7 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
                 }
             }
         }
-        return new(request, startUtc, endUtc, candidates.Count, slots, directionEvaluations, options, sources);
+        return new(request, startUtc, endUtc, candidates.Count, slots, directionEvaluations, maximumSampleMotion, options, sources);
     }
 
     private static bool HasSupport(PixelPoint pixel, ProjectionContext projection, double radius)

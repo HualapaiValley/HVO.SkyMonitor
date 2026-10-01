@@ -389,9 +389,12 @@ fixture disables stochastic shot noise. Saturation caused by a source preserves
 that source with a diagnostic reason; a saturated background alone does not
 force every faint catalog candidate into the image.
 
-The default minimum expected SNR is 5. A conservative shot-noise upper bound,
-with a 0.5-magnitude query margin, determines the complete candidate query before
-position-specific aperture evaluation. The configured HYG fidelity ceiling is
+The default minimum expected SNR is 5. The complete candidate query bounds both
+shot-noise-only SNR and source-caused saturation, using native full-well/ADC
+headroom, background, dark current and channel response, with a 0.5-magnitude
+margin. If background can approach clipping, arbitrarily faint source charge
+can cross that boundary: query the explicit HYG fidelity ceiling, then evaluate
+each aperture. Zero source photons never qualify by saturation. The configured HYG fidelity ceiling is
 separate from this sensitivity ceiling; both and the limiting-depth flag are
 recorded. The legacy magnitude is treated as approximate V-like photometry,
 not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
@@ -406,9 +409,17 @@ noiseless Gaussian footprints, normalized before clipping, then applies one
 sensor shot/dark/read/full-well/ADC pass. Missing horizon or clipped energy is
 not renormalized. Cloud transmission follows each source at its matching
 scenario time. The configured defaults permit at most 64 temporal samples per
-source, a 0.15-native-pixel motion step, 100 million kernel-cell visits per render
+source, a 0.15-native-pixel maximum motion step, 100 million kernel-cell visits per render
 plane, 65,536 sparse aperture entries and 16,777,216 active native buffer pixels.
 An exposure that cannot satisfy a sampling or work bound fails explicitly.
+For a narrow discrete Gaussian, adjacent-photosite weight ratios change on the
+sigma-squared scale. The requested step is also bounded by `0.25 * sigma^2`;
+preparation checks the actual maximum interval motion, including geometry
+supplied outside the camera module. The qualified integrated kernel requires
+radius at least four sigma and at least 0.75 pixels. Strongly truncated kernels
+are explicitly unsupported. Sigma0.05 boundary fixtures pass independent dense
+quadrature at one second; the same narrow kernel at ten seconds can exceed the
+64-sample limit and is refused instead of publishing inaccurate pixels.
 Near the geometric horizon, bounded extremum checks detect a grazing rise or
 dip between equal-sign endpoints and midpoints. Horizon arcs are at most six
 hours, extremum searches stop after 72 iterations, and the default whole-capture
@@ -429,6 +440,12 @@ selection and sampled supports to cover unsampled shutter endpoints; detector
 transforms use their larger scale conservatively. Mask raster work is bounded
 at 100 million cells, including the entire central window, with explicit refusal
 instead of truncation.
+Central V2 resolves each source's acknowledged capture-bound deployment version
+and checks its descriptor provenance, canonical coordinate hash and effective
+interval against actual capture time. Missing or conflicting location evidence
+returns NeedsReview; registration coordinates never substitute for it. The
+virtual celestial clock does not change deployment validity. Legacy V1 keeps
+its historical registration-based behavior for frozen receipts.
 
 The legacy instantaneous mask remains the default. A swept profile must declare
 an adequate complete-query safety bound, such as 32,768 for the HYG magnitude

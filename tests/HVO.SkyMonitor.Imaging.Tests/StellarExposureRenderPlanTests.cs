@@ -123,6 +123,58 @@ public sealed class StellarExposureRenderPlanTests
     }
 
     [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    public void CatalogCeilingBoundsSnrAndClippingForEveryNativeResponse(CameraPixelFormat format)
+    {
+        LinearSceneRenderOptions options = format switch
+        {
+            CameraPixelFormat.Mono16 => new Mono16SceneRenderOptions { SensorResponse = Asi174MmSensorModel.Resolve(150, 64) },
+            CameraPixelFormat.BayerRggb16 => new BayerRggb16RenderOptions
+            {
+                SensorResponse = Asi174MmSensorModel.Resolve(150, 64),
+                ChannelResponse = new(.6, .8, .9)
+            },
+            _ => new Rgb24CompatibilityRenderOptions { ChannelResponse = new(.6, .8, .9), WhiteBalance = new(1, 2, 1) }
+        };
+        options = options with { ExposureSeconds = 1, MagnitudeZeroElectronsPerSecond = 60000 };
+        var ceiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(options, 1000);
+        Assert.IsNotNull(ceiling);
+        Assert.IsTrue(ceiling >= 0, "The magnitude-zero saturated source must reach native admission.");
+        Assert.IsNull(StellarExposureRenderPlan.BestCaseMagnitudeCeiling(options with { MagnitudeZeroElectronsPerSecond = 0 }, 1000));
+        Assert.IsNull(StellarExposureRenderPlan.BestCaseMagnitudeCeiling(options with { ExposureSeconds = 0 }, 1000));
+    }
+
+    [TestMethod]
+    public void BackgroundApproachingClippingUsesExplicitCatalogFidelityCeiling()
+    {
+        var options = new Mono16SceneRenderOptions
+        {
+            ExposureSeconds = 1,
+            MagnitudeZeroElectronsPerSecond = 60000,
+            BackgroundElectronsPerSecond = 99,
+            DarkCurrentElectronsPerSecond = 1,
+            SensorResponse = new() { FullWellElectrons = 100, ElectronsPerAdu = 1 }
+        };
+        Assert.AreEqual(double.PositiveInfinity, StellarExposureRenderPlan.BestCaseMagnitudeCeiling(options, 1000));
+        var below = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(options with { BackgroundElectronsPerSecond = 98 }, 1000);
+        Assert.AreEqual(2.5 * Math.Log10(60000) + .5, below!.Value, 1e-12);
+    }
+
+    [TestMethod]
+    public async Task ZeroSourcePhotonsNeverAdmitWhenAdcHasZeroHeadroom()
+    {
+        var (geometry, _) = await Scene(1).ConfigureAwait(false);
+        var options = Options() with
+        {
+            MagnitudeZeroElectronsPerSecond = 0,
+            SensorResponse = new() { BlackLevelAdu = 4095 }
+        };
+        Assert.IsEmpty(StellarExposureRenderPlan.Prepare(geometry, options).Sources);
+    }
+
+    [TestMethod]
     [DataRow(0, 0)]
     [DataRow(1, 0)]
     [DataRow(0, 1)]

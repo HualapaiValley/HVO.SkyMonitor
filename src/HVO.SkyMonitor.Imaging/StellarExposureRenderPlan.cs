@@ -122,6 +122,46 @@ public sealed class StellarExposureRenderPlan
             (long)Geometry.Request.Projection.WidthPixels * Geometry.Request.Projection.HeightPixels,
             Settings.MaximumKernelCellVisits, Settings.MaximumSparsePixels);
 
+    /// <summary>
+    /// Bounds both admission conditions before querying. A photosite cannot receive more than
+    /// the complete source charge. If background can approach clipping, no finite positive
+    /// source threshold is conservative: use the caller's explicit catalog fidelity ceiling.
+    /// </summary>
+    public static double? BestCaseMagnitudeCeiling(LinearSceneRenderOptions options, double minimumSignalToNoise)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        var maximumResponse = options switch
+        {
+            BayerRggb16RenderOptions bayer => Math.Exp(.7) * Math.Max(bayer.ChannelResponse.Red,
+                Math.Max(bayer.ChannelResponse.Green, bayer.ChannelResponse.Blue)),
+            Rgb24CompatibilityRenderOptions => 3 * Math.Exp(.7),
+            _ => 1
+        };
+        var snrCeiling = StellarVisibilityModel.BestCaseMagnitudeCeiling(options.MagnitudeZeroElectronsPerSecond,
+            options.ExposureSeconds, maximumResponse, minimumSignalToNoise);
+        if (snrCeiling is null) return null;
+        var response = SensorResponse(options);
+        var dark = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
+        // Cloud transmission + scatter is at most one. Include outward float-rounding
+        // allowance because the native background path adds two float conversions.
+        var background = options.BackgroundElectronsPerSecond * options.ExposureSeconds *
+            (options.Cloud?.RequiresEvaluation == true ? 1 + Math.ScaleB(1d, -23) : 1);
+        var requiredCharge = double.MaxValue;
+        foreach (var weight in DisplayWeights(options))
+        {
+            var cap = MaximumCharge(options, response, weight);
+            if (cap == double.MaxValue) continue;
+            if (cap == 0 || dark < cap && background >= cap - dark)
+                return double.PositiveInfinity;
+            requiredCharge = Math.Min(requiredCharge, dark < cap ? cap - dark - background : cap);
+        }
+        if (requiredCharge == double.MaxValue) return snrCeiling;
+        var saturationCeiling = 2.5 * Math.Log10(options.MagnitudeZeroElectronsPerSecond *
+            options.ExposureSeconds * maximumResponse / requiredCharge) + .5;
+        return Math.Max(snrCeiling.Value, saturationCeiling);
+    }
+
     /// <summary>Prepares conditional aperture photometry using native channels, clipping and digital-bin covariance.</summary>
     public static StellarExposureRenderPlan Prepare(StellarExposureGeometry geometry,
         LinearSceneRenderOptions options, StellarExposureRenderSettings? settings = null,
@@ -135,6 +175,10 @@ public sealed class StellarExposureRenderPlan
         if (options.StellarExposure is not null ||
             TimeSpan.FromSeconds(options.ExposureSeconds) != geometry.EndUtc - geometry.StartUtc)
             throw new ArgumentException("Stellar geometry must bind the exact rendered exposure.", nameof(options));
+        var temporalStep = TemporalPointSpreadRaster.MaximumTemporalStepPixels(options.PsfSigmaPixels, options.PsfRadiusPixels);
+        if (geometry.MaximumSampleMotionPixels > temporalStep * (1 + 1e-12) ||
+            geometry.PsfSupportRadiusPixels < options.PsfRadiusPixels)
+            throw new InvalidOperationException("stellar-exposure-psf-temporal-resolution-insufficient");
         var projection = geometry.Request.Projection;
         if ((long)projection.WidthPixels * projection.HeightPixels > 16777216)
             throw new InvalidOperationException("stellar-exposure-active-pixel-budget-exceeded");
@@ -143,9 +187,7 @@ public sealed class StellarExposureRenderPlan
         var visits = 0L;
         var sampleCount = 0L;
         var projector = options.Cloud?.RequiresEvaluation == true ? ProjectorFactory.Create(projection) : null;
-        var displayWeights = options is Rgb24CompatibilityRenderOptions rgb
-            ? new[] { rgb.ChannelResponse.Red * rgb.WhiteBalance.Red, rgb.ChannelResponse.Green * rgb.WhiteBalance.Green,
-                rgb.ChannelResponse.Blue * rgb.WhiteBalance.Blue } : new[] { 1d };
+        var displayWeights = DisplayWeights(options);
         var maximumDisplayWeight = displayWeights.Max();
         foreach (var source in geometry.Sources)
         {
@@ -209,14 +251,10 @@ public sealed class StellarExposureRenderPlan
                     aperture.Add(new(sourceElectrons, backgroundElectrons, darkElectrons, readVariance, extractionWeight * channelWeight));
                     if (aperture.Count > 65536) throw new InvalidOperationException("stellar-exposure-aperture-budget-exceeded");
                     var totalCharge = sourceElectrons + backgroundElectrons + darkElectrons;
-                    var maximumCharge = response is null
-                        ? options.Gain > 0 && displayWeights[channel] > 0
-                            ? Math.Max(0, (options is Rgb24CompatibilityRenderOptions ? byte.MaxValue / displayWeights[channel] : ushort.MaxValue) - options.Bias) / options.Gain
-                            : double.MaxValue
-                        : Math.Min(response.FullWellElectrons, Math.Max(0, response.MaximumAdu - response.BlackLevelAdu) * response.ElectronsPerAdu);
+                    var maximumCharge = MaximumCharge(options, response, displayWeights[channel]);
                     saturated |= sourceElectrons > 0 && totalCharge >= maximumCharge;
-                    sourceCausesSaturation |= sourceElectrons >= maximumCharge ||
-                        backgroundElectrons + darkElectrons < maximumCharge && totalCharge >= maximumCharge;
+                    sourceCausesSaturation |= sourceElectrons > 0 && (sourceElectrons >= maximumCharge ||
+                        backgroundElectrons + darkElectrons < maximumCharge && totalCharge >= maximumCharge);
                     signalSum += sourceElectrons * channelWeight;
                     weightedX += sourceElectrons * channelWeight * (x + .5); weightedY += sourceElectrons * channelWeight * (y + .5);
                 }
@@ -278,6 +316,18 @@ public sealed class StellarExposureRenderPlan
 
     private static LinearSceneRenderOptions Normalize(LinearSceneRenderOptions options)
         => options with { Seed = 0, StellarExposure = null };
+    private static double[] DisplayWeights(LinearSceneRenderOptions options)
+        => options is Rgb24CompatibilityRenderOptions rgb
+            ? [rgb.ChannelResponse.Red * rgb.WhiteBalance.Red, rgb.ChannelResponse.Green * rgb.WhiteBalance.Green,
+                rgb.ChannelResponse.Blue * rgb.WhiteBalance.Blue] : [1d];
+
+    private static double MaximumCharge(LinearSceneRenderOptions options, MonoSensorResponse? response, double displayWeight)
+        => response is null
+            ? options.Gain > 0 && displayWeight > 0
+                ? Math.Max(0, (options is Rgb24CompatibilityRenderOptions ? byte.MaxValue / displayWeight : ushort.MaxValue) - options.Bias) / options.Gain
+                : double.MaxValue
+            : Math.Min(response.FullWellElectrons, Math.Max(0, response.MaximumAdu - response.BlackLevelAdu) * response.ElectronsPerAdu);
+
     private static MonoSensorResponse? SensorResponse(LinearSceneRenderOptions options) => options switch
     {
         Mono16SceneRenderOptions mono => mono.SensorResponse,

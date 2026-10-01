@@ -1835,6 +1835,52 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreSame(expected, actual);
     }
 
+    [TestMethod]
+    public async Task OrdinaryCaptureRetainsSourceCausedSaturationBelowConfiguredSnrThreshold()
+    {
+        var module = CreateModule(FixtureUtc);
+        var config = CreateConfig() with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                magnitudeZeroElectronsPerSecond = 60000,
+                backgroundElectronsPerSecond = 0,
+                minimumStellarSignalToNoise = 1000,
+                asi174Sensor = new { enabled = true, blackLevelAdu = 64 }
+            }))
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var result = await module.CaptureAsync(new(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromSeconds(1), 150, null, null)), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("1", result.Frame!.Metadata.Extra!["stellarAdmittedCount"]);
+        Assert.IsTrue(result.Frame.Metadata.Scene!.Objects!.Any(item => item.Id == "fixture-star"));
+        Assert.AreEqual((ushort)4095, MaximumSample(result.Frame.PixelData.Span));
+    }
+
+    [TestMethod]
+    public async Task OrdinaryCaptureRefusesNarrowPsfWhenRequiredTemporalResolutionExceedsBudget()
+    {
+        var module = CreateModule(FixtureUtc);
+        var config = CreateConfig(width: 128, height: 128) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                psfSigmaPixels = .05,
+                psfRadiusPixels = 4
+            })),
+            Rig = CreateConfig(width: 128, height: 128).Rig with
+            {
+                Optics = new("Perspective", 0, 90, 0, LensKind.Rectilinear, 64, 64, 100)
+            }
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await module.CaptureAsync(new(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new(TimeSpan.FromSeconds(10), 1, null, null)), CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        Assert.AreEqual("stellar-exposure-temporal-budget-exceeded", exception.Message);
+    }
+
     private static VirtualSkyCameraModule CreateModule(DateTimeOffset utc)
     {
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, -113.878) / 15d;

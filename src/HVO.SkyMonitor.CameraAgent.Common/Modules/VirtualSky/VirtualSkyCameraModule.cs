@@ -203,12 +203,8 @@ public sealed class VirtualSkyCameraModule(
                 initialRenderOptions.BackgroundElectronsPerSecond, solarBackground.AltitudeDegrees,
                 _options.BackgroundElectronsPerSecond)
         };
-        var maximumResponse = initialRenderOptions is BayerRggb16RenderOptions bayerResponse
-            ? Math.Exp(.7) * Math.Max(bayerResponse.ChannelResponse.Red,
-                Math.Max(bayerResponse.ChannelResponse.Green, bayerResponse.ChannelResponse.Blue))
-            : initialRenderOptions is Rgb24CompatibilityRenderOptions ? 3 * Math.Exp(.7) : 1;
-        var queryCeiling = StellarVisibilityModel.BestCaseMagnitudeCeiling(_options.MagnitudeZeroElectronsPerSecond,
-            setpoint.Exposure.TotalSeconds, maximumResponse, _options.MinimumStellarSignalToNoise);
+        var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
+            _options.MinimumStellarSignalToNoise);
         var selectedMagnitude = Math.Min(_options.MaximumMagnitude, queryCeiling ?? -30);
         var sceneRequest = new VisibleSceneRequest(
             sceneUtc,
@@ -234,7 +230,9 @@ public sealed class VirtualSkyCameraModule(
         var stellarGeometry = await new StellarExposureGeometryBuilder(catalog, constellationTopology).BuildAsync(sceneRequest,
             virtualExposure.CelestialStartUtc, setpoint.Exposure,
             new StellarExposureGeometryOptions(_options.MaximumResults, _options.MaximumStellarSamples,
-                _options.MaximumStellarStepPixels, _options.PsfRadiusPixels,
+                Math.Min(_options.MaximumStellarStepPixels,
+                    TemporalPointSpreadRaster.MaximumTemporalStepPixels(_options.PsfSigmaPixels, _options.PsfRadiusPixels)),
+                _options.PsfRadiusPixels,
                 _cloudField?.Definition.TemporalSampleCount ?? 1), cancellationToken).ConfigureAwait(false);
         var projectionMilliseconds = Stopwatch.GetElapsedTime(projectionStarted).TotalMilliseconds;
         var projectionProcessCpuMilliseconds = (ReadProcessCpu() - projectionCpuStarted).TotalMilliseconds;
@@ -421,6 +419,7 @@ public sealed class VirtualSkyCameraModule(
             ["stellarRenderPlanes"] = (render.StellarStatistics?.RenderPlanes ?? 0).ToString(CultureInfo.InvariantCulture),
             ["stellarMaximumCandidates"] = _options.MaximumResults.ToString(CultureInfo.InvariantCulture),
             ["stellarMaximumTemporalSamples"] = _options.MaximumStellarSamples.ToString(CultureInfo.InvariantCulture),
+            ["stellarMaximumSampleMotionPixels"] = stellarGeometry.MaximumSampleMotionPixels.ToString("R", CultureInfo.InvariantCulture),
             ["stellarMaximumKernelCellVisitsPerPlane"] = _options.MaximumStellarKernelCellVisits.ToString(CultureInfo.InvariantCulture),
             ["stellarMaximumSparsePixels"] = _options.MaximumStellarSparsePixels.ToString(CultureInfo.InvariantCulture),
             ["stellarProjectionMilliseconds"] = projectionMilliseconds.ToString("R", CultureInfo.InvariantCulture),
