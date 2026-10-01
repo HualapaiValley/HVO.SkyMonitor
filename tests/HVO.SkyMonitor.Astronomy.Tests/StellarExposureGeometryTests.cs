@@ -104,6 +104,20 @@ public sealed class StellarExposureGeometryTests
     }
 
     [TestMethod]
+    public async Task RefractedMotionIsExplicitlyUnsupportedRatherThanUsingGeometricSpeedBound()
+    {
+        var projection = Projection(ProjectionModel.Perspective);
+        var source = AtPixel(projection, new(64, 64));
+        var request = new VisibleSceneRequest(MidpointUtc, Observer, projection, new(7, 1), Metadata,
+            refraction: new(true), horizonPolicy: HorizonPolicy.GeometricHorizon);
+        var builder = new StellarExposureGeometryBuilder(new InMemoryCelestialCatalog([source]));
+        await Assert.ThrowsAsync<NotSupportedException>(async () => await builder.BuildAsync(request,
+            MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20)).ConfigureAwait(false)).ConfigureAwait(false);
+        var zero = await builder.BuildAsync(request, MidpointUtc, TimeSpan.Zero).ConfigureAwait(false);
+        Assert.IsEmpty(zero.Sources);
+    }
+
+    [TestMethod]
     public async Task ZeroExposureCancellationAndConflictingMidpointAreExplicit()
     {
         var projection = Projection(ProjectionModel.Perspective);

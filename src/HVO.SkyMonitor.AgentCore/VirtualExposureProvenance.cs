@@ -74,4 +74,21 @@ public sealed record VirtualExposureProvenance(
     }
 
     private static bool IsUtc(DateTimeOffset value) => value != default && value.Offset == TimeSpan.Zero;
+
+    /// <summary>
+    /// Resolves the known exposure clock for catalog geometry. This accepts time-only capture
+    /// facts, never simulated object locations, admissions, photon predictions or class truth.
+    /// </summary>
+    public static DateTimeOffset ResolveCelestialStartUtc(
+        ReconstructionDescriptor descriptor,
+        VirtualExposureProvenance? virtualExposure)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        if (virtualExposure is null) return descriptor.Timing.ExposureStartedUtc;
+        if (!virtualExposure.IsValid(descriptor.Controls.EffectiveExposure) ||
+            virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds() !=
+                descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds())
+            throw new ArgumentException("Virtual exposure clock does not match the capture.", nameof(virtualExposure));
+        return virtualExposure.CelestialStartUtc;
+    }
 }

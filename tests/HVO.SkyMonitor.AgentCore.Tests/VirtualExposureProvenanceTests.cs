@@ -68,6 +68,22 @@ public sealed class VirtualExposureProvenanceTests
     }
 
     [TestMethod]
+    public void CatalogClockResolutionUsesOnlyValidatedTimeFactsAndPreservesPhysicalFallback()
+    {
+        var descriptor = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        var request = descriptor.Timing.RequestedStartUtc;
+        var clock = VirtualExposureProvenance.Create(request, request, request.AddDays(-1),
+            descriptor.Controls.EffectiveExposure, VirtualExposureTimeMapping.FixedCelestialUtc);
+        Assert.AreEqual(clock.CelestialStartUtc, VirtualExposureProvenance.ResolveCelestialStartUtc(descriptor, clock));
+        Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, VirtualExposureProvenance.ResolveCelestialStartUtc(descriptor, null));
+        Assert.Throws<ArgumentException>(() => VirtualExposureProvenance.ResolveCelestialStartUtc(descriptor,
+            clock with { CelestialEndUtc = clock.CelestialEndUtc.AddTicks(1) }));
+        var anotherCapture = VirtualExposureProvenance.Create(request.AddSeconds(1), request.AddSeconds(1), request.AddDays(-1),
+            descriptor.Controls.EffectiveExposure, VirtualExposureTimeMapping.FixedCelestialUtc);
+        Assert.Throws<ArgumentException>(() => VirtualExposureProvenance.ResolveCelestialStartUtc(descriptor, anotherCapture));
+    }
+
+    [TestMethod]
     public void ManifestRoundTripPreservesOperationalTimingAndRejectsConflictingLogicalFacts()
     {
         var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);

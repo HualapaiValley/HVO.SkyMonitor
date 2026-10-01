@@ -48,6 +48,8 @@ internal sealed class CentralTransientMaskFactory(
         {
             return null;
         }
+        if (options.MaskPolicy is not (CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1 or
+                CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2)) return null;
         var maskProfile = sources[0].Descriptor.Profiles.Mask;
         if (!string.Equals(maskProfile.Name, "mask", StringComparison.Ordinal) ||
             !string.Equals(maskProfile.Version, "none-v1", StringComparison.Ordinal) ||
@@ -147,9 +149,55 @@ internal sealed class CentralTransientMaskFactory(
             registration.ObservatoryLongitudeDegrees,
             registration.ObservatoryElevationMeters);
         var supports = new List<Linear16CircularMaskRegion>();
+        var sweptMasks = new List<Linear16PixelMask>();
+        var sweptWork = 0L;
         var supportRadius = Math.Ceiling(4 * options.StarSourceSupportRadiusPixels * scaleX) + 1;
         foreach (var source in sources.OrderBy(item => item.Position))
         {
+            if (options.MaskPolicy == CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2)
+            {
+                try
+                {
+                    var sceneJson = await dbContext.CentralArtifacts.AsNoTracking()
+                        .Where(item => item.Id == source.CentralArtifactId)
+                        .Select(item => item.Frame!.SceneProvenanceJson)
+                        .SingleAsync(cancellationToken).ConfigureAwait(false);
+                    // Read only the capture clock. Per-object renderer truth never enters masks.
+                    VirtualExposureProvenance? clock = null;
+                    if (sceneJson is not null)
+                    {
+                        using var sceneDocument = JsonDocument.Parse(sceneJson);
+                        if (sceneDocument.RootElement.TryGetProperty(nameof(SceneProvenance.VirtualExposure), out var clockJson) &&
+                            clockJson.ValueKind != JsonValueKind.Null)
+                            clock = clockJson.Deserialize<VirtualExposureProvenance>(RigJsonOptions)
+                                ?? throw new JsonException("Virtual capture clock is missing.");
+                    }
+                    var start = VirtualExposureProvenance.ResolveCelestialStartUtc(source.Descriptor, clock);
+                    var exposure = source.Descriptor.Controls.EffectiveExposure;
+                    var geometry = await new StellarExposureGeometryBuilder(celestialCatalog).BuildAsync(
+                        new VisibleSceneRequest(start.AddTicks(exposure.Ticks / 2), observer, projection,
+                            new CatalogQuery(options.StarMaximumMagnitude, options.StarMaximumResults),
+                            catalogMetadata.Metadata, horizonPolicy: HorizonPolicy.GeometricHorizon,
+                            projectionVersion: rig.Optics.CalibrationVersion), start, exposure,
+                        new(MaximumCandidates: options.StarMaximumResults,
+                            PsfSupportRadiusPixels: 4 * options.StarSourceSupportRadiusPixels), cancellationToken)
+                        .ConfigureAwait(false);
+                    var swept = StellarExposureMask.Create(geometry, detectorLayout.Width, detectorLayout.Height,
+                        scaleX, scaleY, options: new(4 * options.StarSourceSupportRadiusPixels, 1,
+                            100000000 - sweptWork), cancellationToken: cancellationToken);
+                    sweptWork += swept.KernelCellVisits;
+                    sweptMasks.Add(swept.Mask);
+                }
+                catch (Exception exception) when (exception is ArgumentException or JsonException or
+                    OverflowException or NotSupportedException || exception is InvalidOperationException &&
+                    exception.Message.StartsWith("stellar-", StringComparison.Ordinal))
+                {
+                    // Unsupported geometry, invalid clocks or exhausted work are explicit NeedsReview,
+                    // never silently truncated masks or an unbounded retry loop.
+                    return null;
+                }
+                continue;
+            }
             var scene = await new VisibleSceneBuilder(celestialCatalog).BuildAsync(new VisibleSceneRequest(
                 source.Descriptor.Timing.ExposureStartedUtc,
                 observer,
@@ -165,6 +213,10 @@ internal sealed class CentralTransientMaskFactory(
         }
 
         var empty = Linear16MaskOperations.Empty(detectorLayout.Width, detectorLayout.Height);
+        var starMask = options.MaskPolicy == CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2
+            ? Linear16MaskOperations.Combine(sweptMasks, cancellationToken)
+            : Linear16MaskOperations.CreateCircularSupportMask(
+                detectorLayout.Width, detectorLayout.Height, supports, cancellationToken);
         var profileVersion = maskProfile.Sha256.ToUpperInvariant();
         return
         [
@@ -182,9 +234,9 @@ internal sealed class CentralTransientMaskFactory(
             TransientDetectorMask.Create(TransientDetectorMaskKind.BadPixel,
                 new ProcessingAlgorithmIdentity("central-bad-pixel-mask", profileVersion), empty),
             TransientDetectorMask.Create(TransientDetectorMaskKind.Star,
-                new ProcessingAlgorithmIdentity("catalog-projected-star-mask", catalogMetadata.Metadata.Checksum),
-                Linear16MaskOperations.CreateCircularSupportMask(
-                    detectorLayout.Width, detectorLayout.Height, supports, cancellationToken))
+                new ProcessingAlgorithmIdentity(options.MaskPolicy == CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2
+                    ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", catalogMetadata.Metadata.Checksum),
+                starMask)
         ];
     }
 

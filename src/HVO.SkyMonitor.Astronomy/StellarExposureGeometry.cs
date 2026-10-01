@@ -51,13 +51,15 @@ public sealed class StellarExposureObject
 public sealed class StellarExposureGeometry
 {
     internal StellarExposureGeometry(VisibleSceneRequest request, DateTimeOffset startUtc, DateTimeOffset endUtc,
-        int candidateCount, int temporalSlots, List<StellarExposureObject> sources)
+        int candidateCount, int temporalSlots, StellarExposureGeometryOptions options, List<StellarExposureObject> sources)
     {
         Request = request;
         StartUtc = startUtc;
         EndUtc = endUtc;
         CandidateCount = candidateCount;
         TemporalSlots = temporalSlots;
+        MaximumStepPixels = options.MaximumStepPixels;
+        PsfSupportRadiusPixels = options.PsfSupportRadiusPixels;
         Sources = new ReadOnlyCollection<StellarExposureObject>(sources.ToArray());
     }
 
@@ -73,6 +75,10 @@ public sealed class StellarExposureGeometry
     public int CandidateCount { get; }
     /// <summary>Gets uniform temporal slots before horizon-boundary subdivision.</summary>
     public int TemporalSlots { get; }
+    /// <summary>Gets the declared motion bound between uniform samples.</summary>
+    public double MaximumStepPixels { get; }
+    /// <summary>Gets the source support used for conservative swept selection.</summary>
+    public double PsfSupportRadiusPixels { get; }
     /// <summary>Gets sources whose PSF support can intersect the image during the interval.</summary>
     public IReadOnlyList<StellarExposureObject> Sources { get; }
 }
@@ -100,9 +106,14 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         if (catalog is ICelestialCatalogMetadataSource metadataSource && metadataSource.Metadata != request.CatalogMetadata)
             throw new ArgumentException("Catalog provenance does not match the provider.", nameof(request));
         var projection = request.Projection;
-        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, []);
-        var expanded = ExpandProjection(projection, options.PsfSupportRadiusPixels);
-        var speedBound = MaximumProjectionSpeed(expanded, options.PsfSupportRadiusPixels);
+        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, options, []);
+        if (request.Refraction.Enabled)
+            throw new NotSupportedException("Exposure geometry requires geometric altitude; refracted motion is not bounded by this version.");
+        // A source can enter finite support between samples. Include half a motion step
+        // in selection so neither the renderer nor a swept mask loses that interval.
+        var selectionSupport = options.PsfSupportRadiusPixels + options.MaximumStepPixels / 2;
+        var expanded = ExpandProjection(projection, selectionSupport);
+        var speedBound = MaximumProjectionSpeed(expanded, selectionSupport);
         var requiredSlots = Math.Max(options.MinimumSamplesPerSource, Math.Ceiling(exposure.TotalSeconds * speedBound / options.MaximumStepPixels));
         if (!double.IsFinite(requiredSlots) || requiredSlots > options.MaximumSamplesPerSource)
             throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
@@ -191,13 +202,13 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
                     }
                 }
                 var direction = Direction(middle).Apparent;
-                if (projector.Project(direction) is not { } samplePixel || !HasSupport(samplePixel, projection, options.PsfSupportRadiusPixels)) return;
+                if (projector.Project(direction) is not { } samplePixel || !HasSupport(samplePixel, projection, selectionSupport)) return;
                 if (samples.Count >= options.MaximumSamplesPerSource)
                     throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
                 samples.Add(new(middle, direction, samplePixel, (double)(right - left).Ticks / exposure.Ticks));
             }
         }
-        return new(request, startUtc, endUtc, candidates.Count, slots, sources);
+        return new(request, startUtc, endUtc, candidates.Count, slots, options, sources);
     }
 
     private static bool HasSupport(PixelPoint pixel, ProjectionContext projection, double radius)

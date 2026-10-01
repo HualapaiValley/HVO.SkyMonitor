@@ -409,6 +409,29 @@ scenario time. The configured defaults permit at most 64 temporal samples per
 source, a 0.15-native-pixel motion step, 100 million kernel-cell visits per render
 plane, 65,536 sparse aperture entries and 16,777,216 active native buffer pixels.
 An exposure that cannot satisfy a sampling or work bound fails explicitly.
+This version supports geometric altitude. Enabled atmospheric refraction is
+refused for positive exposures because its altitude-floor discontinuity and
+motion derivative are outside the geometric sampling bound.
+
+Transient masking can explicitly select `ExposureIntegratedStarMask=true` in
+the CameraAgent transient options or central transient options. The shared
+`catalog-geometric-exposure-swept-mask-v1` uses an independent complete catalog
+query, captured rig/location, effective exposure and validated time-only capture
+clock facts. It never reads simulated object locations, admissions, photon
+predictions or class truth. Half the declared maximum motion step expands both
+selection and sampled supports to cover unsampled shutter endpoints; detector
+transforms use their larger scale conservatively. Mask raster work is bounded
+at 100 million cells, including the entire central window, with explicit refusal
+instead of truncation.
+
+The legacy instantaneous mask remains the default. A swept profile must declare
+an adequate complete-query safety bound, such as 32,768 for the HYG magnitude
+6.5 virtual qualification, rather than inherit a 2,000-result truncation.
+Central durable execution options freeze the legacy or swept policy. An edge
+candidate whose persisted causal mask identities cannot be reproduced after a
+policy/configuration change retains its causal evidence and finalizes as
+`NeedsReview`; it does not receive a changed automatic verdict. Switch profiles
+after draining unfinished edge windows when automatic completion is required.
 
 Without an explicit background-rate override,
 `bortle-solar-altitude-log-background-v1` retains the night rate below solar
