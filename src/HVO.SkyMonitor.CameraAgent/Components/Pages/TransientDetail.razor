@@ -22,7 +22,7 @@
     else
     {
         <header class="event-detail-heading">
-            <div><p class="eyebrow">Events / Local evidence / Local camera</p><h1>@CameraAgentEventFacts.Title(_detail.AssessmentEvidence)</h1><p>@FormatTime(_evidence.RecordedUtc) · @(_evidence.Reference?.Source is null ? "Candidate recorded time; observation time unavailable" : "Source observation time")<br />Causal evidence: @_detail.CausalEvidence.State · Centered evidence: @_detail.CenteredEvidence.State · Owner review unavailable</p></div>
+            <div><p class="eyebrow">Events / Local evidence / Local camera</p><h1>@CameraAgentEventFacts.Title(_detail.AssessmentEvidence)</h1><p>@FormatTime(_evidence.RecordedUtc) · @(_evidence.Reference?.Source is null ? "Candidate recorded time; observation time unavailable" : "Source observation time")<br />Causal evidence: @_detail.CausalEvidence.State · Centered context: @(_detail.CenteredEvidence.CenteredContextConverged == true ? "Converged receipt" : "Incomplete or unavailable") · Owner review unavailable</p></div>
             <div class="event-detail-status"><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(_detail.AssessmentEvidence)">@CameraAgentEventFacts.Classification(_detail.AssessmentEvidence)</span><span>Local candidate</span></div>
         </header>
         <div class="event-media-tabs" role="tablist" aria-label="Event evidence media" aria-describedby="event-media-reason">

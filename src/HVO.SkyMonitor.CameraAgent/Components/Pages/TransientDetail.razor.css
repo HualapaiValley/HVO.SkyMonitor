@@ -68,7 +68,7 @@
 .archive-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: .7rem; }
 .archive-panel h2 { margin: 0; font-size: .85rem; }
 .archive-panel p { margin: .35rem 0 .65rem; color: var(--muted); font-size: .65rem; line-height: 1.45; }
-.archive-panel header > span { color: var(--muted); font-size: .65rem; }
+.archive-panel header > span { flex-shrink: 0; color: var(--muted); font-size: .65rem; }
 .satellite-assessment { margin-top: .75rem; }
 .satellite-assessment > header > div > p { max-width: 48rem; }
 .event-review-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(18rem, .6fr); gap: .65rem; margin-top: .75rem; }

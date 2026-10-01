@@ -85,7 +85,7 @@
                         </a>
                         <div class="event-card-main">
                             <header><div><p class="eyebrow">@ObservingDate(candidate).ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture) observing date / Local camera</p><h2>@CameraAgentEventFacts.Title(assessment)</h2></div><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(assessment)">@CameraAgentEventFacts.Classification(assessment)</span></header>
-                            <p>Local assessment: @(assessment?.State ?? "Unavailable"). Centered evidence: @candidate.CenteredEvidenceState. Source imagery shows its retained frame, not an extracted event product.</p>
+                            <p>Local assessment: @(assessment?.State ?? "Unavailable"). Centered context: @(evidence?.Detail.CenteredEvidence.CenteredContextConverged == true ? "Converged receipt" : "Incomplete or unavailable"). Source imagery shows its retained frame, not an extracted event product.</p>
                             <a href="@DetailUrl(candidate.CandidateId)">Open event evidence →</a>
                             <details class="event-local-evidence"><summary>Local workflow and identity</summary><dl><div><dt>Candidate ID</dt><dd><code>@candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@candidate.EventId</code></dd></div><div><dt>Workflow</dt><dd>@SplitWords(candidate.WorkflowPhase) · @SplitWords(candidate.EventState)</dd></div><div><dt>Causal / Centered / Assessment / Final</dt><dd>@candidate.CausalEvidenceState / @candidate.CenteredEvidenceState / @candidate.AssessmentEvidenceState / @candidate.FinalEvidenceState</dd></div></dl></details>
                         </div>
