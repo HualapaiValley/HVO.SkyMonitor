@@ -299,6 +299,8 @@ public class Program
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
+        builder.Services.AddScoped<ICameraAgentArchiveCardUiService, CameraAgentArchiveCardUiService>();
+        builder.Services.AddScoped<ICameraAgentEventEvidenceUiService, CameraAgentEventEvidenceUiService>();
         builder.Services.AddScoped<ICameraAgentTransientOperationsUiService, CameraAgentTransientOperationsUiService>();
         builder.Services.AddScoped<ICameraAgentObservingDayUiService, CameraAgentObservingDayUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();

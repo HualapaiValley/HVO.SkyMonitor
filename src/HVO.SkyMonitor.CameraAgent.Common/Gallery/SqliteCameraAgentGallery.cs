@@ -111,13 +111,29 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         };
     }
 
+    public async ValueTask<CameraAgentGalleryCapture?> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty) return null;
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {RawSelectSql}
+            WHERE raw.capture_id = $capture_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var row = await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false);
+        var capture = ProjectCapture(row, [], false, false, true, "Unavailable");
+        return capture with { Detail = ProjectRawDetail(row, [], [], UnavailableCloudAssessment("NotRead")) };
+    }
+
     private async ValueTask<CameraAgentGalleryCaptureDetail> BuildDetailAsync(
         RawGalleryRow row,
         CameraAgentGalleryCapture capture,
         CancellationToken cancellationToken)
     {
-        var manifest = TryReadTrustedManifest(row);
-        var descriptor = manifest?.Descriptor;
         var processingDetails = await _processingStore.ReadGalleryNodeDetailsAsync(
             row.CaptureId, cancellationToken).ConfigureAwait(false);
         var retention = await _processingStore.ReadGalleryRetentionStatesAsync(
@@ -155,6 +171,18 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             detail.InputsTruncated))
             .ToArray();
 
+        return ProjectRawDetail(row, artifactStates, nodeDetails,
+            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false));
+    }
+
+    private static CameraAgentGalleryCaptureDetail ProjectRawDetail(
+        RawGalleryRow row,
+        IReadOnlyList<CameraAgentGalleryArtifactState> artifactStates,
+        IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> nodeDetails,
+        CameraAgentGalleryCloudAssessment cloudAssessment)
+    {
+        var manifest = TryReadTrustedManifest(row);
+        var descriptor = manifest?.Descriptor;
         return new CameraAgentGalleryCaptureDetail(
             descriptor is null ? "Unavailable" : "Available",
             manifest?.SchemaVersion,
@@ -190,7 +218,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             row.RetentionHold,
             artifactStates,
             nodeDetails,
-            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false),
+            cloudAssessment,
             descriptor?.Profiles.Processing);
     }
 

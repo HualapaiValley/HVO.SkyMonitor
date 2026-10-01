@@ -32,7 +32,8 @@
 .capture-card-heading span { margin-top: .15rem; color: var(--muted-strong); font-size: .62rem; }
 .capture-card-heading time { flex: 0 0 auto; color: var(--muted-strong); font: .58rem ui-monospace, monospace; }
 .capture-card-meta, .capture-card-summary, .capture-card-event { margin: .45rem 0 0; color: var(--muted); font-size: .62rem; line-height: 1.45; }
-.capture-card-event { color: #f1c96f; }
+.capture-card-event { display: flex; flex-wrap: wrap; gap: .25rem .75rem; color: #f1c96f; }
+.capture-card-event a { color: inherit; }
 .capture-card-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: .65rem 0 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .capture-card-facts > div { min-width: 0; padding: .5rem .25rem; }
 .capture-card-facts dt { color: var(--muted); font-size: .5rem; text-transform: uppercase; }
@@ -56,4 +57,5 @@
 .status-icon.running { border: 2px solid var(--blue); border-top-color: transparent; animation: archive-spin 1s linear infinite; }
 @keyframes archive-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .status-icon.running { animation: none; } }
+@media (pointer: coarse) { .capture-card-event a { display: inline-flex; min-height: 44px; align-items: center; } }
 :is(a, button):focus-visible { outline: 3px solid rgba(88, 166, 255, .65); outline-offset: 2px; }

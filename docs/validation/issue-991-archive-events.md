@@ -1,0 +1,287 @@
+# Archive Captures and Events candidate
+
+Issue #991 owns the #1013, #1023 and #1024 acceptance pages under epic #1110.
+The visual authority is `docs/prototypes/pipeline-operations/gallery.html`,
+`events.html`, `event.html`, their complete CSS cascade and interaction scripts.
+This record describes a candidate for independent review, not operator acceptance.
+
+## Behavior and authority
+
+Archive cards resolve recorded display-product integration, exact live-run links
+and prospectively retained candidate links for their own capture. A causal mean
+without retained total integration says “Not recorded”; exposure multiplied by
+source count is not evidence of integration. Missing products and run identities
+retain the capture facts and an explicit unavailable state.
+
+The Events list ports the prototype summary, filters, image/main/facts cards and
+seven-column calendar. Classification comes from the retained local assessment;
+workflow completion is not owner confirmation. Filters and every calendar match
+use the same bounded page. The actual observing calendar supplies the site time
+zone and noon-to-noon date. Unknown central review counts and unsupported review
+filtering remain unavailable, with their authority reason.
+
+Detail ports the media/context, measured/derived/unresolved science, orbital and
+review/provenance hierarchy. A retained centered receipt resolves raw sources by
+artifact ID and checksum, with its recorded relative positions. Causal journal
+sources expose only their proven past/endpoint positions. Neither path invents
+future captures by sequence arithmetic. Exact source frames, capture and run
+links remain distinguishable from extracted event derivative media. The latter
+is not exposed by the existing local projection, so all three media tabs remain
+disabled. No CSS tracks, filtered substitute images or prototype science are used.
+
+Single-camera physical speed, altitude, ground track and impact location remain
+unresolved. Detector pixel measurements stay in pixels; exposure/window span is
+not event duration. Assessment confidence is labelled a local score, with method,
+producer authority and unrecorded uncertainty stated separately. Central owner
+review and orbital correlation have disabled actions with accessible reasons.
+The optional read-contract fields are additive; no persistence schema, acquisition,
+detector, central transport, generation or review mutation changes are included.
+
+## Native evidence instance
+
+The private instance runs normally on native `home-dev-02`, binding
+`http://192.168.2.45:5130`. Its isolated runtime is
+`/home/roys/.hvo-ui-1110`; no installed instance or `/mnt/hvo-1058` was changed.
+It uses the normally installed, checksum-verified production HYG v42 catalog and
+real VirtualSky acquisition/processing. Passwords and browser authentication state
+are private mode-600 files and are excluded from the evidence artifact manifest.
+
+Archive comparison pins `/gallery?maxSequence=24&pageSize=24`: acquisitions 1–24,
+24 captures and 144 retained artifacts, with exact capture/artifact identities in
+`gallery-baseline.json`. Events comparison pins eight of nine acquired candidates:
+`/transients?pageSize=25&to=2026-10-01T05%3A01%3A42.619Z`. The detail candidate is
+`2aa42833-8fa9-405b-ba37-efece1ce4e47`. `events-baseline.json` preserves the range
+and return URL; `candidates-baseline.json` retains the candidate/receipt snapshot.
+Acquisition was paused through authenticated System control before comparison.
+
+Generic sensor tracks were acquired through the normal VirtualSky module; no
+candidate records or browser media were inserted. The initial stimulus hit the
+existing temporal star-mask compatibility gate. Narrowing star support in this
+private preview collected actual local evidence without changing detector code.
+All eight comparison candidates have three causal source frames and incomplete
+centered receipts. For the selected candidate the exact source captures are
+311/312/313, with observation-start offsets −4.016/−2.007/0 seconds. The two future
+context slots remain unavailable. This preview does not qualify full centered
+media production or owner review.
+
+Prototype mapping is explicit: production capture sequences 1–24 map only to the
+prototype Gallery layout, not its six illustrative captures. Production Events
+map to `events.html` list/calendar structure, and the selected local candidate
+maps to `event.html?event=august-fireball` structure. Its illustrative images,
+review state and scientific values are never used as production facts.
+
+## Comparison and interactions
+
+Evidence root: `/home/roys/.cache/hvo/1110/`.
+
+- `*-before-{1440,390,320}.png`, `*-after-*.png`, `*-reference-*.png`: pinned
+  Gallery, Events and detail; full-page views retain below-fold science/provenance.
+- `gallery-{compact,empty,unavailable}-{before,after}-*.png`: compact layout,
+  filtered empty and failed-preview branches with the same 24 captures.
+  Preview failure aborts only browser image requests; retained state is unchanged.
+- `gallery-{compact,empty}-reference-*.png`: corresponding prototype states.
+- `event-calendar-*`, `events-empty-*`, `event-unknown-*`: actual month/all matches,
+  no matching classification and unknown candidate without substitution.
+- `*-comparison-*.png`: before/candidate/prototype viewport strips.
+- `*-aligned-{overlay,diff}-*.png`, `pixel-comparison.json`: top-left-aligned
+  component intersection, without resampling. Actual content and unavailable
+  states differ from fixtures, so absolute pixel identity is not an acceptance score.
+- `layout-comparison.json`, `font-comparison.json`: element bounds/font sizes and
+  explicit deltas; `visual-sha256.txt` binds the captured visual files.
+- `ui-evidence.json`, `gallery-*-interactions.json`, `native-controls.json`:
+  pinned identities, overflow, browser errors, filters, layout and exact destinations.
+
+| Measurement | 1440×900 | 390×844 | 320 px |
+| --- | --- | --- | --- |
+| Events card width difference from prototype | 0 px | 0 px | 0 px |
+| Detail media/context outer width difference | 0 px | 0 px | 0 px |
+| Desktop detail column widths | 919.312 / 443.797 px | stacked | stacked |
+| Science-panel width difference | 0 px | 0 px | 0 px |
+| Calendar grid width difference | 0 px | 0 px | 0 px |
+| Calendar columns | 7 | 7 | 7 |
+| Events heading font size, candidate/reference | 56 / 56 px | 32 / 32 px | 32 / 32 px |
+| Detail heading font size, candidate/reference | 52.8 / 52.8 px | 32 / 32 px | 32 / 32 px |
+| Horizontal overflow | 0 px | 0 px | 0 px |
+
+Production inherits the accepted shared heading weight 500 (prototype 700) and
+application body line height. Height/vertical-position deltas are retained in the
+measurement JSON: unavailable authority descriptions, bounded-range disclosure,
+actual source links and uncertainty/method text increase some panels; genuine
+context images have native source geometry rather than fixture aspect ratios.
+The selected media area has an explicit unavailable state instead of a fixture
+image. The prototype calendar script leaves its illustrative list visible; its
+calendar component is compared independently. These differences require review.
+
+The original 30-state pass established geometry and route identity; review found
+that its Events-empty screenshots still showed loading and its failed-preview
+screenshots showed broken images. Those attempts do not qualify those states.
+Corrected native evidence and its exact source are bound in the PR ledger. Classification, empty state, list/calendar
+and observing-date interactions preserve the exact bounded range; all eight
+matching events appear on their date. Three exact capture links, three run links,
+observing-day and nearby-capture destinations resolve. Archive compact/grid
+pressed state, empty filters, media failure and bounded Older/Newer paging are
+checked separately. Component tests cover missing/foreign identities, authority
+revocation, loading/error, unavailable products and canonical integration.
+
+Coarse-pointer controls are checked at least 44px before capture. Chromium's
+full-page screenshot resets pointer emulation to fine in this harness; separate
+`*-touch-390.png` viewport screenshots preserve coarse-pointer evidence. Full-page
+comparison geometry uses the resulting fine-pointer state and does not silently
+claim coarse-pointer coverage.
+
+## Validation and source ranges
+
+Implementation commits: `f0c94a14`, `c33be121`. The final candidate also restores
+the prototype filter container and full-width phone action found during aligned
+comparison; refreshed screenshots bind this CSS correction. Original base:
+`8d8e929b1d38e7656b8dc91808eb79776fa352e7`. Initial focused suite: 66 passed.
+Full CameraAgent Unit on `c33be121` and again after target merge: 2866 passed,
+one existing platform skip on each run.
+Two preceding failures were old UI mock/expectation fixtures; twelve affected
+cases pass after correction. Failed attempts remain separately retained.
+
+Before review, target base advanced to
+`6b35bccaed880c0862fc4ea9e9a0c7eef7a71505`. Merge `d9bf789e` preserves both sides'
+inventory: Unit 4906, Integration 681, Manual 150. The only conflict was the
+runbook discovery totals, resolved by the union of both contributions.
+
+Selector: `scripts/ci:classify pull_request 6b35bccaed880c0862fc4ea9e9a0c7eef7a71505 d9bf789ea94e686cbac9fe1b19d1dcd22edfb9ca`.
+Result: `mode=full complete=false cameraagent=true combined=true shared=false
+logichost=false delivery=false deployment=false`. The selected CameraAgent and
+combined lanes govern local candidate evidence; complete solution mode is not
+implied by `mode=full`. For this target, `.github/workflows/development-v1.yml`
+provides protected Preflight and warning-clean Release/all-Unit gates; the full
+main/release component workflow is outside this branch profile. Selected local
+Integration and component coverage evidence therefore remain necessary.
+
+Warning-clean Release solution build, format verification, package audit,
+documentation audit and all four CI-control guards pass on the synchronized
+candidate. CameraAgent Acceptance Unit 27, storage Integration 221, standalone Integration 7,
+CameraAgent Integration 22, combined Unit 8 and combined Integration 8 pass. Canonical combined coverage passes at
+33.0091% line / 18.2389% branch against unchanged floors. Canonical CameraAgent
+coverage over all five selected slots passes at 84.7658% line / 66.0176% branch. Final candidate build, visual refresh,
+selector output and reviewed SHA are recorded in the append-only PR ledger.
+
+The original combined Integration run failed three Hybrid startup cases with
+`transient-validation.hybrid-candidate-not-found`. All three reproduced on the
+unmodified original base. Already-delivered PR #1112 aligns the controlled
+fixture's star masks/background; merging it through the current base made the
+full eight-case combined Integration gate green. No production workaround or
+weakened assertions were added here.
+
+Local logs/results remain under the evidence root and the worktree's ignored
+`TestResults`/`coverage-report` folders. The modified Manual browser owner chain
+has not been run in full: its fixture binds loopback, while this session's
+operator directs native hosts to bind the LAN IP. The normal native browser
+checks above verify the affected page directly; no complete Manual-chain pass
+is asserted. Protected CI must qualify the exact final reviewed head before merge.
+
+## Pre-review authorization correction
+
+Three regressions reproduce a denial during Archive run, candidate or product
+hydration after the page query succeeds. Every protected denial now clears the
+loaded page/card evidence and redirects to access denied. The new cases increase
+final discovery to Unit 4909; Integration 681 and Manual 150 are unchanged.
+The focused red matrix fails all three cases; the green affected suite passes
+85 cases. Evidence is retained as `archive-card-auth-{red,green}.log`.
+This correction receives the initial independent deep review with the full port.
+
+Comprehensive coarse-pointer checks also identified a later normal-field rule
+overriding the Archive advanced-filter floor and short inline destination links.
+The final CSS orders the 44px floor last and applies it to those page actions.
+`keyboard-touch.json` now records explicit focus/key actions and target bounds for
+grid, compact, cursor, list, calendar and detail states. A separate actual
+`maxSequence=313` Archive pin exercises retained candidate links. Only a completed
+recorder run qualifies these paths; the original height-only report does not.
+
+## Independent-review corrections
+
+The full initial read-only review bound `6b35bcca..b67dd818` and returned FINDINGS.
+All six provisional findings from the earlier INCOMPLETE attempts were carried,
+plus four additional observations; the complete report and individual
+dispositions are retained on PR #1114. The fallback launch pins Anthropic
+`claude-opus-5-5` / CLI effort `high`; provider-internal effort is not exposed.
+
+Missing/Pending/Absent/Unavailable assessments now say “Not assessed”, separately
+from a retained Unknown classification. Failed per-candidate reads have a partial
+unavailability notice and cannot enter classification filters. Latest-summary
+loading/error states do not assert an empty page. Calendar month defaults to the
+filtered candidates and explicitly counts matches in other months. Local detector
+producer authority is scoped separately from owner review; method identifies the
+retained assessor's name/version, rather than the receipt schema. Nine regression
+cases reproduce the original label/month faults; the updated projection test
+reproduces the producer-method fault. All pass after correction.
+
+A shared retained-preview component detects an image that failed before Blazor
+attached its handler, and routes later errors through the same parent fallback.
+Two component cases cover failure before/after attachment. Native failed-preview
+capture must wait for all 24 unavailable placeholders, without replacing browser
+event handlers. Failed prereview captures remain historical evidence. Events
+source images use the same explicit fallback and retain source links/facts.
+
+Page-load measurements on the original native baseline identified unnecessary
+full-capture presentation reconstruction on every event card: median Events DOM
+readiness rose from 58 ms to 2470 ms for eight real candidates. The correction uses
+existing protected capture-metadata reads and the pure presentation projector
+restricted to the exact source artifact. Image-byte validation remains at the
+protected preview endpoint; unrelated products are not reconstructed for cards.
+Own-artifact display previews do not establish calibrated photometry. Final
+latency/CPU/RSS/I/O measurements, their limitations and any explained cost are
+recorded with the correction evidence in the PR ledger. Filter changes re-read
+the bounded query; open-ended queries can advance with new acquisitions.
+
+The correction adds eleven Unit cases: discovery becomes Unit 4920, CameraAgent
+Unit 2881; other category totals remain unchanged. The focused preview, projection,
+page, authorization and composition gate passes 92 cases with no warnings.
+Broader correction gates and refreshed native evidence are recorded against the
+committed correction source. No full Manual-chain or operator acceptance is inferred.
+
+### Second correction: bounded source reads and failure evidence
+
+The first correction review verified the material label, authority and calendar
+findings fixed, but retained the performance finding and identified an interop
+failure risk and missing Events/detail fallback evidence. The second correction
+adds a protected source-only Gallery read. It reads the exact raw identity and
+trusted manifest without processing, cloud or delivery traversal; the browser's
+existing protected preview endpoint still validates the exact payload. Tests prove
+that this read works with the unrelated processing table absent, rejects foreign
+capture identity, respects authorization and sanitizes internal failures.
+
+The preview probe tolerates module failures and live timeouts while retaining its
+normal image-error handler. Both Events parents now have regression cases and
+native failed-preview evidence: eight list placeholders and five context
+placeholders preserve exact candidate/capture links, with no browser errors.
+Keyboard evidence adds a Previous/Next calendar month round trip; all eleven
+recorded actions and ten coarse-pointer states pass with no short targets.
+
+At production source `fdfcbfab`, the original eight-candidate native pin improves
+from the prior correction's 1502 ms median to 207 ms (p95 309 ms). CPU per ten
+loads falls from 17.13 to 3.23 seconds. A single cold load accounts for both
+prerender and interactive reads: 16 candidate projections total 65 ms and 16
+raw-source reads total 65 ms; eight protected preview requests occur separately.
+The larger retained state contains a genuine full page of 25 distinct candidates
+acquired through the native virtual camera with generic sensor tracks, followed
+by an authenticated pause. Ten navigations measure median 557 ms, p95 627 ms,
+and 6.17 process CPU seconds. A separate five-navigation all-image run measures
+median 499 ms and p95 511 ms. Its cold stage trace has 50 reads: candidate
+projection 180 ms, source metadata 213 ms, total 394 ms, with 25 preview requests.
+Prerender duplicates are included, rather than hidden from the accounting.
+
+The original pre-port eight-row list was 58 ms and had no source images or detail
+hydration. Remaining cost is attributable to those added retained reads, preview
+validation/encoding and two render phases; unrelated product traversal has been
+removed. The raw timing, process CPU/RSS/I/O and stage records are retained in
+the immutable correction pack. Process I/O includes background work; cached
+read volume is not physical disk I/O. These samples do not establish an SLA,
+managed allocation, capture-backlog or maximum-100-candidate qualification.
+
+Nine additional Unit cases bring discovery to Unit 4929, CameraAgent Unit 2890.
+The 100-case focused gate and the full CameraAgent Unit selection pass (2889
+passed, one existing platform skip). Refreshed Integration selections pass
+221 storage, 22 host and seven standalone cases; the Acceptance Unit selection
+passes 27. All five CameraAgent coverage reports use the same corrected source:
+84.7827% line and 66.0736% branch pass unchanged floors. Mixing pre-refactor
+reports with new source initially failed the Gallery floor; refreshing the
+reports resolved that without changing a floor. Release, category discovery,
+format, documentation and all four CI-control guards pass. The PR stays draft
+until independent review, final synchronization and protected CI complete.

@@ -27,6 +27,7 @@ public sealed class ArchivePagesTests
     // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
     // matched against visible text so a negated disclaimer is not mistaken for a claim.
     private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];
+    private static readonly string[] UnresolvedPhysicalQuantities = ["Ground track", "Impact location"];
 
     [TestMethod]
     public void Calendar_RendersTheMonthAsAGridOfObservingDays()
@@ -504,7 +505,10 @@ public sealed class ArchivePagesTests
         using var context = new BunitContext();
         var transient = new RecordingTransientUiService();
         context.Services.AddSingleton<ICameraAgentTransientUiService>(transient);
-        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var captures = new TestOperatorUiService();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(captures);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
+        context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(transient, captures, new ProcessingExecutionPagesTests.GraphUiService(), captures));
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         navigation.NavigateTo("/transients?from=2026-07-21T19:00:00&to=2026-07-22T18:59:59");
 
@@ -514,8 +518,8 @@ public sealed class ArchivePagesTests
         {
             Assert.AreEqual(new DateTimeOffset(2026, 7, 21, 19, 0, 0, TimeSpan.Zero), transient.LastQuery?.FromUtc);
             Assert.AreEqual(new DateTimeOffset(2026, 7, 22, 18, 59, 59, TimeSpan.Zero), transient.LastQuery?.ToUtc);
-            StringAssert.Contains(list.Find(".range-state").TextContent, "Showing candidates created between", StringComparison.Ordinal);
-            var visible = list.Find(".transient-page").TextContent;
+            StringAssert.Contains(list.Find(".range-state").TextContent, "Candidate creation range", StringComparison.Ordinal);
+            var visible = list.Find(".event-results").TextContent;
             foreach (var forbidden in ForbiddenCandidateClaims)
             {
                 Assert.IsFalse(visible.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
@@ -528,27 +532,34 @@ public sealed class ArchivePagesTests
 
         var candidateId = Guid.Parse("00000000-0000-0000-0000-000000000301");
         var sourceCapture = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var centerEvidenceId = Guid.NewGuid();
         transient.Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(new(
             new(candidateId, Guid.NewGuid(), "Provisional", "pending", "candidate_persisted", OperatorUiTestData.Now, OperatorUiTestData.Now, "Available", "Absent", "Absent", "Absent"),
-            new("Available", OperatorUiTestData.Now, null, 1, null, null, []),
+            new("Available", OperatorUiTestData.Now, centerEvidenceId, 1, null, null, []),
             new("Absent"), new("Absent"), new("Absent", ReasonCodes: []), new("Absent"),
-            [new(0, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw, sourceCapture, 41, OperatorUiTestData.Now, OperatorUiTestData.Now, OperatorUiTestData.Now.AddSeconds(2))]));
+            [new(0, centerEvidenceId, Guid.NewGuid(), FrameArtifactRole.Raw, sourceCapture, 41, OperatorUiTestData.Now, OperatorUiTestData.Now, OperatorUiTestData.Now.AddSeconds(2))]));
         var detail = context.Render<TransientDetail>(parameters => parameters.Add(page => page.CandidateId, candidateId));
         detail.WaitForAssertion(() =>
         {
-            var link = detail.Find(".source-list a");
+            var link = detail.Find(".context-frame a");
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000002", link.GetAttribute("href"));
             StringAssert.Contains(link.TextContent, "Capture #41", StringComparison.Ordinal);
             var text = detail.Find(".transient-detail").TextContent;
-            foreach (var forbidden in ForbiddenCandidateClaims)
+            foreach (var forbidden in ForbiddenCandidateClaims.Where(static forbidden => forbidden is not ("ground track" or "impact location")))
             {
                 Assert.IsFalse(text.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
+            }
+            foreach (var quantity in UnresolvedPhysicalQuantities)
+            {
+                var label = detail.FindAll(".science-facts dt").Single(element => element.TextContent.Contains(quantity, StringComparison.Ordinal));
+                Assert.AreEqual("Requires genuine correlation", label.ParentElement!.QuerySelector("dd")!.TextContent);
             }
         });
     }
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

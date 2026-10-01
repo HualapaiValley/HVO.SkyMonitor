@@ -40,10 +40,10 @@
     padding-top: 0;
     padding-inline: clamp(.75rem, 2.6vw, 2.4rem);
 }
-.content-container:has(.execution-page, .transient-page, .transient-detail) {
+.content-container:has(.execution-page) {
     padding-top: clamp(1rem, 2.6vw, 2.4rem);
 }
-.content-container ::deep :is(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout) {
+.content-container ::deep :is(.current-sky-page, .gallery-page, .calendar-page, .products-page, .day-page, .detail-page, .product-detail, .operations-layout, .transient-page, .transient-detail) {
     box-sizing: border-box;
     width: 100%;
     max-width: none;

@@ -109,6 +109,8 @@ public sealed partial class ArchiveCard : ComponentBase
     [Parameter, EditorRequired] public Uri DetailUrl { get; set; } = default!;
     [Parameter] public Uri? RunUrl { get; set; }
     [Parameter] public string RunUnavailableReason { get; set; } = "The pipeline run identity is not resolved for this card.";
+    [Parameter] public IReadOnlyList<Guid> CandidateIds { get; set; } = [];
+    [Parameter] public CameraAgentProduct? DisplayProduct { get; set; }
 
     private CameraAgentPresentationSlot? SelectedSlot => ArchiveCardFacts.SelectedSlot(Presentation);
 
@@ -136,9 +138,6 @@ public sealed partial class ArchiveCard : ComponentBase
     private string ArtifactCountLabel => Capture.ArtifactsTruncated
         ? $"{Capture.Artifacts.Count}+ artifacts"
         : $"{Capture.Artifacts.Count} artifact{(Capture.Artifacts.Count == 1 ? string.Empty : "s")}";
-
-    // No event linkage exists in the capture projection yet; an event badge is only shown when one is retained.
-    private string? EventLabel => null;
 
     private string? Summary
     {
@@ -178,15 +177,24 @@ public sealed partial class ArchiveCard : ComponentBase
     {
         get
         {
-            var exposure = Capture.Detail?.Controls?.EffectiveExposureMilliseconds;
-            if (exposure is not { } milliseconds || milliseconds <= 0)
+            if (DisplayProduct is { } product && product.CaptureId == Capture.CaptureId &&
+                product.ArtifactId == ArchiveCardFacts.DisplayArtifact(Capture, Presentation)?.ArtifactId &&
+                product.TotalIntegration > TimeSpan.Zero)
+            {
+                return FormattableString.Invariant($"{product.TotalIntegration.TotalSeconds:0.#} s");
+            }
+            // Frame count proves lineage, not equal exposure: changing schedules can give each source
+            // a different integration. Only the retained output's summed integration establishes that total.
+            if (IsCausal)
             {
                 return "Not recorded";
             }
-            // Integration is only summed across frames whose multi-source lineage is actually retained.
-            var frames = IsCausal && ProvenSourceCount > 0 ? ProvenSourceCount : 1;
-            var total = milliseconds * frames / 1000d;
-            return FormattableString.Invariant($"{total:0.#} s");
+            var exposure = Capture.Detail?.Controls?.EffectiveExposureMilliseconds;
+            if (exposure is not { } milliseconds || !double.IsFinite(milliseconds) || milliseconds <= 0)
+            {
+                return "Not recorded";
+            }
+            return FormattableString.Invariant($"{milliseconds / 1000d:0.#} s");
         }
     }
 
