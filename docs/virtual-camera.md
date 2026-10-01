@@ -503,6 +503,13 @@ changes their local capture-profile identities. Tests pin both the new identitie
 and the original identities reconstructed with only the historical cap restored;
 rig, schedule and processing-plan identity checks remain unchanged.
 
+The Siding Spring location/restart fixture requires observable catalog geometry,
+so it declares a fixed celestial epoch and a stronger magnitude-zero signal.
+Its original 10 ms, 1,000-electron/second fixture did not guarantee an admitted
+star at the physical SNR threshold. The nonempty-star assertion remains, with
+additional checks of the declared signal and clock; production admission and
+other host fixtures retain their configured inputs.
+
 The unchanged `hualapai-asi174-conformance-v1.json` retains independent astronomy
 and orientation references and historical instantaneous pixels. The separate
 `hualapai-asi174-temporal-conformance-v2.json` fixes exact exposure intervals and
