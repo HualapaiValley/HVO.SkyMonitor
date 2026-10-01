@@ -97,9 +97,9 @@ internal sealed class CameraAgentEventEvidenceUiService(
             }
             frames.Add(new(position, source, capture, executionId));
         }
-        if (logger?.IsEnabled(LogLevel.Debug) == true)
+        if (logger?.IsEnabled(LogLevel.Information) == true)
         {
-            logger.LogDebug("Event evidence read {CandidateId}, context {IncludeContext}: candidate {CandidateMilliseconds:F3} ms, raw sources {SourceMilliseconds:F3} ms ({SourceReads} reads), runs {RunMilliseconds:F3} ms, total {TotalMilliseconds:F3} ms.",
+            logger.LogInformation("Event evidence read {CandidateId}, context {IncludeContext}: candidate {CandidateMilliseconds:F3} ms, raw sources {SourceMilliseconds:F3} ms ({SourceReads} reads), runs {RunMilliseconds:F3} ms, total {TotalMilliseconds:F3} ms.",
                 candidateId, includeContext, candidateMilliseconds, sourceMilliseconds, sourceReads, runMilliseconds,
                 Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
