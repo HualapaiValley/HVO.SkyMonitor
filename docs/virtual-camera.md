@@ -438,6 +438,12 @@ candidate whose persisted causal mask identities cannot be reproduced after a
 policy/configuration change retains its causal evidence and finalizes as
 `NeedsReview`; it does not receive a changed automatic verdict. Switch profiles
 after draining unfinished edge windows when automatic completion is required.
+The full-resolution W1/W2 qualification uses independent catalog-only supports
+over five 20-second captures at 25-second cadence. It retains the original
+99% residual-suppression and 20% masked-area limits and requires zero star-only
+candidates. `star-mask-strategy-v2.json` pins the new deterministic results and
+retains the original instantaneous references separately; its hashes are
+regression checks, not independent physical or detection accuracy evidence.
 
 Without an explicit background-rate override,
 `bortle-solar-altitude-log-background-v1` retains the night rate below solar
