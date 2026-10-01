@@ -231,7 +231,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             await InvokeAsync(() =>
             {
-                if (_disposeStarted != 0 || _viewerOpen) { _refreshing = false; return; }
+                if (_accessDenied || _disposeStarted != 0 || _viewerOpen) { _refreshing = false; return; }
                 if (result.IsSuccess && result.Value is not null)
                 {
                     var wasLayered = ShowLayeredHero;
@@ -282,7 +282,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 _refreshing = false;
                 StateHasChanged();
             }).ConfigureAwait(false);
-            if (displayCaptureId is { } captureId)
+            if (!_accessDenied && _disposeStarted == 0 && displayCaptureId is { } captureId)
             {
                 // The image is already visible. A slow optional run-link lookup cannot make
                 // the five-second current-sky refresh appear to have failed.
@@ -294,6 +294,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         {
             await InvokeAsync(() =>
             {
+                if (_accessDenied || _disposeStarted != 0) return;
                 _errorMessage = "The current image refresh exceeded its five-second deadline.";
                 _initialLoading = false;
                 _refreshing = false;

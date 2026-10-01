@@ -552,3 +552,25 @@ acceptance requires that behavior; no throughput improvement is claimed. The
 roughly 18 ms p95 increment is measured on this input only and does not qualify
 full-host defaults. `matched-render-target.json` records the baseline output
 SHA and exact runtime assembly hashes alongside every measured iteration.
+
+
+## Initial-review corrections (2026-10-01 UTC)
+
+Independent deep review of `de18e41c..c88014a9` reported two blocking P2
+findings (PR #1119 comment 5939641992). R1 is corrected by making authorization
+denial terminal for pending refresh publication, optional-read scheduling and
+timeout publication. The regression releases a previously authorized refresh
+after an optional read revokes access and verifies protected content cannot
+return. R2 is corrected by using the shared historical compositor selector in
+LogicHost. Four real central ingest/materialization cases cover v1, v2, mixed
+v1/v2 and v3, including expected algorithm-bound identity and cached replay.
+
+Affected Debug/Release builds pass with warnings as errors; formatting and all
+four CI-control guards pass. Focused Release evidence: 73 Current Sky Unit
+cases and four real SQL/Redis/filesystem central Integration rows pass with no
+skips. Initial test attempts exposed a navigation-event assertion race and
+a shared idempotency key across data rows; those fixtures were corrected before
+the green runs. Inventories now select 5,012 Unit and 684 Integration cases
+before target integration. The earlier unchanged full candidate and performance
+evidence remains applicable to unaffected paths. These fixes require correction
+review before finalization; target #1116 is still not integrated.

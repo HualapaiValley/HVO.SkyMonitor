@@ -1283,6 +1283,39 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task ARefreshCompletedAfterOptionalAuthorizationRevocationCannotRestoreProtectedContent()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var refreshResult = new TaskCompletionSource<OperatorUiResult<CameraAgentCurrentSkyView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transientResult = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        var view = new CameraAgentCurrentSkyView(OperatorUiTestData.CurrentImage(), null, null);
+        service.CurrentSkyHandler = _ => Interlocked.Increment(ref reads) == 1
+            ? ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(view))
+            : new(refreshResult.Task);
+        service.TransientHandler = (_, _) => new(transientResult.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        var refresh = cut.Find("button.refresh-link").ClickAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, reads));
+
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, args) => redirected.TrySetResult(args.Location);
+        transientResult.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        Assert.IsTrue((await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            .EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".sky-image-stage img")));
+        refreshResult.SetResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(view));
+        await refresh.ConfigureAwait(false);
+
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(2, reads);
+    }
+
+    [TestMethod]
     public void RefreshReportsBusyStateAndNavigatesOnAuthorizationRevocation()
     {
         using var context = new BunitContext();

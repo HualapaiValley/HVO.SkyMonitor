@@ -205,8 +205,8 @@ internal sealed class CentralPresentationMaterializer(
             var composed = PresentationLayerCompositor.CompositeDisplay(
                 baseImage.Layout, baseImage.PixelData, compositorLayers, cancellationToken);
             var output = composed.Pixels;
-            var compositorVersion = manifest.Layers.All(layer => layer.RendererVersion == PresentationLayerCompositor.PreviousAlgorithmVersion)
-                ? PresentationLayerCompositor.PreviousAlgorithmVersion : PresentationLayerCompositor.AlgorithmVersion;
+            var compositorVersion = PresentationLayerCompositor.SelectAlgorithmVersion(
+                manifest.Layers.Select(static layer => layer.RendererVersion));
             if (output.Length > MaximumOutputBytes)
             {
                 return new(CentralPresentationMaterializationStatus.Invalid);
