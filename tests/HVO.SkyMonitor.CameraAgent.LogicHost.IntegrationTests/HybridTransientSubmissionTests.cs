@@ -330,7 +330,7 @@ public sealed class HybridTransientSubmissionTests
         await VerifyPayloadReleaseAsync(fixture, eventId, derivativeIds).ConfigureAwait(false);
     }
 
-    private static Task DeferOtherPendingJobsAsync(ApplicationDbContext db, Guid jobId)
+    private static Task<int> DeferOtherPendingJobsAsync(ApplicationDbContext db, Guid jobId)
     {
         // Artifact delivery can schedule ordinary preview jobs after validation. This
         // fixture manually drives one worker; preserve unrelated work but make the
