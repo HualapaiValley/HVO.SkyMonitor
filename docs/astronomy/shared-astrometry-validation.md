@@ -89,3 +89,9 @@ max(20%, 0.5 ms) requires investigation and a recorded explanation. Latency
 budgets describe this qualification host, not a portable hardware guarantee.
 Final immutable-head results and environment are retained in the issue/PR
 ledger. Full camera/solve/detection qualification remains #1102/#1106.
+
+The [actual virtual-camera baseline](virtual-camera-astrometry-baseline.md)
+defines #1102's ordinary final-pixel harness, independent Cartesian references,
+supported readouts, held-out partitions, timing limitation and resource gates.
+It supplements the standalone fixtures above; final exposure-correct evidence
+remains dependent on #522/#1106.
