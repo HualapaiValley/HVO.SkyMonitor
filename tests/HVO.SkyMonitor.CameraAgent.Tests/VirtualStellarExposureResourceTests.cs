@@ -16,6 +16,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [DoNotParallelize]
 public sealed class VirtualStellarExposureResourceTests
 {
+    private static readonly string[] Sensors = ["mono", "cfa", "asi676"];
+    private static readonly string[] ExposureCases = ["short", "long", "day"];
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
@@ -29,8 +31,8 @@ public sealed class VirtualStellarExposureResourceTests
         var label = Environment.GetEnvironmentVariable("HVO_EXPOSURE_LABEL");
         Assert.IsTrue(label is "before" or "after");
         var workload = Environment.GetEnvironmentVariable("HVO_EXPOSURE_WORKLOAD")!;
-        Assert.IsTrue(new[] { "mono", "cfa", "asi676" }.SelectMany(sensor =>
-            new[] { "short", "long", "day" }.Select(exposure => $"{sensor}-{exposure}")).Contains(workload));
+        Assert.IsTrue(Sensors.SelectMany(sensor =>
+            ExposureCases.Select(exposureCase => $"{sensor}-{exposureCase}")).Contains(workload));
         var parts = workload.Split('-');
         var exposure = parts[1] switch { "short" => .1, "long" => 20d, _ => 60d };
         var utc = new DateTimeOffset(2026, 2, 10, parts[1] == "day" ? 20 : 8, 0, 0, TimeSpan.Zero);
