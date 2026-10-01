@@ -407,3 +407,24 @@ scoped selector does not reach `RetainedPreviewImage`'s child `<img>`. No Archiv
 fix is included in this branch. Full HYG is already loaded; missing visible stars
 requires examining actual generation/display inputs rather than inferring a
 catalog absence from labels. Capture #42's Sun altitude is about 45.34°.
+
+The six ordinary Integration assemblies pass on `7ddbde59`: 674 cases, no
+failures or skips (221 storage, seven standalone, two Astronomy, 414 LogicHost,
+22 CameraAgent host and eight cross-host). The seven architecture/publish
+Integration cases remain separate. Both canonical migration/model checks,
+coverage baseline policy, affected Debug/format checks, all four CI-control
+guards and the operations documentation audit pass.
+
+The CameraAgent Unit run exposes two further test-fixture mismatches. The new
+versioned producers/default styles change the effective W6 graph identity from
+`DC29C83638C695CBAF379FF6F387A2661F109462DE0931D25FC1BCC63484110D`
+to `C1DCDBDC45D682D086A8873BDC84D425ABA510939079C24AC9F20DEF6C3F4052`;
+the Unit and Manual identities are repinned together, leaving rig, desired graph,
+processing profile, local profile and schedule identity checks intact. Historical
+viewer test modules explicitly handle `disconnect` when a capture change disposes
+the former viewer. All 33 focused GalleryDetail/W6 profile cases pass. These
+corrections change tests, with no additional production behavior or test count.
+
+The operator additionally directs that the goal be paused after the next #1035
+merge and cleanup, for assessment. Follow-up #1117 and further epic children
+remain unclaimed by this session.
