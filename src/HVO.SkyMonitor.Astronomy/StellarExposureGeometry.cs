@@ -1,0 +1,238 @@
+using System.Collections.ObjectModel;
+
+namespace HVO.SkyMonitor.Astronomy;
+
+/// <summary>Explicit candidate and quadrature work bounds; exhaustion refuses the exposure.</summary>
+public sealed record StellarExposureGeometryOptions(
+    int MaximumCandidates = 32768,
+    int MaximumSamplesPerSource = 64,
+    double MaximumStepPixels = .15,
+    double PsfSupportRadiusPixels = 4)
+{
+    /// <summary>Validates bounded candidate, temporal and optical support parameters.</summary>
+    public void Validate()
+    {
+        if (MaximumCandidates is < 1 or > 100000 || MaximumSamplesPerSource is < 1 or > 64 ||
+            !double.IsFinite(MaximumStepPixels) || MaximumStepPixels is <= 0 or > .5 ||
+            !double.IsFinite(PsfSupportRadiusPixels) || PsfSupportRadiusPixels is <= 0 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(StellarExposureGeometryOptions));
+    }
+}
+
+/// <summary>One noiseless temporal source sample, weighted by its fraction of the complete exposure.</summary>
+public readonly record struct StellarExposureSample(
+    DateTimeOffset Utc,
+    AltAzPoint Horizontal,
+    PixelPoint Pixel,
+    double ExposureFraction);
+
+/// <summary>Catalog identity and temporal footprint; the optional reference is an instantaneous midpoint, not a flux centroid.</summary>
+public sealed class StellarExposureObject
+{
+    internal StellarExposureObject(CelestialCatalogObject source, ProjectedCelestialObject? midpointReference,
+        List<StellarExposureSample> samples)
+    {
+        Source = source;
+        MidpointReference = midpointReference;
+        Samples = new ReadOnlyCollection<StellarExposureSample>(samples.ToArray());
+    }
+
+    /// <summary>Gets the immutable catalog source.</summary>
+    public CelestialCatalogObject Source { get; }
+    /// <summary>Gets a normal visible midpoint reference when its center is inside the aperture and horizon.</summary>
+    public ProjectedCelestialObject? MidpointReference { get; }
+    /// <summary>Gets supported temporal samples; omitted interval energy is never renormalized.</summary>
+    public IReadOnlyList<StellarExposureSample> Samples { get; }
+}
+
+/// <summary>Bounded sky geometry before any sensor-dependent visibility or flux calculation.</summary>
+public sealed class StellarExposureGeometry
+{
+    internal StellarExposureGeometry(VisibleSceneRequest request, DateTimeOffset startUtc, DateTimeOffset endUtc,
+        int candidateCount, int temporalSlots, List<StellarExposureObject> sources)
+    {
+        Request = request;
+        StartUtc = startUtc;
+        EndUtc = endUtc;
+        CandidateCount = candidateCount;
+        TemporalSlots = temporalSlots;
+        Sources = new ReadOnlyCollection<StellarExposureObject>(sources.ToArray());
+    }
+
+    /// <summary>Identifies the sky-motion and finite-support midpoint integration policy.</summary>
+    public const string AlgorithmVersion = "stellar-exposure-iau1976-bounded-midpoint-v1";
+    /// <summary>Gets the midpoint scene request and immutable catalog/projection inputs.</summary>
+    public VisibleSceneRequest Request { get; }
+    /// <summary>Gets the exact celestial interval start.</summary>
+    public DateTimeOffset StartUtc { get; }
+    /// <summary>Gets the exact celestial interval end.</summary>
+    public DateTimeOffset EndUtc { get; }
+    /// <summary>Gets the complete queried candidate count before spatial rejection.</summary>
+    public int CandidateCount { get; }
+    /// <summary>Gets uniform temporal slots before horizon-boundary subdivision.</summary>
+    public int TemporalSlots { get; }
+    /// <summary>Gets sources whose PSF support can intersect the image during the interval.</summary>
+    public IReadOnlyList<StellarExposureObject> Sources { get; }
+}
+
+/// <summary>Projects a complete bounded magnitude query through the swept field, including off-frame PSF centers.</summary>
+public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog)
+{
+    // Slightly above the geometric sidereal angular rate, including the coordinate-model drift.
+    private const double MaximumSkyRadiansPerSecond = 7.3e-5;
+
+    /// <summary>Builds storage-neutral temporal geometry without sensor, photometry or renderer dependencies.</summary>
+    public async ValueTask<StellarExposureGeometry> BuildAsync(VisibleSceneRequest request,
+        DateTimeOffset startUtc, TimeSpan exposure, StellarExposureGeometryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(request);
+        options ??= new();
+        options.Validate();
+        if (startUtc == default || startUtc.Offset != TimeSpan.Zero || exposure < TimeSpan.Zero ||
+            exposure > TimeSpan.FromDays(1) || request.Utc != startUtc.AddTicks(exposure.Ticks / 2))
+            throw new ArgumentException("Scene reference must be the exact floor midpoint of the UTC exposure.", nameof(startUtc));
+        var endUtc = startUtc + exposure;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (catalog is ICelestialCatalogMetadataSource metadataSource && metadataSource.Metadata != request.CatalogMetadata)
+            throw new ArgumentException("Catalog provenance does not match the provider.", nameof(request));
+        var projection = request.Projection;
+        var expanded = ExpandProjection(projection, options.PsfSupportRadiusPixels);
+        var speedBound = MaximumProjectionSpeed(expanded, options.PsfSupportRadiusPixels);
+        var requiredSlots = Math.Max(1, Math.Ceiling(exposure.TotalSeconds * speedBound / options.MaximumStepPixels));
+        if (!double.IsFinite(requiredSlots) || requiredSlots > options.MaximumSamplesPerSource)
+            throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
+        var slots = (int)requiredSlots;
+        var sources = new List<StellarExposureObject>();
+        if (exposure == TimeSpan.Zero)
+            return new(request, startUtc, endUtc, 0, slots, sources);
+        // A global magnitude query is deliberately conservative. No instantaneous spatial cap
+        // may erase a star that enters the sensor/aperture or contributes only clipped PSF support.
+        var candidates = await catalog.QueryCandidatesAsync(new(request.CatalogQuery.MaximumMagnitude), cancellationToken)
+            .ConfigureAwait(false);
+        if (candidates.Count > options.MaximumCandidates)
+            throw new InvalidOperationException("stellar-exposure-candidate-budget-exceeded");
+        var projector = ProjectorFactory.Create(expanded);
+        var midpointProjector = ProjectorFactory.Create(projection);
+        var basis = CameraBasis.Create(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees,
+            projection.RollDegrees, projection.HorizontalFlip);
+        foreach (var source in candidates.OrderBy(static item => item.Magnitude).ThenBy(static item => item.Id, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var samples = new List<StellarExposureSample>();
+            for (var index = 0; index < slots; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var left = startUtc.AddTicks(exposure.Ticks * index / slots);
+                var right = startUtc.AddTicks(exposure.Ticks * (index + 1) / slots);
+                AppendInterval(left, right, 0);
+            }
+            if (samples.Count == 0) continue;
+            var (ofDate, geometric, apparent) = Direction(request.Utc);
+            var pixel = midpointProjector.Project(apparent);
+            var reference = pixel is null || request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometric.AltitudeDegrees < 0
+                ? null : new ProjectedCelestialObject(source.Id, source.DisplayName, CelestialObjectKind.Star,
+                    new(source.RightAscensionHours, source.DeclinationDegrees), ofDate, geometric, apparent,
+                    basis.ToCamera(CameraBasis.FromHorizontal(apparent)), pixel.Value, source.Magnitude, source.ColorIndex,
+                    request.CatalogMetadata.Version, request.ProjectionVersion, StellarExposureGeometry.AlgorithmVersion, source.HipparcosId);
+            sources.Add(new(source, reference, samples));
+
+            (EquatorialPoint OfDate, AltAzPoint Geometric, AltAzPoint Apparent) Direction(DateTimeOffset utc)
+            {
+                var position = EquatorialPrecession.PrecessJ2000(new(source.RightAscensionHours, source.DeclinationDegrees), utc);
+                var horizontal = CoordinateTransforms.EquatorialToHorizontal(position, utc,
+                    request.Observer.LatitudeDegrees, request.Observer.LongitudeDegrees);
+                return (position, horizontal, horizontal with
+                {
+                    AltitudeDegrees = AtmosphericRefraction.Apply(horizontal.AltitudeDegrees, request.Refraction)
+                });
+            }
+
+            void AppendInterval(DateTimeOffset left, DateTimeOffset right, int depth)
+            {
+                if (right <= left) return;
+                var middle = left.AddTicks((right - left).Ticks / 2);
+                if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon)
+                {
+                    var a = Direction(left).Geometric.AltitudeDegrees;
+                    var b = Direction(right).Geometric.AltitudeDegrees;
+                    var m = Direction(middle).Geometric.AltitudeDegrees;
+                    if ((a >= 0) == (b >= 0) && (a >= 0) != (m >= 0))
+                    {
+                        if (depth >= 8) throw new InvalidOperationException("stellar-exposure-horizon-refinement-budget-exceeded");
+                        AppendInterval(left, middle, depth + 1); AppendInterval(middle, right, depth + 1); return;
+                    }
+                    if (a < 0 && b < 0) return;
+                    if ((a >= 0) != (b >= 0))
+                    {
+                        var low = left; var high = right;
+                        while ((high - low).Ticks > 1)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var test = low.AddTicks((high - low).Ticks / 2);
+                            if ((Direction(test).Geometric.AltitudeDegrees >= 0) == (a >= 0)) low = test; else high = test;
+                        }
+                        if (a >= 0) right = high; else left = high;
+                        if (right <= left) return;
+                        middle = left.AddTicks((right - left).Ticks / 2);
+                    }
+                }
+                var direction = Direction(middle).Apparent;
+                if (projector.Project(direction) is not { } samplePixel || !HasSupport(samplePixel, projection, options.PsfSupportRadiusPixels)) return;
+                if (samples.Count >= options.MaximumSamplesPerSource)
+                    throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
+                samples.Add(new(middle, direction, samplePixel, (double)(right - left).Ticks / exposure.Ticks));
+            }
+        }
+        return new(request, startUtc, endUtc, candidates.Count, slots, sources);
+    }
+
+    private static bool HasSupport(PixelPoint pixel, ProjectionContext projection, double radius)
+        => pixel.X >= -radius && pixel.X <= projection.WidthPixels + radius &&
+           pixel.Y >= -radius && pixel.Y <= projection.HeightPixels + radius &&
+           (projection.ImageCircleRadiusPixels is not { } circle ||
+            Math.Sqrt(Math.Pow(pixel.X - projection.PrincipalPointX, 2) + Math.Pow(pixel.Y - projection.PrincipalPointY, 2)) <= circle + radius);
+
+    private static ProjectionContext ExpandProjection(ProjectionContext projection, double support)
+    {
+        if (projection.Model == ProjectionModel.Perspective) return projection with { EnforceSensorBounds = false };
+        var maximumRadius = projection.Model switch
+        {
+            ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
+            ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
+            ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
+            _ => double.MaxValue
+        };
+        return projection with
+        {
+            EnforceSensorBounds = false,
+            ImageCircleRadiusPixels = Math.Min(maximumRadius, projection.ImageCircleRadiusPixels!.Value + support)
+        };
+    }
+
+    private static double MaximumProjectionSpeed(ProjectionContext projection, double supportRadius)
+    {
+        var focal = Math.Max(projection.FocalLengthXPixels, projection.FocalLengthYPixels);
+        double jacobian;
+        if (projection.Model == ProjectionModel.Perspective)
+        {
+            var x = (supportRadius + Math.Max(Math.Abs(projection.PrincipalPointX), Math.Abs(projection.WidthPixels - projection.PrincipalPointX))) / projection.FocalLengthXPixels;
+            var y = (supportRadius + Math.Max(Math.Abs(projection.PrincipalPointY), Math.Abs(projection.HeightPixels - projection.PrincipalPointY))) / projection.FocalLengthYPixels;
+            jacobian = 1 + x * x + y * y;
+        }
+        else
+        {
+            var ratio = projection.ImageCircleRadiusPixels!.Value / focal;
+            jacobian = projection.Model switch
+            {
+                ProjectionModel.EquidistantFisheye => ratio <= 1e-12 ? 1 : ratio / Math.Sin(ratio),
+                ProjectionModel.EquisolidFisheye => 1 / Math.Sqrt(1 - ratio * ratio / 4),
+                ProjectionModel.OrthographicFisheye => 1,
+                ProjectionModel.StereographicFisheye => 1 + ratio * ratio / 4,
+                _ => throw new ArgumentOutOfRangeException(nameof(projection))
+            };
+        }
+        return MaximumSkyRadiansPerSecond * focal * jacobian;
+    }
+}
