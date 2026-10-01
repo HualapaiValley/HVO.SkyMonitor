@@ -104,7 +104,8 @@ a, button, select, input, summary { outline-offset: 3px; }
     .page-state { flex-wrap: wrap; }
 }
 @media (pointer: coarse) {
-    .btn, .view-switcher button, .event-toolbar input, .event-toolbar select, .event-card-main > a, summary, .event-month-day a { min-height: 44px; }
+    .btn, .view-switcher button, .event-toolbar input, .event-toolbar select, .event-card-main > a, summary, .event-month-day a, .range-state a, .event-calendar-empty a { min-height: 44px; }
     .view-switcher button { min-width: 44px; }
     summary, .event-month-day a { display: flex; align-items: center; }
+    .range-state a, .event-calendar-empty a { display: inline-flex; align-items: center; }
 }

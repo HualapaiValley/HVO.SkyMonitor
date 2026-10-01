@@ -183,3 +183,9 @@ final discovery to Unit 4909; Integration 681 and Manual 150 are unchanged.
 The focused red matrix fails all three cases; the green affected suite passes
 85 cases. Evidence is retained as `archive-card-auth-{red,green}.log`.
 This correction receives the initial independent deep review with the full port.
+
+Comprehensive coarse-pointer checks also identified a later normal-field rule
+overriding the Archive advanced-filter floor and short inline destination links.
+The final CSS orders the 44px floor last and applies it to those page actions.
+`keyboard-touch.json` records every visible enabled page target and keyboard
+filter/list/calendar behavior, rather than checking only primary controls.

@@ -111,6 +111,7 @@ a, button, summary { outline-offset: 3px; }
     .evidence-list span { max-width: 100%; }
 }
 @media (pointer: coarse) {
-    .btn, .event-media-tabs button, .context-frame a, .context-day-link, summary { min-height: 44px; }
+    .btn, .event-media-tabs button, .context-frame a, .context-day-link, .breadcrumb a, summary { min-height: 44px; }
     .context-frame a, summary { display: flex; align-items: center; }
+    .breadcrumb a { display: inline-flex; align-items: center; }
 }
