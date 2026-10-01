@@ -60,8 +60,8 @@ control results do not replace the complete Tier C candidate gate.
 
 ## Work still required
 
-- Complete the captured site/location facts and remaining overlay typography,
-  fact-card hierarchy and prototype comparisons.
+- Complete remaining overlay typography, fact-card hierarchy and prototype
+  comparisons. Captured location and real current-location drift are verified below.
 - Qualify SVG/raster pixel parity on matched retained inputs. Native image/SVG
   bounds, actual layered products and saved RGB output are recorded below.
 - Complete native failure and authorization checks. Full-screen selection,
@@ -202,3 +202,57 @@ including all shared, CameraAgent, LogicHost, combined and delivery lanes and
 the deployment catalog, shard and installer selections over 38 changed paths.
 This expands the candidate evidence required; no full gate, PR, independent
 review, operator page acceptance or rollout is claimed yet.
+
+
+## Captured location and live history verification
+
+Source `a1d833de` projects location from the trusted raw manifest's provenance and
+protected history at exposure time. It never reads the current `Active` location
+as a fallback. Invalid version/provenance/hash/interval and unavailable history
+remain unavailable; legacy captures without provenance say not retained. The
+full detail reuses its trusted manifest, and the fast source-thumbnail read does
+not resolve history. All 134 focused Current Sky, location/profile/fact and SQLite
+gallery cases pass, including 12 new cases. Fresh CameraAgent Unit discovery is
+2,953 and the solution inventory is 5,007; the full suite is still pending.
+The source-bound native host Release build passes with zero warnings/errors.
+
+The private LAN 5132 preview verifies capture #32's recorded location version 1
+at 1440, 390 and 320 pixels, with five default layers, equal image/SVG bounds,
+and no overflow or browser errors. A normal authenticated manual-location
+command and restart activated different current coordinates as version 2. Fresh
+circuits still displayed capture #32's original coordinates and version 1.
+A second normal command and restart restored the original coordinates as current
+version 3. The raw capture remains at #32; the original coordinate-free manifest
+and redacted envelope remain intact. No installed instance was changed.
+
+`location-drift-invariants.json` proves identical historical site text, encoded
+base checksum and layer identities across all three current-version states and
+widths. The two normal API receipts and before/after/restored native reports are
+retained privately in the evidence cache. Current private authority is version 3;
+acquisition remains paused, and the retained capture still references version 1.
+
+## Measured remaining style differences
+
+`style-audit.json` records both pages' element bounds, padding, colors, font sizes,
+weights, line heights and columns at 1440/390/320. The reference browser receives
+the exact same capture-32 encoded base image; prototype science labels remain
+explicit design fixtures. Reference and candidate stage/full-page crops are saved
+separately. Real rig geometry and sky positions are not replaced with fixtures.
+These observations identify work still required, not approximate acceptance.
+
+| Element | Current retained output | Reference |
+| --- | --- | --- |
+| Scene/cardinal text | Embedded IBM Plex Sans Regular outlines | DejaVu Sans Mono Bold; cardinals 18 px, constellation captions 14 px |
+| Text halo | Black, 2 px on the sampled cardinal path | `rgba(3,8,14,.95)`, 4 px cardinals / 5 px other scene text |
+| Constellation stroke | 2 px, `10 8` dash, group opacity .8 | 3 px, same dash, purple alpha .78 |
+| Image boundary | Cyan alpha .45, 1 px | Same cyan alpha .45, 2 px |
+| Cardinal plate border | Opaque `#2C4F61`, 1 px | Cyan alpha .38, 1.7 px inherited width |
+| Frame-fact hierarchy | Uniform regular text inside bordered corner plates | Bold white heading and regular mono detail with a left accent/rules |
+
+The next implementation must encode the selected font, weight, size, halo and
+plate/stroke styles in versioned shared payload/layout behavior for SVG and
+saved raster, while preserving old artifacts. Matched pixel/resource evidence,
+complete classifier-selected gates (including deployment), independent exact-range
+review and separate operator page acceptance remain pending. The classifier on
+`de18e41c..a1d833de` still selects `mode=full complete=true deployment=true` and
+all component/deployment selections, now over 40 changed paths.
