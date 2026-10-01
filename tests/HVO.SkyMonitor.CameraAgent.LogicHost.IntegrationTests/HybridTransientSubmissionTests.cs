@@ -26,10 +26,15 @@ public sealed class HybridTransientSubmissionTests
 {
     private const int MaximumTemporalPendingTail = 2;
 
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
-    public async Task CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob()
+    [DataRow(0)]
+    [DataRow(250)]
+    [DataRow(12000)]
+    public async Task CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob(int startupDelayMilliseconds)
     {
-        using var fixture = new CameraAgentIntegrationFixture(hybridTransientMode: true);
+        using var fixture = new CameraAgentIntegrationFixture(hybridTransientMode: true, startupDelayMilliseconds);
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var scope = fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
@@ -54,13 +59,6 @@ public sealed class HybridTransientSubmissionTests
                 progress: () => ReadIngestProgressAsync(fixture.StorageRoot),
                 describeState: fixture.DescribeRuntimeState).ConfigureAwait(false);
             Assert.IsNotNull(submission);
-            var causalTailCompletedUtc = fixture.TransientEpochUtc.AddSeconds(3);
-            var causalTailDelay = causalTailCompletedUtc - DateTimeOffset.UtcNow;
-            if (causalTailDelay > TimeSpan.Zero)
-            {
-                await Task.Delay(causalTailDelay).ConfigureAwait(false);
-            }
-            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(3, submission.Candidate.ContextSources.Count);
             Assert.AreEqual(fixture.DeviceId, submission.Candidate.AgentId);
             var submissionBytes = await ReadSubmissionPayloadAsync(
@@ -94,6 +92,10 @@ public sealed class HybridTransientSubmissionTests
                 return Convert.ToInt32(await command.ExecuteScalarAsync().ConfigureAwait(false),
                     System.Globalization.CultureInfo.InvariantCulture) == 2;
             }, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+            // Stop only after both actual future inputs are available. Wall time relative
+            // to the virtual epoch cannot establish readiness for a fixed sequence.
+            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
 
             var acknowledged = await journal.ReadAsync(submission.CandidateId, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -153,6 +155,16 @@ public sealed class HybridTransientSubmissionTests
             await centralConnection.OpenAsync().ConfigureAwait(false);
             using var centralCommand = centralConnection.CreateCommand();
             centralCommand.CommandText = """
+                SELECT frame.CaptureSequence
+                FROM CentralArtifacts AS artifact
+                INNER JOIN CentralFrames AS frame ON frame.Id = artifact.CentralFrameId
+                WHERE artifact.ArtifactId = @center;
+                """;
+            AddParameter(centralCommand, "@center", artifactIds[2]);
+            Assert.AreEqual(5L, Convert.ToInt64(
+                await centralCommand.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture));
+            centralCommand.Parameters.Clear();
+            centralCommand.CommandText = """
                 SELECT COUNT(*) FROM CentralTransientValidationJobs
                 WHERE SubmissionIdentitySha256 = @submission;
                 """;
@@ -174,18 +186,9 @@ public sealed class HybridTransientSubmissionTests
                 assertionScope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
                 submission.SubmissionIdentitySha256,
                 CancellationToken.None).ConfigureAwait(false);
-            Assert.AreNotEqual("TerminalFailure", execution.Status, execution.ReasonCode);
-            if (execution.Status == "Skipped")
-            {
-                Assert.IsTrue(execution.ReasonCode is
-                    "transient-validation.hybrid-candidate-not-found" or
-                    "transient-validation.hybrid-candidate-ambiguous");
-            }
-            else
-            {
-                Assert.AreEqual("Produced", execution.Status, execution.ReasonCode);
-                Assert.IsNull(execution.ReasonCode);
-            }
+            TestContext.WriteLine($"Startup delay: {startupDelayMilliseconds} ms; center capture: 5; submission: {submission.SubmissionIdentitySha256}; central outcome: {execution.Status}; reason: {execution.ReasonCode}; virtual event UTC: {fixture.TransientEpochUtc:O}");
+            Assert.AreEqual("Produced", execution.Status, execution.ReasonCode);
+            Assert.IsNull(execution.ReasonCode);
             centralCommand.CommandText = """
                 SELECT job.Status, job.LastError
                 FROM CentralDerivativeJobs AS job
