@@ -64,6 +64,8 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<IHipparcosCatalog>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+        services.AddSingleton<IAstrometricCatalogSource>(static serviceProvider =>
+            serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<ICelestialCatalogMetadataSource>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
 
