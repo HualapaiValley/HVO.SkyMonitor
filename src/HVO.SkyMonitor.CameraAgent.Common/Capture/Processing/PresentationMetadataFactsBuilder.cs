@@ -130,13 +130,14 @@ internal sealed class PresentationMetadataFactsBuilder(
         var corners = new PresentationMetadataFactsV1(string.Empty,
             DisplayLines([$"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}", $"{descriptor.Layout.Width} × {descriptor.Layout.Height} PIXELS",
              $"UTC {descriptor.Timing.ExposureStartedUtc.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.fffZ}"]),
-            DisplayLines([$"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
+            DisplayLines(["ACQUISITION", $"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
               $"EXPOSURE {descriptor.Controls.EffectiveExposure.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
               $"GAIN {descriptor.Controls.EffectiveGain.ToString("F3", CultureInfo.InvariantCulture)}",
               $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
               $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
-            DisplayLines(environment.Count == 0 ? ["ENVIRONMENT MISSING"] : environment.Select(static item => item.DisplayLine)),
-            DisplayLines([$"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
+            DisplayLines(environment.Count == 0 ? ["ENVIRONMENT", "NOT RETAINED"] :
+                environment.Select(static item => item.DisplayLine).Prepend("ENVIRONMENT")),
+            DisplayLines(["LINEAGE", $"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
               $"CALIBRATION {descriptor.Profiles.Calibration.Version} / {descriptor.Profiles.Calibration.Sha256[..12]}",
               stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
               $"PROFILE {descriptor.Profiles.Processing.Version} / {descriptor.Profiles.Processing.Sha256[..12]}"]));

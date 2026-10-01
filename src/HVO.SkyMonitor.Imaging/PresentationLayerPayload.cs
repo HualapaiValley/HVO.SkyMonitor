@@ -22,7 +22,8 @@ public sealed record PresentationSegmentV1(PixelPoint From, PixelPoint To, int T
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationStrokeV2? Stroke = null);
 /// <summary>An ellipse in continuous top-left image pixels with positive finite radii.</summary>
 public sealed record PresentationEllipseV1(PixelPoint Center, double RadiusX, double RadiusY, PresentationColor Color,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationStrokeV2? Stroke = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationStrokeV2? Stroke = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ThicknessMilliPixels = null);
 
 /// <summary>Pixel-space dash cadence and stroke coverage shared by SVG and saved raster products.</summary>
 public sealed record PresentationStrokeV2(int DashPixels, int GapPixels, int OpacityMillionths,
@@ -30,7 +31,24 @@ public sealed record PresentationStrokeV2(int DashPixels, int GapPixels, int Opa
 
 /// <summary>A text-bound translucent plate with a border and optional left accent, in image pixels.</summary>
 public sealed record PresentationBackplateV2(PresentationColor Fill, int OpacityMillionths,
-    PresentationColor Border, int Padding, int AccentPixels);
+    PresentationColor Border, int Padding, int AccentPixels,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationPlateStyleV3? Style = null);
+
+/// <summary>Pinned font faces for new presentation styles; absent styles retain the original Plex face.</summary>
+public enum PresentationFontFaceV3 { MonoRegular, MonoBold }
+
+/// <summary>Explicit font, tracking and halo in thousandths of an image pixel.</summary>
+public sealed record PresentationTextStyleV3(PresentationFontFaceV3 Face, int SizeMilliPixels,
+    int LetterSpacingMilliPixels, PresentationColor Color, PresentationColor HaloColor,
+    int HaloOpacityMillionths, int HaloWidthMilliPixels);
+
+/// <summary>A body style and optional first-line heading; lines share the block's left edge.</summary>
+public sealed record PresentationTextAppearanceV3(PresentationTextStyleV3 Body,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationTextStyleV3? Heading = null);
+
+/// <summary>Border coverage and an optional heading separator independent of the left accent.</summary>
+public sealed record PresentationPlateStyleV3(int BorderWidthMilliPixels, int BorderOpacityMillionths,
+    bool HeadingRule = false, int RuleOpacityMillionths = 250_000);
 /// <summary>A bounded text block using the embedded font at 7 * scale pixels, with pixel inset/spacing.</summary>
 public sealed record PresentationTextBlockV1(
     PresentationTextAnchor Anchor,
@@ -40,7 +58,8 @@ public sealed record PresentationTextBlockV1(
     int Inset,
     int LineSpacing,
     PresentationColor Color,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationBackplateV2? Backplate = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationBackplateV2? Backplate = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PresentationTextAppearanceV3? Appearance = null);
 /// <summary>A compact cloudy-tile mask whose set bits draw tile borders in row-major order.</summary>
 public sealed record PresentationTileMaskV1(
     int Columns,
@@ -67,8 +86,9 @@ public sealed record PresentationLayerPayloadV1(
     PresentationTileMaskV1? TileMask)
 {
     public const string PreviousSchemaVersion = "presentation-layer-payload-v1";
-    public const string CurrentSchemaVersion = "presentation-layer-payload-v2";
-    public static bool SupportsSchema(string? schema) => schema is CurrentSchemaVersion or PreviousSchemaVersion;
+    public const string SemanticSchemaVersion = "presentation-layer-payload-v2";
+    public const string CurrentSchemaVersion = "presentation-layer-payload-v3";
+    public static bool SupportsSchema(string? schema) => schema is CurrentSchemaVersion or SemanticSchemaVersion or PreviousSchemaVersion;
     public const int MaximumMarkers = 10_000;
     public const int MaximumSegments = 50_000;
     public const int MaximumEllipses = 16;
@@ -102,7 +122,15 @@ public sealed record PresentationLayerPayloadV1(
                 Segments.Any(value => value.Stroke is not null) || Ellipses.Any(value => value.Stroke is not null) ||
                 TextBlocks.Any(value => value.Backplate is not null)))
             throw new ArgumentException("Presentation style is invalid for its schema.", nameof(PresentationLayerPayloadV1));
-        if (SchemaVersion == CurrentSchemaVersion && (Markers.Any(value => !Bounded(value.Center)) ||
+        if (Ellipses.Any(value => value.ThicknessMilliPixels is < 1 or > 8_000) ||
+            TextBlocks.Any(value => value.Appearance is { } appearance &&
+                (!ValidTextStyle(appearance.Body) || appearance.Heading is { } heading && !ValidTextStyle(heading)) ||
+                value.Backplate?.Style is { } plate && (plate.BorderWidthMilliPixels is < 0 or > 8_000 ||
+                    plate.BorderOpacityMillionths is < 0 or > 1_000_000 || plate.RuleOpacityMillionths is < 0 or > 1_000_000)) ||
+            SchemaVersion != CurrentSchemaVersion && (Ellipses.Any(value => value.ThicknessMilliPixels is not null) ||
+                TextBlocks.Any(value => value.Appearance is not null || value.Backplate?.Style is not null)))
+            throw new ArgumentException("Presentation appearance is invalid for its schema.", nameof(PresentationLayerPayloadV1));
+        if (SchemaVersion != PreviousSchemaVersion && (Markers.Any(value => !Bounded(value.Center)) ||
             Segments.Any(value => !Bounded(value.From) || !Bounded(value.To)) ||
             Ellipses.Any(value => !Bounded(value.Center) || value.RadiusX > 131_072 || value.RadiusY > 131_072) ||
             TextBlocks.Any(value => !Bounded(value.Point))))
@@ -134,6 +162,10 @@ public sealed record PresentationLayerPayloadV1(
 
     private static bool Finite(PixelPoint value) => double.IsFinite(value.X) && double.IsFinite(value.Y);
     private static bool Bounded(PixelPoint value) => Math.Abs(value.X) <= 131_072 && Math.Abs(value.Y) <= 131_072;
+    private static bool ValidTextStyle(PresentationTextStyleV3? style) => style is not null &&
+        Enum.IsDefined(style.Face) && style.SizeMilliPixels is >= 1_000 and <= 112_000 &&
+        style.LetterSpacingMilliPixels is >= 0 and <= 8_000 && style.HaloWidthMilliPixels is >= 0 and <= 16_000 &&
+        style.HaloOpacityMillionths is >= 0 and <= 1_000_000;
     private static bool ValidStroke(PresentationStrokeV2? stroke) => stroke is null ||
         stroke.DashPixels is >= 0 and <= 64 && stroke.GapPixels is >= 0 and <= 64 &&
         (stroke.DashPixels == 0) == (stroke.GapPixels == 0) && stroke.OpacityMillionths is >= 0 and <= 1_000_000 &&
@@ -152,7 +184,15 @@ public sealed record PresentationCompositorLayer(
 public static class PresentationLayerCompositor
 {
     public const string PreviousAlgorithmVersion = "typed-presentation-compositor-v3-plex";
-    public const string AlgorithmVersion = "typed-presentation-compositor-v5-single-coverage";
+    public const string SemanticAlgorithmVersion = "typed-presentation-compositor-v5-single-coverage";
+    public const string AlgorithmVersion = "typed-presentation-compositor-v6-pinned-appearance";
+
+    public static string SelectAlgorithmVersion(IEnumerable<string> versions)
+    {
+        var values = versions.ToArray();
+        return values.All(value => value == PreviousAlgorithmVersion) ? PreviousAlgorithmVersion :
+            values.All(value => value is PreviousAlgorithmVersion or SemanticAlgorithmVersion) ? SemanticAlgorithmVersion : AlgorithmVersion;
+    }
 
     // Execution admission, not wire-format limits. Covers 3552x3552 W6 with seven layers;
     // bounds the owned output, aggregate readback and recorded native geometry independently.
@@ -172,7 +212,7 @@ public static class PresentationLayerCompositor
         cancellationToken.ThrowIfCancellationRequested();
         if (orderedLayers.Count > 256) throw new ArgumentException("Too many presentation layers.", nameof(orderedLayers));
         var promote = layout.PixelFormat == CameraPixelFormat.Mono8 && orderedLayers.Any(layer =>
-            layer is { Enabled: true, OpacityMillionths: > 0 } && layer.Payload.SchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion);
+            layer is { Enabled: true, OpacityMillionths: > 0 } && layer.Payload.SchemaVersion != PresentationLayerPayloadV1.PreviousSchemaVersion);
         var outputLayout = promote ? new ImageLayout(layout.Width, layout.Height, CameraPixelFormat.Rgb24, checked(layout.Width * 3)) : layout;
         return (outputLayout, CompositeCore(layout, outputLayout, immutableBase, orderedLayers, cancellationToken));
     }
@@ -220,7 +260,7 @@ public static class PresentationLayerCompositor
             if (payload.WidthPixels != layout.Width || payload.HeightPixels != layout.Height)
                 throw new ArgumentException("Layer dimensions do not match the base frame.", nameof(orderedLayers));
             var layerPrimitives = payload.Markers.Count + payload.Segments.Count + payload.Ellipses.Count +
-                payload.TextBlocks.Sum(static block => block.Lines.Count + (block.Backplate is null ? 0 : 2)) +
+                payload.TextBlocks.Sum(static block => block.Lines.Count + (block.Backplate is null ? 0 : 2) + (block.Backplate?.Style?.HeadingRule == true && block.Lines.Count > 1 ? 1 : 0)) +
                 (payload.TileMask is { } mask ? checked(mask.Columns * mask.Rows) : 0);
             primitives += layerPrimitives;
             if (layerPrimitives > MaximumLayerPrimitives || primitives > MaximumCompositionPrimitives)
@@ -262,7 +302,7 @@ public static class PresentationLayerCompositor
         {
             cancellationToken.ThrowIfCancellationRequested();
             var payload = layer.Payload;
-            if (payload.SchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion)
+            if (payload.SchemaVersion != PresentationLayerPayloadV1.PreviousSchemaVersion)
             {
                 DrawSemanticLayer(output, layout, payload, layer, cancellationToken);
                 continue;
@@ -311,8 +351,10 @@ public static class PresentationLayerCompositor
         {
             cancellationToken.ThrowIfCancellationRequested();
             paint.Color = Color(ellipse.Color, ellipse.Stroke?.OpacityMillionths ?? 1_000_000);
+            paint.StrokeWidth = (ellipse.ThicknessMilliPixels ?? 1000) / 1000f;
             canvas.DrawOval((float)ellipse.Center.X, (float)ellipse.Center.Y, (float)ellipse.RadiusX, (float)ellipse.RadiusY, paint);
         }
+        paint.StrokeWidth = 1;
         foreach (var marker in payload.Markers)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -412,10 +454,11 @@ public static class PresentationLayerCompositor
                 }
             }
 
-        static SKColor Color(PresentationColor value, int opacity = 1_000_000) =>
-            new(value.Red, value.Green, value.Blue, (byte)(((long)opacity * 255 + 500_000) / 1_000_000));
         static byte Unpremultiply(byte value, byte alpha) => (byte)Math.Min(255, (value * 255 + alpha / 2) / alpha);
     }
+
+    private static SKColor Color(PresentationColor value, int opacity = 1_000_000) =>
+        new(value.Red, value.Green, value.Blue, (byte)(((long)opacity * 255 + 500_000) / 1_000_000));
 
     private static void DrawSemanticText(SKCanvas canvas, ImageLayout layout, PresentationTextBlockV1 block,
         CancellationToken cancellationToken)
@@ -429,33 +472,51 @@ public static class PresentationLayerCompositor
                 (byte)(((long)plate.OpacityMillionths * 255 + 500_000) / 1_000_000));
             canvas.DrawRect(bounds, paint);
             paint.Style = SKPaintStyle.Stroke;
-            paint.StrokeWidth = 1;
-            paint.Color = new(plate.Border.Red, plate.Border.Green, plate.Border.Blue);
-            canvas.DrawRect(bounds, paint);
+            paint.StrokeWidth = (plate.Style?.BorderWidthMilliPixels ?? 1000) / 1000f;
+            paint.Color = Color(plate.Border, plate.Style?.BorderOpacityMillionths ?? 1_000_000);
+            if (paint.StrokeWidth > 0) canvas.DrawRect(bounds, paint);
             if (plate.AccentPixels > 0)
             {
                 paint.Style = SKPaintStyle.Fill;
+                paint.Color = Color(plate.Border);
                 canvas.DrawRect(bounds.Left, bounds.Top, plate.AccentPixels, bounds.Height, paint);
+            }
+            if (plate.Style?.HeadingRule == true && block.Lines.Count > 1)
+            {
+                paint.Style = SKPaintStyle.Stroke;
+                paint.StrokeWidth = 1;
+                paint.Color = Color(plate.Border, plate.Style.RuleOpacityMillionths);
+                var y = PresentationFont.HeadingRuleY(block, layout.Width, layout.Height);
+                canvas.DrawLine(bounds.Left + plate.Padding, y, bounds.Right - plate.Padding, y, paint);
             }
         }
         for (var index = 0; index < block.Lines.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var (x, y) = PresentationFont.LineOrigin(block, layout.Width, layout.Height, font, block.Lines[index], index);
-            using var path = PresentationFont.LinePath(font, block.Lines[index], x, y);
-            var halo = PresentationFont.Halo(block.Scale);
-            if (halo > 0)
-            {
-                paint.Style = SKPaintStyle.Stroke;
-                paint.StrokeWidth = 2 * halo;
-                paint.StrokeJoin = SKStrokeJoin.Round;
-                paint.Color = SKColors.Black;
-                canvas.DrawPath(path, paint);
-            }
-            paint.Style = SKPaintStyle.Fill;
-            paint.Color = new(block.Color.Red, block.Color.Green, block.Color.Blue);
+            DrawSemanticTextLine(canvas, layout, block, index, paint);
+        }
+    }
+
+    private static void DrawSemanticTextLine(SKCanvas canvas, ImageLayout layout, PresentationTextBlockV1 block,
+        int index, SKPaint paint)
+    {
+        using var lineFont = PresentationFont.Create(block, index);
+        var style = PresentationFont.LineStyle(block, index);
+        var (x, y) = PresentationFont.LineOrigin(block, layout.Width, layout.Height, lineFont, block.Lines[index], index);
+        using var path = PresentationFont.LinePath(lineFont, block.Lines[index], x, y,
+            (style?.LetterSpacingMilliPixels ?? 0) / 1000f);
+        var halo = style is null ? 2 * PresentationFont.Halo(block.Scale) : style.HaloWidthMilliPixels / 1000f;
+        if (halo > 0)
+        {
+            paint.Style = SKPaintStyle.Stroke;
+            paint.StrokeWidth = halo;
+            paint.StrokeJoin = SKStrokeJoin.Round;
+            paint.Color = style is null ? SKColors.Black : Color(style.HaloColor, style.HaloOpacityMillionths);
             canvas.DrawPath(path, paint);
         }
+        paint.Style = SKPaintStyle.Fill;
+        paint.Color = Color(style?.Color ?? block.Color);
+        canvas.DrawPath(path, paint);
     }
 
     private static void DrawMarker(byte[] pixels, ImageLayout layout, PresentationMarkerV1 marker, PresentationCompositorLayer layer)
@@ -578,47 +639,53 @@ public static class PresentationLayerCompositor
             var (x, y) = PresentationFont.LineOrigin(value, layout.Width, layout.Height, font, value.Lines[index], index);
             using var path = PresentationFont.LinePath(font, value.Lines[index], x, y);
             var halo = PresentationFont.Halo(value.Scale);
-            var bounds = path.Bounds;
-            var left = Math.Max(0, (int)Math.Floor(bounds.Left - halo - 1));
-            var top = Math.Max(0, (int)Math.Floor(bounds.Top - halo - 1));
-            var right = Math.Min(layout.Width, (int)Math.Ceiling(bounds.Right + halo + 1));
-            var bottom = Math.Min(layout.Height, (int)Math.Ceiling(bounds.Bottom + halo + 1));
-            if (left >= right || top >= bottom) continue;
-            using var bitmap = new SKBitmap(new SKImageInfo(right - left, bottom - top, SKColorType.Rgba8888, SKAlphaType.Premul));
-            using (var canvas = new SKCanvas(bitmap))
+            DrawLegacyTextPath(pixels, layout, path, halo, value.Color, layer, cancellationToken);
+        }
+    }
+
+    private static void DrawLegacyTextPath(byte[] pixels, ImageLayout layout, SKPath path, int halo,
+        PresentationColor textColor, PresentationCompositorLayer layer, CancellationToken cancellationToken)
+    {
+        var bounds = path.Bounds;
+        var left = Math.Max(0, (int)Math.Floor(bounds.Left - halo - 1));
+        var top = Math.Max(0, (int)Math.Floor(bounds.Top - halo - 1));
+        var right = Math.Min(layout.Width, (int)Math.Ceiling(bounds.Right + halo + 1));
+        var bottom = Math.Min(layout.Height, (int)Math.Ceiling(bounds.Bottom + halo + 1));
+        if (left >= right || top >= bottom) return;
+        using var bitmap = new SKBitmap(new SKImageInfo(right - left, bottom - top, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using (var canvas = new SKCanvas(bitmap))
+        {
+            canvas.Clear(SKColors.Transparent);
+            canvas.Translate(-left, -top);
+            if (halo > 0)
             {
-                canvas.Clear(SKColors.Transparent);
-                canvas.Translate(-left, -top);
-                if (halo > 0)
+                using var outline = new SKPaint
                 {
-                    using var outline = new SKPaint
-                    {
-                        Color = SKColors.Black,
-                        IsAntialias = true,
-                        Style = SKPaintStyle.Stroke,
-                        StrokeWidth = 2 * halo,
-                        StrokeJoin = SKStrokeJoin.Round
-                    };
-                    canvas.DrawPath(path, outline);
-                }
-                using var fill = new SKPaint
-                {
-                    Color = new SKColor(value.Color.Red, value.Color.Green, value.Color.Blue),
+                    Color = SKColors.Black,
                     IsAntialias = true,
-                    Style = SKPaintStyle.Fill
+                    Style = SKPaintStyle.Stroke,
+                    StrokeWidth = 2 * halo,
+                    StrokeJoin = SKStrokeJoin.Round
                 };
-                canvas.DrawPath(path, fill);
+                canvas.DrawPath(path, outline);
             }
-            for (var row = 0; row < bitmap.Height; row++)
+            using var fill = new SKPaint
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                for (var column = 0; column < bitmap.Width; column++)
-                {
-                    var pixel = bitmap.GetPixel(column, row);
-                    if (pixel.Alpha == 0) continue;
-                    var color = new PresentationColor(pixel.Red, pixel.Green, pixel.Blue);
-                    Set(pixels, layout, left + column, top + row, color, layer, pixel.Alpha);
-                }
+                Color = new SKColor(textColor.Red, textColor.Green, textColor.Blue),
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill
+            };
+            canvas.DrawPath(path, fill);
+        }
+        for (var row = 0; row < bitmap.Height; row++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var column = 0; column < bitmap.Width; column++)
+            {
+                var pixel = bitmap.GetPixel(column, row);
+                if (pixel.Alpha == 0) continue;
+                var color = new PresentationColor(pixel.Red, pixel.Green, pixel.Blue);
+                Set(pixels, layout, left + column, top + row, color, layer, pixel.Alpha);
             }
         }
     }

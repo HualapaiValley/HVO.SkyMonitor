@@ -17,7 +17,7 @@ public sealed record PresentationAnnotationStyleV1(
     int LabelScale = 1,
     int MaximumLabelCharacters = 24,
     double MaximumLabelMagnitude = 2.5,
-    int SegmentThickness = 1,
+    int SegmentThickness = 3,
     IReadOnlyList<string>? ConstellationIds = null,
     PresentationColor? MarkerColor = null,
     PresentationColor? LabelColor = null,
@@ -96,9 +96,9 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v6-semantic";
-    public const string MetadataProducerVersion = "metadata-corner-presentation-v4-compact-backed";
-    public const string CloudProducerVersion = "cloud-presentation-v3-semantic";
+    public const string SceneProducerVersion = "projected-scene-presentation-v7-pinned-appearance";
+    public const string MetadataProducerVersion = "metadata-corner-presentation-v5-heading-rules";
+    public const string CloudProducerVersion = "cloud-presentation-v4-payload-v3";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -170,6 +170,8 @@ public static class PresentationLayerProducers
         var width = scene.ImageTransform.OutputWidthPixels;
         var height = scene.ImageTransform.OutputHeightPixels;
         var cardinalScale = PresentationFont.FrameScale(width, height, style.CardinalScale);
+        var cardinalAppearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+            9_000 * style.CardinalScale, 360 * style.CardinalScale, cardinalColor, new(3, 8, 14), 950_000, 4_000));
         var cardinalTexts = new List<PresentationTextBlockV1>();
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
@@ -209,7 +211,7 @@ public static class PresentationLayerProducers
                     var radiusX = Math.Max(Math.Abs(xVector.X), Math.Abs(yVector.X));
                     var radiusY = Math.Max(Math.Abs(xVector.Y), Math.Abs(yVector.Y));
                     if (radiusX > 0 && radiusY > 0)
-                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, new(0, 0, 450_000)));
+                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, new(0, 0, 450_000), 2_000));
                 }
             }
             if (includeCardinalDirections)
@@ -244,7 +246,7 @@ public static class PresentationLayerProducers
             reserved.Add(new SKRect(0, height - cornerHeight, width / 3f, height));
             reserved.Add(new SKRect(width * 2 / 3f, height - cornerHeight, width, height));
         }
-        using (var font = PresentationFont.Create(cardinalScale))
+        using (var font = PresentationFont.Create(cardinalAppearance.Body))
             foreach (var (label, point) in cardinalPoints)
             {
                 var bounds = PresentationFont.LineBounds(font, label, (float)point.X, (float)point.Y);
@@ -252,12 +254,15 @@ public static class PresentationLayerProducers
                 if (width >= 640 && height >= 480 && reserved.Any(box => Overlaps(box, bounds))) continue;
                 reserved.Add(bounds);
                 cardinalTexts.Add(new(PresentationTextAnchor.Point, point, new ReadOnlyCollection<string>([label]),
-                    cardinalScale, 0, 0, cardinalColor, new(new(2, 8, 14), 840_000, new(44, 79, 97), cardinalScale, 0)));
+                    cardinalScale, 0, 0, cardinalColor,
+                    new(new(2, 8, 14), 840_000, new(116, 209, 255), cardinalScale, 0, new(1_700, 380_000)), cardinalAppearance));
             }
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
             var scale = PresentationFont.StarFrameScale(width, height, style.LabelScale);
-            using var font = PresentationFont.Create(scale);
+            var appearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+                14_000 * style.LabelScale, 560 * style.LabelScale, labelColor, new(3, 8, 14), 950_000, 5_000));
+            using var font = PresentationFont.Create(appearance.Body);
             var occupied = new List<SKRect>();
             foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
@@ -268,13 +273,15 @@ public static class PresentationLayerProducers
                 var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
                 var x = Math.Round(item.Pixel.X + style.MarkerRadius + 2 * scale, MidpointRounding.AwayFromZero);
                 var y = Math.Round(item.Pixel.Y - 3 * scale, MidpointRounding.AwayFromZero);
-                var bounds = PresentationFont.LineBounds(font, name, (float)x, (float)y);
-                bounds.Inflate(PresentationFont.Halo(scale) + scale, PresentationFont.Halo(scale) + scale);
+                var bounds = PresentationFont.LineBounds(font, name, (float)x, (float)y,
+                    appearance.Body.LetterSpacingMilliPixels / 1000f);
+                bounds.Inflate(appearance.Body.HaloWidthMilliPixels / 2000f + scale,
+                    appearance.Body.HaloWidthMilliPixels / 2000f + scale);
                 if (bounds.Left < 0 || bounds.Top < 0 || bounds.Right > width || bounds.Bottom > height ||
                     occupied.Any(box => Overlaps(box, bounds)) ||
                     reserved.Any(box => Overlaps(box, bounds))) continue;
                 starTexts.Add(new(PresentationTextAnchor.Point, new PixelPoint(x, y),
-                    new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor));
+                    new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor, Appearance: appearance));
                 occupied.Add(bounds);
             }
         }
@@ -338,7 +345,7 @@ public static class PresentationLayerProducers
         int scale = 1, int inset = 4, int lineSpacing = 2)
     {
         ArgumentNullException.ThrowIfNull(facts);
-        inset = Math.Max(inset, Math.Min(32, Math.Max(4, heightPixels / 60)));
+        inset = Math.Max(inset, Math.Min(32, Math.Max(8, heightPixels / 60)));
         var textScale = PresentationFont.FrameScale(widthPixels, heightPixels, scale);
         // The metadata payload has no knowledge of the scene. Fit its actual glyph bounds into
         // the same outer thirds reserved by the scene producer.
@@ -352,34 +359,34 @@ public static class PresentationLayerProducers
         };
         return PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, widthPixels, heightPixels, textBlocks: blocks);
 
-        PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines) =>
-            new(anchor, default, lines, textScale, inset, lineSpacing, color ?? new(216, 229, 246),
-                new(new(5, 10, 17), 780_000, new(88, 166, 255), Math.Min(8, inset / 2), 2));
+        PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines, int? candidate = null) =>
+            new(anchor, default, lines, candidate ?? textScale, inset, Math.Max(lineSpacing, 4), color ?? new(216, 229, 246),
+                new(new(5, 10, 17), 780_000, new(88, 166, 255), Math.Min(8, inset / 2), 2, new(0, 0, HeadingRule: true)),
+                new(new(PresentationFontFaceV3.MonoRegular, 3_500 * (candidate ?? textScale), 0,
+                        color ?? new(216, 229, 246), default, 0, 0),
+                    new(PresentationFontFaceV3.MonoBold, 4_140 * (candidate ?? textScale), 0, new(255, 255, 255), default, 0, 0)));
 
         bool Fits(int candidate)
         {
-            using var font = PresentationFont.Create(candidate);
             foreach (var block in new[]
             {
-                new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default, facts.TopLeft, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.TopRight, default, facts.TopRight, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.BottomLeft, default, facts.BottomLeft, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.BottomRight, default, facts.BottomRight, candidate, inset, lineSpacing, default)
+                Block(PresentationTextAnchor.TopLeft, facts.TopLeft, candidate),
+                Block(PresentationTextAnchor.TopRight, facts.TopRight, candidate),
+                Block(PresentationTextAnchor.BottomLeft, facts.BottomLeft, candidate),
+                Block(PresentationTextAnchor.BottomRight, facts.BottomRight, candidate)
             })
-                for (var index = 0; index < block.Lines.Count; index++)
-                {
-                    var line = block.Lines[index];
-                    var (x, y) = PresentationFont.LineOrigin(block, widthPixels, heightPixels, font, line, index);
-                    var bounds = PresentationFont.LineBounds(font, line, x, y);
-                    bounds.Inflate(PresentationFont.Halo(candidate), PresentationFont.Halo(candidate));
-                    var right = block.Anchor is PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight;
-                    var bottom = block.Anchor is PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight;
-                    if (bounds.Left < (right ? widthPixels * 2 / 3f : 0) ||
-                        bounds.Right > (right ? widthPixels : widthPixels / 3f) ||
-                        bounds.Top < (bottom ? heightPixels / 2f : 0) ||
-                        bounds.Bottom > (bottom ? heightPixels : heightPixels / 2f))
-                        return false;
-                }
+            {
+                if (block.Lines.Count == 0) continue;
+                using var font = PresentationFont.Create(block, 0);
+                var bounds = PresentationFont.BackplateBounds(block, widthPixels, heightPixels, font);
+                var right = block.Anchor is PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight;
+                var bottom = block.Anchor is PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight;
+                if (bounds.Left < (right ? widthPixels * 2 / 3f : 0) ||
+                    bounds.Right > (right ? widthPixels : widthPixels / 3f) ||
+                    bounds.Top < (bottom ? heightPixels / 2f : 0) ||
+                    bounds.Bottom > (bottom ? heightPixels : heightPixels / 2f))
+                    return false;
+            }
             return true;
         }
     }

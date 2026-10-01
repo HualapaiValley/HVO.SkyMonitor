@@ -11,6 +11,64 @@ namespace HVO.SkyMonitor.Imaging.Tests;
 public sealed class PresentationLayerCompositorTests
 {
     [TestMethod]
+    public void PinnedMonoFacesTrackingAndMixedHeadingLayoutRemainInsideCapturedCorner()
+    {
+        var body = new PresentationTextStyleV3(PresentationFontFaceV3.MonoRegular, 16_000, 0,
+            new(216, 229, 246), default, 0, 0);
+        var heading = body with { Face = PresentationFontFaceV3.MonoBold, SizeMilliPixels = 22_000, Color = new(255, 255, 255) };
+        using var regular = PresentationFont.Create(body);
+        using var bold = PresentationFont.Create(heading);
+        Assert.AreEqual("DejaVu Sans Mono", regular.Typeface!.FamilyName);
+        Assert.AreEqual(400, regular.Typeface.FontStyle.Weight);
+        Assert.AreEqual(700, bold.Typeface!.FontStyle.Weight);
+        Assert.AreEqual(regular.MeasureText("iii"), regular.MeasureText("WWW"), 0.001f);
+        using var untracked = PresentationFont.LinePath(bold, "NORTH", 0, 0);
+        using var tracked = PresentationFont.LinePath(bold, "NORTH", 0, 0, 0.72f);
+        Assert.AreEqual(4 * 0.72f, tracked.Bounds.Width - untracked.Bounds.Width, 0.001f);
+        var block = new PresentationTextBlockV1(PresentationTextAnchor.BottomRight, default,
+            ["Capture 32", "1936 × 1216 pixels"], 3, 20, 6, body.Color,
+            new(new(5, 10, 17), 780_000, new(88, 166, 255), 6, 2, new(0, 0, true)), new(body, heading));
+        var first = PresentationFont.LineOrigin(block, 640, 480, bold, block.Lines[0], 0);
+        var second = PresentationFont.LineOrigin(block, 640, 480, regular, block.Lines[1], 1);
+        Assert.AreEqual(first.X, second.X);
+        Assert.IsGreaterThan(first.Y, second.Y);
+        var bounds = PresentationFont.BackplateBounds(block, 640, 480, bold);
+        Assert.IsGreaterThanOrEqualTo(0, bounds.Left);
+        Assert.IsLessThanOrEqualTo(640, bounds.Right);
+        Assert.IsLessThanOrEqualTo(480, bounds.Bottom);
+        var layout = new ImageLayout(640, 480, CameraPixelFormat.Rgb24, 1920);
+        var pixels = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(Payload(640, 480, text: [block]), true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.IsTrue(Enumerable.Range(0, pixels.Length / 3).Any(index =>
+            pixels[index * 3] == 255 && pixels[index * 3 + 1] == 255 && pixels[index * 3 + 2] == 255));
+        var outside = ((int)bounds.Top * 640 + (int)bounds.Right + 1) * 3;
+        Assert.AreEqual((byte)0, pixels[outside]);
+    }
+
+    [TestMethod]
+    public void SemanticV2KeepsOriginalPixelsWhileV3UsesExplicitEllipseWidth()
+    {
+        var legacy = Payload(160, 120, ellipses: [new(new(80, 60), 20, 20, new(0, 255, 0))],
+            text: [new(PresentationTextAnchor.Point, new(5, 5), ["Legacy"], 2, 0, 0, new(255, 255, 255))])
+            with
+        { SchemaVersion = PresentationLayerPayloadV1.SemanticSchemaVersion };
+        var layout = new ImageLayout(160, 120, CameraPixelFormat.Rgb24, 480);
+        byte[] Render(PresentationLayerPayloadV1 payload) => PresentationLayerCompositor.Composite(layout,
+            new byte[layout.RequiredByteLength], [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var original = Render(legacy);
+        CollectionAssert.AreEqual(original, Render(legacy with { SchemaVersion = PresentationLayerPayloadV1.CurrentSchemaVersion }));
+        var wide = legacy with
+        {
+            SchemaVersion = PresentationLayerPayloadV1.CurrentSchemaVersion,
+            Ellipses = [legacy.Ellipses[0] with { ThicknessMilliPixels = 2_000 }]
+        };
+        Assert.IsGreaterThan(original[(60 * 160 + 100) * 3 + 1], Render(wide)[(60 * 160 + 100) * 3 + 1]);
+        Assert.ThrowsExactly<ArgumentException>(() => (wide with { SchemaVersion = PresentationLayerPayloadV1.SemanticSchemaVersion }).ValidateStructure());
+        Assert.AreEqual(PresentationLayerCompositor.SemanticAlgorithmVersion,
+            PresentationLayerCompositor.SelectAlgorithmVersion([PresentationLayerCompositor.SemanticAlgorithmVersion]));
+    }
+
+    [TestMethod]
     public void CompositionBudgetsRejectBeforeOutputAllocationAndAdmitFullResolutionW6()
     {
         var oversized = new ImageLayout(16384, 16384, CameraPixelFormat.Mono8, 16384);

@@ -256,3 +256,34 @@ complete classifier-selected gates (including deployment), independent exact-ran
 review and separate operator page acceptance remain pending. The classifier on
 `de18e41c..a1d833de` still selects `mode=full complete=true deployment=true` and
 all component/deployment selections, now over 40 changed paths.
+
+## Pinned typography and explicit appearance increment
+
+New payloads use `presentation-layer-payload-v3`. Their bounded explicit appearance
+records pin DejaVu Sans Mono Regular/Bold, size, letter tracking, halo color/coverage/width,
+ellipse thickness and plate border coverage/heading rules. The fonts are embedded with
+checksum enforcement and their distribution license. SVG and saved raster share font
+paths, corner alignment, plate bounds and heading separator geometry. New scene/metadata
+producer, compositor and SVG identities distinguish these outputs from prior artifacts.
+
+The cardinal default is bold 18 px with 0.72 px tracking, a 4 px dark halo,
+84-percent dark plate and 1.7 px cyan border at 38-percent coverage. The default
+constellation stroke is 3 px at 78-percent layer coverage with continuous 10/8
+dash cadence. The image boundary is 2 px at 45-percent coverage. Fact cards now
+have bold white headings, regular monospace detail, an independent blue left
+accent and heading rule instead of a full blue border. Their recorded acquisition,
+environment and lineage section headings do not substitute any prototype values.
+Explicit stored monochrome text overrides remain supported.
+
+V1 and v2 payloads remain accepted. Absent appearance fields retain Plex font and
+original widths; those new fields are omitted from old canonical JSON and rejected
+when attached to an old schema. Old v2 materialization/SVG identities retain their
+original version selection. Pre-change native host assemblies from `a1d833de` are
+preserved in the private cache for matched qualification.
+
+Focused Processing payload/product checks pass 23 cases and Imaging compositor
+checks pass 23 cases with warnings as errors. CameraAgent layer/metadata/Current Sky
+checks pass 82 cases on the final default-color correction with warnings as errors. Fresh Unit discovery is Imaging 242 and Processing 212, bringing
+the solution inventory to 5,011; the other inventories are unchanged. This is
+focused evidence, not a complete solution gate or pixel/resource qualification.
+Native production and reference comparison of the new styles are still required.

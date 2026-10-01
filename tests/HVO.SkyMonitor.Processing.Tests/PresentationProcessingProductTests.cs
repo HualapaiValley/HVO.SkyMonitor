@@ -67,7 +67,7 @@ public sealed class PresentationProcessingProductTests
         Assert.IsTrue(all.Algorithms.Any(algorithm => algorithm.Name == PresentationMaterializationExecutor.PackedEncoderName &&
             algorithm.Version == PresentationMaterializationExecutor.PackedEncoderVersion));
         Assert.IsTrue(all.Algorithms.Any(algorithm => algorithm.Name == "presentation-compositor" &&
-            algorithm.Version == "typed-presentation-compositor-v5-single-coverage"));
+            algorithm.Version == PresentationLayerCompositor.AlgorithmVersion));
         var oldRequest = LayeredPresentationJson.CreateMaterializationRequest(manifest,
             [first.Layer.LayerIdentitySha256, second.Layer.LayerIdentitySha256], "typed-presentation-compositor-v4-semantic",
             PresentationMaterializationExecutor.PackedEncoderName, PresentationMaterializationExecutor.PackedEncoderVersion,

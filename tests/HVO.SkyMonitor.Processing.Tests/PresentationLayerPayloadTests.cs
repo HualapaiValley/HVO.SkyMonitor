@@ -12,6 +12,67 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed class PresentationLayerPayloadTests
 {
     [TestMethod]
+    public void ExplicitAppearanceBindsIdentityRejectsUnboundedStylesAndKeepsV2Canonical()
+    {
+        var old = PresentationLayerPayloadJson.Create(new string('A', 64), 160, 120,
+            textBlocks: [new(PresentationTextAnchor.Point, new(10, 10), ["N"], 2, 0, 0, new(195, 236, 255))])
+            with
+        { SchemaVersion = PresentationLayerPayloadV1.SemanticSchemaVersion };
+        old = old with { ContentIdentitySha256 = PresentationLayerPayloadJson.ComputeIdentity(old) };
+        var retained = PresentationLayerPayloadJson.Serialize(old);
+        CollectionAssert.AreEqual(retained, PresentationLayerPayloadJson.Serialize(PresentationLayerPayloadJson.Parse(retained).Payload!));
+        Assert.IsFalse(Encoding.UTF8.GetString(retained).Contains("appearance", StringComparison.Ordinal));
+        var style = new PresentationTextStyleV3(PresentationFontFaceV3.MonoBold, 18_000, 720,
+            new(195, 236, 255), new(3, 8, 14), 950_000, 4_000);
+        var current = old with
+        {
+            SchemaVersion = PresentationLayerPayloadV1.CurrentSchemaVersion,
+            TextBlocks = [old.TextBlocks[0] with { Appearance = new(style) }]
+        };
+        current = current with { ContentIdentitySha256 = PresentationLayerPayloadJson.ComputeIdentity(current) };
+        var parsed = PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(current)).Payload;
+        Assert.IsNotNull(parsed);
+        Assert.AreEqual(style, parsed.TextBlocks[0].Appearance!.Body);
+        Assert.AreNotEqual(old.ContentIdentitySha256, current.ContentIdentitySha256);
+        Assert.ThrowsExactly<ArgumentException>(() => (current with { SchemaVersion = PresentationLayerPayloadV1.SemanticSchemaVersion }).ValidateStructure());
+        foreach (var invalid in new[] { style with { Face = (PresentationFontFaceV3)20 }, style with { SizeMilliPixels = 0 },
+            style with { SizeMilliPixels = 112_001 }, style with { LetterSpacingMilliPixels = -1 },
+            style with { HaloWidthMilliPixels = 16_001 }, style with { HaloOpacityMillionths = 1_000_001 } })
+            Assert.ThrowsExactly<ArgumentException>(() => (current with
+            { TextBlocks = [current.TextBlocks[0] with { Appearance = new(invalid) }] }).ValidateStructure());
+        Assert.ThrowsExactly<ArgumentException>(() => (current with
+        {
+            TextBlocks = [current.TextBlocks[0] with
+            { Backplate = new(default, 1, default, 2, 0, new(-1, 1)) }]
+        }).ValidateStructure());
+    }
+
+    [TestMethod]
+    public void SvgUsesSharedTrackedPathsHaloAndHeadingPlateGeometry()
+    {
+        var compatibility = new PresentationCompatibilityDescriptor(640, 480, new string('D', 64), new string('E', 64));
+        var source = new PresentationProductReference(Guid.NewGuid(), new string('A', 64), "image/png", compatibility);
+        var layer = LayeredPresentationJson.CreateLayer("expected", source, null, PresentationCoordinateSpace.ScenePixels,
+            PresentationLayerCompositor.AlgorithmVersion, PresentationLayerProducers.SceneProducerVersion, 0,
+            PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { }));
+        var style = new PresentationTextStyleV3(PresentationFontFaceV3.MonoBold, 18_000, 720,
+            new(195, 236, 255), new(3, 8, 14), 950_000, 4_000);
+        var block = new PresentationTextBlockV1(PresentationTextAnchor.Point, new(20, 20), ["NORTH", "EXPECTED"],
+            2, 0, 4, style.Color, new(new(2, 8, 14), 840_000, new(116, 209, 255), 6, 0, new(1_700, 380_000, true)), new(style));
+        var payload = PresentationLayerPayloadJson.Create(new string('A', 64), 640, 480, textBlocks: [block],
+            ellipses: [new(new(320, 240), 100, 100, new(116, 209, 255), new(0, 0, 450_000), 2_000)]);
+        var svg = Encoding.UTF8.GetString(GroupedSvgPresentationRenderer.Render(
+            LayeredPresentationJson.CreateManifest(source, null, [layer]), [payload], new string('F', 64)).Svg.Span);
+        using var font = PresentationFont.Create(style);
+        using var path = PresentationFont.LinePath(font, "NORTH", 20, 20, 0.72f);
+        StringAssert.Contains(svg, path.ToSvgPathData(), StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke=\"#03080E\" stroke-width=\"4\" stroke-opacity=\"0.95\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke-width=\"1.7\" stroke-opacity=\"0.38\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke-opacity=\"0.25\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke-width=\"2\"", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void SemanticStylesBindCanonicalIdentityAndRejectInvalidBoundsWithoutChangingV1()
     {
         const string retained = """
@@ -136,10 +197,10 @@ public sealed class PresentationLayerPayloadTests
     public void CornerTextFitsItsOwnFrameQuadrantOrRejectsUnrenderableFacts()
     {
         var facts = new PresentationMetadataFactsV1(new string('B', 64),
-            [new string('W', 24)], ["Right"], ["Bottom"], ["End"]);
+            [new string('W', 64)], ["Right"], ["Bottom"], ["End"]);
         var payload = PresentationLayerProducers.FromMetadataFacts(facts, 800, 600);
         Assert.IsLessThan(PresentationFont.FrameScale(800, 600), payload.TextBlocks[0].Scale);
-        using var font = PresentationFont.Create(payload.TextBlocks[0].Scale);
+        using var font = PresentationFont.Create(payload.TextBlocks[0], 0);
         var block = payload.TextBlocks[0];
         var (x, y) = PresentationFont.LineOrigin(block, 800, 600, font, block.Lines[0], 0);
         Assert.IsLessThanOrEqualTo(800d / 3, PresentationFont.LineBounds(font, block.Lines[0], x, y).Right);

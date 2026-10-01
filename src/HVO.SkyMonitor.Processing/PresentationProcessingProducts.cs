@@ -326,8 +326,7 @@ public static class PresentationMaterializationExecutor
         var sourceIds = new[] { baseArtifact.ArtifactId, manifestArtifact.ArtifactId }
             .Concat(manifest.Layers.Where(layer => enabled.Contains(layer.LayerIdentitySha256))
                 .Select(static layer => layer.SourceProduct.ArtifactId)).Distinct().ToArray();
-        var compositorVersion = manifest.Layers.All(layer => layer.RendererVersion == PresentationLayerCompositor.PreviousAlgorithmVersion)
-            ? PresentationLayerCompositor.PreviousAlgorithmVersion : PresentationLayerCompositor.AlgorithmVersion;
+        var compositorVersion = PresentationLayerCompositor.SelectAlgorithmVersion(manifest.Layers.Select(layer => layer.RendererVersion));
         var request = LayeredPresentationJson.CreateMaterializationRequest(manifest, enabled,
             compositorVersion, options.EncoderName, options.EncoderVersion,
             JsonSerializer.SerializeToElement(new { format = "packed" }), sourceIds);
