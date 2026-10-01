@@ -95,6 +95,7 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
         }
 
         var sources = await ReadSourcesAsync(connection, candidateId, cancellationToken).ConfigureAwait(false);
+        var centeredSources = await ReadCenteredSourcesAsync(connection, row.Centered, cancellationToken).ConfigureAwait(false);
         return new CameraAgentTransientOperatorDetail(
             ProjectSummary(row),
             ProjectCandidateEvidence(row.Candidate, row.Phase),
@@ -102,7 +103,50 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
             ProjectExtraction(row.Centered, row.Phase),
             ProjectAssessment(row.Assessment, row.Phase),
             ProjectFinal(row.Finalization, row.Phase),
-            sources);
+            sources,
+            centeredSources);
+    }
+
+    // Resolve only the immutable centered receipt's own raw artifact and checksum.
+    // Sequence neighbours cannot establish membership in this extraction.
+    private static async ValueTask<IReadOnlyList<CameraAgentTransientOperatorSource>> ReadCenteredSourcesAsync(
+        SqliteConnection connection,
+        TransientCandidateExtractionDescriptorV1? extraction,
+        CancellationToken cancellationToken)
+    {
+        if (extraction is not { CenteredContextConverged: true } ||
+            !await TableExistsAsync(connection, "raw_captures", cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+        var sources = new List<CameraAgentTransientOperatorSource>();
+        foreach (var (source, ordinal) in extraction.OrderedSources.Select(static (source, ordinal) => (source, ordinal)))
+        {
+            var evidence = source.Source;
+            var artifact = evidence.Locator.Artifact;
+            if (artifact.Role != HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
+            {
+                continue;
+            }
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT capture_id, capture_sequence, exposure_started_unix_ms
+                FROM raw_captures
+                WHERE raw_artifact_id = $artifact AND payload_sha256 = $checksum COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$artifact", artifact.ArtifactId.ToString("N"));
+            command.Parameters.AddWithValue("$checksum", artifact.ChecksumSha256);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                sources.Add(new CameraAgentTransientOperatorSource(
+                    ordinal, evidence.EvidenceId, artifact.ArtifactId, artifact.Role,
+                    Guid.ParseExact(reader.GetString(0), "N"), reader.GetInt64(1),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+                    evidence.ObservationStartedUtc, evidence.ObservationEndedUtc, (int)source.Position));
+            }
+        }
+        return sources;
     }
 
     internal const int MaximumSources = 64;
@@ -518,7 +562,8 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
                 extraction.CenteredContextConverged,
                 extraction.OrderedSources.Count,
                 extraction.Candidates.Count,
-                extraction.ExtractionIdentitySha256);
+                extraction.ExtractionIdentitySha256,
+                extraction.Algorithms.Select(static algorithm => $"{algorithm.Name} / {algorithm.Version}").ToArray());
 
     private static CameraAgentTransientAssessmentEvidence ProjectAssessment(
         TransientAssessmentExecutionDescriptorV1? execution,
@@ -533,7 +578,8 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
                 execution.Assessment.ConfidenceMillionths,
                 execution.Assessment.EvidenceObservationIds.Count,
                 execution.Assessment.Reasons.Select(static reason => reason.Code).ToArray(),
-                execution.ExecutionIdentitySha256);
+                execution.ExecutionIdentitySha256,
+                [execution.SchemaVersion]);
 
     private static CameraAgentTransientFinalEvidence ProjectFinal(
         TransientFinalizationReceiptV1? receipt,

@@ -49,6 +49,12 @@
 .view-switcher button:first-child { border-radius: .38rem 0 0 .38rem; }
 .view-switcher button:last-child { border-left: 0; border-radius: 0 .38rem .38rem 0; }
 .view-switcher button.active { color: var(--blue); background: var(--blue-soft); }
+
+@media (pointer: coarse) {
+    .button, .view-switcher button, .gallery-toolbar input, .gallery-toolbar select,
+    .advanced-filters__grid input, .advanced-filters__grid select { min-height: 44px; }
+    .view-switcher button { min-width: 44px; height: 44px; }
+}
 .toolbar-actions { display: flex; gap: .4rem; align-items: end; }
 
 .button { display: inline-flex; min-height: 2.35rem; align-items: center; justify-content: center; gap: .4rem; padding: .45rem .7rem; border: 1px solid var(--border-strong); border-radius: .45rem; color: var(--text); background: var(--surface-raised); font-size: .7rem; font-weight: 700; cursor: pointer; text-decoration: none; }

@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -364,7 +365,7 @@ public sealed class GalleryPageTests
             var card = cut.Find(".capture-card");
             StringAssert.Contains(card.QuerySelector(".capture-card-heading")!.TextContent, "Processed presentation", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "5 frames / endpoint #42", StringComparison.Ordinal);
-            StringAssert.Contains(card.TextContent, "Integration5 s", StringComparison.Ordinal);
+            StringAssert.Contains(card.TextContent, "IntegrationNot recorded", StringComparison.Ordinal);
             Assert.IsFalse(card.TextContent.Contains("7 source frames", StringComparison.Ordinal));
         });
         var thumbnailPresentation = new CameraAgentCapturePresentation(CameraAgentPresentationStage.Annotated,
@@ -378,7 +379,7 @@ public sealed class GalleryPageTests
     }
 
     [TestMethod]
-    public void ProvenCausalMeanIsLabelledAndIntegrationIsSummed()
+    public void ProvenCausalMeanIsLabelledWithoutAssumingEqualSourceExposures()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -415,8 +416,8 @@ public sealed class GalleryPageTests
             StringAssert.Contains(card.TextContent, "3 frames / endpoint #42", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "no geometric registration", StringComparison.Ordinal);
             StringAssert.Contains(card.TextContent, "Succeeded", StringComparison.Ordinal);
-            // Integration is summed across the three proven sources (1 s exposure each).
-            StringAssert.Contains(card.TextContent, "Integration3 s", StringComparison.Ordinal);
+            // Lineage does not establish the exposure of every source.
+            StringAssert.Contains(card.TextContent, "IntegrationNot recorded", StringComparison.Ordinal);
         });
     }
 
@@ -460,11 +461,109 @@ public sealed class GalleryPageTests
         StringAssert.Contains(unavailable.GetAttribute("aria-label"), "not resolved", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public void CardsLinkOnlyTheirExactLiveRunAndRetainedCandidates()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var executionId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+        var cards = new Mock<ICameraAgentArchiveCardUiService>(MockBehavior.Strict);
+        cards.Setup(card => card.GetLinksAsync(capture.CaptureId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentArchiveCardLinks(executionId, string.Empty, [candidateId], true));
+        context.Services.AddSingleton(cards.Object);
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual($"/operations/pipeline/executions/{executionId:D}",
+                cut.Find(".capture-card-actions .run-link").GetAttribute("href"));
+            Assert.AreEqual($"/transients/{candidateId:D}",
+                cut.Find(".capture-card-event a").GetAttribute("href"));
+            StringAssert.Contains(cut.Find(".gallery-heading-facts").TextContent, "1 linked local candidates", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("Owner confirmed", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void MissingLinkEvidenceLeavesCaptureVisibleWithoutInventingZeroCandidates()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([OperatorUiTestData.Capture()], null)));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, cut.FindAll(".capture-card"));
+            Assert.HasCount(0, cut.FindAll(".capture-card-event a"));
+            Assert.AreEqual("true", cut.Find(".capture-card-actions .run-link").GetAttribute("aria-disabled"));
+            StringAssert.Contains(cut.Find(".gallery-heading-facts").TextContent, "Unavailable", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void IntegrationUsesTheExactRetainedOutputTotalInsteadOfEndpointExposure()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var artifact = ArchiveCardFacts.DisplayArtifact(capture, service.Project(capture))!;
+        var product = CardProduct(capture, artifact, TimeSpan.FromSeconds(7.5));
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+        service.ProductDetailHandler = (id, _) => ValueTask.FromResult(
+            id == artifact.ArtifactId
+                ? OperatorUiResult<CameraAgentProductDetail>.Success(new(product, capture.ExposureStartedUtc,
+                    ObservingDayCalendar.Utc.Resolve(capture.ExposureStartedUtc), capture.RigId, [], false, null, []))
+                : OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.NotFound, "The product was not found."));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".capture-card-facts").TextContent,
+            "Integration7.5 s", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void IntegrationRejectsAProductThatBelongsToAnotherCapture()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var artifact = ArchiveCardFacts.DisplayArtifact(capture, service.Project(capture))!;
+        var product = CardProduct(capture, artifact, TimeSpan.FromSeconds(7.5)) with { CaptureId = Guid.NewGuid() };
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([capture], null)));
+        service.ProductDetailHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentProductDetail>.Success(new(product, capture.ExposureStartedUtc,
+                ObservingDayCalendar.Utc.Resolve(capture.ExposureStartedUtc), capture.RigId, [], false, null, [])));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".capture-card-facts").TextContent.Contains("7.5", StringComparison.Ordinal)));
+    }
+
+    private static CameraAgentProduct CardProduct(CameraAgentGalleryCapture capture, CameraAgentGalleryArtifact artifact, TimeSpan integration)
+        => new(artifact.ArtifactId, new string('A', 64), capture.CaptureId, capture.CaptureSequence, capture.AgentId,
+            "preview", artifact.Role, artifact.Variant, OperatorUiTestData.Now, OperatorUiTestData.Now, artifact.MediaType,
+            artifact.ChecksumSha256, artifact.ByteLength, new("preview", "1", "1", new string('B', 64), new string('C', 64)),
+            [], null, null, null, "Available", null, integration, 3, 640, 480, "Live", false);
+
     private static TestOperatorUiService Configure(BunitContext context)
     {
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(service);
+        var cards = new Moq.Mock<ICameraAgentArchiveCardUiService>();
+        cards.Setup(card => card.GetLinksAsync(Moq.It.IsAny<Guid>(), Moq.It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentArchiveCardLinks(null, "The pipeline run identity is not resolved for this card.", [], false));
+        context.Services.AddSingleton(cards.Object);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         return service;
     }

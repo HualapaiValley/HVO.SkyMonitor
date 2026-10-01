@@ -1,54 +1,92 @@
 @page "/transients/{CandidateId:guid}"
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Transient detail</PageTitle>
+<PageTitle>Event evidence</PageTitle>
 
-<div class="transient-detail">
-    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Transient candidates</a><span>/</span><span aria-current="page">Candidate detail</span></nav>
+<div class="transient-detail archive-main">
+    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="@BackUrl">Detected events</a><span>/</span><span aria-current="page">Candidate evidence</span></nav>
     @if (_isLoading)
     {
-        <PageHeader Title="Transient detail" />
-        <section class="detail-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading candidate evidence</strong></section>
+        <header class="event-detail-heading"><h1>Event evidence</h1></header>
+        <section class="detail-state" role="status"><strong>Loading retained candidate evidence</strong></section>
     }
-    else if (_errorMessage is not null || _detail is null)
+    else if (_errorMessage is not null || _detail is null || _evidence is null)
     {
-        <PageHeader Title="Transient detail" />
-        <section class="detail-state detail-state--error" role="alert"><div><strong>Candidate unavailable</strong><p>@(_errorMessage ?? "The requested transient candidate was not found.")</p></div><a class="btn btn-outline-light" href="@BackUrl">Return to candidates</a></section>
+        <header class="event-detail-heading"><h1>Event evidence</h1></header>
+        <section class="detail-state detail-state--error" role="alert"><div><strong>Candidate unavailable</strong><p>@(_errorMessage ?? "The requested transient candidate was not found.")</p></div><a class="btn btn-outline-light" href="@BackUrl">Return to events</a></section>
     }
     else
     {
-        <header class="detail-heading"><div><p class="eyebrow">@TransientPage.FormatTime(_detail.Candidate.CreatedUtc)</p><h1>@_detail.Candidate.CandidateId</h1><p>Sanitized local candidate, event, and stage evidence.</p></div><span>@TransientPage.SplitWords(_detail.Candidate.EventState)</span></header>
-        <section class="identity-card"><dl><div><dt>Candidate ID</dt><dd><code>@_detail.Candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@_detail.Candidate.EventId</code></dd></div><div><dt>Candidate state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.CandidateState)</dd></div><div><dt>Event state</dt><dd>@TransientPage.SplitWords(_detail.Candidate.EventState)</dd></div><div><dt>Workflow phase</dt><dd>@TransientPage.SplitWords(_detail.Candidate.WorkflowPhase)</dd></div><div><dt>Updated</dt><dd>@TransientPage.FormatTime(_detail.Candidate.UpdatedUtc)</dd></div></dl></section>
-
-        <section class="source-card" aria-label="Source captures">
-            <h2>Source captures</h2>
-            @if (_detail.Sources is null || _detail.Sources.Count == 0)
-            {
-                <p class="stage-absence">No retained source captures are linked to this candidate.</p>
-            }
-            else
-            {
-                <ol class="source-list">
-                    @foreach (var source in _detail.Sources)
+        <header class="event-detail-heading">
+            <div><p class="eyebrow">Events / Local evidence / Local camera</p><h1>@CameraAgentEventFacts.Title(_detail.AssessmentEvidence)</h1><p>@FormatTime(_evidence.RecordedUtc) · @(_evidence.Reference?.Source is null ? "Candidate recorded time; observation time unavailable" : "Source observation time")<br />Causal evidence: @_detail.CausalEvidence.State · Centered evidence: @_detail.CenteredEvidence.State · Owner review unavailable</p></div>
+            <div class="event-detail-status"><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(_detail.AssessmentEvidence)">@CameraAgentEventFacts.Classification(_detail.AssessmentEvidence)</span><span>Local candidate</span></div>
+        </header>
+        <div class="event-media-tabs" role="tablist" aria-label="Event evidence media" aria-describedby="event-media-reason">
+            <button type="button" role="tab" aria-selected="false" aria-controls="event-media-panel" disabled>Centered animation</button><button type="button" role="tab" aria-selected="false" aria-controls="event-media-panel" disabled>Path composite</button><button type="button" role="tab" aria-selected="false" aria-controls="event-media-panel" disabled>Detection mask</button>
+        </div>
+        <section class="event-media-layout">
+            <div id="event-media-panel" class="event-media-view" aria-label="Extracted event media unavailable"><div class="event-media-unavailable"><h2>Event media not produced</h2><p id="event-media-reason">No exact retained animation, path composite, or detection-mask artifact is exposed by this candidate's local evidence. Source frames remain available in the context panel.</p></div></div>
+            <aside class="event-context">
+                <h2>Centered context</h2><p>Exact receipt source identities, ordered around the candidate endpoint. A causal three-frame window is not a complete five-frame centered window.</p>
+                <div class="context-frame-list">
+                    @foreach (var frame in _evidence.Frames)
                     {
-                        <li><a href="/gallery/@source.CaptureId.ToString("D")">Capture #@source.CaptureSequence</a> <span class="source-meta">@(source.Role?.ToString() ?? "Unknown role") · observed @TransientPage.FormatTime(source.ObservationStartedUtc) to @source.ObservationEndedUtc.ToLocalTime().ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</span></li>
+                        <div class="context-frame @(frame.Position == 0 ? "reference" : null) @(frame.Source is null ? "unavailable" : null)">
+                            @if (frame.Image is { } image) { <img src="@image.PreviewUrl" alt="Exact source at @frame.PositionLabel" loading="lazy" /> }
+                            else { <span class="context-frame-placeholder">Unavailable</span> }
+                            <div><strong>@frame.PositionLabel</strong>
+                                @if (frame.Source is { } source)
+                                {
+                                    <small>@LocalTime(source.ObservationStartedUtc)</small><a href="/gallery/@source.CaptureId.ToString("D")">Capture #@source.CaptureSequence</a>
+                                    @if (frame.ExecutionId is { } executionId) { <a href="@RunUrl(executionId)">Pipeline run</a> }
+                                    else { <small>Run link not recorded</small> }
+                                }
+                                else { <small>No exact retained source identity</small> }
+                            </div><span>@Offset(frame)</span>
+                        </div>
                     }
-                </ol>
-            }
+                </div>
+                <a class="context-day-link" href="@NearbyUrl">Captures from this observing day →</a>
+            </aside>
         </section>
-
-        <section class="stage-grid" aria-label="Transient evidence stages">
-            <article><header><p class="eyebrow">Detection</p><h2>Candidate evidence</h2><span>@_detail.CandidateEvidence.State</span></header><dl><div><dt>Created</dt><dd>@FormatTime(_detail.CandidateEvidence.CreatedUtc)</dd></div><div><dt>Centered source</dt><dd>@FormatGuid(_detail.CandidateEvidence.CenterEvidenceId)</dd></div><div><dt>Context sources</dt><dd>@_detail.CandidateEvidence.ContextSourceCount</dd></div><div><dt>Reason codes</dt><dd>@FormatList(_detail.CandidateEvidence.ReasonCodes)</dd></div></dl>
-                @if (_detail.CandidateEvidence.Geometry is { } geometry) { <h3>Geometry</h3><dl><div><dt>Coordinates</dt><dd>@geometry.CoordinateWidth x @geometry.CoordinateHeight</dd></div><div><dt>Bounds</dt><dd>@FormatBounds(geometry)</dd></div><div><dt>Polyline points</dt><dd>@geometry.PolylinePointCount</dd></div></dl> } else { <p class="stage-absence">Geometry is absent.</p> }
-                @if (_detail.CandidateEvidence.Features is { } features) { <h3>Features</h3><dl><div><dt>Length / mean width</dt><dd>@features.LengthPixels / @features.MeanWidthPixels px</dd></div><div><dt>Peak / integrated signal</dt><dd>@features.PeakSignalAdu / @features.IntegratedSignalAdu ADU</dd></div><div><dt>Saturated samples</dt><dd>@features.SaturatedSampleCount</dd></div><div><dt>Fragments</dt><dd>@features.FragmentCount</dd></div></dl> } else { <p class="stage-absence">Feature evidence is absent.</p> }
-            </article>
-            <article><header><p class="eyebrow">Extraction receipt</p><h2>Causal window</h2><span>@_detail.CausalEvidence.State</span></header>@if (_detail.CausalEvidence.State == "Available") { <dl><div><dt>Centered context converged</dt><dd>@FormatBoolean(_detail.CausalEvidence.CenteredContextConverged)</dd></div><div><dt>Ordered sources</dt><dd>@_detail.CausalEvidence.SourceCount</dd></div><div><dt>Candidates</dt><dd>@_detail.CausalEvidence.CandidateCount</dd></div><div class="wide"><dt>Extraction identity SHA-256</dt><dd><code>@_detail.CausalEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.CausalEvidence.State.</p> }</article>
-            <article><header><p class="eyebrow">Extraction receipt</p><h2>Centered window</h2><span>@_detail.CenteredEvidence.State</span></header>@if (_detail.CenteredEvidence.State == "Available") { <dl><div><dt>Centered context converged</dt><dd>@FormatBoolean(_detail.CenteredEvidence.CenteredContextConverged)</dd></div><div><dt>Ordered sources</dt><dd>@_detail.CenteredEvidence.SourceCount</dd></div><div><dt>Candidates</dt><dd>@_detail.CenteredEvidence.CandidateCount</dd></div><div class="wide"><dt>Extraction identity SHA-256</dt><dd><code>@_detail.CenteredEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.CenteredEvidence.State.</p> }</article>
-            <article><header><p class="eyebrow">Classification</p><h2>Assessment</h2><span>@_detail.AssessmentEvidence.State</span></header>@if (_detail.AssessmentEvidence.State == "Available") { <dl><div><dt>Assessment ID</dt><dd>@FormatGuid(_detail.AssessmentEvidence.AssessmentId)</dd></div><div><dt>Authority</dt><dd>@_detail.AssessmentEvidence.Authority</dd></div><div><dt>Classification</dt><dd>@_detail.AssessmentEvidence.Classification</dd></div><div><dt>Meteor severity</dt><dd>@(_detail.AssessmentEvidence.MeteorSeverity ?? "Not applicable")</dd></div><div><dt>Confidence</dt><dd>@FormatConfidence(_detail.AssessmentEvidence.ConfidenceMillionths)</dd></div><div><dt>Evidence observations</dt><dd>@_detail.AssessmentEvidence.EvidenceObservationCount</dd></div><div><dt>Reason codes</dt><dd>@FormatList(_detail.AssessmentEvidence.ReasonCodes)</dd></div><div class="wide"><dt>Execution identity SHA-256</dt><dd><code>@_detail.AssessmentEvidence.IdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.AssessmentEvidence.State.</p> }</article>
-            <article><header><p class="eyebrow">Terminal event</p><h2>Final evidence</h2><span>@_detail.FinalEvidence.State</span></header>@if (_detail.FinalEvidence.State == "Available") { <dl><div><dt>Event state</dt><dd>@_detail.FinalEvidence.EventState</dd></div><div><dt>Event version</dt><dd>@_detail.FinalEvidence.EventVersion</dd></div><div><dt>First observed</dt><dd>@FormatTime(_detail.FinalEvidence.FirstObservedUtc)</dd></div><div><dt>Last observed</dt><dd>@FormatTime(_detail.FinalEvidence.LastObservedUtc)</dd></div><div><dt>Observations</dt><dd>@_detail.FinalEvidence.ObservationCount</dd></div><div><dt>Assessments</dt><dd>@_detail.FinalEvidence.AssessmentCount</dd></div><div class="wide"><dt>Receipt identity SHA-256</dt><dd><code>@_detail.FinalEvidence.ReceiptIdentitySha256</code></dd></div></dl> } else { <p class="stage-absence">Evidence state: @_detail.FinalEvidence.State.</p> }</article>
+        <section class="science-grid" aria-label="Scientific evidence">
+            <article class="science-panel"><header><h2>Observed measurements</h2><span>Direct detector evidence</span></header><dl class="science-facts">
+                <div><dt>Duration <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Not measured</dd></div><div><dt>Angular path <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Not recorded</dd></div>
+                <div><dt>Start / end direction <i class="science-value-kind unresolved">Unresolved</i></dt><dd>No retained astrometric measurement</dd></div><div><dt>Angular velocity <i class="science-value-kind unresolved">Unresolved</i></dt><dd>No retained timing and astrometry</dd></div>
+                <div><dt>Pixel path length <i class="science-value-kind">Measured</i></dt><dd>@Number(_detail.CandidateEvidence.Features?.LengthPixels, "px")</dd></div><div><dt>Peak signal <i class="science-value-kind">Measured</i></dt><dd>@(_detail.CandidateEvidence.Features is { } signal ? $"{signal.PeakSignalAdu} ADU" : "Not recorded")</dd></div>
+                <div class="full"><dt>Measurement limits</dt><dd>Exposure and context spans are not event duration. Pixel length does not establish angular motion. @(_detail.CandidateEvidence.Features is { } features ? $"{features.SaturatedSampleCount} saturated detector samples recorded." : "Saturation evidence not recorded.")</dd></div>
+            </dl></article>
+            <article class="science-panel"><header><h2>Derived estimates</h2><span>Retained local assessment</span></header><dl class="science-facts">
+                <div><dt>Classification <i class="science-value-kind derived">Inferred</i></dt><dd>@CameraAgentEventFacts.Classification(_detail.AssessmentEvidence)</dd></div><div><dt>Confidence <i class="science-value-kind derived">Score</i></dt><dd>@CameraAgentEventFacts.Confidence(_detail.AssessmentEvidence)</dd></div>
+                <div><dt>Apparent magnitude <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Not calibrated</dd></div><div><dt>Photometric method <i class="science-value-kind unresolved">Unresolved</i></dt><dd>No retained photometric estimate</dd></div>
+                <div class="full"><dt>Method and authority</dt><dd>Retained assessment · @(_detail.AssessmentEvidence.Authority ?? "authority not recorded"). Method: @FormatList(_detail.AssessmentEvidence.Methods). The score is not a calibrated probability or owner review. Uncertainty is not recorded.</dd></div>
+            </dl></article>
+            <article class="science-panel"><header><h2>Physical trajectory</h2><span>Single-camera limitation</span></header><div class="trajectory-unresolved">No correlated physical trajectory</div><dl class="science-facts">
+                @foreach (var quantity in new[] { "Physical speed", "Event altitude", "Ground track", "Impact location" }) { <div><dt>@quantity <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Requires genuine correlation</dd></div> }
+            </dl></article>
         </section>
+        <section class="satellite-assessment archive-panel" aria-labelledby="orbital-heading"><header><div><h2 id="orbital-heading">Orbital match evidence</h2><p>Unavailable. No exact orbital-correlation assessment is retained for this candidate.</p></div><span class="hvo-chip">Not produced</span></header><p>Predicted geometry alone cannot establish optical visibility or reject a local candidate.</p><button class="btn btn-outline-light" type="button" disabled aria-describedby="orbital-reason">Inspect orbital assessment</button><p id="orbital-reason">Orbital assessment is not available on this camera.</p></section>
+        <section class="event-review-grid">
+            <article class="archive-panel"><header><div><h2>Review &amp; classification</h2><p>LogicHost owns authoritative review and its append-only history. CameraAgent preserves immutable local evidence.</p></div><span class="hvo-chip">Review unavailable</span></header><div class="event-review-actions"><button class="btn btn-outline-light" type="button" disabled aria-describedby="owner-review-reason">Review candidate</button><button class="btn btn-outline-light" type="button" disabled aria-describedby="owner-review-reason">Revise classification</button><a class="btn btn-outline-light" href="@ObservingDayUrl">Observing day</a></div><p id="owner-review-reason" class="ops-note-banner">No central owner-review identity or supported review destination is recorded locally. Local @_detail.Candidate.EventState workflow does not establish owner confirmation or rejection.</p></article>
+            <article class="archive-panel"><header><div><h2>Evidence provenance</h2><p>Technical identity remains secondary.</p></div><span>Retained local record</span></header><ul class="evidence-list"><li><strong>Candidate ID</strong><span><code>@_detail.Candidate.CandidateId</code></span></li><li><strong>Event ID</strong><span><code>@_detail.Candidate.EventId</code></span></li><li><strong>Assessment ID</strong><span><code>@FormatGuid(_detail.AssessmentEvidence.AssessmentId)</code></span></li><li><strong>Detector methods</strong><span>@FormatList(_detail.CausalEvidence.Methods)</span></li><li><strong>Extraction identity</strong><span><code>@(_detail.CenteredEvidence.IdentitySha256 ?? _detail.CausalEvidence.IdentitySha256 ?? "Not recorded")</code></span></li>
+                @if (_evidence.Reference?.Capture is { } reference)
+                {
+                    <li><strong>Rig profile identity</strong><span><code>@(reference.Capture.RigId ?? "Not recorded")</code></span></li>
+                    <li><strong>Processing profile</strong><span><code>@(reference.Capture.Detail?.ProcessingProfile?.Sha256 ?? "Not recorded")</code></span></li>
+                    @if (reference.Capture.Artifacts.SingleOrDefault(artifact => artifact.ArtifactId == _evidence.Reference.Source?.ArtifactId) is { } sourceArtifact) { <li><strong>Source checksum SHA-256</strong><span><code>@sourceArtifact.ChecksumSha256</code></span></li> }
+                }
+            </ul></article>
+        </section>
+        <details class="local-stage-evidence archive-panel"><summary>Local workflow and evidence receipts</summary><section class="stage-grid" aria-label="Transient evidence stages">
+            <article><h2>Candidate evidence</h2><p>@_detail.CandidateEvidence.State · @_detail.CandidateEvidence.ContextSourceCount context sources</p><p>@FormatList(_detail.CandidateEvidence.ReasonCodes)</p>@if (_detail.CandidateEvidence.Geometry is { } geometry) { <p>@geometry.CoordinateWidth × @geometry.CoordinateHeight detector coordinates · @FormatBounds(geometry)</p> }</article>
+            <article><h2>Causal window</h2><p>Evidence state: @_detail.CausalEvidence.State.</p><p>@_detail.CausalEvidence.SourceCount ordered sources · Centered context converged: @FormatBoolean(_detail.CausalEvidence.CenteredContextConverged)</p><code>@_detail.CausalEvidence.IdentitySha256</code></article>
+            <article><h2>Centered window</h2><p>Evidence state: @_detail.CenteredEvidence.State.</p><p>@_detail.CenteredEvidence.SourceCount ordered sources · Centered context converged: @FormatBoolean(_detail.CenteredEvidence.CenteredContextConverged)</p><code>@_detail.CenteredEvidence.IdentitySha256</code></article>
+            <article><h2>Assessment</h2><p>Evidence state: @_detail.AssessmentEvidence.State.</p><p>@FormatList(_detail.AssessmentEvidence.ReasonCodes)</p><code>@_detail.AssessmentEvidence.IdentitySha256</code></article>
+            <article><h2>Final evidence</h2><p>Evidence state: @_detail.FinalEvidence.State · Local @_detail.FinalEvidence.EventState</p><dl><div><dt>First / last source observation</dt><dd>@FormatTime(_detail.FinalEvidence.FirstObservedUtc) / @FormatTime(_detail.FinalEvidence.LastObservedUtc)</dd></div><div><dt>Receipt identity SHA-256</dt><dd><code>@_detail.FinalEvidence.ReceiptIdentitySha256</code></dd></div></dl></article>
+        </section></details>
     }
 </div>

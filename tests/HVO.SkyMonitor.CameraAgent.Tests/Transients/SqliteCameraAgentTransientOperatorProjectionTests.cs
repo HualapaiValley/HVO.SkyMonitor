@@ -31,6 +31,60 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
         MinimumFragmentAlignmentCosine: 0.95);
 
     [TestMethod]
+    [DataRow("complete", 5)]
+    [DataRow("missing", 4)]
+    [DataRow("checksum", 4)]
+    [DataRow("foreign-artifact", 4)]
+    public async Task CenteredSourcesResolveExactReceiptArtifactsAndKeepGaps(string scenario, int expectedCount)
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var evidence = CreateEvidence();
+        await fixture.InsertCandidateAsync(evidence.Candidate).ConfigureAwait(false);
+        await fixture.InsertRuntimeAsync(evidence).ConfigureAwait(false);
+        await fixture.ExecuteAsync("""
+            CREATE TABLE raw_captures (
+                capture_id TEXT NOT NULL,
+                raw_artifact_id TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                capture_sequence INTEGER NOT NULL,
+                exposure_started_unix_ms INTEGER NOT NULL
+            );
+            """).ConfigureAwait(false);
+        var captures = new Dictionary<int, Guid>();
+        foreach (var source in evidence.Centered.OrderedSources)
+        {
+            var position = (int)source.Position;
+            if (position == 1 && scenario == "missing")
+            {
+                continue;
+            }
+            var captureId = Guid.NewGuid();
+            captures[position] = captureId;
+            await fixture.ExecuteAsync("INSERT INTO raw_captures VALUES ($capture, $artifact, $checksum, $sequence, $started);",
+                ("$capture", captureId.ToString("N")),
+                ("$artifact", (position == 1 && scenario == "foreign-artifact" ? Guid.NewGuid() : source.Source.Locator.Artifact.ArtifactId).ToString("N")),
+                ("$checksum", position == 1 && scenario == "checksum" ? new string('F', 64) : source.Source.Locator.Artifact.ChecksumSha256),
+                ("$sequence", 500 + position),
+                ("$started", source.Source.ObservationStartedUtc.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+        }
+
+        var detail = await fixture.Projection.GetCandidateAsync(evidence.Candidate.CandidateId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(detail?.CenteredSources);
+        Assert.AreEqual(expectedCount, detail.CenteredSources.Count);
+        foreach (var source in detail.CenteredSources)
+        {
+            Assert.IsNotNull(source.RelativePosition);
+            var expected = evidence.Centered.OrderedSources.Single(value => (int)value.Position == source.RelativePosition);
+            Assert.AreEqual(expected.Source.EvidenceId, source.EvidenceId);
+            Assert.AreEqual(expected.Source.Locator.Artifact.ArtifactId, source.ArtifactId);
+            Assert.AreEqual(captures[source.RelativePosition.Value], source.CaptureId);
+            Assert.AreEqual(expected.Source.ObservationStartedUtc, source.ObservationStartedUtc);
+        }
+        Assert.AreEqual(scenario == "complete", detail.CenteredSources.Any(static source => source.RelativePosition == 1));
+    }
+
+    [TestMethod]
     public async Task DetailResolvesJournalSourcesToRetainedCaptures()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
@@ -337,6 +391,9 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
             evidence.Assessment.Assessment.Reasons.Select(static reason => reason.Code).ToArray(),
             detail.AssessmentEvidence.ReasonCodes!.ToArray());
         Assert.AreEqual(evidence.Assessment.ExecutionIdentitySha256, detail.AssessmentEvidence.IdentitySha256);
+        CollectionAssert.AreEqual(new[] { evidence.Assessment.SchemaVersion }, detail.AssessmentEvidence.Methods!.ToArray());
+        CollectionAssert.AreEqual(evidence.Causal.Algorithms.Select(static algorithm => $"{algorithm.Name} / {algorithm.Version}").ToArray(),
+            detail.CausalEvidence.Methods!.ToArray());
     }
 
     [TestMethod]
