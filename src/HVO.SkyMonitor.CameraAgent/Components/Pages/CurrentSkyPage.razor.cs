@@ -845,6 +845,14 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         ? $"{profile.ProjectionModel} (configured; no measured fit)"
         : "No retained model or measured fit";
 
+    private string SiteLabel => _facts?.Location switch
+    {
+        { Availability: "Available", LatitudeDegrees: { } latitude, LongitudeDegrees: { } longitude, ElevationMeters: { } elevation } =>
+            FormattableString.Invariant($"{latitude:0.###}°, {longitude:0.###}° / {elevation:0.#} m"),
+        { Availability: "NotRetained" } => "Location not retained for this capture",
+        _ => "Historical location unavailable"
+    };
+
     private string IncludedFramesLabel(CameraAgentCombinedLineage lineage) =>
         _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId && !product.SourcesTruncated
             ? $"{product.Sources.Count} of {product.Product.SourceCount} frames"

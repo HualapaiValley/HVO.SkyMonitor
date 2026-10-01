@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -11,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
@@ -19,6 +21,27 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 [DoNotParallelize]
 public sealed class SqliteCameraAgentGalleryTests
 {
+    [TestMethod]
+    public async Task FullDetailResolvesCapturedLocationWhileSourceReadRemainsRawOnly()
+    {
+        var captured = DeploymentLocationSnapshot.Create("recorded-site", 7, "manual", null,
+            Utc(1).AddHours(-1), null, 35.33, -113.99, 1100, "America/Phoenix");
+        var history = new Mock<IDeploymentLocationStore>(MockBehavior.Strict);
+        history.Setup(store => store.Resolve(captured.ToProvenance(), Utc(1))).Returns(captured);
+        using var fixture = await GalleryFixture.CreateAsync(deploymentLocation: history.Object).ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null, location: captured.ToProvenance()).ConfigureAwait(false);
+
+        var detail = await fixture.Gallery.GetCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        var source = await fixture.Gallery.GetSourceCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("Available", detail?.Detail?.Location?.Availability);
+        Assert.AreEqual(35.33, detail?.Detail?.Location?.LatitudeDegrees);
+        Assert.AreEqual(7L, detail?.Detail?.Location?.DeploymentVersion);
+        Assert.IsNull(source?.Detail?.Location);
+        history.Verify(store => store.Resolve(captured.ToProvenance(), Utc(1)), Times.Once());
+        history.VerifyNoOtherCalls();
+    }
+
     private static readonly string[] SourceDependency = ["source"];
     private static readonly string[] ExpectedDeliveryStatuses = ["Pending", "Retry", "Acknowledged", "Quarantined"];
     private static readonly string[] ExpectedTwoRootDeliveryStatuses = ["raw-ingress:Pending", "storage-1:Acknowledged"];
@@ -1392,7 +1415,8 @@ public sealed class SqliteCameraAgentGalleryTests
 
         internal SqliteCameraAgentGallery Gallery { get; }
 
-        internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false)
+        internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false,
+            IDeploymentLocationStore? deploymentLocation = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -1416,7 +1440,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 root,
                 journal,
                 processingStore,
-                new SqliteCameraAgentGallery(options, processingStore, resolver))
+                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation))
             {
                 SecondaryRoot = secondaryRoot
             };
@@ -1467,7 +1491,8 @@ public sealed class SqliteCameraAgentGalleryTests
             DateTimeOffset exposureStartedUtc,
             string sourceId,
             SceneProvenance? scene,
-            CameraModuleConfig? configuration = null)
+            CameraModuleConfig? configuration = null,
+            CaptureLocationProvenance? location = null)
         {
             var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
             var captureId = Guid.NewGuid();
@@ -1487,6 +1512,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 Capture = new CaptureIdentityDescriptor(
                     identity.AgentId, "rig-gallery", identity.CaptureSequence, identity.CaptureId),
                 Timing = timing,
+                Location = location,
                 Artifact = template.Descriptor.Artifact with
                 {
                     ArtifactId = identity.ArtifactId,

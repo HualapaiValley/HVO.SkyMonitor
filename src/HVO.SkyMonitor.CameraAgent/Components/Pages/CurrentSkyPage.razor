@@ -325,7 +325,10 @@
                     <div><dt>Sensor sample</dt><dd>@SensorSampleLabel</dd></div>
                     <div><dt>Optics</dt><dd>@OpticsLabel</dd></div>
                     <div><dt>Projection</dt><dd>@ProjectionLabel</dd></div>
-                    <div><dt>Site</dt><dd class="fact-unavailable">Location not retained in this summary</dd></div>
+                    <div><dt>Site</dt><dd class="@(_facts?.Location?.Availability == "Available" ? null : "fact-unavailable")">@SiteLabel
+                        @if (_facts?.Location is { Availability: "Available", DeploymentVersion: { } version, TimeZoneId: { } zone })
+                        { <small class="capture-location-provenance">@zone / recorded deployment v@(version)</small> }
+                    </dd></div>
                     <div><dt>Profile</dt><dd>@(_facts?.ProcessingProfile is { } profile ? $"{profile.Name} / {profile.Version}" : "Unavailable")</dd></div>
                 </dl>
             </section>

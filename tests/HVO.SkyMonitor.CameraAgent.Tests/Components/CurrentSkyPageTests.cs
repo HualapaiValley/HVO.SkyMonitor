@@ -11,6 +11,39 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class CurrentSkyPageTests
 {
     [TestMethod]
+    [DataRow("Available", "35.33°, -113.99° / 1100 m")]
+    [DataRow("NotRetained", "Location not retained for this capture")]
+    [DataRow("Unavailable", "Historical location unavailable")]
+    public void SiteFactsShowCapturedCoordinatesAndVersionOrExplicitAbsence(string availability, string expected)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var location = availability == "Available"
+            ? new CameraAgentCaptureLocationFacts(availability, 35.33, -113.99, 1100, "America/Phoenix", 7)
+            : new CameraAgentCaptureLocationFacts(availability);
+        capture = capture with { Detail = capture.Detail! with { Location = location } };
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.Utc);
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), facts, null)));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var site = cut.FindAll(".rig-facts dl > div").Single(div => div.QuerySelector("dt")!.TextContent == "Site");
+
+        StringAssert.Contains(site.TextContent, expected, StringComparison.Ordinal);
+        if (availability == "Available")
+        {
+            StringAssert.Contains(site.TextContent, "America/Phoenix / recorded deployment v7", StringComparison.Ordinal);
+            Assert.IsFalse(site.QuerySelector("dd")!.ClassList.Contains("fact-unavailable"));
+        }
+        else
+        {
+            Assert.IsTrue(site.QuerySelector("dd")!.ClassList.Contains("fact-unavailable"));
+            Assert.IsNull(site.QuerySelector("small"));
+        }
+    }
+
+    [TestMethod]
     [DataRow("absent", "No retained outcome")]
     [DataRow("central", "No retained outcome")]
     [DataRow("waiting", "Waiting for detector")]

@@ -54,7 +54,17 @@ public sealed record CameraAgentGalleryCaptureDetail(
     IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> ProcessingNodes,
     CameraAgentGalleryCloudAssessment CloudAssessment,
     ProfileIdentityDescriptor? ProcessingProfile = null,
-    CameraAgentCaptureProfileFacts? CaptureProfile = null);
+    CameraAgentCaptureProfileFacts? CaptureProfile = null,
+    CameraAgentCaptureLocationFacts? Location = null);
+
+// Local owner-facing facts resolved from the exact manifest provenance and protected deployment history.
+public sealed record CameraAgentCaptureLocationFacts(
+    string Availability,
+    double? LatitudeDegrees = null,
+    double? LongitudeDegrees = null,
+    double? ElevationMeters = null,
+    string? TimeZoneId = null,
+    long? DeploymentVersion = null);
 
 // A deliberately small projection of the verified capture-time envelope. Module
 // options, device identity and precise location are never part of this UI contract.
