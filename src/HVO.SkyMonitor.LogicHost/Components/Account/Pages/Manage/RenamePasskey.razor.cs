@@ -63,7 +63,8 @@ public sealed partial class RenamePasskey
             return;
         }
 
-        if (!string.IsNullOrEmpty(passkey.Name))
+        // Prefill only the page a GET renders; on the post, Input holds the new name the user submitted.
+        if (HttpMethods.IsGet(HttpContext.Request.Method) && !string.IsNullOrEmpty(passkey.Name))
         {
             Input.Name = passkey.Name;
         }

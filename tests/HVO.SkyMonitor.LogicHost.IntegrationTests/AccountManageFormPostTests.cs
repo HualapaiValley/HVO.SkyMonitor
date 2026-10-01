@@ -1,9 +1,11 @@
+using System.Buffers.Text;
 using System.Net;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -115,6 +117,69 @@ public sealed class AccountManageFormPostTests
         }).ConfigureAwait(false);
         Assert.Contains("API key deleted.", deleted);
         Assert.IsNull(await FindViewerKeyAsync(displayName).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RenamePasskey_SavesThePostedNameAsync()
+    {
+        var credentialId = Guid.NewGuid().ToByteArray();
+        await AddViewerPasskeyAsync(credentialId, "Original passkey").ConfigureAwait(false);
+        var path = $"/Account/Manage/RenamePasskey/{Base64Url.EncodeToString(credentialId)}";
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+        await SignInAsync(client, TestUsers.Viewer.Email, TestUsers.Viewer.Password, path).ConfigureAwait(false);
+
+        var html = await GetPageAsync(client, path).ConfigureAwait(false);
+        Assert.Contains("value=\"Original passkey\"", html);
+
+        // The page loads the saved passkey on every request; the post must keep the submitted name, not the saved one.
+        var fields = new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = AntiforgeryToken(html),
+            ["Input.Name"] = "Renamed passkey",
+            ["_handler"] = "rename-passkey"
+        };
+        using var form = new FormUrlEncodedContent(fields);
+        using var post = await client.PostAsync(new Uri(path, UriKind.Relative), form).ConfigureAwait(false);
+
+        Assert.IsTrue((int)post.StatusCode is >= 300 and < 400, $"Rename returned {(int)post.StatusCode}.");
+        Assert.AreEqual("Renamed passkey", await FindViewerPasskeyNameAsync(credentialId).ConfigureAwait(false));
+    }
+
+    private static async Task AddViewerPasskeyAsync(byte[] credentialId, string name)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var viewer = await users.FindByEmailAsync(TestUsers.Viewer.Email).ConfigureAwait(false)
+            ?? throw new AssertFailedException("The viewer test user is missing.");
+        var passkey = new UserPasskeyInfo(
+            credentialId,
+            publicKey: [1, 2, 3],
+            createdAt: DateTimeOffset.UtcNow,
+            signCount: 0,
+            transports: null,
+            isUserVerified: true,
+            isBackupEligible: false,
+            isBackedUp: false,
+            attestationObject: [4, 5, 6],
+            clientDataJson: [7, 8, 9])
+        {
+            Name = name
+        };
+        var result = await users.AddOrUpdatePasskeyAsync(viewer, passkey).ConfigureAwait(false);
+        Assert.IsTrue(result.Succeeded, string.Join("; ", result.Errors.Select(error => error.Description)));
+    }
+
+    private static async Task<string?> FindViewerPasskeyNameAsync(byte[] credentialId)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var viewer = await users.FindByEmailAsync(TestUsers.Viewer.Email).ConfigureAwait(false)
+            ?? throw new AssertFailedException("The viewer test user is missing.");
+        return (await users.GetPasskeyAsync(viewer, credentialId).ConfigureAwait(false))?.Name;
     }
 
     private static async Task<Guid> AddViewerObservatoryMembershipAsync()
