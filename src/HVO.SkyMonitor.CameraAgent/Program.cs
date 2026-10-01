@@ -304,6 +304,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
 
@@ -331,6 +332,7 @@ public class Program
             "transient-candidate-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
+        healthChecks.AddCheck<ClockHealthCheck>("clock", tags: ["dependency"]);
         AddCameraModules(builder.Services);
 
         var app = builder.Build();

@@ -1,0 +1,123 @@
+@using HVO.SkyMonitor.CameraAgent.Common.TimeSync
+@* System control's Time panel: the agent clock measured against network time, the time servers, and the GPS receiver
+   settings a later reader will use. CameraAgent measures the clock and never sets it. *@
+<section class="ops-panel ops-grid time-sync" aria-labelledby="time-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="time-heading">Time</h2><p>Capture timestamps, overlays, twilight and schedules use this host's clock. CameraAgent measures it against network time; the host's time service sets it.</p></div>
+        @if (_view is { } heading)
+        {
+            <span id="time-status" class="state-chip @ClockFormat.StatusChip(heading.Status)">@ClockFormat.StatusText(heading.Status)</span>
+        }
+    </header>
+
+    @if (_view is null)
+    {
+        @if (_error is null)
+        {
+            <p class="time-note">Reading the clock state.</p>
+        }
+        else
+        {
+            <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Clock state unavailable.</strong> @_error</span></div>
+        }
+    }
+    else
+    {
+        var view = _view;
+        <div class="ops-note-banner compact" role="status"><span class="status-icon @StatusTone(view.Status)" aria-hidden="true"></span><span id="time-status-detail">@view.StatusDetail</span></div>
+        @if (_message is not null)
+        {
+            <div class="ops-note-banner compact time-message" role="@(_message.IsError ? "alert" : "status")"><span class="status-icon @_message.Tone" aria-hidden="true"></span><span>@_message.Text</span></div>
+        }
+
+        <div class="time-sync-grid">
+            <dl class="ops-facts time-facts">
+                <AgentClock SiteTimeZoneId="@view.SiteTimeZoneId" />
+                <div><dt>Clock offset</dt><dd id="time-offset" title="This agent's clock compared with the server that answered">@OffsetText(view)</dd></div>
+                <div><dt>Answered by</dt><dd id="time-server">@AnsweredByText(view)</dd></div>
+                <div><dt>Round trip</dt><dd id="time-round-trip">@(view.Selected?.RoundTrip is { } roundTrip ? ClockFormat.Unsigned(roundTrip) : "—")</dd></div>
+                <div><dt>Measured</dt><dd id="time-measured" title="@MeasuredTitle(view)">@MeasuredText(view)</dd></div>
+                <div><dt>Tolerance</dt><dd id="time-tolerance">@ClockFormat.Unsigned(view.Tolerance)<small>checked every @Every(view.Interval)</small></dd></div>
+                <div><dt>Host time service</dt><dd id="time-kernel">@KernelText(view.Kernel)</dd></div>
+            </dl>
+            <div class="ops-action-list">
+                <article class="ops-action-row">
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"></circle><path d="M10 6v4l3 2"></path></svg></span>
+                    <span><strong>Check now</strong><small>Query the time servers and measure the offset now. At most one check every @CheckIntervalText.</small></span>
+                    <button type="button" id="time-check" class="button secondary" disabled="@(Busy || CheckUnavailableReason is not null)"
+                            title="@CheckUnavailableReason" aria-describedby="@(CheckUnavailableReason is null ? null : "time-check-unavailable")"
+                            @onclick="CheckNowAsync">@(_checking ? "Checking…" : "Check now")</button>
+                    @if (CheckUnavailableReason is { } checkUnavailable)
+                    {
+                        <span id="time-check-unavailable" class="visually-hidden">@checkUnavailable</span>
+                    }
+                </article>
+                <article class="ops-action-row">
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"></circle><path d="M10 6v4h4"></path><path d="M3 3l14 14"></path></svg></span>
+                    <span><strong>Set host clock</strong><small id="time-set-unavailable">@SetClockUnavailableReason</small></span>
+                    <button type="button" id="time-set-clock" class="button secondary" disabled aria-describedby="time-set-unavailable">Host only</button>
+                </article>
+            </div>
+        </div>
+
+        @if (view.Servers.Count > 0)
+        {
+            <div class="ops-table-wrap">
+                <table class="ops-table time-servers-table" aria-label="Time servers in the latest check">
+                    <thead><tr><th scope="col">Server</th><th scope="col">Result</th><th scope="col">Clock offset</th><th scope="col">Round trip</th><th scope="col">Stratum</th></tr></thead>
+                    <tbody>
+                        @foreach (var server in view.Servers)
+                        {
+                            <tr>
+                                <td><strong>@server.Server</strong>@if (server.Selected)
+                                    {
+                                        <small>Used for the offset</small>
+                                    }</td>
+                                <td><span class="state-chip @(server.Failure is null ? "success" : "warning")">@FailureText(server.Failure)</span></td>
+                                <td>@(server.Offset is { } offset ? ClockFormat.Relative(offset.Negate()) : "—")</td>
+                                <td>@(server.RoundTrip is { } serverRoundTrip ? ClockFormat.Unsigned(serverRoundTrip) : "—")</td>
+                                <td>@(server.Stratum?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <div class="time-sync-grid">
+            <div class="time-settings">
+                <h3 id="time-servers-heading">Time servers</h3>
+                <p class="time-note">Up to @TimeSyncSettings.MaximumServers NTP servers, separated by commas. Each check queries them together and uses the reply with the shortest round trip. @ServersSummary(view.Setting)</p>
+                @if (view.IgnoredEntries > 0)
+                {
+                    <p id="time-ignored" class="time-note warning">@IgnoredText(view.IgnoredEntries) Saving a list here replaces them.</p>
+                }
+                <fieldset class="time-settings-form" disabled="@(Busy || ServersUnavailableReason is not null)" aria-describedby="@(ServersUnavailableReason is null ? null : "time-servers-unavailable")">
+                    <legend class="visually-hidden">Time servers</legend>
+                    <label class="ops-field">Servers<input id="time-servers" autocomplete="off" spellcheck="false" maxlength="@ServersInputMaxLength"
+                                                           placeholder="@string.Join(", ", TimeSyncSettings.DefaultServers)" @bind="_serversInput" /></label>
+                    <div class="time-settings-actions">
+                        <button type="button" id="time-servers-save" class="button secondary" @onclick="() => SaveServersAsync(useDefault: false)">@(_saving ? "Saving…" : "Save servers")</button>
+                        <button type="button" id="time-servers-default" class="text-button" disabled="@view.Setting.UsingDefault" @onclick="() => SaveServersAsync(useDefault: true)">Use default</button>
+                    </div>
+                </fieldset>
+                @if (ServersUnavailableReason is { } serversUnavailable)
+                {
+                    <p id="time-servers-unavailable" class="time-note">@serversUnavailable</p>
+                }
+            </div>
+            <div class="time-settings">
+                <h3 id="time-gps-heading">GPS receiver</h3>
+                <p class="time-note">A GPS receiver with a pulse-per-second output keeps time without a network connection.</p>
+                <fieldset class="time-settings-form time-gps" disabled aria-describedby="time-gps-unavailable">
+                    <legend class="visually-hidden">GPS receiver</legend>
+                    <label class="ops-field">Time source<select id="time-gps-source"><option selected>Network time servers</option><option>GPS receiver</option></select></label>
+                    <label class="ops-field">Serial device<input id="time-gps-device" autocomplete="off" placeholder="Not configured" /></label>
+                    <label class="ops-field">Baud rate<select id="time-gps-baud"><option>4800</option><option selected>9600</option><option>38400</option><option>115200</option></select></label>
+                    <label class="time-gps-pps"><input id="time-gps-pps" type="checkbox" /> Use the PPS signal</label>
+                </fieldset>
+                <p id="time-gps-unavailable" class="time-note">@GpsUnavailableReason</p>
+            </div>
+        </div>
+    }
+</section>

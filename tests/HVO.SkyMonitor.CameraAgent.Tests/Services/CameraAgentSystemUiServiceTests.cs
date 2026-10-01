@@ -6,7 +6,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.TimeSync;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -54,6 +56,55 @@ public sealed class CameraAgentSystemUiServiceTests
         Assert.IsTrue(view.CentralIntegrationEnabled);
         Assert.AreEqual(Start, view.EvaluatedUtc);
         Assert.IsGreaterThan(0, view.Host.ProcessorCount);
+    }
+
+    [TestMethod]
+    public async Task Health_ReportsTheClockCheckUnderAcquisitionAndTheDriftAsAgentMinusNetwork()
+    {
+        var monitor = new Mock<IClockSyncMonitor>();
+        monitor.SetupGet(value => value.Settings).Returns(TimeSyncSettings.Default);
+        // The server's clock is 12 ms ahead of this agent's, so this agent drifts 12 ms behind.
+        var snapshot = ClockAssessmentTests.Snapshot(TimeSpan.FromMilliseconds(12));
+        monitor.SetupGet(value => value.Latest).Returns(snapshot);
+        using var fixture = new Fixture(clockMonitor: monitor.Object);
+        fixture.Report(("clock", Entry(HealthStatus.Healthy)));
+
+        var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var check = Check(view, "clock");
+        Assert.AreEqual("Clock", check.Label);
+        Assert.AreEqual("Acquisition", check.Scope);
+        Assert.AreEqual("/operations/control", check.Href);
+        Assert.AreEqual(new SystemClockFact(ClockSyncStatus.InTolerance, TimeSpan.FromMilliseconds(-12), snapshot.MeasuredUtc), view.Clock);
+    }
+
+    [TestMethod]
+    public async Task Health_ClockFact_HasNoDriftWhenCheckingIsOffOrNothingWasMeasured()
+    {
+        var monitor = new Mock<IClockSyncMonitor>();
+        monitor.SetupGet(value => value.Settings).Returns(TimeSyncSettings.Default with { Enabled = false });
+        monitor.SetupGet(value => value.Latest).Returns(ClockAssessmentTests.Snapshot(TimeSpan.FromMilliseconds(12)));
+        using var fixture = new Fixture(clockMonitor: monitor.Object);
+        fixture.Report(("self", Entry(HealthStatus.Healthy)));
+
+        var disabled = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+        monitor.SetupGet(value => value.Settings).Returns(TimeSyncSettings.Default);
+        monitor.SetupGet(value => value.Latest).Returns((ClockSyncSnapshot?)null);
+        var notMeasured = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(new SystemClockFact(ClockSyncStatus.Disabled, null, null), disabled.Clock);
+        Assert.AreEqual(new SystemClockFact(ClockSyncStatus.NotMeasured, null, null), notMeasured.Clock);
+    }
+
+    [TestMethod]
+    public async Task Health_WithoutAClockMonitor_HasNoClockFact()
+    {
+        using var fixture = new Fixture();
+        fixture.Report(("self", Entry(HealthStatus.Healthy)));
+
+        var view = (await fixture.Service.GetHealthAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.IsNull(view.Clock);
     }
 
     [TestMethod]
@@ -263,7 +314,7 @@ public sealed class CameraAgentSystemUiServiceTests
 
         internal Mock<IRawCaptureIngress> Ingress { get; } = new();
 
-        internal Fixture(bool centralEnabled = true, bool authorized = true)
+        internal Fixture(bool centralEnabled = true, bool authorized = true, IClockSyncMonitor? clockMonitor = null)
         {
             Directory.CreateDirectory(_root);
             var options = Options.Create(new CameraAgentHostOptions
@@ -299,7 +350,8 @@ public sealed class CameraAgentSystemUiServiceTests
                     new string('a', 64), 52_428_800, 118_218, null!),
                 options,
                 Clock,
-                NullLogger<CameraAgentSystemUiService>.Instance);
+                NullLogger<CameraAgentSystemUiService>.Instance,
+                clockMonitor);
         }
 
         internal SettableTimeProvider Clock { get; } = new(Start);
