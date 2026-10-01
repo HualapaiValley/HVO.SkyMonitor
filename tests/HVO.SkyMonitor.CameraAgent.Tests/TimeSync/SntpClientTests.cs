@@ -21,7 +21,7 @@ public sealed class SntpClientTests
             Now,
             Now.AddSeconds(5).AddMilliseconds(10),
             Now.AddSeconds(5).AddMilliseconds(11),
-            Now.AddMilliseconds(21));
+            Now.AddMilliseconds(21))!.Value;
 
         Assert.AreEqual(TimeSpan.FromSeconds(5), offset);
         Assert.AreEqual(TimeSpan.FromMilliseconds(20), roundTrip);
@@ -31,17 +31,25 @@ public sealed class SntpClientTests
     public void Measure_WhenTheServerClockIsBehind_ReturnsANegativeOffset()
     {
         var (offset, _) = SntpClient.Measure(
-            Now, Now.AddMilliseconds(-240), Now.AddMilliseconds(-240), Now.AddMilliseconds(20));
+            Now, Now.AddMilliseconds(-240), Now.AddMilliseconds(-240), Now.AddMilliseconds(20))!.Value;
 
         Assert.AreEqual(TimeSpan.FromMilliseconds(-250), offset);
     }
 
     [TestMethod]
-    public void Measure_ANegativeDelayFromRounding_IsReportedAsZero()
+    public void Measure_ANegativeDelayWithinTheRoundingAllowance_IsReportedAsZero()
     {
-        var (_, roundTrip) = SntpClient.Measure(Now, Now, Now.AddMilliseconds(2), Now.AddMilliseconds(1));
+        var measured = SntpClient.Measure(Now, Now, Now.AddMilliseconds(1.5), Now.AddMilliseconds(1));
 
-        Assert.AreEqual(TimeSpan.Zero, roundTrip);
+        Assert.IsNotNull(measured);
+        Assert.AreEqual(TimeSpan.Zero, measured.Value.RoundTrip);
+    }
+
+    [TestMethod]
+    public void Measure_AServerHoldLongerThanTheWholeExchange_IsNotAMeasurement()
+    {
+        // The server claims 5 ms between receiving and answering a request that was out for 1 ms.
+        Assert.IsNull(SntpClient.Measure(Now, Now, Now.AddMilliseconds(5), Now.AddMilliseconds(1)));
     }
 
     [TestMethod]
@@ -71,12 +79,29 @@ public sealed class SntpClientTests
 
         Assert.IsTrue(result.Succeeded, result.Failure?.ToString());
         Assert.AreEqual(1, result.Stratum);
-        // The receive time is the send time plus the monotonic round trip, so the offset is 5 s less half of it.
+        // The wall clock reads Now on receipt and the send time is that less the monotonic round trip, so the request
+        // left half a round trip further from the server's time: the offset is 5 s plus half of it.
         Assert.IsGreaterThan(TimeSpan.Zero, result.RoundTrip!.Value);
         Assert.IsLessThan(Timeout, result.RoundTrip.Value);
-        var expected = TimeSpan.FromSeconds(5) - (result.RoundTrip.Value / 2);
+        var expected = TimeSpan.FromSeconds(5) + (result.RoundTrip.Value / 2);
         Assert.IsLessThanOrEqualTo(1L, Math.Abs((expected - result.Offset!.Value).Ticks));
         Assert.AreEqual(1, server.Requests);
+    }
+
+    [TestMethod]
+    public async Task QueryAsync_AServerClaimingAHoldLongerThanTheExchange_IsAnInvalidReplyAsync()
+    {
+        // A one-second hold on a loopback exchange would compute a round trip near -1 s; clamped to zero, it would
+        // outrank every honest server.
+        using var server = new FakeTimeServer(nonce => SntpPacketTests.Reply(
+            originate: nonce,
+            received: SntpPacket.ToTimestamp(Now.AddSeconds(5)),
+            transmitted: SntpPacket.ToTimestamp(Now.AddSeconds(6))));
+        var client = new SntpClient(new FixedTimeProvider(Now));
+
+        var result = await client.QueryAsync(server.Address, Timeout, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(TimeServerResult.Failed(server.Address, SntpFailure.InvalidReply), result);
     }
 
     [TestMethod]

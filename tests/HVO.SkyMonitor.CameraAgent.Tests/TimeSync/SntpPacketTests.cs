@@ -73,7 +73,8 @@ public sealed class SntpPacketTests
     [DataRow(0, 16, 0d, 0d, DisplayName = "Stratum 16")]
     [DataRow(0, 2, 2d, 0.6d, DisplayName = "Root distance 1.6 s")]
     [DataRow(0, 2, 0d, 1.6d, DisplayName = "Root dispersion 1.6 s")]
-    [DataRow(0, 2, -0.5d, 0d, DisplayName = "Negative root delay")]
+    [DataRow(0, 2, -0.5d, 0d, DisplayName = "Root delay with its high bit set")]
+    [DataRow(0, 2, 0d, -32768d, DisplayName = "Root dispersion with its high bit set")]
     public void Parse_AReplyFromAServerThatIsNotSynchronized_IsRejected(
         int leap, int stratum, double rootDelaySeconds, double rootDispersionSeconds)
     {

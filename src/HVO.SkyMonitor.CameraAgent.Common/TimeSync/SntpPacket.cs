@@ -83,7 +83,7 @@ public static class SntpPacket
         }
         var rootDelay = ShortFormat(BinaryPrimitives.ReadUInt32BigEndian(reply[4..]));
         var rootDispersion = ShortFormat(BinaryPrimitives.ReadUInt32BigEndian(reply[8..]));
-        if (rootDelay < TimeSpan.Zero || (rootDelay / 2) + rootDispersion > MaximumRootDistance)
+        if ((rootDelay / 2) + rootDispersion > MaximumRootDistance)
         {
             return SntpReply.Rejected(SntpFailure.Unsynchronized);
         }
@@ -109,9 +109,11 @@ public static class SntpPacket
         return era.AddTicks(ticks);
     }
 
-    // NTP short format: a signed 16.16 fixed-point number of seconds.
+    // NTP short format: an unsigned 16.16 fixed-point number of seconds (RFC 5905 section 6). Read unsigned, a root
+    // delay that RFC 4330's signed reading would make negative is over 9 hours, so the root distance bound refuses it
+    // either way, and no value can lower the distance below what the server claims.
     private static TimeSpan ShortFormat(uint value)
-        => TimeSpan.FromTicks((long)(int)value * TimeSpan.TicksPerSecond >> 16);
+        => TimeSpan.FromTicks((long)value * TimeSpan.TicksPerSecond >> 16);
 }
 
 /// <summary>A validated server reply, or the reason it was rejected.</summary>
@@ -135,7 +137,10 @@ public enum SntpFailure
     /// <summary>The network refused or could not route the query.</summary>
     Unreachable,
 
-    /// <summary>A reply arrived but failed validation: wrong mode, version or originate timestamp, or zero times.</summary>
+    /// <summary>
+    /// A reply arrived but failed validation: wrong mode, version or originate timestamp, zero times, or a server hold
+    /// time longer than the whole exchange.
+    /// </summary>
     InvalidReply,
 
     /// <summary>The server sent a kiss-o'-death reply and declines to serve this client.</summary>

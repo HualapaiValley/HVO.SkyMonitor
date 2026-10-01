@@ -38,6 +38,9 @@ public sealed record TimeServerResult(
 /// </summary>
 public sealed class SntpClient(TimeProvider timeProvider) : ISntpClient
 {
+    /// <summary>How far below zero a round trip may compute before the reply is refused rather than clamped.</summary>
+    public static readonly TimeSpan RoundingAllowance = TimeSpan.FromMilliseconds(1);
+
     private const int ReceiveBufferLength = 512;
 
     public async Task<TimeServerResult> QueryAsync(string server, TimeSpan timeout, CancellationToken cancellationToken)
@@ -62,19 +65,23 @@ public sealed class SntpClient(TimeProvider timeProvider) : ISntpClient
             var nonce = CreateNonce();
             var request = SntpPacket.CreateRequest(nonce);
             var buffer = new byte[ReceiveBufferLength];
-            var sentUtc = timeProvider.GetUtcNow();
             var started = timeProvider.GetTimestamp();
             await socket.SendAsync(request, SocketFlags.None, deadline.Token).ConfigureAwait(false);
             var length = await socket.ReceiveAsync(buffer, SocketFlags.None, deadline.Token).ConfigureAwait(false);
-            var receivedUtc = sentUtc + timeProvider.GetElapsedTime(started);
+            // T4 is the wall clock on receipt and T1 is T4 less the monotonic time the exchange took, so a step of the
+            // host clock while the query is in flight neither distorts the round trip nor leaves the offset describing
+            // the clock as it was before the step.
+            var receivedUtc = timeProvider.GetUtcNow();
+            var sentUtc = receivedUtc - timeProvider.GetElapsedTime(started);
 
             var reply = SntpPacket.Parse(buffer.AsSpan(0, length), nonce);
             if (reply.Failure is { } failure)
             {
                 return TimeServerResult.Failed(server, failure);
             }
-            var (offset, roundTrip) = Measure(sentUtc, reply.Received, reply.Transmitted, receivedUtc);
-            return new TimeServerResult(server, null, offset, roundTrip, reply.Stratum);
+            return Measure(sentUtc, reply.Received, reply.Transmitted, receivedUtc) is var (offset, roundTrip)
+                ? new TimeServerResult(server, null, offset, roundTrip, reply.Stratum)
+                : TimeServerResult.Failed(server, SntpFailure.InvalidReply);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -93,13 +100,20 @@ public sealed class SntpClient(TimeProvider timeProvider) : ISntpClient
 
     /// <summary>
     /// The RFC 4330 offset and round-trip delay from the client send (T1), server receive (T2), server transmit (T3)
-    /// and client receive (T4) times. A negative delay, which only rounding can produce, is reported as zero.
+    /// and client receive (T4) times, or null when the server claims to have held the request for longer than the
+    /// whole exchange took. A delay that is negative by no more than <see cref="RoundingAllowance"/> is timestamp
+    /// rounding and is reported as zero, as RFC 5905 clamps it; anything further below zero is not a measurement, and
+    /// clamping it would rank the reply ahead of every honest one.
     /// </summary>
-    public static (TimeSpan Offset, TimeSpan RoundTrip) Measure(
+    public static (TimeSpan Offset, TimeSpan RoundTrip)? Measure(
         DateTimeOffset sent, DateTimeOffset serverReceived, DateTimeOffset serverTransmitted, DateTimeOffset received)
     {
         var offset = ((serverReceived - sent) + (serverTransmitted - received)) / 2;
         var roundTrip = (received - sent) - (serverTransmitted - serverReceived);
+        if (roundTrip < -RoundingAllowance)
+        {
+            return null;
+        }
         return (offset, roundTrip < TimeSpan.Zero ? TimeSpan.Zero : roundTrip);
     }
 
