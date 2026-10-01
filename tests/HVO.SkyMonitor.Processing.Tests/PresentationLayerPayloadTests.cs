@@ -244,6 +244,10 @@ public sealed class PresentationLayerPayloadTests
         Assert.AreEqual(PresentationFont.StarFrameScale(800, 600), first.StarAnnotations.TextBlocks[0].Scale);
         Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
         Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
+        var hostDefault = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, new(LabelScale: 2),
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
+        Assert.AreEqual(18_000, hostDefault.StarAnnotations.TextBlocks[0].Appearance!.Body.SizeMilliPixels);
+        Assert.AreEqual(720, hostDefault.StarAnnotations.TextBlocks[0].Appearance!.Body.LetterSpacingMilliPixels);
     }
 
     [TestMethod]

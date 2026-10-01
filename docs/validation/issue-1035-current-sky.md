@@ -301,3 +301,35 @@ capture #32's original historical site, five layer identities, base checksum and
 image/SVG bounds. The report `pinned-style-legacy32.json` is compared directly with
 the prior `location-native.json`; no acquisition occurred during that check.
 This is preservation evidence, not qualification of newly produced v3 output.
+
+## Genuine v3 native production checkpoint
+
+Source `889216f7` built Release with zero warnings/errors and all four CI control
+guards passed. `scripts/ci:classify pull_request de18e41c 889216f7` selected
+`mode=full complete=true deployment=true`, all five component lanes and all three
+deployment suites, from 45 changed paths. The remaining complete candidate gates
+are still required.
+
+The revised private 12-node graph was created, validated and activated through
+the normal authenticated API. Its source was the authoritative post-startup graph;
+canonical stored enum names were converted to the API's numeric wire format.
+Rejected preparatory requests did not create graph revisions. Five genuine new
+captures (#33–#37) were retained, and acquisition was paused through the normal
+operator control at #37. No raw, gallery or artifact rows were manufactured.
+
+Native #37 checks at 1440/390/320 pass the exact 38×25/radius-5 cardinal plates,
+1.7 px/38-percent cyan borders, 4 px/95-percent dark cardinal halos, 3 px/78-percent
+10/8 dashed constellation strokes and 2 px/45-percent image boundary. All five
+layer groups are retained, image/SVG bounds match, and there is no overflow or
+browser error. Corner facts have white headings, regular detail and blue accents
+and rules. The actual unregistered five-frame window records 5 s integration and
+8.031 s first-to-last-start span. Evidence: `pinned-style-native.json` and its
+three-width page/stage screenshots in the private cache.
+
+Visual inspection found the catalog labels were 28 px because the host's default
+label scale is two. The producer now retains the existing frame-scale/minimum
+policy while choosing 18 px and 0.72 px tracking for this host default, with a
+112 px upper bound. Its version is `projected-scene-presentation-v9-prototype-labels`;
+all 23 affected Processing cases pass. Capture #37's explicit stored 28 px style
+is preserved. Newly produced output after this final size correction and matched
+SVG/raster/reference/resource qualification remain pending.
