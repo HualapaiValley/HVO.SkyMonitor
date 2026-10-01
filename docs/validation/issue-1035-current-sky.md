@@ -3,8 +3,11 @@
 This is the active local evidence record for the remaining work under epic #1110.
 The issue remains open. The operator accepted the Current Sky sizing and
 authorized merging the current work on 2026-10-01, with Archive image containment
-and catalog-star visibility tracked in #1117. Full candidate validation,
-independent review and release remain in progress.
+and catalog-star visibility tracked in #1117. The classifier-selected local
+candidate gate is complete. Independent review, target synchronization and
+protected CI remain required. The latest consolidated results are at the end
+of this chronological evidence record; earlier pending statements describe
+their checkpoint, not the current result.
 
 ## Starting point and preserved candidate
 
@@ -60,7 +63,7 @@ All four CI-control guards passed on local `08b79fb7`. The classifier on
 LogicHost, combined and delivery lanes; deployment is false. These focused and
 control results do not replace the complete Tier C candidate gate.
 
-## Work still required
+## Work required at the initial checkpoint
 
 - Complete remaining overlay typography, fact-card hierarchy and prototype
   comparisons. Captured location and real current-location drift are verified below.
@@ -428,3 +431,124 @@ corrections change tests, with no additional production behavior or test count.
 The operator additionally directs that the goal be paused after the next #1035
 merge and cleanup, for assessment. Follow-up #1117 and further epic children
 remain unclaimed by this session.
+
+## Consolidated local candidate — 2026-10-01
+
+`5fd54d0b` contains the final production changes plus the projection, historical
+viewer and W6-identity fixture corrections. `scripts/ci:classify pull_request
+de18e41c HEAD` selects `mode=full complete=true deployment=true`, all five
+component lanes and all three deployment suites, over 49 paths. This selector,
+rather than a manual diff assessment, chose the candidate gate.
+
+| Selected evidence | Result |
+| --- | --- |
+| Pinned tool/solution restore; Debug and Release warning-clean solution builds | Pass |
+| Format, package audit and actual category discovery | Pass; 5,011 Unit / 681 Integration / 153 Manual / one Soak / one Hardware |
+| Positive Unit selection with invalid Docker endpoint | 5,009 pass; two documented Linux/provider skips |
+| Separate Integration lane, including architecture | 681 pass; no skips |
+| Four CI-control guards, operations docs audit and category audit | Pass |
+| Both canonical migration/model checks and coverage policy | Pass |
+| Exactly 23 canonical coverage inputs | 86.7012% line / 70.9297% branch; all required file floors pass |
+| Host and installer/replay/processing-runner x64/arm64 publishes | Pass; retained SHA-256 manifests and inventory |
+| Installer qualification, exhaustive catalog lifecycle, CLI/outage/normal-flow/filesystem contracts | Pass |
+| All ten deployment-environment shards | Pass |
+| Disposable offline installer with the verified production HYG bundle | Pass |
+
+Long unchanged lanes were not repeated after test-only corrections. Production
+source is unchanged from the accepted `fcb2e2ac` preview: `c11e80e7` passed the
+full warning-clean solution builds; `7ddbde59` passed the six ordinary Integration
+assemblies; `5fd54d0b` passed the final affected Debug/Release builds, corrected
+Unit projects, architecture/publish and remaining deployment evidence. The
+additional 16 positively selected Unit cases in four inventory-guard assemblies
+also pass with Docker disabled. Canonical coverage excludes those extra reports
+and contains exactly the workflow's 23 project/category inputs.
+
+The first parallel deployment attempt overlapped a test-fixture commit and
+failed a bootstrap-credential timeout assertion. That mixed-head attempt is not
+counted as green. The isolated unchanged-head bootstrap retry passed; four
+earlier unchanged successful shards were retained and the five unfinished
+shards completed serially on fixed `5fd54d0b`. The offline installer initially
+refused to start without `HVO_PRODUCTION_CATALOG_BUNDLE`; with the already
+verified production bundle, its disposable install/reset contracts pass. Logs,
+TRXs, coverage inputs and publish manifests are retained in the private
+`candidate-c11e80e7` evidence directory and `TestResults/`.
+
+## Final native failure and resource evidence
+
+Authenticated capture #42 at LAN 5132 passes the three-width visual, layer,
+full-screen, focus, resize and immutable save checks recorded above. A browser
+probe that aborts image requests waits for the actual capture and verification
+failure: layered controls and canvas are suppressed with an explicit retry
+message; the failed standard preview never substitutes another capture. A fresh
+unauthenticated context redirects to login and the actual protected artifact
+request returns 401. No durable facts were altered to induce these states.
+Authorization revocation, late optional reads, stale capture generations and
+disposal remain separately covered by the focused component/service cases.
+
+The typography comparison uses identical actual capture #42 scene, facts and
+Mono8 base, the saved manifest's true z-order, CPU 11, five warm iterations and
+30 measured iterations. Its candidate output exactly reproduces the native
+saved RGB SHA `71FDD556…FFF6`. Against the earlier semantic-v2 rendering
+checkpoint `a1d833de`, p50/p95 are 132.00/154.81 ms versus 138.36/166.69 ms;
+mean allocation increases 2.02% (43.90 versus 43.03 MB), measured working set
+increases 16.20% (171.14 versus 147.28 MB) and process peak increases 2.73%
+(170.94 versus 166.40 MB). The pinned outline/font caches explain the additional
+working set; these single paired samples are evidence of bounded cost, not a
+claim of a general latency improvement. The earlier wrong-order probe is
+retained as a rejected input. This comparison isolates the appearance increment
+and does not represent the entire PR versus its target.
+
+A second probe uses the actual retained W6 capture #12: a 3552×3552 RGB24
+base and all seven produced payloads, including the cloud groups' actual
+availability. Under a declared 1 GiB/no-swap process limit, five warm and 30
+measured composites reproduce the retained 37,850,112-byte RGB output exactly:
+`D52729862581BE1EF0E2AA868C089F3180449F5291D1C39F934D681F67D7C9CE`.
+It measures 69.97 ms median / 91.50 ms p95 and 232,161,280 bytes peak working
+set. This qualifies this bounded compositor input, not full-host acquisition.
+
+**The full W6 host is not qualified at 1 GiB.** A native SDK-hosted candidate
+was OOM-killed after four completed captures. A direct-host diagnostic reached
+`OutOfMemoryException` in the unchanged virtual sensor's full-frame rate/output
+allocation and a terminal rolling-window execution. Fresh target `de18e41c`,
+using the same canonical 3552×3552 Bayer profile, actual calibration and full HYG
+in its own 1 GiB/no-swap root, also failed: five executions completed, the sixth
+rolling execution failed, and the unchanged Bayer renderer ran out of memory.
+These are failed resource attempts, not passing qualification; they do not
+establish equivalent headroom or justify changing deployment defaults. Failed
+states/quarantines are retained, and no safety gate or journal row was bypassed.
+
+A separate diagnostic restarted the candidate with 2 GiB/no swap. Actual
+calibration and all fourteen pipeline nodes produced 46 completed captures with
+all standard/environment/transient lanes drained. The defined five-warm/30-
+measured window is capture #7–#36: processing p50/p95 2.3355/2.825 s; exposure
+start interval median 10.008 s, maximum 10.161 s. Monitored peak RSS is
+1,852,600,320 bytes; cgroup peak 2,147,487,744 bytes; no OOM or OOM kill. The
+monitored interval consumes 401.1 CPU seconds, 6,315,507,712 read bytes and
+6,747,127,808 written bytes. Every capture #36 output's payload SHA matches its
+retained descriptor, with source lineage preserved. This is an explicitly
+bounded 2 GiB native processing diagnostic, not a canonical multi-trial Manual
+fault campaign or 1 GiB adoption. Capture was paused normally and the diagnostic
+host stopped; the accepted capture #42 preview remains paused on LAN 5132.
+
+The operator-authorized Archive containment/catalog-visibility follow-up is
+#1117; the other owner's exposure-aware star-rendering PR #1116 merged while
+these local checks ran. The target must therefore be synchronized and the
+merge interactions reviewed. No additional epic child or follow-up is claimed.
+After this PR merges and cleanup completes, pause the goal for the operator's
+assessment; do not start the next group.
+
+The complete target comparison uses the actual `de18e41c` host assemblies and
+its original `Composite` entry point with the identical capture #42 scene, facts,
+base and z-order. Target output is monochrome (2,354,176 bytes); the candidate
+retains semantic color in RGB24 (7,062,528 bytes). Target p50/p95 are
+118.17/137.42 ms versus candidate 132.00/154.81 ms
+(+11.70% / +12.66%). Mean managed allocation is
+37.01 versus 43.90 MB (+18.61%); mean CPU is 125.14
+versus 132.13 ms. Measured working set is 172.26 versus
+171.14 MB, and peak is 173.75 versus 170.94 MB. The additional
+output bytes and semantic glyph/coverage work account for the bounded time and
+allocation cost of correctly colored, pinned presentation. The pixel/color
+acceptance requires that behavior; no throughput improvement is claimed. The
+roughly 18 ms p95 increment is measured on this input only and does not qualify
+full-host defaults. `matched-render-target.json` records the baseline output
+SHA and exact runtime assembly hashes alongside every measured iteration.
