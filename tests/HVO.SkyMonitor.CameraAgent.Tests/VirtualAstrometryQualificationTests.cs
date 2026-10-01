@@ -297,7 +297,7 @@ public sealed class VirtualAstrometryQualificationTests
         return new(rows, geometry, sourceCoverage, mappingCoverage);
     }
 
-    private static CatalogSnapshotResult Snapshot()
+    internal static CatalogSnapshotResult Snapshot()
     {
         var root = Environment.GetEnvironmentVariable("HVO_ASTROMETRY_CATALOG_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(root), "Approved full catalog installation is mandatory.");
@@ -306,9 +306,9 @@ public sealed class VirtualAstrometryQualificationTests
         Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
         return snapshot;
     }
-    private static CaptureRequest Request(DateTimeOffset utc) => new(utc, TimeSpan.FromSeconds(60), CaptureMode.Still,
+    internal static CaptureRequest Request(DateTimeOffset utc) => new(utc, TimeSpan.FromSeconds(60), CaptureMode.Still,
         new(TimeSpan.FromSeconds(1), 150, null, null));
-    private static void RequireRevision()
+    internal static void RequireRevision()
     {
         var revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION");
         Assert.IsTrue(revision is { Length: 40 } && revision.All(Uri.IsHexDigit), "Final evidence requires the exact committed source SHA.");
