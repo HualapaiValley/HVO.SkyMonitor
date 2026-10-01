@@ -308,12 +308,14 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional lineage does not interrupt the current image.")]
     private async Task LoadLineageAsync(Guid artifactId, Guid? captureId, CancellationToken cancellationToken)
     {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
         var lineage = _facts?.CombinedLineage;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
             var result = await OperatorService.GetProductDetailAsync(artifactId, timeout.Token).ConfigureAwait(false);
+            if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 await InvokeAsync(RevokeAccess).ConfigureAwait(false);
@@ -331,8 +333,10 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 {
                     foreach (var source in product.Sources)
                     {
+                        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
                         if (source.CaptureId is not { } sourceCaptureId) break;
                         var read = await OperatorService.GetSourceCaptureAsync(sourceCaptureId, timeout.Token).ConfigureAwait(false);
+                        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
                         if (read.Kind == OperatorUiResultKind.Unauthorized)
                         {
                             await InvokeAsync(RevokeAccess).ConfigureAwait(false);
@@ -348,7 +352,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             }
             await InvokeAsync(() =>
             {
-                if (_accessDenied || _disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
                 if (result.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     RevokeAccess();
@@ -369,7 +373,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         {
             await InvokeAsync(() =>
             {
-                if (_disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
                 _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
                 StateHasChanged();
             }).ConfigureAwait(false);
@@ -381,6 +385,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         if (_disposeStarted != 0) return;
         _deferredLayers = null;
         _accessDenied = true;
+        _lifetime?.Cancel();
+        _layerCancellation?.Cancel();
         _viewerOpen = false;
         _presentation = null;
         _facts = null;
@@ -773,6 +779,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An optional detector read must not fail or hide the image.")]
     private async Task LoadTransientAsync(Guid captureId, CancellationToken cancellationToken)
     {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
         var generation = Interlocked.Increment(ref _transientGeneration);
         OperatorUiResult<CameraAgentCaptureTransientView> result;
         try
@@ -790,7 +797,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         }
         await InvokeAsync(() =>
         {
-            if (_disposeStarted != 0 || _accessDenied || _runCaptureId != captureId ||
+            if (Volatile.Read(ref _disposeStarted) != 0 || _accessDenied || _runCaptureId != captureId ||
                 generation != Volatile.Read(ref _transientGeneration)) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
             _transient = result.IsSuccess && result.Value?.CaptureId == captureId ? result.Value : null;
@@ -969,25 +976,25 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the current sky image.")]
     private async Task LoadLiveRunLinkAsync(Guid captureId, CancellationToken cancellationToken)
     {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
-            if (run.Kind == OperatorUiResultKind.Unauthorized && _runCaptureId == captureId && _disposeStarted == 0)
+            if (run.Kind == OperatorUiResultKind.Unauthorized && _runCaptureId == captureId && Volatile.Read(ref _disposeStarted) == 0)
             {
                 await InvokeAsync(() =>
                 {
-                    if (_runCaptureId != captureId || _disposeStarted != 0) return;
-                    _accessDenied = true;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    if (_runCaptureId != captureId || Volatile.Read(ref _disposeStarted) != 0) return;
+                    RevokeAccess();
                 });
             }
-            else if (run.IsSuccess && _runCaptureId == captureId && _disposeStarted == 0)
+            else if (run.IsSuccess && _runCaptureId == captureId && Volatile.Read(ref _disposeStarted) == 0)
             {
                 await InvokeAsync(() =>
                 {
-                    if (_runCaptureId != captureId || _disposeStarted != 0 || _accessDenied) return;
+                    if (_runCaptureId != captureId || Volatile.Read(ref _disposeStarted) != 0 || _accessDenied) return;
                     _liveExecutionId = run.Value?.ExecutionId;
                     StateHasChanged();
                 }).ConfigureAwait(false);

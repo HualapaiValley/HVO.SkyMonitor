@@ -1283,6 +1283,82 @@ public sealed class CurrentSkyPageTests
     }
 
     [TestMethod]
+    [DataRow("product")]
+    [DataRow("source")]
+    public async Task LateLineageResponsesCannotStartMoreSourceReadsAfterRevocation(string pendingStage)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var (lineage, product, captures) = Gallery.CameraAgentCombinedSpanProjectorTests.CreateWindow();
+        var endpoint = captures[^1];
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(endpoint, ObservingDayCalendar.Utc) with { CombinedLineage = lineage };
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), facts, null)));
+        // Inline continuations let the releasing Task.Run join the actual late workflow,
+        // rather than asserting an unchanged call count before that workflow resumes.
+        var productResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentProductDetail>>();
+        var sourceResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentGalleryCapture>>();
+        var transientResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken pendingToken = default;
+        var sourceReads = 0;
+        service.ProductDetailHandler = (_, token) =>
+        {
+            pendingToken = token;
+            return pendingStage == "product" ? new(productResponse.Task)
+                : ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+        };
+        service.DetailHandler = (id, token) =>
+        {
+            pendingToken = token;
+            Interlocked.Increment(ref sourceReads);
+            return new(sourceResponse.Task);
+        };
+        service.TransientHandler = (_, _) => new(transientResponse.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        var expectedReads = pendingStage == "source" ? 1 : 0;
+        Assert.AreEqual(expectedReads, sourceReads);
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, _) => redirected.TrySetResult();
+
+        transientResponse.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(pendingToken.IsCancellationRequested);
+        await Task.Run(() =>
+        {
+            if (pendingStage == "product") productResponse.SetResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+            else sourceResponse.SetResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(captures[0]));
+        }).ConfigureAwait(false);
+        await cut.InvokeAsync(() => { }).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedReads, sourceReads);
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+    }
+
+    [TestMethod]
+    public void SynchronousRunLinkDenialClearsContentAndPreventsTransientDispatch()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var graph = (ProcessingExecutionPagesTests.GraphUiService)context.Services.GetRequiredService<ICameraAgentProcessingGraphUiService>();
+        graph.LiveRunResult = OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.Unauthorized, "revoked");
+        var transientReads = 0;
+        service.TransientHandler = (_, _) =>
+        {
+            Interlocked.Increment(ref transientReads);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.NotFound, "absent"));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        Assert.AreEqual(0, transientReads);
+    }
+
+    [TestMethod]
     public async Task ARefreshCompletedAfterOptionalAuthorizationRevocationCannotRestoreProtectedContent()
     {
         using var context = new BunitContext();

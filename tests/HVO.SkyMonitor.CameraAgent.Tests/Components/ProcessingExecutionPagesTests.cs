@@ -461,8 +461,10 @@ public sealed class ProcessingExecutionPagesTests
         public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)
             => ValueTask.FromResult(DetailFailure ?? OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(Detail!));
 
+        public OperatorUiResult<CameraAgentLiveRunLink>? LiveRunResult { get; set; }
+
         public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.NotFound, "No live run."));
+            => ValueTask.FromResult(LiveRunResult ?? OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.NotFound, "No live run."));
 
         public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }

@@ -574,3 +574,28 @@ the green runs. Inventories now select 5,012 Unit and 684 Integration cases
 before target integration. The earlier unchanged full candidate and performance
 evidence remains applicable to unaffected paths. These fixes require correction
 review before finalization; target #1116 is still not integrated.
+
+
+## Correction rereview 2 preparation
+
+Correction-1 independent report (PR #1119 comment 5940079131) verified R2
+fixed and the original held-refresh R1 fixed, but retained R1 as a blocker:
+late product/source responses could dispatch further protected reads, and
+synchronous run-link denial could precede transient dispatch. Authorization
+revocation now cancels lifetime/layer work; optional workflows check admission
+and lineage checks after responses and before each source read. Run-link
+denial uses the common clearing/cancellation path. Three new regressions count
+source/transient reads and inspect cancellation for these orderings. Focused
+Current Sky/authorization selection passes 78 cases without skips. The first
+build flagged analyzer assumptions across awaits; volatile disposal reads make
+the concurrency checks explicit and the corrected build passes warning-clean.
+
+The full affected Unit suites on correction-1 head `d4a442c6` pass: CameraAgent,
+LogicHost and their combined assembly, with only their two pre-existing
+documented platform/provider skips. These are retained as correction-1
+evidence, not relabeled as the later head. Correction-2 requires a fresh
+CameraAgent suite and independent rereview. Pre-union inventory is now
+5,015 Unit / 684 Integration / 153 Manual. The next review snapshot will
+explicitly transport target `60c7a857` into its named remote ref; the previous
+snapshot retained the older ref despite having the target object, which did not
+affect its verified correction endpoints.
