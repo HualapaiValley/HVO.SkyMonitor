@@ -235,3 +235,53 @@ Unit 2881; other category totals remain unchanged. The focused preview, projecti
 page, authorization and composition gate passes 92 cases with no warnings.
 Broader correction gates and refreshed native evidence are recorded against the
 committed correction source. No full Manual-chain or operator acceptance is inferred.
+
+### Second correction: bounded source reads and failure evidence
+
+The first correction review verified the material label, authority and calendar
+findings fixed, but retained the performance finding and identified an interop
+failure risk and missing Events/detail fallback evidence. The second correction
+adds a protected source-only Gallery read. It reads the exact raw identity and
+trusted manifest without processing, cloud or delivery traversal; the browser's
+existing protected preview endpoint still validates the exact payload. Tests prove
+that this read works with the unrelated processing table absent, rejects foreign
+capture identity, respects authorization and sanitizes internal failures.
+
+The preview probe tolerates module failures and live timeouts while retaining its
+normal image-error handler. Both Events parents now have regression cases and
+native failed-preview evidence: eight list placeholders and five context
+placeholders preserve exact candidate/capture links, with no browser errors.
+Keyboard evidence adds a Previous/Next calendar month round trip; all eleven
+recorded actions and ten coarse-pointer states pass with no short targets.
+
+At production source `fdfcbfab`, the original eight-candidate native pin improves
+from the prior correction's 1502 ms median to 207 ms (p95 309 ms). CPU per ten
+loads falls from 17.13 to 3.23 seconds. A single cold load accounts for both
+prerender and interactive reads: 16 candidate projections total 65 ms and 16
+raw-source reads total 65 ms; eight protected preview requests occur separately.
+The larger retained state contains a genuine full page of 25 distinct candidates
+acquired through the native virtual camera with generic sensor tracks, followed
+by an authenticated pause. Ten navigations measure median 557 ms, p95 627 ms,
+and 6.17 process CPU seconds. A separate five-navigation all-image run measures
+median 499 ms and p95 511 ms. Its cold stage trace has 50 reads: candidate
+projection 180 ms, source metadata 213 ms, total 394 ms, with 25 preview requests.
+Prerender duplicates are included, rather than hidden from the accounting.
+
+The original pre-port eight-row list was 58 ms and had no source images or detail
+hydration. Remaining cost is attributable to those added retained reads, preview
+validation/encoding and two render phases; unrelated product traversal has been
+removed. The raw timing, process CPU/RSS/I/O and stage records are retained in
+the immutable correction pack. Process I/O includes background work; cached
+read volume is not physical disk I/O. These samples do not establish an SLA,
+managed allocation, capture-backlog or maximum-100-candidate qualification.
+
+Nine additional Unit cases bring discovery to Unit 4929, CameraAgent Unit 2890.
+The 100-case focused gate and the full CameraAgent Unit selection pass (2889
+passed, one existing platform skip). Refreshed Integration selections pass
+221 storage, 22 host and seven standalone cases; the Acceptance Unit selection
+passes 27. All five CameraAgent coverage reports use the same corrected source:
+84.7827% line and 66.0736% branch pass unchanged floors. Mixing pre-refactor
+reports with new source initially failed the Gallery floor; refreshing the
+reports resolved that without changing a floor. Release, category discovery,
+format, documentation and all four CI-control guards pass. The PR stays draft
+until independent review, final synchronization and protected CI complete.
