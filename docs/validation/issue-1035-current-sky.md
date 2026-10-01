@@ -599,3 +599,28 @@ CameraAgent suite and independent rereview. Pre-union inventory is now
 explicitly transport target `60c7a857` into its named remote ref; the previous
 snapshot retained the older ref despite having the target object, which did not
 affect its verified correction endpoints.
+
+
+## Final target integration preparation
+
+Independent correction-2 review of `d4a442c6..069f415e` is CLEAN (PR #1119
+comment 5940331595), verifying R1 and preserving R2. Sole finalization ownership
+was proved through complete primary reads before/after the thirty-second
+stabilization interval. Target `60c7a857` (#1116) is merged without rewriting
+reviewed history. Inventory conflicts combine both sides' additions rather than
+choosing either side: 5,131 Unit / 684 Integration / 154 Manual.
+
+The W6 profile test merges both the target's bounded 32,768 catalog-result
+configuration and this PR's versioned effective-graph identity. Its two Manual
+acceptance profile pins also require the target's new configuration identities
+(`CB42AAEE…709B8` Bayer and `4546797C…9D320` Mono8); their independent
+configuration-derived Unit assertions will validate those values. Historical
+300-result profile identity assertions remain in the profile tests. No Manual
+fault campaign is claimed by this fixture synchronization. The earlier full
+host resource diagnostics describe pre-target checkpoints; the retained
+compositor inputs/algorithm are unchanged by the optical renderer integration.
+
+Next: classify the actual base-sync delta, run its affected local candidate and
+CI-control guards, obtain independent deep conflict/interaction review, then
+start protected CI on the reviewed head. This entry records preparation, not
+a green union gate or a merge of the PR.

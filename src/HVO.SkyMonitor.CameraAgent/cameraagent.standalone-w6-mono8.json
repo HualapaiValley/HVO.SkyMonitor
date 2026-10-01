@@ -6,7 +6,7 @@
       "seed": 211,
       "rigProfileVersion": "virtual-asi174mm-mono8-roi-bin4-w6-control-v1",
       "maximumMagnitude": 6.5,
-      "maximumResults": 300,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 1000.0,
       "bortleClass": 3,
       "shotNoiseEnabled": false,

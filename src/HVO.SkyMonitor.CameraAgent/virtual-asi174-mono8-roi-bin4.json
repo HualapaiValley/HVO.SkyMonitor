@@ -5,7 +5,7 @@
     "options": {
       "seed": 2025,
       "maximumMagnitude": 6.5,
-      "maximumResults": 2000,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 300.0,
       "bortleClass": 3
     }

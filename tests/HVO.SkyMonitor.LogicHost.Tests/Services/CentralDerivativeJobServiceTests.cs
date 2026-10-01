@@ -63,6 +63,27 @@ public sealed class CentralDerivativeJobServiceTests
     }
 
     [TestMethod]
+    public void ExposureSweptMaskPolicyIsOptInAndPinnedInDurableExecutionIdentity()
+    {
+        var legacy = new CentralTransientOptions().CreateExecutionOptions();
+        var selected = new CentralTransientOptions { ExposureIntegratedStarMask = true }.CreateExecutionOptions();
+        var legacyJson = CentralTransientExecutionOptionsJson.Serialize(legacy);
+        var selectedJson = CentralTransientExecutionOptionsJson.Serialize(selected);
+        legacy.MaskPolicy.Should().Be(CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1);
+        selected.MaskPolicy.Should().Be(CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2);
+        CentralTransientExecutionOptionsJson.Deserialize(legacyJson.Json).Should().Be(legacy);
+        CentralTransientExecutionOptionsJson.Deserialize(selectedJson.Json).Should().Be(selected);
+        selectedJson.Sha256.Should().NotBe(legacyJson.Sha256);
+        // Changing the live host choice cannot mutate a previously frozen recipe.
+        CentralTransientExecutionOptionsJson.Serialize(CentralTransientExecutionOptionsJson.Deserialize(legacyJson.Json))
+            .Should().Be(legacyJson);
+        var invalid = new CentralTransientOptions { ExposureIntegratedStarMask = true, StarSourceSupportRadiusPixels = 17 };
+        invalid.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(invalid)).Should().NotBeEmpty();
+        invalid = new CentralTransientOptions { ExposureIntegratedStarMask = true, StarSourceSupportRadiusPixels = .1 };
+        invalid.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(invalid)).Should().NotBeEmpty();
+    }
+
+    [TestMethod]
     public void CentralTransientOptions_CreatePinnedDurableWindowRecipe()
     {
         var options = new CentralTransientOptions

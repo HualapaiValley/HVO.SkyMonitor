@@ -652,6 +652,9 @@ public sealed class TransientDetectionOptions : IValidatableObject
     [Range(0.5, 256)]
     public double StarSupportRadiusSourcePixels { get; init; } = 5;
 
+    /// <summary>Selects catalog-only exposure support for a new declared virtual detector profile.</summary>
+    public bool ExposureIntegratedStarMask { get; init; }
+
     [Required]
     public TransientCandidateAssociationOptions Association { get; init; } = new();
 
@@ -662,6 +665,11 @@ public sealed class TransientDetectionOptions : IValidatableObject
             yield return new ValidationResult(
                 "Transient detection mode is not supported.",
                 [nameof(Mode)]);
+        }
+        if (ExposureIntegratedStarMask && StarSupportRadiusSourcePixels > 64)
+        {
+            yield return new ValidationResult("Exposure-integrated star support must be at most 64 source pixels.",
+                [nameof(StarSupportRadiusSourcePixels)]);
         }
         if (Required && Mode is not (TransientOperatingMode.Edge or TransientOperatingMode.Hybrid))
         {
