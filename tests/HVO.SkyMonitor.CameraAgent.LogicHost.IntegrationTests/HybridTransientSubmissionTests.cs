@@ -236,6 +236,7 @@ public sealed class HybridTransientSubmissionTests
             eventId = bundle.CentralTransientEventId;
             versionsBeforePublication = await db.CentralTransientEventVersions.CountAsync(
                 item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+            await DeferOtherPendingJobsAsync(db, jobId).ConfigureAwait(false);
             var lease = await services.GetRequiredService<ICentralDerivativeJobService>().ClaimNextAsync(
                 "combined-transient-products", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(lease);
@@ -300,6 +301,8 @@ public sealed class HybridTransientSubmissionTests
         using (var scope = fixture.CreateHostScope())
         {
             var services = scope.ServiceProvider;
+            var db = services.GetRequiredService<ApplicationDbContext>();
+            await DeferOtherPendingJobsAsync(db, jobId).ConfigureAwait(false);
             var lease = await services.GetRequiredService<ICentralDerivativeJobService>().ClaimNextAsync(
                 "combined-transient-products-retry", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(lease);
@@ -308,7 +311,6 @@ public sealed class HybridTransientSubmissionTests
                 .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, result.Status, result.ReasonCode);
             Assert.AreEqual("transient-derivative.output-adopted", result.ReasonCode);
-            var db = services.GetRequiredService<ApplicationDbContext>();
             CollectionAssert.AreEquivalent(derivativeIds, await db.CentralTransientDerivatives.AsNoTracking()
                 .Where(item => item.CentralDerivativeJobId == jobId).Select(item => item.DerivativeId)
                 .ToArrayAsync().ConfigureAwait(false));
@@ -326,6 +328,17 @@ public sealed class HybridTransientSubmissionTests
                 .Where(item => item.Id == jobId).Select(item => item.Status).SingleAsync().ConfigureAwait(false));
         }
         await VerifyPayloadReleaseAsync(fixture, eventId, derivativeIds).ConfigureAwait(false);
+    }
+
+    private static Task DeferOtherPendingJobsAsync(ApplicationDbContext db, Guid jobId)
+    {
+        // Artifact delivery can schedule ordinary preview jobs after validation. This
+        // fixture manually drives one worker; preserve unrelated work but make the
+        // intended bundle the next eligible job, including its recovery lease.
+        return db.CentralDerivativeJobs.Where(item => item.Id != jobId &&
+                item.Status == CentralDerivativeJobStatus.Pending)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                item => item.AvailableAtUtc, DateTimeOffset.UtcNow.AddHours(1)));
     }
 
     private static async Task VerifyPayloadReleaseAsync(
