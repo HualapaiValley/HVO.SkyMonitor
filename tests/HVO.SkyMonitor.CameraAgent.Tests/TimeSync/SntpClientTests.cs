@@ -91,14 +91,14 @@ public sealed class SntpClientTests
     [TestMethod]
     public async Task QueryAsync_AServerClaimingAHoldLongerThanTheExchange_IsAnInvalidReplyAsync()
     {
-        // The claimed hold is twice the query timeout, so any exchange that completes at all computes a round trip
-        // at least 5 s below zero, however slowly the host schedules it. Clamped to zero, it would outrank every
-        // honest server.
+        // The monotonic clock is frozen, so the exchange measures zero however the host schedules it, and the claimed
+        // one-second hold computes a round trip of minus one second. Clamped to zero, it would outrank every honest
+        // server.
         using var server = new FakeTimeServer(nonce => SntpPacketTests.Reply(
             originate: nonce,
             received: SntpPacket.ToTimestamp(Now.AddSeconds(5)),
-            transmitted: SntpPacket.ToTimestamp(Now.AddSeconds(5) + (2 * Timeout))));
-        var client = new SntpClient(new FixedTimeProvider(Now));
+            transmitted: SntpPacket.ToTimestamp(Now.AddSeconds(6))));
+        var client = new SntpClient(new FrozenTimeProvider(Now));
 
         var result = await client.QueryAsync(server.Address, Timeout, CancellationToken.None).ConfigureAwait(false);
 
@@ -220,5 +220,12 @@ public sealed class SntpClientTests
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class FrozenTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+
+        public override long GetTimestamp() => 0;
     }
 }
