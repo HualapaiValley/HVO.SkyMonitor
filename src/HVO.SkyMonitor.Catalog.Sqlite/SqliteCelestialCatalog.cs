@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 /// <summary>
 /// Validates and loads a read-only SQLite snapshot into a connection-independent immutable cache.
 /// </summary>
-public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource
+public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource, IAstrometricCatalogSource
 {
     private const int Sha256HexLength = 64;
     private readonly ReadOnlyCollection<CelestialCatalogObject> _objects;
@@ -19,15 +19,16 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The chained constructor disposes the authenticated source in its finally block.")]
     public SqliteCelestialCatalog(SqliteCelestialCatalogOptions options)
-        : this(options, AuthenticateDatabase(options), expectedDatabaseLength: null, ownsAuthenticatedSource: true)
+        : this(options, AuthenticateDatabase(options), expectedDatabaseLength: null, ownsAuthenticatedSource: true, astrometricProvenance: null)
     {
     }
 
     internal SqliteCelestialCatalog(
         SqliteCelestialCatalogOptions options,
         CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
-        long expectedDatabaseLength)
-        : this(options, authenticatedSource, expectedDatabaseLength, ownsAuthenticatedSource: false)
+        long expectedDatabaseLength,
+        AstrometricCatalogProvenance astrometricProvenance)
+        : this(options, authenticatedSource, expectedDatabaseLength, ownsAuthenticatedSource: false, astrometricProvenance)
     {
     }
 
@@ -35,7 +36,8 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         SqliteCelestialCatalogOptions options,
         CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
         long? expectedDatabaseLength,
-        bool ownsAuthenticatedSource)
+        bool ownsAuthenticatedSource,
+        AstrometricCatalogProvenance? astrometricProvenance)
     {
         try
         {
@@ -44,6 +46,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ValidateOptions(options);
 
             Options = options;
+            AstrometricProvenance = astrometricProvenance;
             var databasePath = Path.GetFullPath(options.DatabasePath);
             ValidateNoSidecars(databasePath);
             using var privateSnapshot = PrivateSqliteSnapshot.Create(
@@ -114,8 +117,39 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     /// <summary>Gets the checked preprocessing format version.</summary>
     public string PreprocessingVersion { get; }
 
+    /// <summary>Gets package identity only when this instance was loaded by the installed-snapshot resolver.</summary>
+    public AstrometricCatalogProvenance? AstrometricProvenance { get; }
+
     /// <summary>Gets the number of validated catalog objects in the immutable cache.</summary>
     public int ObjectCount => _objects.Count;
+
+    /// <summary>
+    /// Copies at most the requested solver bound from the immutable magnitude index. Only a fully
+    /// validated production installation can declare complete sky coverage; fixtures and direct
+    /// database loads remain explicitly incomplete even when every stored row fits the bound.
+    /// </summary>
+    public ValueTask<AstrometricCatalogData> ReadAsync(double maximumMagnitude, int maximumEntries,
+        CancellationToken cancellationToken = default)
+    {
+        if (!double.IsFinite(maximumMagnitude))
+            throw new ArgumentOutOfRangeException(nameof(maximumMagnitude));
+        if (maximumEntries is < 1 or > AstrometricCatalogData.MaximumEntries)
+            throw new ArgumentOutOfRangeException(nameof(maximumEntries));
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var matchingCount = FindUpperBound(maximumMagnitude);
+        var selected = new CelestialCatalogObject[Math.Min(matchingCount, maximumEntries)];
+        for (var index = 0; index < selected.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            selected[index] = _objects[index];
+        }
+        var result = new AstrometricCatalogData(Metadata, selected,
+            AstrometricProvenance?.PackageKind == "production" && matchingCount <= maximumEntries,
+            maximumMagnitude, provenance: AstrometricProvenance);
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(result);
+    }
 
     /// <inheritdoc />
     public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query)

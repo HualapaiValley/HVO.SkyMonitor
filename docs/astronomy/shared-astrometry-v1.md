@@ -89,3 +89,41 @@ Score0–100 combines30% fit residual,30% verification residual,20% count and20%
 Current stacks remain unregistered arithmetic means. Edge insertion points are `RollingCombinationCaptureProcessingStep`, its compatible history selection and lineage; central points are `CentralDerivativeRecipeCatalog`, window resolver/input reader/job executor/output writer. A future registered recipe must bind ordered source frame and accepted solution identities, reference UTC/solution, mapping version, interpolation, coverage masks, rejection policy and actual integration into output identity. Preserve raw originals and transient evidence. Ordinary geometric resampling must follow linear CFA reconstruction.
 
 Meteor/satellite consumers may reuse accepted pixel/sky mappings and explicit timing/quality later. Existing transient geometry remains detector-pixel evidence; this change adds no event classifier, orbital propagation, source rejection policy or trajectory solver.
+
+## Installed HYG selection
+
+The installed `SqliteCelestialCatalog` also implements
+`IAstrometricCatalogSource`; `AddInstalledCelestialCatalog` resolves all catalog
+interfaces to the same validated immutable cache. Use the existing installed
+snapshot resolver, not a new catalog registry. `ReadAsync` accepts a finite
+magnitude (including negative values) and 1–2,500 entries, finds the exact
+matching count by binary search, and copies at most that bound. Cancellation
+is checked before selection, while copying and after bounded materialization.
+
+Only a resolver-validated production package with every requested matching row
+inside the bound reports `IsCompleteForRequestedMagnitude=true`. An overflowing
+selection still carries the requested magnitude ceiling but is explicitly
+incomplete; the solver returns `catalog-incomplete` before numerical fitting.
+Fixture packages and directly opened database files cannot assert production
+sky completeness. Invalid bounds/magnitudes throw argument exceptions; canceled
+reads throw `OperationCanceledException`.
+
+Installed selections retain catalog ID, package version/kind and preprocessing
+version in `AstrometricCatalogProvenance`, alongside the existing data checksum,
+schema, source/license and coordinate model. These fields bind the catalog
+identity used for warm-prior compatibility. Standalone evidence without package
+provenance retains its previous identity. A new package identity cannot silently
+reuse a prior frame fit even when its selected stars are unchanged. This adds no
+catalog schema, HYG upgrade, proper-motion or lifecycle behavior; those remain
+owned by #521.
+
+The initial #1098 catalog profile is the approved full HYG 4.2 snapshot with
+magnitude <=5: 1,637 entries, below both the 2,500 solver bound and the current
+2,000 visible-render bound. Set `AstrometricSolverOptions.MaximumCatalogMagnitude`
+and VirtualSky `MaximumMagnitude` to 5 explicitly for that profile. The existing
+solver default of 7 selects 15,598 catalog rows and therefore remains unavailable
+through this bounded adapter; defaults are not silently reinterpreted. A
+magnitude <=5.5 request already has 2,865 rows and is incomplete at 2,500. These
+counts establish catalog selection, not detection sensitivity or actual-camera
+qualification (#1102/#1106). #522 still owns honest visibility/resource behavior
+for deeper production rendering profiles.

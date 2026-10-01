@@ -8,6 +8,7 @@ using Microsoft.Extensions.Primitives;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 internal sealed class InstalledCelestialCatalogTests
 {
     [TestMethod]
@@ -41,6 +42,7 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreSame(snapshot.Catalog, concrete);
         Assert.AreSame(concrete, provider.GetRequiredService<ICelestialCatalog>());
         Assert.AreSame(concrete, provider.GetRequiredService<IHipparcosCatalog>());
+        Assert.AreSame(concrete, provider.GetRequiredService<IAstrometricCatalogSource>());
         Assert.AreSame(concrete, provider.GetRequiredService<ICelestialCatalogMetadataSource>());
         Assert.AreSame(snapshot, provider.GetRequiredService<CatalogSnapshotResult>());
 
