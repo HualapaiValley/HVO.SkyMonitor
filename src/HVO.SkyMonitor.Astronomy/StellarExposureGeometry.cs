@@ -7,14 +7,16 @@ public sealed record StellarExposureGeometryOptions(
     int MaximumCandidates = 32768,
     int MaximumSamplesPerSource = 64,
     double MaximumStepPixels = .15,
-    double PsfSupportRadiusPixels = 4)
+    double PsfSupportRadiusPixels = 4,
+    int MinimumSamplesPerSource = 1)
 {
     /// <summary>Validates bounded candidate, temporal and optical support parameters.</summary>
     public void Validate()
     {
         if (MaximumCandidates is < 1 or > 100000 || MaximumSamplesPerSource is < 1 or > 64 ||
             !double.IsFinite(MaximumStepPixels) || MaximumStepPixels is <= 0 or > .5 ||
-            !double.IsFinite(PsfSupportRadiusPixels) || PsfSupportRadiusPixels is <= 0 or > 64)
+            !double.IsFinite(PsfSupportRadiusPixels) || PsfSupportRadiusPixels is <= 0 or > 64 ||
+            MinimumSamplesPerSource < 1 || MinimumSamplesPerSource > MaximumSamplesPerSource)
             throw new ArgumentOutOfRangeException(nameof(StellarExposureGeometryOptions));
     }
 }
@@ -76,7 +78,7 @@ public sealed class StellarExposureGeometry
 }
 
 /// <summary>Projects a complete bounded magnitude query through the swept field, including off-frame PSF centers.</summary>
-public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog)
+public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IConstellationTopology? constellationTopology = null)
 {
     // Slightly above the geometric sidereal angular rate, including the coordinate-model drift.
     private const double MaximumSkyRadiansPerSecond = 7.3e-5;
@@ -98,19 +100,29 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog)
         if (catalog is ICelestialCatalogMetadataSource metadataSource && metadataSource.Metadata != request.CatalogMetadata)
             throw new ArgumentException("Catalog provenance does not match the provider.", nameof(request));
         var projection = request.Projection;
+        if (exposure == TimeSpan.Zero) return new(request, startUtc, endUtc, 0, 0, []);
         var expanded = ExpandProjection(projection, options.PsfSupportRadiusPixels);
         var speedBound = MaximumProjectionSpeed(expanded, options.PsfSupportRadiusPixels);
-        var requiredSlots = Math.Max(1, Math.Ceiling(exposure.TotalSeconds * speedBound / options.MaximumStepPixels));
+        var requiredSlots = Math.Max(options.MinimumSamplesPerSource, Math.Ceiling(exposure.TotalSeconds * speedBound / options.MaximumStepPixels));
         if (!double.IsFinite(requiredSlots) || requiredSlots > options.MaximumSamplesPerSource)
             throw new InvalidOperationException("stellar-exposure-temporal-budget-exceeded");
         var slots = (int)requiredSlots;
         var sources = new List<StellarExposureObject>();
-        if (exposure == TimeSpan.Zero)
-            return new(request, startUtc, endUtc, 0, slots, sources);
         // A global magnitude query is deliberately conservative. No instantaneous spatial cap
         // may erase a star that enters the sensor/aperture or contributes only clipped PSF support.
-        var candidates = await catalog.QueryCandidatesAsync(new(request.CatalogQuery.MaximumMagnitude), cancellationToken)
+        var queriedCandidates = await catalog.QueryCandidatesAsync(new(request.CatalogQuery.MaximumMagnitude), cancellationToken)
             .ConfigureAwait(false);
+        var candidates = queriedCandidates;
+        if (request.IncludeConstellationEndpointStars && request.ConstellationIds.Count > 0)
+        {
+            if (constellationTopology is null || catalog is not IHipparcosCatalog hipparcosCatalog)
+                throw new InvalidOperationException("Constellation endpoint stars require topology and stable catalog lookup.");
+            var ids = request.ConstellationIds.SelectMany(id => constellationTopology.GetSegments(id))
+                .SelectMany(static segment => new[] { segment.FromHipparcosId, segment.ToHipparcosId })
+                .Distinct(StringComparer.Ordinal).ToArray();
+            var endpoints = await hipparcosCatalog.GetByHipparcosIdsAsync(ids, cancellationToken).ConfigureAwait(false);
+            candidates = queriedCandidates.Concat(endpoints).DistinctBy(static source => source.Id, StringComparer.Ordinal).ToArray();
+        }
         if (candidates.Count > options.MaximumCandidates)
             throw new InvalidOperationException("stellar-exposure-candidate-budget-exceeded");
         var projector = ProjectorFactory.Create(expanded);

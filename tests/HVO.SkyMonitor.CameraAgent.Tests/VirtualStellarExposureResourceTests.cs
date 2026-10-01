@@ -60,7 +60,7 @@ public sealed class VirtualStellarExposureResourceTests
         var config = new CameraModuleConfig(new(35.347, -113.878, 1000, "America/Phoenix"),
             new("VirtualSky", JsonSerializer.SerializeToElement(options, VirtualAstrometryFixture.JsonOptions)), rig,
             CapturePipelineConfig.Empty, "virtual-stellar-exposure-resource");
-        var catalog = new MeasuredCatalog(snapshot.Catalog);
+        var catalog = new MeasuredCatalog(snapshot.Catalog, label == "after");
         var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
@@ -102,6 +102,7 @@ public sealed class VirtualStellarExposureResourceTests
                     cpuMs,
                     allocatedBytes,
                     catalog.QueryMilliseconds,
+                    queryProcessCpuMilliseconds = catalog.QueryProcessCpuMilliseconds,
                     catalog.CandidateCount,
                     catalog.QueryCount,
                     visibleObjectCount = frame.Metadata.Scene!.Objects!.Count,
@@ -168,21 +169,35 @@ public sealed class VirtualStellarExposureResourceTests
         return (values["read_bytes"], values["write_bytes"]);
     }
 
-    private sealed class MeasuredCatalog(ICelestialCatalog source) : ICelestialCatalog, ICelestialCatalogMetadataSource
+    private sealed class MeasuredCatalog(ICelestialCatalog source, bool measureProcessCpu) : ICelestialCatalog, ICelestialCatalogMetadataSource
     {
         public double QueryMilliseconds { get; private set; }
+        public double? QueryProcessCpuMilliseconds { get; private set; }
         public int CandidateCount { get; private set; }
         public int QueryCount { get; private set; }
         public CatalogMetadata Metadata => ((ICelestialCatalogMetadataSource)source).Metadata;
         public string PreprocessingVersion => ((ICelestialCatalogMetadataSource)source).PreprocessingVersion;
         public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => source.Query(query);
-        public void Reset() { QueryMilliseconds = 0; CandidateCount = 0; QueryCount = 0; }
+        public void Reset()
+        {
+            QueryMilliseconds = 0;
+            QueryProcessCpuMilliseconds = measureProcessCpu ? 0 : null;
+            CandidateCount = 0;
+            QueryCount = 0;
+        }
         public async ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(CatalogCandidateQuery query,
             CancellationToken cancellationToken = default)
         {
+            using var process = measureProcessCpu ? Process.GetCurrentProcess() : null;
+            var cpu = process?.TotalProcessorTime;
             var clock = Stopwatch.StartNew();
             var candidates = await source.QueryCandidatesAsync(query, cancellationToken).ConfigureAwait(false);
             QueryMilliseconds += clock.Elapsed.TotalMilliseconds;
+            if (process is not null && cpu is { } startedCpu)
+            {
+                process.Refresh();
+                QueryProcessCpuMilliseconds += (process.TotalProcessorTime - startedCpu).TotalMilliseconds;
+            }
             CandidateCount += candidates.Count;
             QueryCount++;
             return candidates;

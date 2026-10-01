@@ -60,11 +60,22 @@ internal sealed class VirtualSkyCloudObservationProcessingStep(
         }
 
         var duration = provenance.IntegrationEndUtc - provenance.IntegrationStartUtc;
+        var virtualExposure = context.Frame.Metadata.Scene?.VirtualExposure;
+        var expectedScenarioStart = context.Submission.Request.RequestedStartUtc;
+        if (virtualExposure is not null)
+        {
+            if (!virtualExposure.IsValid(context.Frame.Metadata.Exposure) ||
+                virtualExposure.RequestedStartUtc != context.Submission.Request.RequestedStartUtc ||
+                virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds() != context.Frame.TimestampUtc.ToUnixTimeMilliseconds() ||
+                context.Frame.Metadata.Scene?.SceneUtc != virtualExposure.CelestialMidpointUtc)
+                throw new InvalidDataException("Virtual exposure provenance conflicts with the captured frame.");
+            expectedScenarioStart = virtualExposure.ScenarioStartUtc;
+        }
         if (duration < TimeSpan.Zero ||
             provenance.IntegrationStartUtc.Offset != TimeSpan.Zero ||
             provenance.IntegrationEndUtc.Offset != TimeSpan.Zero ||
-            provenance.IntegrationStartUtc != context.Submission.Request.RequestedStartUtc ||
-            provenance.IntegrationStartUtc.ToUnixTimeMilliseconds() != context.Frame.TimestampUtc.ToUnixTimeMilliseconds() ||
+            provenance.IntegrationStartUtc != expectedScenarioStart ||
+            virtualExposure is null && provenance.IntegrationStartUtc.ToUnixTimeMilliseconds() != context.Frame.TimestampUtc.ToUnixTimeMilliseconds() ||
             duration != context.Frame.Metadata.Exposure ||
             context.Submission.Request.RequestedSetpoint is { } requestedSetpoint && duration != requestedSetpoint.Exposure)
         {

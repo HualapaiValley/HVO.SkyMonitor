@@ -365,6 +365,83 @@ Mono16 data. Annotation marks and readable scalable labels are restricted to
 properly named stars at magnitude 2.5 or brighter and named solar-system
 bodies; constellation lines can still use all resolved endpoints.
 
+### Exposure-aware stellar visibility and motion
+
+The normal VirtualSky path uses `camera-aware-stellar-exposure-v1`. A frame now
+has two explicit logical intervals: the scenario clock for clouds/transients
+and the celestial clock for star geometry. `VirtualExposureProvenance` records
+both UTC starts, ends and floor-tick midpoints, together with effective exposure
+and the ordinary/fixed-scene/fixed-sequence mapping. Annotation references use
+the celestial midpoint. Capture callbacks, raw timestamps and acquisition facts
+continue to describe the operational capture. Full scene identity binds both
+logical clocks; controlled frozen-field transient runs use a separate celestial
+noise identity so advancing a transient does not redraw quiet stellar noise.
+
+Expected source visibility is a conditional simulation prediction. For a native
+aperture with extraction weights `w`, expected source electrons are `sum(w*s)`
+and physical noise variance is `sum(w*w*(s + sky + dark + readNoiseSquared))`.
+Expected SNR is source divided by the square root of that variance. Native
+channel response, existing approximate HYG color factors, vignetting and clipped
+PSF fractions enter before admission. Digital average/sum uses the collected
+native photosites and their read noise; it is not charge-domain binning. The
+physical Poisson variance remains the prediction convention when a controlled
+fixture disables stochastic shot noise. Saturation caused by a source preserves
+that source with a diagnostic reason; a saturated background alone does not
+force every faint catalog candidate into the image.
+
+The default minimum expected SNR is 5. A conservative shot-noise upper bound,
+with a 0.5-magnitude query margin, determines the complete candidate query before
+position-specific aperture evaluation. The configured HYG fidelity ceiling is
+separate from this sensitivity ceiling; both and the limiting-depth flag are
+recorded. The legacy magnitude is treated as approximate V-like photometry,
+not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
+camera. PSF size does not change with source magnitude. Normal profiles use a
+32,768-candidate safety bound instead of silently retaining the brightest 300
+or 2,000; exhaustion explicitly refuses the exposure.
+
+`stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
+selection over the exact celestial interval, including off-frame centers whose
+PSF can overlap the aperture. `bounded-temporal-gaussian-native-v1` integrates
+noiseless Gaussian footprints, normalized before clipping, then applies one
+sensor shot/dark/read/full-well/ADC pass. Missing horizon or clipped energy is
+not renormalized. Cloud transmission follows each source at its matching
+scenario time. The configured defaults permit at most 64 temporal samples per
+source, a 0.15-native-pixel motion step, 100 million kernel-cell visits per render
+plane, 65,536 sparse aperture entries and 16,777,216 active native buffer pixels.
+An exposure that cannot satisfy a sampling or work bound fails explicitly.
+
+Without an explicit background-rate override,
+`bortle-solar-altitude-log-background-v1` retains the night rate below solar
+altitude -18 degrees, interpolates its logarithm through twilight and reaches a
+million-fold scalar daylight plateau at zero degrees. The ephemeris model is
+identified separately. This approximates solar background rather than lunar,
+weather, atmospheric-scattering or calibrated radiative-transfer behavior.
+Explicit electron-rate fixtures retain their configured rate. Display stretch
+still operates only on derivatives and does not determine source admission.
+
+The shared render result exposes bounded per-source expected signal, SNR,
+reason, saturation and swept optical footprint in native projection coordinates.
+These values are available for rendering diagnostics and scoring; they are not
+image detections and must not enter measured-source extraction or fitting.
+Capture metadata retains a versioned SHA-256 over ordered canonical prediction
+records without embedding another per-frame projected catalog. It also records
+candidate/admission/sample/actual-raster counts, buffer limits, and stage wall
+times and observed process-CPU deltas. Process CPU is attributable to these
+stages only in the declared isolated, single-capture benchmark; concurrent work
+can contribute to a process counter. Geometry and reference-scene stage counters
+include their catalog queries, whose separately measured CPU must be accounted
+for rather than added twice. Baseline uninstrumented stage CPU remains explicitly
+unavailable.
+
+The unchanged `hualapai-asi174-conformance-v1.json` retains independent astronomy
+and orientation references and historical instantaneous pixels. The separate
+`hualapai-asi174-temporal-conformance-v2.json` fixes exact exposure intervals and
+new deterministic actual-pixel hashes, centroids and statistics. Canonical Mono
+captures keep the old reference UTC as their midpoint. Physical temporal
+accuracy is checked separately against 4,096-sample numerical quadrature, with
+0.5% flux and 0.02-native-pixel centroid tolerances; a matching regression hash
+alone is not an independent physical validation.
+
 ## Optical Profiles
 
 The optical projector is created from rig configuration in

@@ -111,6 +111,14 @@ public sealed class StellarExposureGeometryTests
         var empty = await builder.BuildAsync(Request(projection), MidpointUtc, TimeSpan.Zero).ConfigureAwait(false);
         Assert.AreEqual(0, empty.CandidateCount);
         Assert.IsEmpty(empty.Sources);
+        // The full equisolid domain has an unbounded edge Jacobian, but a zero-duration
+        // exposure needs neither projection samples nor a catalog query.
+        var singularProjection = new ProjectionContext(ProjectionModel.EquisolidFisheye,
+            64, 64, 100, 100, 128, 128, ProjectionAperture.Circular, 200);
+        var singularEmpty = await builder.BuildAsync(Request(singularProjection), MidpointUtc, TimeSpan.Zero)
+            .ConfigureAwait(false);
+        Assert.AreEqual(0, singularEmpty.CandidateCount);
+        Assert.IsEmpty(singularEmpty.Sources);
         using var canceled = new CancellationTokenSource(); await canceled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await builder.BuildAsync(Request(projection),
             MidpointUtc, TimeSpan.Zero, cancellationToken: canceled.Token).ConfigureAwait(false)).ConfigureAwait(false);

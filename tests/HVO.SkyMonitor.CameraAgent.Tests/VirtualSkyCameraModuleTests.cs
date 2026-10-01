@@ -670,7 +670,7 @@ public sealed class VirtualSkyCameraModuleTests
         }
 
         Assert.AreEqual(1936 * 1216 * 3, rawBytes.Length);
-        using var manifest = LoadConformanceManifest();
+        using var manifest = LoadTemporalConformanceManifest();
         var expectedRender = manifest.RootElement.GetProperty("renders").EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == "asi174mc-rgb24-full");
         var expectedStatistics = expectedRender.GetProperty("statistics");
@@ -701,6 +701,57 @@ public sealed class VirtualSkyCameraModuleTests
     public TestContext TestContext { get; set; }
 
     [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task LongerCaptureAdmitsFainterSourcesThroughNormalCameraModel(CameraPixelFormat format)
+    {
+        var ofDate = new EquatorialPoint(AstronomyTime.LocalMeanSiderealDegrees(FixtureUtc, -113.878) / 15d, 35.347);
+        var j2000 = EquatorialPrecession.PrecessToJ2000(ofDate, FixtureUtc);
+        var catalog = new InMemoryCelestialCatalog([
+            new("bright", "Bright", j2000.RightAscensionHours, j2000.DeclinationDegrees, 1),
+            new("middle", "Middle", j2000.RightAscensionHours, j2000.DeclinationDegrees + 2, 3),
+            new("faint", "Faint", j2000.RightAscensionHours, j2000.DeclinationDegrees - 2, 6)
+        ]);
+        var options = JsonSerializer.SerializeToElement(new
+        {
+            magnitudeZeroElectronsPerSecond = 1000000,
+            maximumMagnitude = 6.5,
+            maximumResults = 16,
+            minimumStellarSignalToNoise = 5,
+            backgroundElectronsPerSecond = 0,
+            readNoiseStandardDeviation = 3,
+            asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 }
+        });
+        var config = CreateConfig(format, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", options)
+        };
+        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        async Task<CameraFrame> Capture(TimeSpan exposure)
+        {
+            var result = await module.CaptureAsync(new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(2),
+                CaptureMode.Still, new CaptureSetpoint(exposure, 1, null, null)), CancellationToken.None).ConfigureAwait(false);
+            return result.Frame!;
+        }
+        var shortFrame = await Capture(TimeSpan.FromMilliseconds(1)).ConfigureAwait(false);
+        var longFrame = await Capture(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        Assert.IsFalse(shortFrame.Metadata.Scene!.Objects!.Any(static source => source.Id == "faint"));
+        Assert.HasCount(3, longFrame.Metadata.Scene!.Objects!);
+        Assert.AreEqual("3", longFrame.Metadata.Extra!["stellarAdmittedCount"]);
+        Assert.AreEqual("False", shortFrame.Metadata.Extra!["stellarCatalogDepthLimiting"]);
+        Assert.AreEqual("True", longFrame.Metadata.Extra["stellarCatalogDepthLimiting"]);
+        Assert.AreEqual(HVO.SkyMonitor.Imaging.StellarExposureRenderPlan.PredictionIdentityVersion,
+            longFrame.Metadata.Extra["stellarPredictionIdentityVersion"]);
+        Assert.AreEqual(64, longFrame.Metadata.Extra["stellarPredictionsSha256"].Length);
+        Assert.AreNotEqual(shortFrame.Metadata.Extra["stellarPredictionsSha256"],
+            longFrame.Metadata.Extra["stellarPredictionsSha256"]);
+        Assert.AreEqual(format, longFrame.PixelFormat);
+        Assert.AreEqual(format == CameraPixelFormat.Mono16 ? "1" : "3", longFrame.Metadata.Extra["stellarRenderPlanes"]);
+    }
+
+    [TestMethod]
     public async Task CaptureAsyncWithMono16ProfileProducesDeterministicFrame()
     {
         var module = CreateModule(FixtureUtc);
@@ -726,7 +777,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.IsFalse(first.Frame.Metadata.Extra.ContainsKey("virtualCalibrationAlgorithm"));
         var checksum = Convert.ToHexString(SHA256.HashData(first.Frame.PixelData.Span));
         TestContext.WriteLine($"Reduced SHA-256: {checksum}");
-        Assert.AreEqual("5B77FD453893CC419FF5FFDA0D392329B5DD6557666B1B3D4B91AAD981FEB43F", checksum);
+        Assert.AreEqual(LoadTemporalCaptureChecksum("single-star-reduced"), checksum);
     }
 
     [TestMethod]
@@ -1145,8 +1196,13 @@ public sealed class VirtualSkyCameraModuleTests
             new CaptureRequest(laterRequestedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(fixedSceneUtc, first.Frame!.Metadata.Scene!.SceneUtc);
-        Assert.AreEqual(fixedSceneUtc, later.Frame!.Metadata.Scene!.SceneUtc);
+        var midpoint = fixedSceneUtc + TimeSpan.FromTicks(first.Frame!.Metadata.Exposure.Ticks / 2);
+        Assert.AreEqual(midpoint, first.Frame.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(midpoint, later.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(fixedSceneUtc, first.Frame.Metadata.Scene.VirtualExposure!.CelestialStartUtc);
+        Assert.AreEqual(firstRequestedUtc, first.Frame.Metadata.Scene.VirtualExposure.ScenarioStartUtc);
+        Assert.AreEqual(laterRequestedUtc, later.Frame.Metadata.Scene.VirtualExposure!.ScenarioStartUtc);
+        Assert.AreNotEqual(first.Frame.Metadata.Scene.SceneId, later.Frame.Metadata.Scene.SceneId);
         CollectionAssert.AreEqual(
             first.Frame.Metadata.Scene.Objects!.ToArray(),
             later.Frame.Metadata.Scene.Objects!.ToArray());
@@ -1186,9 +1242,12 @@ public sealed class VirtualSkyCameraModuleTests
             new CaptureRequest(FixtureUtc.AddHours(2), TimeSpan.FromSeconds(3), CaptureMode.Still),
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(sequenceStartUtc, first.Frame!.Metadata.Scene!.SceneUtc);
-        Assert.AreEqual(sequenceStartUtc.AddSeconds(7), second.Frame!.Metadata.Scene!.SceneUtc);
-        Assert.AreEqual(sequenceStartUtc.AddSeconds(18), third.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(.5), first.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(7.5), second.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(18.5), third.Frame!.Metadata.Scene!.SceneUtc);
+        Assert.AreEqual(sequenceStartUtc, first.Frame.Metadata.Scene.VirtualExposure!.ScenarioStartUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(7), second.Frame.Metadata.Scene.VirtualExposure!.ScenarioStartUtc);
+        Assert.AreEqual(sequenceStartUtc.AddSeconds(18), third.Frame.Metadata.Scene.VirtualExposure!.ScenarioStartUtc);
         Assert.AreEqual(FixtureUtc, first.Frame.TimestampUtc);
         Assert.AreEqual(FixtureUtc.AddHours(1), second.Frame.TimestampUtc);
         Assert.AreEqual(FixtureUtc.AddHours(2), third.Frame.TimestampUtc);
@@ -1212,7 +1271,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(1936 * 2, result.Frame.StrideBytes);
         var checksum = Convert.ToHexString(SHA256.HashData(result.Frame.PixelData.Span));
         TestContext.WriteLine($"Full SHA-256: {checksum}");
-        Assert.AreEqual("64BDF671DF9B16A56B32E2A7DCF73295C4D91281C4C39EC2A5888DFB53051190", checksum);
+        Assert.AreEqual(LoadTemporalCaptureChecksum("single-star-full"), checksum);
         TestContext.WriteLine($"Full render elapsed: {started.Elapsed.TotalMilliseconds:F2} ms");
         TestContext.WriteLine($"Full render allocated: {allocated} bytes");
     }
@@ -1220,6 +1279,7 @@ public sealed class VirtualSkyCameraModuleTests
     [TestMethod]
     public async Task CanonicalAsi174CaptureHasFixedGeometryCentroidAndStatistics()
     {
+        var captured = new List<(CanonicalAsi174Expectation Expected, CameraFrame Frame)>();
         foreach (var expected in CanonicalAsi174Expectations)
         {
             var module = CreateCanonicalStarModule();
@@ -1227,11 +1287,33 @@ public sealed class VirtualSkyCameraModuleTests
                 .ConfigureAwait(false);
 
             var result = await module.CaptureAsync(
-                new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new CaptureRequest(FixtureUtc.AddSeconds(-10), TimeSpan.FromSeconds(1), CaptureMode.Still,
                     new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null)),
                 CancellationToken.None).ConfigureAwait(false);
 
             var frame = result.Frame!;
+            Assert.AreEqual(FixtureUtc, frame.Metadata.Scene!.SceneUtc);
+            Assert.AreEqual(FixtureUtc.AddSeconds(-10), frame.Metadata.Scene.VirtualExposure!.CelestialStartUtc);
+            Assert.AreEqual(FixtureUtc.AddSeconds(10), frame.Metadata.Scene.VirtualExposure.CelestialEndUtc);
+            var sirius = frame.Metadata.Scene.Objects!.Single(item => item.Id == "HIP 32349");
+            var centroid = CalculateLocalCentroid(frame, sirius.PixelX, sirius.PixelY, 6);
+            var statistics = CalculateRawStatistics(frame.PixelData.Span);
+            TestContext.WriteLine("TEMPORAL_RENDER_REFERENCE:" + JsonSerializer.Serialize(new
+            {
+                Id = expected.Width == 484 ? "asi174mm-reduced" : "asi174mm-full",
+                frame.Width,
+                frame.Height,
+                VirtualExposure = frame.Metadata.Scene.VirtualExposure,
+                Objects = frame.Metadata.Scene.Objects,
+                Centroid = centroid,
+                Statistics = new { statistics.Minimum, statistics.Maximum, statistics.Mean },
+                Sha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)),
+                Algorithms = frame.Metadata.Extra
+            }));
+            captured.Add((expected, frame));
+        }
+        foreach (var (expected, frame) in captured)
+        {
             var objects = frame.Metadata.Scene!.Objects!;
             var sirius = objects.Single(item => item.Id == "HIP 32349");
             var centroid = CalculateLocalCentroid(frame, sirius.PixelX, sirius.PixelY, 6);
@@ -1274,7 +1356,8 @@ public sealed class VirtualSkyCameraModuleTests
             };
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
             var result = await module.CaptureAsync(
-                new CaptureRequest(utc, TimeSpan.FromSeconds(1), CaptureMode.Still),
+                // Manifest orientation coordinates describe this midpoint, not shutter start.
+                new CaptureRequest(utc.AddSeconds(-.5), TimeSpan.FromSeconds(1), CaptureMode.Still),
                 CancellationToken.None).ConfigureAwait(false);
             return result.Frame!.Metadata.Scene!.Objects!.Single(item => item.Id == "HIP 32349");
         }
@@ -1299,7 +1382,7 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    public async Task CaptureAsyncWithRequestedSetpointChangesStatisticsNotObjectSelection()
+    public async Task CaptureAsyncWithRequestedSetpointChangesStatisticsAndUsesItsOwnMidpoint()
     {
         var module = CreateModule(FixtureUtc);
         await module.InitializeAsync(CreateConfig(), CancellationToken.None).ConfigureAwait(false);
@@ -1317,8 +1400,13 @@ public sealed class VirtualSkyCameraModuleTests
             double.Parse(lowResult.Frame.Metadata.Extra["renderMean"], System.Globalization.CultureInfo.InvariantCulture),
             double.Parse(highResult.Frame.Metadata.Extra["renderMean"], System.Globalization.CultureInfo.InvariantCulture));
         CollectionAssert.AreEqual(
-            lowResult.Frame.Metadata.Scene!.Objects!.Select(item => (item.Id, item.PixelX, item.PixelY)).ToArray(),
-            highResult.Frame.Metadata.Scene!.Objects!.Select(item => (item.Id, item.PixelX, item.PixelY)).ToArray());
+            lowResult.Frame.Metadata.Scene!.Objects!.Select(item => item.Id).ToArray(),
+            highResult.Frame.Metadata.Scene!.Objects!.Select(item => item.Id).ToArray());
+        Assert.AreEqual(FixtureUtc.AddSeconds(.5), lowResult.Frame.Metadata.Scene.SceneUtc);
+        Assert.AreEqual(FixtureUtc.AddSeconds(1), highResult.Frame.Metadata.Scene.SceneUtc);
+        Assert.AreEqual(FixtureUtc.AddSeconds(1), lowResult.Frame.Metadata.Scene.VirtualExposure!.CelestialEndUtc);
+        Assert.AreEqual(FixtureUtc.AddSeconds(2), highResult.Frame.Metadata.Scene.VirtualExposure!.CelestialEndUtc);
+        Assert.AreNotEqual(lowResult.Frame.Metadata.Scene.Objects![0].PixelX, highResult.Frame.Metadata.Scene.Objects![0].PixelX);
     }
 
     [TestMethod]
@@ -1387,7 +1475,7 @@ public sealed class VirtualSkyCameraModuleTests
     [TestMethod]
     public async Task InitializeAsyncWithInvalidMaximumResultsRejectsConfiguration()
     {
-        using var document = System.Text.Json.JsonDocument.Parse("{\"maximumResults\":2001}");
+        using var document = System.Text.Json.JsonDocument.Parse("{\"maximumResults\":100001}");
         var config = CreateConfig() with { Module = new CameraModuleDescriptor("VirtualSky", document.RootElement.Clone()) };
         var module = CreateModule(FixtureUtc);
 
@@ -1815,9 +1903,10 @@ public sealed class VirtualSkyCameraModuleTests
 
     private static CanonicalAsi174Expectation[] LoadCanonicalAsi174Expectations()
     {
-        using var manifest = LoadConformanceManifest();
+        using var manifest = LoadTemporalConformanceManifest();
+        using var geometryManifest = LoadConformanceManifest();
         var root = manifest.RootElement;
-        var profiles = root.GetProperty("projectionProfiles");
+        var profiles = geometryManifest.RootElement.GetProperty("projectionProfiles");
         return root.GetProperty("renders").EnumerateArray()
             .Where(item => item.GetProperty("pixelFormat").GetString() == "Mono16")
             .Select(item =>
@@ -1862,6 +1951,16 @@ public sealed class VirtualSkyCameraModuleTests
     private static System.Text.Json.JsonDocument LoadConformanceManifest()
         => System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hualapai-asi174-conformance-v1.json")));
+
+    private static JsonDocument LoadTemporalConformanceManifest()
+        => JsonDocument.Parse(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", "hualapai-asi174-temporal-conformance-v2.json")));
+
+    private static string LoadTemporalCaptureChecksum(string id)
+    {
+        using var manifest = LoadTemporalConformanceManifest();
+        return manifest.RootElement.GetProperty("singleStarCaptures").GetProperty(id).GetProperty("sha256").GetString()!;
+    }
 
     private static PixelPoint ReadPixel(System.Text.Json.JsonElement value)
         => new(value.GetProperty("x").GetDouble(), value.GetProperty("y").GetDouble());
