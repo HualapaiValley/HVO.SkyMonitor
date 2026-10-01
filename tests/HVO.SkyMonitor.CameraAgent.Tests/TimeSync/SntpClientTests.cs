@@ -91,12 +91,13 @@ public sealed class SntpClientTests
     [TestMethod]
     public async Task QueryAsync_AServerClaimingAHoldLongerThanTheExchange_IsAnInvalidReplyAsync()
     {
-        // A one-second hold on a loopback exchange would compute a round trip near -1 s; clamped to zero, it would
-        // outrank every honest server.
+        // The claimed hold is twice the query timeout, so any exchange that completes at all computes a round trip
+        // at least 5 s below zero, however slowly the host schedules it. Clamped to zero, it would outrank every
+        // honest server.
         using var server = new FakeTimeServer(nonce => SntpPacketTests.Reply(
             originate: nonce,
             received: SntpPacket.ToTimestamp(Now.AddSeconds(5)),
-            transmitted: SntpPacket.ToTimestamp(Now.AddSeconds(6))));
+            transmitted: SntpPacket.ToTimestamp(Now.AddSeconds(5) + (2 * Timeout))));
         var client = new SntpClient(new FixedTimeProvider(Now));
 
         var result = await client.QueryAsync(server.Address, Timeout, CancellationToken.None).ConfigureAwait(false);

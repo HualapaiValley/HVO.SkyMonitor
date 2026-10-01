@@ -204,6 +204,31 @@ public sealed class HealthPageTests
         });
     }
 
+    [TestMethod]
+    [DataRow(ClockSyncStatus.HostSynchronized, "Host synced",
+        "No time server answered; the host's time service reports the clock synchronized")]
+    [DataRow(ClockSyncStatus.Unverified, "Unverified",
+        "No time server answered, and the host's time service does not report the clock synchronized")]
+    public void ClockDrift_WhenNoServerAnswered_SaysSoRatherThanNamingNetworkTime(
+        ClockSyncStatus status, string text, string title)
+    {
+        using var context = new BunitContext();
+        Configure(context, out var system, out _);
+        system.HealthHandler = _ => ValueTask.FromResult(OperatorUiResult<SystemHealthView>.Success(
+            TestSystemUiService.Health() with
+            {
+                Clock = new SystemClockFact(status, null, OperatorUiTestData.Now.AddMinutes(-4))
+            }));
+
+        var cut = context.Render<HealthPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(text, cut.Find("#health-clock-drift").TextContent);
+            Assert.AreEqual(title, cut.Find("#health-clock-drift").GetAttribute("title"));
+        });
+    }
+
     internal static void Configure(BunitContext context, out TestSystemUiService system, out TestOperatorUiService operations)
     {
         system = new TestSystemUiService();

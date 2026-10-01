@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -182,9 +183,17 @@ public sealed partial class HealthPage : ComponentBase, IDisposable
             : new Chip(StateText(states.Max()), StateChip(states.Max()));
     }
 
-    private string ClockDriftTitle(SystemClockFact? clock) => clock?.MeasuredUtc is { } measured
-        ? $"This agent's clock minus network time, measured {FormatAge(measured)} ago"
-        : "This agent's clock minus network time";
+    // With no drift to show, the title says why, so "Host synced" is never read as a network measurement.
+    private string ClockDriftTitle(SystemClockFact? clock) => clock switch
+    {
+        { Drift: not null, MeasuredUtc: { } measured } =>
+            $"This agent's clock minus network time, measured {FormatAge(measured)} ago",
+        { Status: ClockSyncStatus.HostSynchronized } =>
+            "No time server answered; the host's time service reports the clock synchronized",
+        { Status: ClockSyncStatus.Unverified } =>
+            "No time server answered, and the host's time service does not report the clock synchronized",
+        _ => "This agent's clock minus network time",
+    };
 
     internal static string StateText(SystemCheckState state) => state switch
     {
