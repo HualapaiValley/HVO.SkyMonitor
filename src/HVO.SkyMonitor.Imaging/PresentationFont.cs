@@ -100,6 +100,21 @@ public static class PresentationFont
             bounds = index == 0 ? line : SKRect.Union(bounds, line);
         }
         bounds.Inflate(block.Backplate?.Padding ?? 0, block.Backplate?.Padding ?? 0);
+        if (block.Backplate?.Style is { } plate)
+        {
+            var minimumWidth = (plate.MinimumWidthMilliPixels ?? 0) / 1000f;
+            var minimumHeight = (plate.MinimumHeightMilliPixels ?? 0) / 1000f;
+            if (minimumWidth > bounds.Width)
+            {
+                var left = MathF.Floor(bounds.MidX - minimumWidth / 2);
+                bounds = new(left, bounds.Top, left + minimumWidth, bounds.Bottom);
+            }
+            if (minimumHeight > bounds.Height)
+            {
+                var top = MathF.Floor(bounds.MidY - minimumHeight / 2);
+                bounds = new(bounds.Left, top, bounds.Right, top + minimumHeight);
+            }
+        }
         return new(MathF.Floor(bounds.Left), MathF.Floor(bounds.Top), MathF.Ceiling(bounds.Right), MathF.Ceiling(bounds.Bottom));
     }
 

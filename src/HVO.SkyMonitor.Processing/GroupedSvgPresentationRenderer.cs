@@ -213,6 +213,8 @@ public static class GroupedSvgPresentationRenderer
                 writer.WriteAttributeString("stroke", Color(plate.Border));
                 if (plate.Style is { } plateStyle)
                 {
+                    if (plateStyle.CornerRadiusMilliPixels is { } radius)
+                        Coordinate(writer, "rx", radius / 1000d);
                     Coordinate(writer, "stroke-width", plateStyle.BorderWidthMilliPixels / 1000d);
                     Coordinate(writer, "stroke-opacity", plateStyle.BorderOpacityMillionths / 1_000_000d);
                 }

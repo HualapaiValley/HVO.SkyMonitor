@@ -48,7 +48,10 @@ public sealed record PresentationTextAppearanceV3(PresentationTextStyleV3 Body,
 
 /// <summary>Border coverage and an optional heading separator independent of the left accent.</summary>
 public sealed record PresentationPlateStyleV3(int BorderWidthMilliPixels, int BorderOpacityMillionths,
-    bool HeadingRule = false, int RuleOpacityMillionths = 250_000);
+    bool HeadingRule = false, int RuleOpacityMillionths = 250_000,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MinimumWidthMilliPixels = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MinimumHeightMilliPixels = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? CornerRadiusMilliPixels = null);
 /// <summary>A bounded text block using the embedded font at 7 * scale pixels, with pixel inset/spacing.</summary>
 public sealed record PresentationTextBlockV1(
     PresentationTextAnchor Anchor,
@@ -126,7 +129,9 @@ public sealed record PresentationLayerPayloadV1(
             TextBlocks.Any(value => value.Appearance is { } appearance &&
                 (!ValidTextStyle(appearance.Body) || appearance.Heading is { } heading && !ValidTextStyle(heading)) ||
                 value.Backplate?.Style is { } plate && (plate.BorderWidthMilliPixels is < 0 or > 8_000 ||
-                    plate.BorderOpacityMillionths is < 0 or > 1_000_000 || plate.RuleOpacityMillionths is < 0 or > 1_000_000)) ||
+                    plate.BorderOpacityMillionths is < 0 or > 1_000_000 || plate.RuleOpacityMillionths is < 0 or > 1_000_000 ||
+                    plate.MinimumWidthMilliPixels is < 0 or > 256_000 || plate.MinimumHeightMilliPixels is < 0 or > 256_000 ||
+                    plate.CornerRadiusMilliPixels is < 0 or > 32_000)) ||
             SchemaVersion != CurrentSchemaVersion && (Ellipses.Any(value => value.ThicknessMilliPixels is not null) ||
                 TextBlocks.Any(value => value.Appearance is not null || value.Backplate?.Style is not null)))
             throw new ArgumentException("Presentation appearance is invalid for its schema.", nameof(PresentationLayerPayloadV1));
@@ -470,11 +475,17 @@ public static class PresentationLayerCompositor
             var bounds = PresentationFont.BackplateBounds(block, layout.Width, layout.Height, font);
             paint.Color = new(plate.Fill.Red, plate.Fill.Green, plate.Fill.Blue,
                 (byte)(((long)plate.OpacityMillionths * 255 + 500_000) / 1_000_000));
-            canvas.DrawRect(bounds, paint);
+            var radius = (plate.Style?.CornerRadiusMilliPixels ?? 0) / 1000f;
+            if (radius > 0) canvas.DrawRoundRect(bounds, radius, radius, paint);
+            else canvas.DrawRect(bounds, paint);
             paint.Style = SKPaintStyle.Stroke;
             paint.StrokeWidth = (plate.Style?.BorderWidthMilliPixels ?? 1000) / 1000f;
             paint.Color = Color(plate.Border, plate.Style?.BorderOpacityMillionths ?? 1_000_000);
-            if (paint.StrokeWidth > 0) canvas.DrawRect(bounds, paint);
+            if (paint.StrokeWidth > 0)
+            {
+                if (radius > 0) canvas.DrawRoundRect(bounds, radius, radius, paint);
+                else canvas.DrawRect(bounds, paint);
+            }
             if (plate.AccentPixels > 0)
             {
                 paint.Style = SKPaintStyle.Fill;

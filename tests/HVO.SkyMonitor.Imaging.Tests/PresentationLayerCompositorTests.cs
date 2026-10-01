@@ -43,6 +43,17 @@ public sealed class PresentationLayerCompositorTests
             pixels[index * 3] == 255 && pixels[index * 3 + 1] == 255 && pixels[index * 3 + 2] == 255));
         var outside = ((int)bounds.Top * 640 + (int)bounds.Right + 1) * 3;
         Assert.AreEqual((byte)0, pixels[outside]);
+        var cardinal = new PresentationTextBlockV1(PresentationTextAnchor.Point, new(100, 50), ["N"], 2, 0, 0, body.Color,
+            new(new(20, 30, 40), 1_000_000, new(116, 209, 255), 5, 0,
+                new(0, 0, MinimumWidthMilliPixels: 38_000, MinimumHeightMilliPixels: 25_000, CornerRadiusMilliPixels: 5_000)),
+            new(body with { Face = PresentationFontFaceV3.MonoBold, SizeMilliPixels = 18_000 }));
+        var plate = PresentationFont.BackplateBounds(cardinal, 640, 480, regular);
+        Assert.AreEqual(38f, plate.Width);
+        Assert.AreEqual(25f, plate.Height);
+        var rounded = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(Payload(640, 480, text: [cardinal]), true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.AreEqual((byte)0, rounded[((int)plate.Top * 640 + (int)plate.Left) * 3]);
+        Assert.AreEqual((byte)20, rounded[(((int)plate.Top + 1) * 640 + (int)plate.Left + 10) * 3]);
     }
 
     [TestMethod]

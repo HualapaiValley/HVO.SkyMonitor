@@ -45,6 +45,11 @@ public sealed class PresentationLayerPayloadTests
             TextBlocks = [current.TextBlocks[0] with
             { Backplate = new(default, 1, default, 2, 0, new(-1, 1)) }]
         }).ValidateStructure());
+        Assert.ThrowsExactly<ArgumentException>(() => (current with
+        {
+            TextBlocks = [current.TextBlocks[0] with
+            { Backplate = new(default, 1, default, 2, 0, new(1, 1, CornerRadiusMilliPixels: 32_001)) }]
+        }).ValidateStructure());
     }
 
     [TestMethod]
@@ -58,7 +63,8 @@ public sealed class PresentationLayerPayloadTests
         var style = new PresentationTextStyleV3(PresentationFontFaceV3.MonoBold, 18_000, 720,
             new(195, 236, 255), new(3, 8, 14), 950_000, 4_000);
         var block = new PresentationTextBlockV1(PresentationTextAnchor.Point, new(20, 20), ["NORTH", "EXPECTED"],
-            2, 0, 4, style.Color, new(new(2, 8, 14), 840_000, new(116, 209, 255), 6, 0, new(1_700, 380_000, true)), new(style));
+            2, 0, 4, style.Color, new(new(2, 8, 14), 840_000, new(116, 209, 255), 6, 0,
+                new(1_700, 380_000, true, CornerRadiusMilliPixels: 5_000)), new(style));
         var payload = PresentationLayerPayloadJson.Create(new string('A', 64), 640, 480, textBlocks: [block],
             ellipses: [new(new(320, 240), 100, 100, new(116, 209, 255), new(0, 0, 450_000), 2_000)]);
         var svg = Encoding.UTF8.GetString(GroupedSvgPresentationRenderer.Render(
@@ -70,6 +76,7 @@ public sealed class PresentationLayerPayloadTests
         StringAssert.Contains(svg, "stroke-width=\"1.7\" stroke-opacity=\"0.38\"", StringComparison.Ordinal);
         StringAssert.Contains(svg, "stroke-opacity=\"0.25\"", StringComparison.Ordinal);
         StringAssert.Contains(svg, "stroke-width=\"2\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "rx=\"5\"", StringComparison.Ordinal);
     }
 
     [TestMethod]

@@ -96,7 +96,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v7-pinned-appearance";
+    public const string SceneProducerVersion = "projected-scene-presentation-v8-cardinal-plates";
     public const string MetadataProducerVersion = "metadata-corner-presentation-v5-heading-rules";
     public const string CloudProducerVersion = "cloud-presentation-v4-payload-v3";
 
@@ -255,7 +255,9 @@ public static class PresentationLayerProducers
                 reserved.Add(bounds);
                 cardinalTexts.Add(new(PresentationTextAnchor.Point, point, new ReadOnlyCollection<string>([label]),
                     cardinalScale, 0, 0, cardinalColor,
-                    new(new(2, 8, 14), 840_000, new(116, 209, 255), cardinalScale, 0, new(1_700, 380_000)), cardinalAppearance));
+                    new(new(2, 8, 14), 840_000, new(116, 209, 255), 5, 0,
+                        new(1_700, 380_000, MinimumWidthMilliPixels: 38_000, MinimumHeightMilliPixels: 25_000,
+                            CornerRadiusMilliPixels: 5_000)), cardinalAppearance));
             }
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
@@ -299,20 +301,23 @@ public static class PresentationLayerProducers
         {
             if (!TryApply(cardinalCenter!.Value, out var outputCenter) || !TryApply(point, out var target))
                 return;
-            var scale = cardinalScale;
+            using var font = PresentationFont.Create(cardinalAppearance.Body);
+            var glyph = PresentationFont.LineBounds(font, label, 0, 0);
+            var horizontalInset = Math.Max(20, (glyph.Width + 10) / 2 + 1);
+            var verticalInset = Math.Max(14, (glyph.Height + 10) / 2 + 1);
             var deltaX = target.X - outputCenter.X;
             var deltaY = target.Y - outputCenter.Y;
             var factor = 1d;
-            if (deltaX < 0) factor = Math.Min(factor, (3 * scale - outputCenter.X) / deltaX);
+            if (deltaX < 0) factor = Math.Min(factor, (horizontalInset - outputCenter.X) / deltaX);
             else if (deltaX > 0) factor = Math.Min(factor,
-                (scene.ImageTransform.OutputWidthPixels - 3 * scale - 1 - outputCenter.X) / deltaX);
-            if (deltaY < 0) factor = Math.Min(factor, (4 * scale - outputCenter.Y) / deltaY);
+                (scene.ImageTransform.OutputWidthPixels - horizontalInset - 1 - outputCenter.X) / deltaX);
+            if (deltaY < 0) factor = Math.Min(factor, (verticalInset - outputCenter.Y) / deltaY);
             else if (deltaY > 0) factor = Math.Min(factor,
-                (scene.ImageTransform.OutputHeightPixels - 4 * scale - 1 - outputCenter.Y) / deltaY);
+                (scene.ImageTransform.OutputHeightPixels - verticalInset - 1 - outputCenter.Y) / deltaY);
             factor = Math.Clamp(factor, 0, 1);
             cardinalPoints.Add((label, new PixelPoint(
-                Math.Round(outputCenter.X + deltaX * factor, MidpointRounding.AwayFromZero) - 2 * scale,
-                Math.Round(outputCenter.Y + deltaY * factor, MidpointRounding.AwayFromZero) - 3 * scale)));
+                Math.Round(outputCenter.X + deltaX * factor - glyph.Width / 2, MidpointRounding.AwayFromZero),
+                Math.Round(outputCenter.Y + deltaY * factor - glyph.Height / 2, MidpointRounding.AwayFromZero))));
         }
 
         bool TryApply(PixelPoint point, out PixelPoint output)

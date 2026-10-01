@@ -287,3 +287,17 @@ checks pass 82 cases on the final default-color correction with warnings as erro
 the solution inventory to 5,011; the other inventories are unchanged. This is
 focused evidence, not a complete solution gate or pixel/resource qualification.
 Native production and reference comparison of the new styles are still required.
+
+The cardinal plate contract also records a 38×25 px minimum and 5 px corner
+radius matching the reference. Cardinal glyphs are centered on their actual rig
+landmarks with edge clipping based on the glyph/plate extents. Tests cover exact
+plate size, transparent rounded corners, invalid radii and shared SVG radius;
+the final affected focused runs pass 23 Imaging, 23 Processing and 82 CameraAgent
+cases with warnings as errors. No further test cases were added in this refinement.
+
+The committed `b84f14fb` native host built Release with zero warnings/errors and
+restarted on LAN 5132. Fresh authenticated checks at 1440/390/320 still show
+capture #32's original historical site, five layer identities, base checksum and
+image/SVG bounds. The report `pinned-style-legacy32.json` is compared directly with
+the prior `location-native.json`; no acquisition occurred during that check.
+This is preservation evidence, not qualification of newly produced v3 output.
