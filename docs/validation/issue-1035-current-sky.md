@@ -333,3 +333,38 @@ policy while choosing 18 px and 0.72 px tracking for this host default, with a
 all 23 affected Processing cases pass. Capture #37's explicit stored 28 px style
 is preserved. Newly produced output after this final size correction and matched
 SVG/raster/reference/resource qualification remain pending.
+
+## Final label-size native and exact-base raster comparison
+
+Source `fcb2e2ac` built Release with zero warnings/errors. A fresh graph revision
+was created/validated/activated through the authenticated API, five more genuine
+captures were acquired, and the normal operator control paused acquisition at
+#42. The final label-size default is now produced, rather than only unit-tested.
+`prototype-label-native.json` records all five retained groups, exact cardinal
+plate/halo and constellation/boundary attributes, matching image/SVG bounds,
+and no overflow/browser errors at 1440/390/320.
+
+The selected full-resolution saved stack is packed RGB24, 7,062,528 bytes, SHA-256
+`71FDD55639359FDF663CF8C70B99DBA9E4C76C780DB6E8791590178E809CFFF6`. The exact
+retained Mono8 base is 2,354,176 bytes, SHA-256
+`469E75B34F706018B96AA9B3D4F6EF51D073BF3123D39DC08F5D105DED6F3478`.
+The first comparison used the browser's JPEG preview and is retained only as a
+rejected comparison input; it cannot qualify original-pixel parity.
+
+Using those exact retained base bytes, Chromium draws the selected SVG at native
+1936×1216 coordinates and compares it with the saved original packed RGB artifact.
+Of 2,354,176 pixels, 2,300,502 match exactly; 2,345,648 differ by at most one channel
+level, and 2,353,365 by at most four. There are 355 pixels above eight levels and
+99 above sixteen; the maximum is 34 and mean absolute channel error is 0.019656.
+All differences above eight occur in non-flat 3×3 neighborhoods. This does not
+prove every difference is acceptable antialiasing: explicit edge analysis and
+qualification remain open. The probe's `baseDifferences` counter is not independent
+evidence because its overlay definition includes either output's departure from
+the base; do not use that counter to assert background equality.
+
+Evidence is retained in `prototype-label-exact-base-pixels.json`, native PNG
+comparison exports, packed base and saved RGB bytes in the private cache. The
+shared-path/geometry tests support common layout, while these browser measurements
+show the actual remaining rasterizer differences. Full visual/resource qualification,
+complete selected candidate gates, independent review and operator acceptance
+remain required before release.
