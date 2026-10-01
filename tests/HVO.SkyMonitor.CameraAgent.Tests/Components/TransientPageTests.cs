@@ -187,13 +187,146 @@ public sealed class TransientPageTests
         });
     }
 
+    [TestMethod]
+    [DataRow("Absent")]
+    [DataRow("Pending")]
+    [DataRow("Unavailable")]
+    public void MissingAssessmentIsNotARetainedUnknownClassification(string state)
+    {
+        var detail = Detail() with { AssessmentEvidence = new(state) };
+        using var listContext = new BunitContext();
+        Configure(listContext, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([Candidate()], null)),
+            Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail)
+        });
+        listContext.Services.GetRequiredService<NavigationManager>().NavigateTo("/transients?classification=unresolved");
+        var list = listContext.Render<TransientPage>();
+        list.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(list.FindAll(".event-card"));
+            StringAssert.Contains(list.Markup, "0 matching local candidates", StringComparison.Ordinal);
+        });
+        using var detailContext = new BunitContext();
+        Configure(detailContext, new TestTransientUiService { Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail) });
+        var page = detailContext.Render<TransientDetail>(parameters => parameters.Add(component => component.CandidateId, detail.Candidate.CandidateId));
+        page.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(page.Find("h1").TextContent, "not assessed", StringComparison.OrdinalIgnoreCase);
+            var panel = page.Find(".science-grid > .science-panel:nth-child(2)");
+            Assert.IsFalse(panel.TextContent.Contains("Retained assessment", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(panel.TextContent.Contains("Inferred", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void RetainedUnknownClassificationPreservesItsLocalAuthorityScope()
+    {
+        using var context = new BunitContext();
+        var detail = Detail() with { AssessmentEvidence = Detail().AssessmentEvidence with { Classification = "Unknown" } };
+        Configure(context, new TestTransientUiService { Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail) });
+        var page = context.Render<TransientDetail>(parameters => parameters.Add(component => component.CandidateId, detail.Candidate.CandidateId));
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Unresolved candidate", page.Find("h1").TextContent);
+            StringAssert.Contains(page.Find(".science-grid > .science-panel:nth-child(2)").TextContent,
+                "Local detector authority: Authoritative", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    [DataRow("all")]
+    [DataRow("unresolved")]
+    public void FailedCandidateEvidenceReadsAreDisclosedWithoutInventingClassification(string classification)
+    {
+        using var context = new BunitContext();
+        Configure(context, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([Candidate()], null)),
+            Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Failure(OperatorUiResultKind.Unavailable, "Unavailable")
+        });
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/transients?classification=" + classification);
+        var page = context.Render<TransientPage>();
+        page.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(page.Find(".event-evidence-unavailable").TextContent,
+                "Details unavailable for 1 local candidate", StringComparison.Ordinal);
+            Assert.AreEqual(classification == "all" ? 1 : 0, page.FindAll(".event-card").Count);
+        });
+    }
+
+    [TestMethod]
+    public void CalendarDefaultsToTheFilteredCandidatesObservingMonth()
+    {
+        using var context = new BunitContext();
+        var older = Candidate();
+        var newer = older with { CandidateId = Guid.NewGuid(), CreatedUtc = older.CreatedUtc.AddMonths(1) };
+        Configure(context, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([newer, older], null)),
+            DetailHandler = id => OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(Detail() with
+            {
+                Candidate = id == newer.CandidateId ? newer : older,
+                AssessmentEvidence = Detail().AssessmentEvidence with { Classification = id == newer.CandidateId ? "Satellite" : "Meteor" }
+            })
+        });
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/transients?view=calendar&classification=fireball");
+        var page = context.Render<TransientPage>();
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("July 2026", page.Find(".event-month-heading h2").TextContent);
+            Assert.HasCount(1, page.FindAll(".event-month-day.has-event a"));
+        });
+    }
+
+    [TestMethod]
+    public void CalendarDisclosesMatchingCandidatesInOtherMonths()
+    {
+        using var context = new BunitContext();
+        var older = Candidate() with { CreatedUtc = new DateTimeOffset(2026, 7, 31, 20, 0, 0, TimeSpan.Zero) };
+        var newer = older with { CandidateId = Guid.NewGuid(), CreatedUtc = older.CreatedUtc.AddDays(1) };
+        Configure(context, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([newer, older], null)),
+            DetailHandler = id => OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(Detail() with
+            {
+                Candidate = id == newer.CandidateId ? newer : older
+            })
+        });
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/transients?view=calendar");
+        var page = context.Render<TransientPage>();
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("August 2026", page.Find(".event-month-heading h2").TextContent);
+            StringAssert.Contains(page.Find(".event-other-months").TextContent,
+                "1 matching local candidate in other months", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void LatestSummaryDoesNotAssertEmptyDuringLoadingOrFailure()
+    {
+        using var context = new BunitContext();
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentTransientOperatorPage>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Configure(context, new TestTransientUiService { PageHandler = (_, _) => new(pending.Task) });
+        var page = context.Render<TransientPage>();
+        Assert.AreEqual("Loading", page.Find(".event-summary article:last-child strong").TextContent);
+        pending.SetResult(OperatorUiResult<CameraAgentTransientOperatorPage>.Failure(OperatorUiResultKind.Unavailable, "Unavailable"));
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Unavailable", page.Find(".event-summary article:last-child strong").TextContent);
+            StringAssert.Contains(page.Find(".event-summary article:last-child small").TextContent, "could not be read", StringComparison.Ordinal);
+        });
+    }
+
     private static void Configure(BunitContext context, TestTransientUiService service)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         context.Services.AddSingleton<ICameraAgentTransientUiService>(service);
         context.Services.AddSingleton<IObservingDayCalendarProvider>(
             new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
         context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(
-            service, new TestOperatorUiService(), Mock.Of<ICameraAgentProcessingGraphUiService>()));
+            service, new TestOperatorUiService(), Mock.Of<ICameraAgentProcessingGraphUiService>(), new TestOperatorUiService()));
     }
 
     private static CameraAgentTransientOperatorCandidate Candidate() => new(
@@ -256,9 +389,11 @@ public sealed class TransientPageTests
             OperatorUiResult<CameraAgentTransientOperatorDetail>.Failure(
                 OperatorUiResultKind.NotFound, "The transient candidate was not found.");
 
+        internal Func<CameraAgentTransientOperatorQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentTransientOperatorPage>>>? PageHandler { get; init; }
+
         public ValueTask<OperatorUiResult<CameraAgentTransientOperatorPage>> GetPageAsync(
             CameraAgentTransientOperatorQuery query,
-            CancellationToken cancellationToken) => ValueTask.FromResult(Page);
+            CancellationToken cancellationToken) => PageHandler?.Invoke(query, cancellationToken) ?? ValueTask.FromResult(Page);
 
         internal Func<Guid, OperatorUiResult<CameraAgentTransientOperatorDetail>>? DetailHandler { get; init; }
 

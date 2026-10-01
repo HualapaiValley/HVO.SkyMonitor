@@ -36,7 +36,7 @@
                     @foreach (var frame in _evidence.Frames)
                     {
                         <div class="context-frame @(frame.Position == 0 ? "reference" : null) @(frame.Source is null ? "unavailable" : null)">
-                            @if (frame.Image is { } image) { <img src="@image.PreviewUrl" alt="Exact source at @frame.PositionLabel" loading="lazy" /> }
+                            @if (frame.Image is { } image && !_failedPreviews.Contains(frame.Source!.ArtifactId)) { <RetainedPreviewImage Source="@image.PreviewUrl!.OriginalString" Alt="@($"Exact source at {frame.PositionLabel}")" OnFailure="() => _failedPreviews.Add(frame.Source!.ArtifactId)" /> }
                             else { <span class="context-frame-placeholder">Unavailable</span> }
                             <div><strong>@frame.PositionLabel</strong>
                                 @if (frame.Source is { } source)
@@ -60,10 +60,16 @@
                 <div><dt>Pixel path length <i class="science-value-kind">Measured</i></dt><dd>@Number(_detail.CandidateEvidence.Features?.LengthPixels, "px")</dd></div><div><dt>Peak signal <i class="science-value-kind">Measured</i></dt><dd>@(_detail.CandidateEvidence.Features is { } signal ? $"{signal.PeakSignalAdu} ADU" : "Not recorded")</dd></div>
                 <div class="full"><dt>Measurement limits</dt><dd>Exposure and context spans are not event duration. Pixel length does not establish angular motion. @(_detail.CandidateEvidence.Features is { } features ? $"{features.SaturatedSampleCount} saturated detector samples recorded." : "Saturation evidence not recorded.")</dd></div>
             </dl></article>
-            <article class="science-panel"><header><h2>Derived estimates</h2><span>Retained local assessment</span></header><dl class="science-facts">
-                <div><dt>Classification <i class="science-value-kind derived">Inferred</i></dt><dd>@CameraAgentEventFacts.Classification(_detail.AssessmentEvidence)</dd></div><div><dt>Confidence <i class="science-value-kind derived">Score</i></dt><dd>@CameraAgentEventFacts.Confidence(_detail.AssessmentEvidence)</dd></div>
+            <article class="science-panel"><header><h2>Derived estimates</h2><span>@(CameraAgentEventFacts.HasRetainedAssessment(_detail.AssessmentEvidence) ? "Retained local assessment" : "Local assessment unavailable")</span></header><dl class="science-facts">
+                <div><dt>Classification <i class="science-value-kind derived">@(CameraAgentEventFacts.HasRetainedAssessment(_detail.AssessmentEvidence) ? "Inferred" : "Unavailable")</i></dt><dd>@CameraAgentEventFacts.Classification(_detail.AssessmentEvidence)</dd></div><div><dt>Confidence <i class="science-value-kind derived">@(CameraAgentEventFacts.HasRetainedAssessment(_detail.AssessmentEvidence) ? "Score" : "Unavailable")</i></dt><dd>@CameraAgentEventFacts.Confidence(_detail.AssessmentEvidence)</dd></div>
                 <div><dt>Apparent magnitude <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Not calibrated</dd></div><div><dt>Photometric method <i class="science-value-kind unresolved">Unresolved</i></dt><dd>No retained photometric estimate</dd></div>
-                <div class="full"><dt>Method and authority</dt><dd>Retained assessment · @(_detail.AssessmentEvidence.Authority ?? "authority not recorded"). Method: @FormatList(_detail.AssessmentEvidence.Methods). The score is not a calibrated probability or owner review. Uncertainty is not recorded.</dd></div>
+                <div class="full"><dt>Method and authority</dt><dd>
+                    @if (CameraAgentEventFacts.HasRetainedAssessment(_detail.AssessmentEvidence))
+                    {
+                        <span>Retained assessment. Local detector authority: @(_detail.AssessmentEvidence.Authority ?? "not recorded"). Method: @FormatList(_detail.AssessmentEvidence.Methods). The score is not a calibrated probability or owner review. Uncertainty is not recorded.</span>
+                    }
+                    else { <span>Local assessment: @_detail.AssessmentEvidence.State. Classification, method and detector authority are unavailable. Owner review is unavailable.</span> }
+                </dd></div>
             </dl></article>
             <article class="science-panel"><header><h2>Physical trajectory</h2><span>Single-camera limitation</span></header><div class="trajectory-unresolved">No correlated physical trajectory</div><dl class="science-facts">
                 @foreach (var quantity in new[] { "Physical speed", "Event altitude", "Ground track", "Impact location" }) { <div><dt>@quantity <i class="science-value-kind unresolved">Unresolved</i></dt><dd>Requires genuine correlation</dd></div> }

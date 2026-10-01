@@ -16,6 +16,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     private bool _isLoading;
     private long _generation;
     private Dictionary<Guid, CameraAgentEventEvidenceView> _evidence = [];
+    private HashSet<Guid> _failedPreviews = [];
     private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
 
     [Inject] internal ICameraAgentEventEvidenceUiService EventEvidence { get; set; } = default!;
@@ -30,6 +31,19 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     private CameraAgentTransientOperatorCandidate? Latest => _page is { Items.Count: > 0 } ? _page.Items[0] : null;
     private string TimeZoneLabel => _calendar.TimeZoneFallback ? "UTC (site time zone unavailable)" : _calendar.TimeZoneId;
     private CameraAgentEventEvidenceView? Evidence(Guid id) => _evidence.GetValueOrDefault(id);
+    private int UnavailableEvidenceCount => (_page?.Items.Count ?? 0) - _evidence.Count;
+    private int OtherMonthCount
+    {
+        get
+        {
+            var month = CalendarMonth;
+            return VisibleItems.Count(candidate =>
+            {
+                var date = ObservingDate(candidate);
+                return date.Year != month.Year || date.Month != month.Month;
+            });
+        }
+    }
     private DateTimeOffset RecordedUtc(CameraAgentTransientOperatorCandidate candidate)
         => Evidence(candidate.CandidateId)?.RecordedUtc ?? candidate.CreatedUtc;
     private DateOnly ObservingDate(CameraAgentTransientOperatorCandidate candidate)
@@ -49,8 +63,9 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
             {
                 return month;
             }
+            var visible = VisibleItems;
             var date = DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var selected)
-                ? selected : Latest is { } first ? ObservingDate(first) : _calendar.Resolve(DateTimeOffset.UtcNow).Date;
+                ? selected : visible.Count > 0 ? ObservingDate(visible[0]) : _calendar.Resolve(DateTimeOffset.UtcNow).Date;
             return new DateOnly(date.Year, date.Month, 1);
         }
     }
@@ -98,6 +113,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
         _errorMessage = null;
         _page = null;
         _evidence = [];
+        _failedPreviews = [];
         _calendar = ObservingDays.Current;
         try
         {
@@ -173,6 +189,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     }
 
     private void ShowNewest() => NavigateToCursor(null);
+    private void MarkPreviewFailed(Guid candidateId) => _failedPreviews.Add(candidateId);
     private void ShowOlder() => NavigateToCursor(_page?.NextCursor);
     private void NavigateToCursor(string? cursor) => NavigationManager.NavigateTo(
         NavigationManager.GetUriWithQueryParameter("cursor", cursor));

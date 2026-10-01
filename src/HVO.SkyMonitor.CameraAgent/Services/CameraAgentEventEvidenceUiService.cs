@@ -35,7 +35,8 @@ internal interface ICameraAgentEventEvidenceUiService
 internal sealed class CameraAgentEventEvidenceUiService(
     ICameraAgentTransientUiService transients,
     ICameraAgentOperatorUiService captures,
-    ICameraAgentProcessingGraphUiService runs) : ICameraAgentEventEvidenceUiService
+    ICameraAgentProcessingGraphUiService runs,
+    ICameraAgentCapturePresentationProjector capturePresentation) : ICameraAgentEventEvidenceUiService
 {
     public async ValueTask<OperatorUiResult<CameraAgentEventEvidenceView>> GetAsync(
         Guid candidateId, bool includeContext, CancellationToken cancellationToken)
@@ -59,16 +60,19 @@ internal sealed class CameraAgentEventEvidenceUiService(
             Guid? executionId = null;
             if (source is not null && (includeContext || position == 0))
             {
-                var captureResult = await captures.GetCaptureDetailViewAsync(source.CaptureId, cancellationToken).ConfigureAwait(false);
+                // Read retained metadata for this source without reconstructing unrelated products.
+                // The protected preview endpoint validates the exact bytes on the browser request.
+                var captureResult = await captures.GetGalleryCaptureAsync(source.CaptureId, cancellationToken).ConfigureAwait(false);
                 if (captureResult.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     return Denied();
                 }
-                if (captureResult.IsSuccess && captureResult.Value is { } view &&
-                    view.Capture.CaptureId == source.CaptureId &&
-                    view.Capture.Artifacts.Any(artifact => artifact.ArtifactId == source.ArtifactId && artifact.Role == source.Role))
+                if (captureResult.IsSuccess && captureResult.Value is { } retained &&
+                    retained.CaptureId == source.CaptureId &&
+                    retained.Artifacts.SingleOrDefault(artifact => artifact.ArtifactId == source.ArtifactId && artifact.Role == source.Role) is { } artifact)
                 {
-                    capture = view;
+                    var exactSource = retained with { Artifacts = [artifact] };
+                    capture = new(retained, capturePresentation.Project(exactSource));
                 }
                 if (includeContext)
                 {
@@ -111,8 +115,11 @@ internal sealed class CameraAgentEventEvidenceUiService(
 
 internal static class CameraAgentEventFacts
 {
+    internal static bool HasRetainedAssessment(CameraAgentTransientAssessmentEvidence? assessment)
+        => assessment is { State: "Available" };
+
     internal static string Classification(CameraAgentTransientAssessmentEvidence? assessment) => assessment is not { State: "Available" }
-        ? "Unresolved"
+        ? "Not assessed"
         : assessment.Classification switch
         {
             "Meteor" => assessment.MeteorSeverity == "Fireball" ? "Fireball" : "Meteor",
@@ -120,7 +127,8 @@ internal static class CameraAgentEventFacts
             "Aircraft" => "Aircraft",
             "SensorArtifact" => "Sensor artifact",
             "EnvironmentalArtifact" => "Environmental artifact",
-            _ => "Unresolved"
+            "Unknown" => "Unresolved",
+            _ => "Not recorded"
         };
 
     internal static string ClassificationKey(CameraAgentTransientAssessmentEvidence? assessment)
@@ -132,11 +140,12 @@ internal static class CameraAgentEventFacts
             "Aircraft" => "aircraft",
             "Sensor artifact" => "sensor-artifact",
             "Environmental artifact" => "environmental-artifact",
-            _ => "unresolved"
+            "Unresolved" => "unresolved",
+            _ => "unassessed"
         };
 
     internal static string Title(CameraAgentTransientAssessmentEvidence? assessment)
-        => $"{Classification(assessment)} candidate";
+        => HasRetainedAssessment(assessment) ? $"{Classification(assessment)} candidate" : "Candidate not assessed";
 
     internal static string Confidence(CameraAgentTransientAssessmentEvidence? assessment)
         => assessment is { State: "Available", ConfidenceMillionths: >= 0 and <= 1_000_000 } && assessment.ConfidenceMillionths is { } score

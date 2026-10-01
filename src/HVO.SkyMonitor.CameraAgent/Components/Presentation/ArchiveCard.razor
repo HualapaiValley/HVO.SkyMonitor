@@ -8,7 +8,7 @@
     <a class="capture-image product-@ProductClass" href="@DetailUrl" aria-label="@ImageLinkLabel">
         @if (SelectedSlot?.PreviewUrl is { } previewUrl && !PreviewFailed)
         {
-            <img src="@previewUrl.OriginalString" alt="@ImageAlt" loading="lazy" decoding="async" @onerror="MarkPreviewFailed" />
+            <RetainedPreviewImage Source="@previewUrl.OriginalString" Alt="@ImageAlt" OnFailure="MarkPreviewFailed" />
         }
         else
         {

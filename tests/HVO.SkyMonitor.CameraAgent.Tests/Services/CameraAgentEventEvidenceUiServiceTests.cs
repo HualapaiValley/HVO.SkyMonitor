@@ -54,6 +54,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
         Assert.IsTrue(result.IsSuccess);
         Assert.AreEqual(1, captures.Invocations.Count);
         Assert.AreEqual(detail.Sources![2].CaptureId, captures.Invocations[0].Arguments[0]);
+        Assert.AreEqual(nameof(ICameraAgentOperatorUiService.GetGalleryCaptureAsync), captures.Invocations[0].Method.Name);
         runs.VerifyNoOtherCalls();
     }
 
@@ -66,7 +67,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
             .ReturnsAsync(OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail));
         var captures = new Mock<ICameraAgentOperatorUiService>(MockBehavior.Strict);
         var runs = new Mock<ICameraAgentProcessingGraphUiService>(MockBehavior.Strict);
-        var result = await new CameraAgentEventEvidenceUiService(transients.Object, captures.Object, runs.Object)
+        var result = await new CameraAgentEventEvidenceUiService(transients.Object, captures.Object, runs.Object, new TestOperatorUiService())
             .GetAsync(Guid.NewGuid(), true, CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.NotFound, result.Kind);
@@ -80,8 +81,8 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
     {
         var detail = Detail();
         var captures = new Mock<ICameraAgentOperatorUiService>();
-        captures.Setup(service => service.GetCaptureDetailViewAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(OperatorUiResult<CameraAgentCaptureDetailView>.Success(View(detail.Sources![2]) with { Capture = OperatorUiTestData.Capture(Guid.NewGuid()) }));
+        captures.Setup(service => service.GetGalleryCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture(Guid.NewGuid())));
         var result = await Service(detail, captures, new Mock<ICameraAgentProcessingGraphUiService>()).GetAsync(detail.Candidate.CandidateId, false, CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsTrue(result.IsSuccess);
@@ -93,8 +94,8 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
     {
         var detail = Detail();
         var captures = new Mock<ICameraAgentOperatorUiService>();
-        captures.Setup(service => service.GetCaptureDetailViewAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(OperatorUiResult<CameraAgentCaptureDetailView>.Failure(OperatorUiResultKind.Unauthorized, "/private/credential"));
+        captures.Setup(service => service.GetGalleryCaptureAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.Unauthorized, "/private/credential"));
         var result = await Service(detail, captures, new Mock<ICameraAgentProcessingGraphUiService>()).GetAsync(detail.Candidate.CandidateId, false, CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, result.Kind);
@@ -107,7 +108,7 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
         var transients = new Mock<ICameraAgentTransientUiService>(MockBehavior.Strict);
         transients.Setup(service => service.GetCandidateAsync(detail.Candidate.CandidateId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(detail));
-        return new(transients.Object, captures.Object, runs.Object);
+        return new(transients.Object, captures.Object, runs.Object, new TestOperatorUiService());
     }
 
     private static Mock<ICameraAgentOperatorUiService> Captures(IReadOnlyList<CameraAgentTransientOperatorSource> sources)
@@ -115,8 +116,8 @@ public sealed class CameraAgentEventEvidenceUiServiceTests
         var service = new Mock<ICameraAgentOperatorUiService>(MockBehavior.Strict);
         foreach (var source in sources)
         {
-            service.Setup(value => value.GetCaptureDetailViewAsync(source.CaptureId, It.IsAny<CancellationToken>()))
-                .ReturnsAsync(OperatorUiResult<CameraAgentCaptureDetailView>.Success(View(source)));
+            service.Setup(value => value.GetGalleryCaptureAsync(source.CaptureId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(OperatorUiResult<CameraAgentGalleryCapture>.Success(View(source).Capture));
         }
         return service;
     }

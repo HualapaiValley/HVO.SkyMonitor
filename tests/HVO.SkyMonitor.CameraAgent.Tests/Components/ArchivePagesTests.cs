@@ -508,7 +508,7 @@ public sealed class ArchivePagesTests
         var captures = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(captures);
         context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
-        context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(transient, captures, new ProcessingExecutionPagesTests.GraphUiService()));
+        context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(transient, captures, new ProcessingExecutionPagesTests.GraphUiService(), captures));
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         navigation.NavigateTo("/transients?from=2026-07-21T19:00:00&to=2026-07-22T18:59:59");
 
@@ -559,6 +559,7 @@ public sealed class ArchivePagesTests
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

@@ -17,7 +17,9 @@
         <article><span>Awaiting review</span><strong>Unavailable</strong><small>Central review state is not recorded locally</small></article>
         <article><span>Rejected</span><strong>Unavailable</strong><small>Local workflow is not owner review</small></article>
         <article><span>Latest event on this page</span>
-            @if (Latest is { } latest)
+            @if (_isLoading) { <strong>Loading</strong><small>Reading retained candidates on this page</small> }
+            else if (_errorMessage is not null) { <strong>Unavailable</strong><small>The latest candidate could not be read</small> }
+            else if (Latest is { } latest)
             {
                 <strong>@TimeZoneInfo.ConvertTime(RecordedUtc(latest), _calendar.TimeZone).ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</strong>
                 <small>@ObservingDate(latest).ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture) observing date · @UtcTime(RecordedUtc(latest))</small>
@@ -47,6 +49,10 @@
     else
     {
         <p class="event-result-count" role="status">@VisibleItems.Count matching local candidate@(VisibleItems.Count == 1 ? string.Empty : "s") on this bounded page · @TimeZoneLabel.</p>
+        @if (UnavailableEvidenceCount > 0)
+        {
+            <p class="event-result-count event-evidence-unavailable" role="status">Details unavailable for @UnavailableEvidenceCount local candidate@(UnavailableEvidenceCount == 1 ? string.Empty : "s"). Their classifications are not recorded and they are omitted from classification filters.</p>
+        }
         @if (_page?.NextCursor is not null) { <p class="event-result-count">Older candidates are omitted from this page. Filters and calendar use only this page's records.</p> }
         @if (VisibleItems.Count == 0) { <section class="page-state" role="status"><div><strong>No matching local candidates</strong><p>No retained candidate on this page matches these filters.</p></div></section> }
         @if (CalendarView)
@@ -67,7 +73,11 @@
                         </div>
                     }
                 </div>
-                <p class="event-calendar-empty">The calendar shows all matching candidates on this page by local noon-to-noon observing date. <a href="/archive/calendar">Open capture calendar</a>.</p>
+                @if (OtherMonthCount > 0)
+                {
+                    <p class="event-calendar-empty event-other-months">@OtherMonthCount matching local candidate@(OtherMonthCount == 1 ? string.Empty : "s") in other months on this page. Change month to view those candidates.</p>
+                }
+                <p class="event-calendar-empty">The calendar shows matching candidates in the displayed month by local noon-to-noon observing date. <a href="/archive/calendar">Open capture calendar</a>.</p>
             </section>
         }
         else
@@ -79,7 +89,7 @@
                     var assessment = evidence?.Detail.AssessmentEvidence;
                     <article class="event-card">
                         <a class="event-card-media" href="@DetailUrl(candidate.CandidateId)" aria-label="Open exact candidate evidence">
-                            @if (evidence?.Reference?.Image is { } image) { <img src="@image.PreviewUrl" alt="Exact candidate source frame; extracted event media is unavailable" loading="lazy" /> }
+                            @if (evidence?.Reference?.Image is { } image && !_failedPreviews.Contains(candidate.CandidateId)) { <RetainedPreviewImage Source="@image.PreviewUrl!.OriginalString" Alt="Exact candidate source frame; extracted event media is unavailable" OnFailure="() => MarkPreviewFailed(candidate.CandidateId)" /> }
                             else { <div class="event-media-placeholder">Candidate source image unavailable</div> }
                             <span>@UtcTime(RecordedUtc(candidate)) @(evidence?.Reference?.Source is null ? "· candidate recorded" : "· source observed")</span>
                         </a>

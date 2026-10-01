@@ -13,6 +13,7 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentEventEvidenceView? _evidence;
+    private HashSet<Guid> _failedPreviews = [];
     private CameraAgentTransientOperatorDetail? _detail => _evidence?.Detail;
     private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
     private string? _errorMessage;
@@ -55,6 +56,7 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
         _isLoading = true;
         _errorMessage = null;
         _evidence = null;
+        _failedPreviews = [];
         _calendar = ObservingDays.Current;
         try
         {

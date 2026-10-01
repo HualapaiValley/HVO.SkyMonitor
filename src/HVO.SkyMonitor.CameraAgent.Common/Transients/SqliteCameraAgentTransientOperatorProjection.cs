@@ -579,7 +579,7 @@ internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgen
                 execution.Assessment.EvidenceObservationIds.Count,
                 execution.Assessment.Reasons.Select(static reason => reason.Code).ToArray(),
                 execution.ExecutionIdentitySha256,
-                [execution.SchemaVersion]);
+                [$"{execution.Assessment.Producer.Name} / {execution.Assessment.Producer.Version}"]);
 
     private static CameraAgentTransientFinalEvidence ProjectFinal(
         TransientFinalizationReceiptV1? receipt,

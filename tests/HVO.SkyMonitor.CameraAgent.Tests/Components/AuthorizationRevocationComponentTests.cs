@@ -122,6 +122,7 @@ public sealed class AuthorizationRevocationComponentTests
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         var cards = new Mock<ICameraAgentArchiveCardUiService>();

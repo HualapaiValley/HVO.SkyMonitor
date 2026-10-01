@@ -112,8 +112,10 @@ The selected media area has an explicit unavailable state instead of a fixture
 image. The prototype calendar script leaves its illustrative list visible; its
 calendar component is compared independently. These differences require review.
 
-All 30 original native/reference page states pass at the three widths, with no
-horizontal overflow or browser errors. Classification, empty state, list/calendar
+The original 30-state pass established geometry and route identity; review found
+that its Events-empty screenshots still showed loading and its failed-preview
+screenshots showed broken images. Those attempts do not qualify those states.
+Corrected native evidence and its exact source are bound in the PR ledger. Classification, empty state, list/calendar
 and observing-date interactions preserve the exact bounded range; all eight
 matching events appear on their date. Three exact capture links, three run links,
 observing-day and nearby-capture destinations resolve. Archive compact/grid
@@ -187,5 +189,49 @@ This correction receives the initial independent deep review with the full port.
 Comprehensive coarse-pointer checks also identified a later normal-field rule
 overriding the Archive advanced-filter floor and short inline destination links.
 The final CSS orders the 44px floor last and applies it to those page actions.
-`keyboard-touch.json` records every visible enabled page target and keyboard
-filter/list/calendar behavior, rather than checking only primary controls.
+`keyboard-touch.json` now records explicit focus/key actions and target bounds for
+grid, compact, cursor, list, calendar and detail states. A separate actual
+`maxSequence=313` Archive pin exercises retained candidate links. Only a completed
+recorder run qualifies these paths; the original height-only report does not.
+
+## Independent-review corrections
+
+The full initial read-only review bound `6b35bcca..b67dd818` and returned FINDINGS.
+All six provisional findings from the earlier INCOMPLETE attempts were carried,
+plus four additional observations; the complete report and individual
+dispositions are retained on PR #1114. The fallback launch pins Anthropic
+`claude-opus-5-5` / CLI effort `high`; provider-internal effort is not exposed.
+
+Missing/Pending/Absent/Unavailable assessments now say “Not assessed”, separately
+from a retained Unknown classification. Failed per-candidate reads have a partial
+unavailability notice and cannot enter classification filters. Latest-summary
+loading/error states do not assert an empty page. Calendar month defaults to the
+filtered candidates and explicitly counts matches in other months. Local detector
+producer authority is scoped separately from owner review; method identifies the
+retained assessor's name/version, rather than the receipt schema. Nine regression
+cases reproduce the original label/month faults; the updated projection test
+reproduces the producer-method fault. All pass after correction.
+
+A shared retained-preview component detects an image that failed before Blazor
+attached its handler, and routes later errors through the same parent fallback.
+Two component cases cover failure before/after attachment. Native failed-preview
+capture must wait for all 24 unavailable placeholders, without replacing browser
+event handlers. Failed prereview captures remain historical evidence. Events
+source images use the same explicit fallback and retain source links/facts.
+
+Page-load measurements on the original native baseline identified unnecessary
+full-capture presentation reconstruction on every event card: median Events DOM
+readiness rose from 58 ms to 2470 ms for eight real candidates. The correction uses
+existing protected capture-metadata reads and the pure presentation projector
+restricted to the exact source artifact. Image-byte validation remains at the
+protected preview endpoint; unrelated products are not reconstructed for cards.
+Own-artifact display previews do not establish calibrated photometry. Final
+latency/CPU/RSS/I/O measurements, their limitations and any explained cost are
+recorded with the correction evidence in the PR ledger. Filter changes re-read
+the bounded query; open-ended queries can advance with new acquisitions.
+
+The correction adds eleven Unit cases: discovery becomes Unit 4920, CameraAgent
+Unit 2881; other category totals remain unchanged. The focused preview, projection,
+page, authorization and composition gate passes 92 cases with no warnings.
+Broader correction gates and refreshed native evidence are recorded against the
+committed correction source. No full Manual-chain or operator acceptance is inferred.

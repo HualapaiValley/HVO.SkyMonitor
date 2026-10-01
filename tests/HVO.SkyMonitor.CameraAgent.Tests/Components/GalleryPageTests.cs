@@ -593,6 +593,7 @@ public sealed class GalleryPageTests
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(service);

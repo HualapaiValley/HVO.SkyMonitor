@@ -391,7 +391,7 @@ public sealed class SqliteCameraAgentTransientOperatorProjectionTests
             evidence.Assessment.Assessment.Reasons.Select(static reason => reason.Code).ToArray(),
             detail.AssessmentEvidence.ReasonCodes!.ToArray());
         Assert.AreEqual(evidence.Assessment.ExecutionIdentitySha256, detail.AssessmentEvidence.IdentitySha256);
-        CollectionAssert.AreEqual(new[] { evidence.Assessment.SchemaVersion }, detail.AssessmentEvidence.Methods!.ToArray());
+        CollectionAssert.AreEqual(new[] { $"{evidence.Assessment.Assessment.Producer.Name} / {evidence.Assessment.Assessment.Producer.Version}" }, detail.AssessmentEvidence.Methods!.ToArray());
         CollectionAssert.AreEqual(evidence.Causal.Algorithms.Select(static algorithm => $"{algorithm.Name} / {algorithm.Version}").ToArray(),
             detail.CausalEvidence.Methods!.ToArray());
     }
