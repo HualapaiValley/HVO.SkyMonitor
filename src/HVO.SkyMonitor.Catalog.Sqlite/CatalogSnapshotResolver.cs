@@ -184,7 +184,9 @@ public static class CatalogSnapshotResolver
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
             manifest.Database.RowCount,
-            manifest.Catalog.Version), databaseFile, manifest.Database.Length);
+            manifest.Catalog.Version), databaseFile, manifest.Database.Length,
+            new AstrometricCatalogProvenance(manifest.Catalog.Id, snapshotVersion,
+                PackageKindValue(options.ExpectedPackageKind), manifest.PreprocessingVersion));
         if (!string.Equals(catalog.Metadata.Name, manifest.Catalog.Name, StringComparison.Ordinal))
         {
             throw new InvalidDataException(

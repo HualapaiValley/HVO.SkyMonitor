@@ -47,3 +47,45 @@ The issue requires classifier-selected evidence and independent exact-range revi
 - Warm absolute focal bounds now survive local refinement and successive accepted updates; the relative2% trust interval is intersected with the immutable-calibration bounds and projection domain. Fixed-scale, upper/lower drift and out-of-range-prior regressions cover this contract
 - Catalog completeness now declares a finite magnitude limit and binds both that limit and incomplete/truncated status into selection provenance. Sync, async-provider and warm paths reject insufficient requested coverage; matching-ceiling controls still solve
 - Nine focused regression cases were added. The repository Astronomy inventory is216 Unit cases; full solution inventory is4631 Unit cases. These are category inventories, not claims that environment-blocked host tests passed
+
+## Bounded installed-catalog qualification (#1101)
+
+`AstrometricCatalogSourceTests` checks fixture/direct-load refusal, exact
+magnitude selection, entry bounds, deterministic identity, negative/invalid
+magnitudes and cancellation. Installed DI reuses the same catalog cache for the
+astrometry contract. Shared solver regression tests preserve standalone
+identity and reject incompatible package provenance for warm refinement.
+
+The explicit full-snapshot gate requires an offline, resolver-validated HYG 4.2
+installation. Missing evidence fails; the test never falls back to fixture data
+or downloads a catalog. Build/install a private test bundle using the existing
+[catalog runbook](../catalog/production-install.md), then run:
+
+```bash
+DOTNET_TieredCompilation=0 \
+HVO_ASTROMETRY_CATALOG_ROOT=/absolute/private/test/catalog-root \
+HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
+dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj \
+  --configuration Release --filter "FullyQualifiedName~FullSnapshotSelectionResources" \
+  --logger trx --results-directory TestResults/astrometric-catalog
+```
+
+This manual gate checks the approved database hash and independent known counts
+(1,637 at magnitude 5; 2,865 at 5.5; 15,598 at 7), exact-cap/one-over-cap behavior,
+package provenance and solver refusal of an overflowing production selection.
+It compares the existing full candidate query followed by honest bounded
+materialization with the new bounded adapter: concurrency 1, 5 warmups and 30
+measured operations for each of those three magnitude ceilings, maximum 2,500
+rows. Run without another build/benchmark and disable tiered compilation for
+both routes to avoid comparing different JIT warm-up phases.
+
+The JSON/TRX attachment records every sample, selection hash, exact supplied
+revision, catalog identity, startup allocation/time, median/p95 wall time,
+process CPU, allocations and process working-set high water. Warm reads perform
+no disk/network I/O and have no queue/backlog. Process high water is not
+operation-local peak memory. The issue's measured-host acceptance is p95 <=20 ms
+and allocations <= the equivalent baseline plus 32 KiB; median regression above
+max(20%, 0.5 ms) requires investigation and a recorded explanation. Latency
+budgets describe this qualification host, not a portable hardware guarantee.
+Final immutable-head results and environment are retained in the issue/PR
+ledger. Full camera/solve/detection qualification remains #1102/#1106.

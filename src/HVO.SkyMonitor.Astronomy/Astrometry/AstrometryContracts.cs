@@ -57,28 +57,53 @@ public sealed record AstrometricFrameContext(Guid CaptureId, Guid SourceArtifact
     }
 }
 
+/// <summary>Immutable installed-package identity, separate from the catalog's coordinate epoch.</summary>
+public sealed record AstrometricCatalogProvenance(
+    string CatalogId, string PackageVersion, string PackageKind, string PreprocessingVersion)
+{
+    internal void Validate()
+    {
+        foreach (var value in new[] { CatalogId, PackageVersion, PreprocessingVersion })
+            if (string.IsNullOrWhiteSpace(value) || value.Length > 256)
+                throw new ArgumentException("Catalog package identity must be nonblank and bounded.");
+        if (PackageKind is not ("production" or "fixture"))
+            throw new ArgumentException("Catalog package kind must be production or fixture.");
+    }
+}
+
 /// <summary>A bounded complete-for-request catalog result. Incomplete results must never become accepted fits.</summary>
 public sealed class AstrometricCatalogData
 {
+    /// <summary>Maximum materialized star count accepted by the bounded solver.</summary>
+    public const int MaximumEntries = 2500;
+
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
-        bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel)
+        bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel,
+        AstrometricCatalogProvenance? provenance = null)
     {
         ArgumentNullException.ThrowIfNull(metadata); ArgumentNullException.ThrowIfNull(stars);
+        provenance?.Validate();
         AstrometricIdentity.RequireSha256(metadata.Checksum);
         if (!double.IsFinite(completenessMagnitudeLimit)) throw new ArgumentException("Catalog completeness magnitude limit must be finite.", nameof(completenessMagnitudeLimit));
         if (string.IsNullOrWhiteSpace(metadata.Name) || string.IsNullOrWhiteSpace(metadata.Version) || string.IsNullOrWhiteSpace(metadata.License) || string.IsNullOrWhiteSpace(metadata.SchemaVersion) || metadata.SourceUrl is null || !metadata.SourceUrl.IsAbsoluteUri || metadata.Name.Length > 256 || metadata.Version.Length > 256 || metadata.SourceUrl.AbsoluteUri.Length > 2048 || metadata.License.Length > 2048 || metadata.SchemaVersion.Length > 256)
             throw new ArgumentException("Catalog metadata must identify an immutable source.", nameof(metadata));
-        var values = stars.Take(2501).ToArray();
-        if (values.Length > 2500) throw new ArgumentException("Catalog materialization exceeds2500 entries.", nameof(stars));
+        var values = stars.Take(MaximumEntries + 1).ToArray();
+        if (values.Length > MaximumEntries) throw new ArgumentException("Catalog materialization exceeds2500 entries.", nameof(stars));
         foreach (var star in values)
             if (star is null || string.IsNullOrWhiteSpace(star.Id) || star.Id.Length > 256 || star.DisplayName is null || star.DisplayName.Length > 512 || star.HipparcosId?.Length > 128 || !double.IsFinite(star.RightAscensionHours) || star.RightAscensionHours is < 0 or >= 24 ||
                 !double.IsFinite(star.DeclinationDegrees) || star.DeclinationDegrees is < -90 or > 90 || !double.IsFinite(star.Magnitude)) throw new ArgumentException("Invalid catalog entry.", nameof(stars));
         if (values.Select(s => s.Id).Distinct(StringComparer.Ordinal).Count() != values.Length) throw new ArgumentException("Duplicate catalog identities.", nameof(stars));
         Metadata = metadata; Stars = Array.AsReadOnly(values.OrderBy(s => s.Magnitude).ThenBy(s => s.Id, StringComparer.Ordinal).ToArray());
         IsCompleteForRequestedMagnitude = isCompleteForRequestedMagnitude; CompletenessMagnitudeLimit = completenessMagnitudeLimit; CoordinateModel = coordinateModel;
-        IdentitySha256 = AstrometricIdentity.Hash(new { metadata, coordinateModel });
+        Provenance = provenance;
+        // Preserve the identity of retained standalone evidence that has no installed-package provenance.
+        IdentitySha256 = provenance is null
+            ? AstrometricIdentity.Hash(new { metadata, coordinateModel })
+            : AstrometricIdentity.Hash(new { schema = "astrometric-catalog-v2", metadata, coordinateModel, provenance });
         SelectionIdentitySha256 = AstrometricIdentity.Hash(new { schema = "astrometric-catalog-selection-v2", Stars, IsCompleteForRequestedMagnitude, CompletenessMagnitudeLimit });
     }
+    /// <summary>Exact installed package identity, or null for caller-supplied standalone evidence.</summary>
+    public AstrometricCatalogProvenance? Provenance { get; }
     public CatalogMetadata Metadata { get; }
     public ReadOnlyCollection<CelestialCatalogObject> Stars { get; }
     public bool IsCompleteForRequestedMagnitude { get; }

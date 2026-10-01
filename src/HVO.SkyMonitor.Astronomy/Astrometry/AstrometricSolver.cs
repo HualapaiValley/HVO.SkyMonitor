@@ -23,7 +23,7 @@ public static class AstrometricSolver
     {
         ArgumentNullException.ThrowIfNull(source);
         options ??= new(); options.Validate(); cancellationToken.ThrowIfCancellationRequested();
-        var catalog = await source.ReadAsync(options.MaximumCatalogMagnitude, 2500, cancellationToken).ConfigureAwait(false);
+        var catalog = await source.ReadAsync(options.MaximumCatalogMagnitude, AstrometricCatalogData.MaximumEntries, cancellationToken).ConfigureAwait(false);
         return Solve(frame, calibration, catalog, detections, options, cancellationToken);
     }
 

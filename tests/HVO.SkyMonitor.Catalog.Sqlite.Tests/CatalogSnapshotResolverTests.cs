@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 [DoNotParallelize]
 internal sealed class CatalogSnapshotResolverTests
 {

@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 [DoNotParallelize]
 internal sealed class SqliteCelestialCatalogTests
 {

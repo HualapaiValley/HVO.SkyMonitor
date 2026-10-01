@@ -16,6 +16,58 @@ public sealed class AstrometricReviewRegressionTests
     });
 
     [TestMethod]
+    public void CatalogPackageIdentityIsBoundWithoutChangingSelectionOrLegacyIdentity()
+    {
+        var catalog = AstrometricTestFixture.Catalog();
+        var legacyHash = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+            new { metadata = catalog.Metadata, coordinateModel = catalog.CoordinateModel })));
+        Assert.AreEqual(legacyHash, catalog.IdentitySha256);
+        var package = new AstrometricCatalogProvenance("hyg-fixture", "package-a", "fixture", "3");
+        var first = new AstrometricCatalogData(catalog.Metadata, catalog.Stars, true,
+            catalog.CompletenessMagnitudeLimit, provenance: package);
+        var second = new AstrometricCatalogData(catalog.Metadata, catalog.Stars, true,
+            catalog.CompletenessMagnitudeLimit, provenance: package with { PackageVersion = "package-b" });
+
+        Assert.AreEqual(package, first.Provenance);
+        Assert.AreNotEqual(catalog.IdentitySha256, first.IdentitySha256);
+        Assert.AreNotEqual(first.IdentitySha256, second.IdentitySha256);
+        Assert.AreEqual(catalog.SelectionIdentitySha256, first.SelectionIdentitySha256);
+        Assert.AreEqual(first.SelectionIdentitySha256, second.SelectionIdentitySha256);
+    }
+
+    [TestMethod]
+    public void CatalogPackageIdentityRejectsMalformedFields()
+    {
+        var catalog = AstrometricTestFixture.Catalog();
+        var valid = new AstrometricCatalogProvenance("hyg-fixture", "package-a", "fixture", "3");
+        foreach (var invalid in new[]
+        {
+            valid with { CatalogId = " " }, valid with { PackageVersion = null! },
+            valid with { PreprocessingVersion = new string('x', 257) },
+            valid with { PackageKind = "unapproved" }
+        })
+        {
+            Assert.ThrowsExactly<ArgumentException>(() => new AstrometricCatalogData(catalog.Metadata,
+                catalog.Stars, true, catalog.CompletenessMagnitudeLimit, provenance: invalid));
+        }
+    }
+
+    [TestMethod]
+    public void WarmPriorRejectsChangedPackageProvenance()
+    {
+        var accepted = Accepted.Value;
+        var changed = new AstrometricCatalogData(accepted.Catalog.Metadata, accepted.Catalog.Stars,
+            true, accepted.Catalog.CompletenessMagnitudeLimit,
+            provenance: new("hyg-fixture", "new-package", "fixture", "3"));
+        var result = AstrometricSolver.Refine(AstrometricTestFixture.Frame(AstrometricTestFixture.Utc),
+            accepted.Calibration, changed, accepted.Detections, accepted.Result.Assessment);
+
+        Assert.AreEqual("warm-context-incompatible", result.Assessment.ReasonCode);
+        Assert.IsFalse(result.Assessment.HasMeasuredMapping);
+        Assert.AreEqual(0, result.Metrics.Hypotheses);
+    }
+
+    [TestMethod]
     public void WarmFixedScale_DoesNotFitOutsideTheDeclaredAbsoluteInterval()
     {
         var catalog = AstrometricTestFixture.Catalog(); var truth = AstrometricTestFixture.Truth();
