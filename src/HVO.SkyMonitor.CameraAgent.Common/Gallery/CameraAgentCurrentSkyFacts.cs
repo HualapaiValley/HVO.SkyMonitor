@@ -19,7 +19,9 @@ public sealed record CameraAgentCurrentSkyFacts(
     CameraAgentCurrentSkyCloudFacts Cloud,
     CameraAgentCombinedLineage? CombinedLineage,
     ProfileIdentityDescriptor? ProcessingProfile,
-    bool CombinedLineageUnavailable = false);
+    bool CombinedLineageUnavailable = false,
+    CameraAgentCaptureProfileFacts? CaptureProfile = null,
+    CameraAgentCaptureLocationFacts? Location = null);
 
 public sealed record CameraAgentCurrentSkyCloudFacts(
     string Availability,
@@ -89,6 +91,8 @@ public static class CameraAgentCurrentSkyFactsProjector
             detail?.ProcessingProfile,
             // Combined lineage could not be described: the bounded artifact list
             // either hid the displayed artifact or leaves the newest one unknowable.
-            combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0));
+            combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0),
+            detail?.CaptureProfile,
+            detail?.Location);
     }
 }

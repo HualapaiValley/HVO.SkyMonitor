@@ -69,8 +69,9 @@
             {
                 <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
             }
-            <div><dt>LogicHost</dt><dd class="fact-unavailable">Not reported here</dd></div>
-            <div><dt>Storage</dt><dd class="fact-unavailable">Not reported here</dd></div>
+            <div><dt>LogicHost</dt><dd><a href="/operations/delivery" title="@CentralStatusReason">@CentralStatusLabel</a></dd></div>
+            <div><dt>Storage</dt><dd><a href="/operations/storage" title="@StorageStatusReason">@StorageStatusLabel</a></dd></div>
+            <div><dt>Capture cadence</dt><dd>@CaptureCadenceLabel</dd></div>
         </dl>
     </section>
 
@@ -146,6 +147,24 @@
                 {
                     <p class="technical-evidence-error" role="alert">@_technicalEvidenceError</p>
                 }
+                @if (_viewerError is not null)
+                {
+                    <p class="technical-evidence-error" role="alert">@_viewerError</p>
+                }
+                <section class="fullscreen-controls" aria-label="Full screen image controls">
+                    <div class="fullscreen-controls-heading"><strong>@ImageHeading</strong><span>@LayerCountLabel</span><button type="button" class="button secondary small" @onclick="CloseFullScreenAsync">Close image</button></div>
+                    @if (ShowLayeredHero && _layers is not null)
+                    {
+                        <div class="fullscreen-layer-list">@foreach (var layer in _layers.Layers) { @LayerToggle(layer) }</div>
+                        <div class="overlay-actions">
+                            <button class="text-button" type="button" disabled="@(!_layerInteractive)" @onclick="RestoreLayerDefaults">Restore profile defaults</button>
+                            <button class="text-button" type="button" disabled="@(_saving || !_layerInteractive)" @onclick="SaveSelectedStackAsync">@(_saving ? "Preparing image..." : "Download selected stack (display JPEG)")</button>
+                        </div>
+                        @if (_saveMessage is not null) { <p role="status" class="sky-layer-result">@_saveMessage <a href="@SavedArtifactUrl" download>Download JPEG again</a> <a href="@SavedOriginalUrl" download>Download original full-resolution stack</a></p> }
+                        @if (_saveError is not null) { <p role="alert" class="sky-layer-result sky-layer-result--error">@_saveError</p> }
+                    }
+                    else { <p class="scene-unavailable">This selected stage has no interactive overlay stack.</p> }
+                </section>
             </figure>
 
             @if (_presentation is not null && _presentation.Stages.Count > 0)
@@ -177,7 +196,6 @@
                 <section class="stack-lineage" aria-labelledby="stack-heading">
                     <header>
                         <div><p class="eyebrow">Multi-source image lineage</p><h3 id="stack-heading">Unregistered live mean ending at capture #@_facts.CaptureSequence</h3></div>
-                        <span class="registration-quality">No registration</span>
                     </header>
                     <div class="source-strip">
                         @for (var index = 0; index < lineage.SourceArtifactIds.Count && index < 8; index++)
@@ -189,7 +207,7 @@
                             <div class="source-entry @(endpoint ? "reference" : "")" title="Source artifact @sourceId">
                                 @if (previewable)
                                 {
-                                    <a href="/gallery/@source!.CaptureId"><img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="@(endpoint ? "Window endpoint capture" : "Capture") @(source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D"))" @onerror="() => _failedSourcePreviews.Add(sourceId)" /></a>
+                                    <a href="/gallery/@source!.CaptureId"><RetainedPreviewImage @key="sourceId" Source="@($"/api/v1/operations/artifacts/{sourceId:D}/preview")" Alt="@($"{(endpoint ? "Window endpoint capture" : "Capture")} {source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D")}")" OnFailure="() => _failedSourcePreviews.Add(sourceId)" /></a>
                                 }
                                 else { <span class="unavailable source-placeholder"><b>Preview unavailable</b></span> }
                                 <span>@(endpoint ? "Endpoint N" : $"N-{lineage.SourceArtifactIds.Count - 1 - index}")</span><small title="Artifact @sourceId">@(source?.CaptureSequence is { } sequence ? $"#{sequence}" : $"Source {index + 1}")</small>
@@ -199,7 +217,7 @@
                     <dl class="lineage-facts">
                         <div><dt>Included</dt><dd>@IncludedFramesLabel(lineage)</dd></div>
                         <div><dt>Total integration</dt><dd>@TotalIntegrationLabel(lineage)</dd></div>
-                        <div><dt>Observation span</dt><dd class="fact-unavailable">Not recorded</dd></div>
+                        <div><dt>Observation span</dt><dd>@(_combinedObservationSpan is { } span ? FormattableString.Invariant($"{span.TotalSeconds:0.###} seconds (first to last start)") : "Unavailable: complete source timing not retained")</dd></div>
                         <div><dt>Window endpoint</dt><dd>Capture #@_facts.CaptureSequence</dd></div>
                     </dl>
                     @if (lineage.SourceCount > 8 || _combinedProduct?.SourcesTruncated == true) { <p>Source display is bounded to the first eight recorded IDs.</p> }
@@ -232,7 +250,8 @@
                         @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
                         @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Catalog stars</strong><small>expected / not retained for this capture</small></span></label> }
                         @if (!HasLayer("scene-constellations", "constellations")) { <label><input type="checkbox" disabled /><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>expected / not retained for this capture</small></span></label> }
-                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Sun &amp; Moon footprints</strong><small>projected physical limb + marker / arrives with #518</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Sun footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Moon footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
                         @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }
                     </div>
                     <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
@@ -241,7 +260,7 @@
                         <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
                         @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
                         @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
-                        <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Meteor tracks</strong><small>measured track layer / arrives with #1005</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Meteor tracks</strong><small>measured track overlay not retained for this capture</small></span></label>
                         @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }
                         @if (!HasLayer("environment", "corner-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch environment"></span><span><strong>Frame facts</strong><small>source and coordinate provenance / not retained</small></span></label> }
                     </div>
@@ -301,12 +320,15 @@
             </section>
 
             <section class="inspector-card rig-facts" aria-labelledby="rig-heading">
-                <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>@(_facts?.RigId ?? "Rig unavailable")</span></header>
+                <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>@(_facts?.CaptureProfile is null ? "Not retained" : "Recorded")</span></header>
                 <dl>
-                    <div><dt>Camera</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
-                    <div><dt>Optics</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
-                    <div><dt>Projection</dt><dd class="fact-unavailable">No measured fit</dd></div>
-                    <div><dt>Site</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
+                    <div><dt>Sensor sample</dt><dd>@SensorSampleLabel</dd></div>
+                    <div><dt>Optics</dt><dd>@OpticsLabel</dd></div>
+                    <div><dt>Projection</dt><dd>@ProjectionLabel</dd></div>
+                    <div><dt>Site</dt><dd class="@(_facts?.Location?.Availability == "Available" ? null : "fact-unavailable")">@SiteLabel
+                        @if (_facts?.Location is { Availability: "Available", DeploymentVersion: { } version, TimeZoneId: { } zone })
+                        { <small class="capture-location-provenance">@zone / recorded deployment v@(version)</small> }
+                    </dd></div>
                     <div><dt>Profile</dt><dd>@(_facts?.ProcessingProfile is { } profile ? $"{profile.Name} / {profile.Version}" : "Unavailable")</dd></div>
                 </dl>
             </section>
@@ -340,8 +362,8 @@
         <section class="operations-strip" aria-label="@(IsArchived ? "Historical capture evidence" : "Current CameraAgent operations")">
             <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@(IsArchived ? ArchivedView!.Capture.RawState : SystemLabel)</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"{(IsArchived ? "Selected" : "Latest")} capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
             <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
-            <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Not reported here</strong><span>Events lists retained candidates</span></div></article>
-            <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Not reported here</strong><span>LogicHost state is not surfaced on this page</span></div></article>
+            <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>@TransientOutcomeLabel</strong><span>@TransientOutcomeReason</span></div></article>
+            <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>@CentralStatusLabel</strong><span>@CentralStatusReason</span></div></article>
         </section>
     };
 

@@ -130,6 +130,8 @@ internal sealed class CaptureProcessingPersistence(
             var frame = restoredBase.Artifact.Frame with
             {
                 PixelData = product.Payload,
+                PixelFormat = product.Layout!.PixelFormat,
+                StrideBytes = product.Layout.StrideBytes,
                 Metadata = restoredBase.Artifact.Frame.Metadata with { SourceId = "gallery-materialization" },
                 Layout = product.Layout
             };

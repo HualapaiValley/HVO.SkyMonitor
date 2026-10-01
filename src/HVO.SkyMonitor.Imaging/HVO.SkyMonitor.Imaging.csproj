@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <EmbeddedResource Include="Fonts/IBMPlexSans-Regular.ttf" />
+    <EmbeddedResource Include="Fonts/DejaVuSansMono.ttf" />
+    <EmbeddedResource Include="Fonts/DejaVuSansMono-Bold.ttf" />
+    <EmbeddedResource Include="Fonts/DejaVu-LICENSE.txt" />
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <PackageReference Include="SkiaSharp" />

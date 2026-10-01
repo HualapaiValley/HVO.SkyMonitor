@@ -449,7 +449,7 @@ internal sealed class CentralLayeredPresentationService(
                 manifest.Layers.Any(layer =>
                     !artifacts.TryGetValue(layer.SourceProduct.ArtifactId, out var artifact) ||
                     artifact.MediaType != layer.SourceProduct.MediaType ||
-                    artifact.StructuredProduct?.ProductSchemaVersion != PresentationLayerPayloadV1.CurrentSchemaVersion ||
+                    artifact.StructuredProduct is null || !PresentationLayerPayloadV1.SupportsSchema(artifact.StructuredProduct.ProductSchemaVersion) ||
                     artifact.StructuredProduct.ContentIdentitySha256 != layer.SourceProduct.ProductIdentitySha256))
             {
                 return false;

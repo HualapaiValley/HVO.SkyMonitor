@@ -222,7 +222,21 @@ public sealed record CameraAgentCaptureDetailView(
 internal sealed record CameraAgentCurrentSkyView(
     CameraAgentCurrentImagePresentation Presentation,
     CameraAgentCurrentSkyFacts? Facts,
-    string? FactsUnavailableReason);
+    string? FactsUnavailableReason,
+    CameraAgentCurrentSkyOperations? Operations = null);
+
+// Current operational facts are separate from the retained capture's historical acquisition/profile facts.
+internal sealed record CameraAgentCurrentSkyOperations(
+    bool CentralIntegrationEnabled,
+    bool ArtifactUploadEnabled,
+    RawIngressReconciliationReport? RawReconciliation,
+    DerivedProductReconciliationReport? ProductReconciliation);
+
+// The current mode describes configuration now; only Run describes the requested capture's retained outcome.
+internal sealed record CameraAgentCaptureTransientView(
+    Guid CaptureId,
+    TransientOperatingMode CurrentMode,
+    TransientCaptureRunState? Run);
 
 internal interface ICameraAgentOperatorUiService
 {
@@ -263,6 +277,9 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(
         CameraAgentGalleryCalendarQuery query,
@@ -780,6 +797,27 @@ internal sealed class CameraAgentOperatorUiService(
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentCaptureTransientView>();
+        if (captureId == Guid.Empty)
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Invalid, "A capture is required.");
+        try
+        {
+            var run = await transientRuntime.ReadCaptureRunAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(captureId, _hostOptions.TransientDetection.Mode, run));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent capture transient outcome UI read failed.");
+            return Unavailable<CameraAgentCaptureTransientView>("The retained transient outcome is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
     {
         var presentation = await GetCurrentImagePresentationAsync(cancellationToken).ConfigureAwait(false);
@@ -787,10 +825,14 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
         }
+        var operations = new CameraAgentCurrentSkyOperations(
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
+            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
         var displayed = presentation.Value.DisplayCapture ?? presentation.Value.LatestCapture;
         if (displayed is null)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null, operations));
         }
         var combinedArtifactId = presentation.Value.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
@@ -800,18 +842,18 @@ internal sealed class CameraAgentOperatorUiService(
         if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null, operations));
         }
         try
         {
             var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained."));
+                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained.", operations));
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null, operations));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -820,7 +862,7 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable."));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable.", operations));
         }
     }
 

@@ -2,6 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -10,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
@@ -18,10 +21,62 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 [DoNotParallelize]
 public sealed class SqliteCameraAgentGalleryTests
 {
+    [TestMethod]
+    public async Task FullDetailResolvesCapturedLocationWhileSourceReadRemainsRawOnly()
+    {
+        var captured = DeploymentLocationSnapshot.Create("recorded-site", 7, "manual", null,
+            Utc(1).AddHours(-1), null, 35.33, -113.99, 1100, "America/Phoenix");
+        var history = new Mock<IDeploymentLocationStore>(MockBehavior.Strict);
+        history.Setup(store => store.Resolve(captured.ToProvenance(), Utc(1))).Returns(captured);
+        using var fixture = await GalleryFixture.CreateAsync(deploymentLocation: history.Object).ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null, location: captured.ToProvenance()).ConfigureAwait(false);
+
+        var detail = await fixture.Gallery.GetCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        var source = await fixture.Gallery.GetSourceCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("Available", detail?.Detail?.Location?.Availability);
+        Assert.AreEqual(35.33, detail?.Detail?.Location?.LatitudeDegrees);
+        Assert.AreEqual(7L, detail?.Detail?.Location?.DeploymentVersion);
+        Assert.IsNull(source?.Detail?.Location);
+        history.Verify(store => store.Resolve(captured.ToProvenance(), Utc(1)), Times.Once());
+        history.VerifyNoOtherCalls();
+    }
+
     private static readonly string[] SourceDependency = ["source"];
     private static readonly string[] ExpectedDeliveryStatuses = ["Pending", "Retry", "Acknowledged", "Quarantined"];
     private static readonly string[] ExpectedTwoRootDeliveryStatuses = ["raw-ingress:Pending", "storage-1:Acknowledged"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
+    [TestMethod]
+    public async Task CaptureProfileReadsOnlyTheOriginalBoundEnvelopeAndRejectsRecoveredSettings()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var rig = new CameraRigConfig(new SensorProfile("sensor", 2, 2, 3.75, SensorColorMode.Mono, CameraPixelFormat.Mono16),
+            new OpticsProfile("Equidistant", 2.8, 180, 0), new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(99), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0));
+        var configuration = new CameraModuleConfig(new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("private"), rig, CapturePipelineConfig.Empty, "agent-gallery");
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null, configuration).ConfigureAwait(false);
+        var submission = new CaptureLoopSubmission(new CaptureRequest(raw.Descriptor.Timing.RequestedStartUtc, TimeSpan.FromSeconds(5), CaptureMode.Still),
+            new CaptureResult(null, new CaptureSetpoint(TimeSpan.FromSeconds(1), 0, null, null), TimeSpan.Zero, CaptureMode.Still, false), Utc(1), TimeSpan.FromSeconds(5), TimeSpan.Zero);
+        var context = CaptureLaneEnvelopeSerializer.Serialize(configuration, submission);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO capture_lane_contexts SELECT raw_capture_row_id, $json, $hash, 'capture' FROM raw_captures WHERE capture_id = $capture;";
+        command.Parameters.AddWithValue("$json", context.Json);
+        command.Parameters.AddWithValue("$hash", context.Sha256);
+        command.Parameters.AddWithValue("$capture", raw.Descriptor.Capture.CaptureId.ToString("N"));
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        var detail = await fixture.Gallery.GetCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), detail?.Detail?.CaptureProfile?.EffectiveInterval);
+        Assert.AreEqual(2.8, detail?.Detail?.CaptureProfile?.FocalLengthMillimeters);
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE capture_lane_contexts SET context_source = 'manifest-fallback';";
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        var recovered = await fixture.Gallery.GetCaptureAsync(raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(recovered?.Detail?.CaptureProfile);
+        Assert.AreEqual(raw.Descriptor.Capture.CaptureId, recovered?.CaptureId);
+    }
 
     [TestMethod]
     public async Task SourceReadKeepsRawIdentityAndManifestWithoutProcessingOrDeliveryTraversal()
@@ -1360,7 +1415,8 @@ public sealed class SqliteCameraAgentGalleryTests
 
         internal SqliteCameraAgentGallery Gallery { get; }
 
-        internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false)
+        internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false,
+            IDeploymentLocationStore? deploymentLocation = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -1384,7 +1440,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 root,
                 journal,
                 processingStore,
-                new SqliteCameraAgentGallery(options, processingStore, resolver))
+                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation))
             {
                 SecondaryRoot = secondaryRoot
             };
@@ -1434,7 +1490,9 @@ public sealed class SqliteCameraAgentGalleryTests
         internal async Task<ArtifactManifestV2> AddRawAsync(
             DateTimeOffset exposureStartedUtc,
             string sourceId,
-            SceneProvenance? scene)
+            SceneProvenance? scene,
+            CameraModuleConfig? configuration = null,
+            CaptureLocationProvenance? location = null)
         {
             var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
             var captureId = Guid.NewGuid();
@@ -1454,6 +1512,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 Capture = new CaptureIdentityDescriptor(
                     identity.AgentId, "rig-gallery", identity.CaptureSequence, identity.CaptureId),
                 Timing = timing,
+                Location = location,
                 Artifact = template.Descriptor.Artifact with
                 {
                     ArtifactId = identity.ArtifactId,
@@ -1461,6 +1520,8 @@ public sealed class SqliteCameraAgentGalleryTests
                     CreatedUtc = timing.ReadoutCompletedUtc
                 }
             };
+            if (configuration is not null)
+                descriptor = descriptor with { Profiles = descriptor.Profiles with { Rig = descriptor.Profiles.Rig with { Sha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig) } } };
             var relativePath = $"frames/{artifactId:N}.bin";
             var manifest = new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath, scene);

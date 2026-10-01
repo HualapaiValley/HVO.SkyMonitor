@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -43,17 +44,20 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     private readonly SqliteCaptureProcessingStore _processingStore;
     private readonly ICameraAgentStorageResolver? _storageResolver;
     private readonly IObservingDayCalendarProvider _observingDays;
+    private readonly IDeploymentLocationStore? _deploymentLocation;
 
     public SqliteCameraAgentGallery(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentStorageResolver? storageResolver = null,
-        IObservingDayCalendarProvider? observingDays = null)
+        IObservingDayCalendarProvider? observingDays = null,
+        IDeploymentLocationStore? deploymentLocation = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _storageResolver = storageResolver;
         _observingDays = observingDays ?? new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create(null));
+        _deploymentLocation = deploymentLocation;
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = options.Value.RawIngressSqliteBusyTimeoutSeconds;
@@ -126,7 +130,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
         var row = await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false);
         var capture = ProjectCapture(row, [], false, false, true, "Unavailable");
-        return capture with { Detail = ProjectRawDetail(row, [], [], UnavailableCloudAssessment("NotRead")) };
+        return capture with { Detail = ProjectRawDetail(row, TryReadTrustedManifest(row), [], [], UnavailableCloudAssessment("NotRead")) };
     }
 
     private async ValueTask<CameraAgentGalleryCaptureDetail> BuildDetailAsync(
@@ -171,17 +175,47 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             detail.InputsTruncated))
             .ToArray();
 
-        return ProjectRawDetail(row, artifactStates, nodeDetails,
+        var manifest = TryReadTrustedManifest(row);
+        var detail = ProjectRawDetail(row, manifest, artifactStates, nodeDetails,
             await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false));
+        return detail with
+        {
+            CaptureProfile = await ReadCaptureProfileAsync(row, manifest?.Descriptor, cancellationToken).ConfigureAwait(false),
+            Location = CameraAgentCaptureLocationProjector.Project(manifest?.Descriptor, _deploymentLocation)
+        };
+    }
+
+    private async ValueTask<CameraAgentCaptureProfileFacts?> ReadCaptureProfileAsync(
+        RawGalleryRow row, ReconstructionDescriptor? descriptor, CancellationToken cancellationToken)
+    {
+        if (descriptor is null) return null;
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // This optional detail read is bounded and never joins processing history.
+        command.CommandText = """
+            SELECT context.context_json, context.context_sha256
+            FROM capture_lane_contexts context
+            JOIN raw_captures raw ON raw.raw_capture_row_id = context.raw_capture_row_id
+            WHERE raw.capture_id = $capture AND raw.raw_artifact_id = $artifact
+              AND context.context_source = 'capture'
+              AND length(context.context_json) <= 1048576
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture", row.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", row.RawArtifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var json = await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
+        return CameraAgentCaptureProfileProjector.Project(descriptor, json, reader.GetString(1));
     }
 
     private static CameraAgentGalleryCaptureDetail ProjectRawDetail(
         RawGalleryRow row,
+        ArtifactManifestV2? manifest,
         IReadOnlyList<CameraAgentGalleryArtifactState> artifactStates,
         IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> nodeDetails,
         CameraAgentGalleryCloudAssessment cloudAssessment)
     {
-        var manifest = TryReadTrustedManifest(row);
         var descriptor = manifest?.Descriptor;
         return new CameraAgentGalleryCaptureDetail(
             descriptor is null ? "Unavailable" : "Available",

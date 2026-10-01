@@ -11,6 +11,241 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class CurrentSkyPageTests
 {
     [TestMethod]
+    [DataRow("Available", "35.33°, -113.99° / 1100 m")]
+    [DataRow("NotRetained", "Location not retained for this capture")]
+    [DataRow("Unavailable", "Historical location unavailable")]
+    public void SiteFactsShowCapturedCoordinatesAndVersionOrExplicitAbsence(string availability, string expected)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var capture = OperatorUiTestData.Capture();
+        var location = availability == "Available"
+            ? new CameraAgentCaptureLocationFacts(availability, 35.33, -113.99, 1100, "America/Phoenix", 7)
+            : new CameraAgentCaptureLocationFacts(availability);
+        capture = capture with { Detail = capture.Detail! with { Location = location } };
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.Utc);
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), facts, null)));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var site = cut.FindAll(".rig-facts dl > div").Single(div => div.QuerySelector("dt")!.TextContent == "Site");
+
+        StringAssert.Contains(site.TextContent, expected, StringComparison.Ordinal);
+        if (availability == "Available")
+        {
+            StringAssert.Contains(site.TextContent, "America/Phoenix / recorded deployment v7", StringComparison.Ordinal);
+            Assert.IsFalse(site.QuerySelector("dd")!.ClassList.Contains("fact-unavailable"));
+        }
+        else
+        {
+            Assert.IsTrue(site.QuerySelector("dd")!.ClassList.Contains("fact-unavailable"));
+            Assert.IsNull(site.QuerySelector("small"));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("absent", "No retained outcome")]
+    [DataRow("central", "No retained outcome")]
+    [DataRow("waiting", "Waiting for detector")]
+    [DataRow("unassessed", "Not assessed")]
+    [DataRow("clear", "No causal candidates")]
+    [DataRow("candidate", "2 causal candidates")]
+    [DataRow("failed", "Detector failed")]
+    [DataRow("retry", "Detector retrying")]
+    [DataRow("unavailable", "Outcome unavailable")]
+    [DataRow("foreign", "Outcome unavailable")]
+    [DataRow("denied", "")]
+    public void TransientCardUsesOnlyTheDisplayedCapturesRetainedOutcome(string scenario, string expected)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.TransientHandler = (id, _) =>
+        {
+            if (scenario == "unavailable") throw new IOException("private-storage-location");
+            if (scenario == "denied") return ValueTask.FromResult(
+                OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+            var run = scenario is "absent" or "central" ? null : new HVO.SkyMonitor.CameraAgent.Common.Transients.TransientCaptureRunState(
+                scenario == "failed" ? "quarantined" : "completed",
+                scenario switch { "waiting" => null, "retry" => "retry_wait", "failed" => "quarantined", _ => "completed" },
+                scenario is "clear" or "candidate" or "foreign" ? true : null,
+                1, scenario == "candidate" ? 2 : 0, scenario == "candidate" ? 1 : 0, 0, OperatorUiTestData.Now);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
+                scenario == "foreign" ? Guid.NewGuid() : id,
+                scenario == "central" ? HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central
+                    : HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, run)));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        if (scenario == "denied")
+        {
+            var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+            cut.WaitForAssertion(() => Assert.IsTrue(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+            return;
+        }
+        cut.WaitForAssertion(() => Assert.AreEqual(expected, cut.Find(".metric-icon.transient + div strong").TextContent));
+        Assert.IsNotEmpty(cut.FindAll(".sky-image-stage img"));
+        Assert.IsFalse(cut.Markup.Contains("#1005", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Markup.Contains("private-storage-location", StringComparison.Ordinal));
+        if (scenario == "candidate")
+            StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "Candidates are not confirmed events", StringComparison.Ordinal);
+        if (scenario is "absent" or "central")
+            StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "now", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task AnOptionalTransientReadDoesNotDelayTheImageAndDisposalDiscardsItsResult()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.TransientHandler = (_, _) => new(pending.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        Assert.AreEqual("Outcome not loaded", cut.Find(".metric-icon.transient + div strong").TextContent);
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        pending.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        Assert.IsFalse(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow("normal")]
+    [DataRow("missing")]
+    [DataRow("denied")]
+    public void SourceTimingUsesTheExactWindowAndAuthorizationDenialClearsTheImage(string outcome)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var (lineage, product, captures) = Gallery.CameraAgentCombinedSpanProjectorTests.CreateWindow();
+        context.JSInterop.SetupModule("./Components/Presentation/RetainedPreviewImage.razor.js")
+            .Setup<bool>("hasFailed", _ => true).SetResult(false);
+        var endpoint = captures[^1];
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(endpoint, ObservingDayCalendar.Utc) with { CombinedLineage = lineage };
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(OperatorUiTestData.CurrentImage(), facts, null)));
+        service.ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+        service.DetailHandler = (id, _) => ValueTask.FromResult(outcome == "denied"
+            ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+            : outcome == "missing"
+                ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.NotFound, "Missing")
+                : OperatorUiResult<CameraAgentGalleryCapture>.Success(captures.Single(capture => capture.CaptureId == id)));
+        var cut = context.Render<CurrentSkyPage>();
+        if (outcome == "denied")
+        {
+            var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+            cut.WaitForAssertion(() => Assert.IsTrue(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        }
+        else
+        {
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".lineage-facts").TextContent,
+                outcome == "normal" ? "17 seconds (first to last start)" : "complete source timing not retained", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".lineage-facts").TextContent, "2 seconds", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("not-found")]
+    [DataRow("unavailable")]
+    [DataRow("exception")]
+    [DataRow("timeout")]
+    public async Task FullScreenPinsTheExactBaseUntilLateLayerReadIsAppliedOnClose(string outcome)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        var completed = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PresentationHandler = (_, _) => new(completed.Task);
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<bool>("requestFullScreen", _ => true).SetResult(true);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".capture-image img");
+        var source = cut.Find(".capture-image img").GetAttribute("src");
+        await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
+        var renders = cut.RenderCount;
+        if (outcome == "exception") completed.SetException(new InvalidOperationException("Private storage failure"));
+        else if (outcome == "timeout") completed.SetException(new OperationCanceledException());
+        else completed.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+            outcome == "not-found" ? OperatorUiResultKind.NotFound : OperatorUiResultKind.Unavailable, "Retained layers unavailable."));
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.RenderCount > renders));
+        Assert.AreEqual(source, cut.Find(".capture-image img").GetAttribute("src"));
+        Assert.IsFalse(cut.Markup.Contains("Private storage failure", StringComparison.Ordinal));
+        await cut.Instance.ViewerClosedAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            if (outcome == "not-found") Assert.AreNotEqual(source, cut.Find(".capture-image img").GetAttribute("src"));
+            else Assert.AreEqual(source, cut.Find(".capture-image img").GetAttribute("src"));
+            Assert.IsFalse(cut.Markup.Contains("Private storage failure", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public async Task AuthorizationRevocationDuringFullScreenIsNotDeferred()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        var completed = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PresentationHandler = (_, _) => new(completed.Task);
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<bool>("requestFullScreen", _ => true).SetResult(true);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".capture-image img");
+        await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, args) => redirected.TrySetResult(args.Location);
+        completed.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+        var location = await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(location.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".sky-image-stage img")));
+    }
+
+    [TestMethod]
+    public async Task BrowserRejectingFullScreenRestoresRefreshAndReportsTheFailure()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var reads = 0;
+        service.CurrentSkyHandler = _ =>
+        {
+            Interlocked.Increment(ref reads);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(OperatorUiTestData.CurrentImage(), null, null)));
+        };
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<bool>("requestFullScreen", _ => true).SetResult(false);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement("#current-sky-view-large");
+        await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "browser could not open full screen", StringComparison.Ordinal));
+        var before = reads;
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsTrue(reads > before));
+    }
+
+    [TestMethod]
+    [DataRow(false, false, "Disabled")]
+    [DataRow(true, false, "Uploads disabled")]
+    [DataRow(true, true, "Delivery configured")]
+    public void CurrentOperationalStatusDoesNotInventCentralAcknowledgement(bool centralEnabled, bool uploadEnabled, string label)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), null, null, new(centralEnabled, uploadEnabled, null, null))));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(label, cut.Find(".dashboard-status a[href='/operations/delivery']").TextContent);
+            Assert.AreEqual("Not verified yet", cut.Find(".dashboard-status a[href='/operations/storage']").TextContent);
+            Assert.IsFalse(cut.Find(".dashboard-status").TextContent.Contains("Acknowledged", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
     public void CurrentImageLeadsWithIndependentFreshnessAndSystemState()
     {
         using var context = new BunitContext();
@@ -42,6 +277,7 @@ public sealed class CurrentSkyPageTests
         var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000103");
         capture = capture with
         {
+            Detail = capture.Detail! with { CaptureProfile = new CameraAgentCaptureProfileFacts(3.75, 2.8, 180, "Equidistant", TimeSpan.FromSeconds(5), HVO.SkyMonitor.AgentCore.CaptureCadenceMode.MinimumStartInterval) },
             Artifacts =
             [
                 .. capture.Artifacts,
@@ -66,7 +302,11 @@ public sealed class CurrentSkyPageTests
             StringAssert.Contains(summary, "1 s", StringComparison.Ordinal);
             StringAssert.Contains(summary, "640 x 480", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "rig-test", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "3.75 µm", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "2.8 mm · 180° field", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "configured; no measured fit", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".rig-facts").TextContent.Contains("rig-test", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".dashboard-status").TextContent, "5 s recorded interval", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "3 source frames", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "rolling-mean", StringComparison.Ordinal);
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001", cut.Find(".layers-link").GetAttribute("href"));
@@ -259,7 +499,9 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        Assert.HasCount(13, cut.FindAll(".scene-panel input:disabled"));
+        Assert.HasCount(14, cut.FindAll(".scene-panel input:disabled"));
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sun footprint", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Moon footprint", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
     }
 
@@ -1038,6 +1280,115 @@ public sealed class CurrentSkyPageTests
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("product")]
+    [DataRow("source")]
+    public async Task LateLineageResponsesCannotStartMoreSourceReadsAfterRevocation(string pendingStage)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var (lineage, product, captures) = Gallery.CameraAgentCombinedSpanProjectorTests.CreateWindow();
+        var endpoint = captures[^1];
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(endpoint, ObservingDayCalendar.Utc) with { CombinedLineage = lineage };
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+            new(OperatorUiTestData.CurrentImage(), facts, null)));
+        // Inline continuations let the releasing Task.Run join the actual late workflow,
+        // rather than asserting an unchanged call count before that workflow resumes.
+        var productResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentProductDetail>>();
+        var sourceResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentGalleryCapture>>();
+        var transientResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken pendingToken = default;
+        var sourceReads = 0;
+        service.ProductDetailHandler = (_, token) =>
+        {
+            pendingToken = token;
+            return pendingStage == "product" ? new(productResponse.Task)
+                : ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+        };
+        service.DetailHandler = (id, token) =>
+        {
+            pendingToken = token;
+            Interlocked.Increment(ref sourceReads);
+            return new(sourceResponse.Task);
+        };
+        service.TransientHandler = (_, _) => new(transientResponse.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        var expectedReads = pendingStage == "source" ? 1 : 0;
+        Assert.AreEqual(expectedReads, sourceReads);
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, _) => redirected.TrySetResult();
+
+        transientResponse.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(pendingToken.IsCancellationRequested);
+        await Task.Run(() =>
+        {
+            if (pendingStage == "product") productResponse.SetResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+            else sourceResponse.SetResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(captures[0]));
+        }).ConfigureAwait(false);
+        await cut.InvokeAsync(() => { }).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedReads, sourceReads);
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+    }
+
+    [TestMethod]
+    public void SynchronousRunLinkDenialClearsContentAndPreventsTransientDispatch()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var graph = (ProcessingExecutionPagesTests.GraphUiService)context.Services.GetRequiredService<ICameraAgentProcessingGraphUiService>();
+        graph.LiveRunResult = OperatorUiResult<CameraAgentLiveRunLink>.Failure(OperatorUiResultKind.Unauthorized, "revoked");
+        var transientReads = 0;
+        service.TransientHandler = (_, _) =>
+        {
+            Interlocked.Increment(ref transientReads);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.NotFound, "absent"));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        Assert.AreEqual(0, transientReads);
+    }
+
+    [TestMethod]
+    public async Task ARefreshCompletedAfterOptionalAuthorizationRevocationCannotRestoreProtectedContent()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var refreshResult = new TaskCompletionSource<OperatorUiResult<CameraAgentCurrentSkyView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transientResult = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        var view = new CameraAgentCurrentSkyView(OperatorUiTestData.CurrentImage(), null, null);
+        service.CurrentSkyHandler = _ => Interlocked.Increment(ref reads) == 1
+            ? ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(view))
+            : new(refreshResult.Task);
+        service.TransientHandler = (_, _) => new(transientResult.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        var refresh = cut.Find("button.refresh-link").ClickAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, reads));
+
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, args) => redirected.TrySetResult(args.Location);
+        transientResult.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        Assert.IsTrue((await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            .EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".sky-image-stage img")));
+        refreshResult.SetResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(view));
+        await refresh.ConfigureAwait(false);
+
+        Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(2, reads);
     }
 
     [TestMethod]
