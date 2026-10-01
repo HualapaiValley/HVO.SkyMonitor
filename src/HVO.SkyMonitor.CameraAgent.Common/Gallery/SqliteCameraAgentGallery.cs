@@ -171,8 +171,33 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             detail.InputsTruncated))
             .ToArray();
 
-        return ProjectRawDetail(row, artifactStates, nodeDetails,
+        var detail = ProjectRawDetail(row, artifactStates, nodeDetails,
             await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false));
+        return detail with { CaptureProfile = await ReadCaptureProfileAsync(row, cancellationToken).ConfigureAwait(false) };
+    }
+
+    private async ValueTask<CameraAgentCaptureProfileFacts?> ReadCaptureProfileAsync(
+        RawGalleryRow row, CancellationToken cancellationToken)
+    {
+        if (TryReadTrustedManifest(row)?.Descriptor is not { } descriptor) return null;
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // This optional detail read is bounded and never joins processing history.
+        command.CommandText = """
+            SELECT context.context_json, context.context_sha256
+            FROM capture_lane_contexts context
+            JOIN raw_captures raw ON raw.raw_capture_row_id = context.raw_capture_row_id
+            WHERE raw.capture_id = $capture AND raw.raw_artifact_id = $artifact
+              AND context.context_source = 'capture'
+              AND length(context.context_json) <= 1048576
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture", row.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", row.RawArtifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var json = await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
+        return CameraAgentCaptureProfileProjector.Project(descriptor, json, reader.GetString(1));
     }
 
     private static CameraAgentGalleryCaptureDetail ProjectRawDetail(

@@ -18,6 +18,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentCurrentSkyFacts? _facts;
     private CameraAgentCurrentSkyOperations? _operations;
     private CameraAgentProductDetail? _combinedProduct;
+    private TimeSpan? _combinedObservationSpan;
     private string? _lineageMessage;
     private readonly HashSet<Guid> _failedSourcePreviews = [];
     private Guid? _lineageArtifactId;
@@ -115,6 +116,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _selectedStage = ResolveSelection(_presentation, sameCapture ? _selectedStage : null);
         _liveExecutionId = null;
         _combinedProduct = null;
+        _combinedObservationSpan = null;
         _lineageArtifactId = _facts?.CombinedLineage?.ArtifactId;
         _lineageMessage = null;
         _failedSourcePreviews.Clear();
@@ -217,8 +219,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                _accessDenied = true;
-                await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
+                await InvokeAsync(RevokeAccess).ConfigureAwait(false);
                 return;
             }
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
@@ -237,6 +238,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                         _liveExecutionId = null;
                         _runCaptureId = displayCaptureId;
                         _combinedProduct = null;
+                        _combinedObservationSpan = null;
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
@@ -245,6 +247,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     if (_lineageArtifactId != combinedId)
                     {
                         _combinedProduct = null;
+                        _combinedObservationSpan = null;
                         _lineageMessage = null;
                         _lineageArtifactId = combinedId;
                         if (combinedId is { } artifactId)
@@ -295,22 +298,57 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional lineage does not interrupt the current image.")]
     private async Task LoadLineageAsync(Guid artifactId, Guid? captureId, CancellationToken cancellationToken)
     {
+        var lineage = _facts?.CombinedLineage;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
             var result = await OperatorService.GetProductDetailAsync(artifactId, timeout.Token).ConfigureAwait(false);
+            if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                await InvokeAsync(RevokeAccess).ConfigureAwait(false);
+                return;
+            }
+            TimeSpan? span = null;
+            if (result.IsSuccess && result.Value is { } product && product.Product.ArtifactId == artifactId &&
+                product.Product.CaptureId == captureId && lineage?.ArtifactId == artifactId &&
+                !product.SourcesTruncated && product.Sources.Count == lineage.SourceCount && lineage.SourceCount is > 0 and <= 8 &&
+                product.Product.SourceCount == lineage.SourceCount &&
+                product.Sources.Select(static source => source.ArtifactId).SequenceEqual(lineage.SourceArtifactIds))
+            {
+                var sources = new List<CameraAgentGalleryCapture>(lineage.SourceCount);
+                try
+                {
+                    foreach (var source in product.Sources)
+                    {
+                        if (source.CaptureId is not { } sourceCaptureId) break;
+                        var read = await OperatorService.GetSourceCaptureAsync(sourceCaptureId, timeout.Token).ConfigureAwait(false);
+                        if (read.Kind == OperatorUiResultKind.Unauthorized)
+                        {
+                            await InvokeAsync(RevokeAccess).ConfigureAwait(false);
+                            return;
+                        }
+                        if (!read.IsSuccess || read.Value is not { } capture) break;
+                        sources.Add(capture);
+                    }
+                    span = CameraAgentCombinedSpanProjector.Project(lineage, product, sources, captureId!.Value);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception) { /* Optional source timing never hides a successfully read product. */ }
+            }
             await InvokeAsync(() =>
             {
                 if (_accessDenied || _disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
                 if (result.Kind == OperatorUiResultKind.Unauthorized)
                 {
-                    _accessDenied = true;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    RevokeAccess();
                     return;
                 }
                 if (result.IsSuccess && result.Value is { } detail && detail.Product.ArtifactId == artifactId && detail.Product.CaptureId == captureId)
+                {
                     _combinedProduct = detail;
+                    _combinedObservationSpan = span;
+                }
                 else
                     _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
                 StateHasChanged();
@@ -326,6 +364,23 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 StateHasChanged();
             }).ConfigureAwait(false);
         }
+    }
+
+    private void RevokeAccess()
+    {
+        if (_disposeStarted != 0) return;
+        _deferredLayers = null;
+        _accessDenied = true;
+        _viewerOpen = false;
+        _presentation = null;
+        _facts = null;
+        _operations = null;
+        _layers = null;
+        _combinedProduct = null;
+        _combinedObservationSpan = null;
+        _selectedLayers.Clear();
+        StateHasChanged();
+        NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
@@ -399,17 +454,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             _layerCancellation?.IsCancellationRequested != false) return;
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
-            _deferredLayers = null;
-            _accessDenied = true;
-            _viewerOpen = false;
-            _presentation = null;
-            _facts = null;
-            _operations = null;
-            _layers = null;
-            _combinedProduct = null;
-            _selectedLayers.Clear();
-            StateHasChanged();
-            NavigationManager.NavigateTo("/Account/AccessDenied");
+            RevokeAccess();
             return;
         }
         // Keep the actual displayed base and controls frozen, including terminal absence/failure.
@@ -710,6 +755,24 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string ProcessingStripLabel => _presentation is null
         ? "Loading"
         : $"{_presentation.Stages.Count(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available)} of {_presentation.Stages.Count} stages";
+
+    private string CaptureCadenceLabel => _facts?.CaptureProfile is not { } profile
+        ? "Not retained for this capture"
+        : profile.CadenceMode == HVO.SkyMonitor.AgentCore.CaptureCadenceMode.Continuous
+            ? "Continuous at capture time"
+            : FormattableString.Invariant($"{profile.EffectiveInterval.TotalSeconds:0.###} s recorded interval");
+
+    private string SensorSampleLabel => _facts?.CaptureProfile is { } profile
+        ? FormattableString.Invariant($"{profile.PixelSizeMicrons:0.###} µm")
+        : "Not retained for this capture";
+
+    private string OpticsLabel => _facts?.CaptureProfile is { } profile
+        ? FormattableString.Invariant($"{profile.FocalLengthMillimeters:0.###} mm · {profile.FieldOfViewDegrees:0.###}° field")
+        : "Not retained for this capture";
+
+    private string ProjectionLabel => _facts?.CaptureProfile is { } profile
+        ? $"{profile.ProjectionModel} (configured; no measured fit)"
+        : "No retained model or measured fit";
 
     private string IncludedFramesLabel(CameraAgentCombinedLineage lineage) =>
         _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId && !product.SourcesTruncated

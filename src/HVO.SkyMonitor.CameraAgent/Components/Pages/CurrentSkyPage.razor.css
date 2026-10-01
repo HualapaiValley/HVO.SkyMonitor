@@ -165,8 +165,8 @@
 .source-strip > .source-entry { position: relative; min-width: 0; min-height: 3.5rem; border: 1px solid var(--border); border-radius: .4rem; color: var(--text); background: #05080d; overflow: hidden; }
 .source-strip > .reference { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(88, 166, 255, .13); }
 .source-strip a { display: block; }
-.source-strip img { display: block; width: 100%; aspect-ratio: 16 / 7; object-fit: cover; opacity: .68; }
-.source-strip .reference img { opacity: 1; }
+.source-strip ::deep img { display: block; width: 100%; aspect-ratio: 16 / 7; object-fit: cover; opacity: .68; }
+.source-strip .reference ::deep img { opacity: 1; }
 .source-strip .unavailable { display: grid; min-height: 3.5rem; place-items: center; background: repeating-linear-gradient(135deg, #070c13 0 8px, #0a111b 8px 16px); }
 .source-strip .unavailable b { max-width: 5rem; color: var(--muted); font-size: .5rem; font-weight: 600; text-align: center; }
 .source-strip .source-entry > span:not(.unavailable), .source-strip small { position: absolute; bottom: .3rem; padding: .1rem .24rem; border-radius: .2rem; background: rgba(4, 8, 14, .82); font-size: .53rem; }
@@ -295,4 +295,14 @@
     .pixel-sky-calculator > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .pixel-sky-calculator .button { grid-column: 1 / -1; }
     .state-notice { align-items: flex-start; flex-direction: column; gap: .25rem; }
+}
+
+@media (pointer: coarse), (max-width: 480px) {
+    .current-sky-page button, .current-sky-page a[href], .current-sky-page label {
+        min-height: 44px;
+        min-width: 44px;
+    }
+    .current-sky-page a[href] { display: inline-flex; align-items: center; }
+    .source-strip a[href] { display: block; }
+    .image-tool { width: 44px; height: 44px; }
 }

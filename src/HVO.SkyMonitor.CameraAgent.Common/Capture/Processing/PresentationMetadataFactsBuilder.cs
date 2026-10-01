@@ -113,9 +113,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             descriptor.Controls.EffectiveOffset,
             descriptor.Controls.TemperatureSetpointC,
             CadenceMode = descriptor.CycleEvidence?.CadenceMode,
-            CadenceSeconds = context.Config.Schedule?.SetpointProfiles.SingleOrDefault(profile =>
-                string.Equals(profile.Id, schedule?.SetpointProfileId, StringComparison.Ordinal))?.CaptureInterval.TotalSeconds ??
-                context.Config.Rig.Pipeline.CaptureInterval.TotalSeconds
+            CadenceSeconds = context.Submission.EffectiveInterval.TotalSeconds
         });
         var catalog = JsonSerializer.SerializeToElement(scene.Catalog);
         var calibration = JsonSerializer.SerializeToElement(descriptor.Profiles.Calibration);
@@ -130,7 +128,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             });
         var processing = JsonSerializer.SerializeToElement(descriptor.Profiles.Processing);
         var corners = new PresentationMetadataFactsV1(string.Empty,
-            DisplayLines([$"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}", $"AGENT {descriptor.Capture.AgentId[..Math.Min(16, descriptor.Capture.AgentId.Length)]}",
+            DisplayLines([$"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}", $"{descriptor.Layout.Width} × {descriptor.Layout.Height} PIXELS",
              $"UTC {descriptor.Timing.ExposureStartedUtc.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.fffZ}"]),
             DisplayLines([$"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
               $"EXPOSURE {descriptor.Controls.EffectiveExposure.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",

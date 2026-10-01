@@ -59,7 +59,8 @@ control results do not replace the complete Tier C candidate gate.
 
 ## Work still required
 
-- Complete the capture-bound rig, cadence, lineage span and bottom-card facts.
+- Qualify the capture-bound rig, cadence and lineage span changes against native
+  retained data, and complete the transient bottom-card facts.
 - Exercise actual newly retained layered products and saved raster output in the
   native browser; compare desktop, phone and native overlay bounds and styling.
 - Verify full-screen selection/default/save/Escape/focus/resizing, failure,
@@ -73,3 +74,26 @@ control results do not replace the complete Tier C candidate gate.
 Private preview state and evidence are outside installed instances. CameraAgent
 previews bind `192.168.2.45`, never localhost. No installed instance, resource
 default or protected `/mnt/hvo-1058` evidence was changed.
+
+## Capture facts and keyboard increment
+
+The capture profile now comes from a size-bounded original capture envelope,
+whose checksum, agent, request time and exact rig hash must match the trusted raw
+manifest. Recovered `manifest-fallback` settings cannot supply historical facts.
+Only sensor sample size, optics, configured projection and recorded interval are
+projected; module options, device identity and coordinates are excluded. Missing
+location remains explicit. Frame-fact cards replace device identity with image
+dimensions and take cadence from the retained submission interval.
+
+Observation span uses the first and last exposure starts in the exact ordered
+source window, with at most eight protected source reads. Incomplete, truncated,
+unrelated or nonmonotonic timing cannot produce a span. A failed optional timing
+read preserves product integration facts; authorization denial clears the image.
+Source thumbnails use the existing cached-failure-aware image component.
+
+The native coarse-pointer probe found six undersized control types and Tab focus
+escaping to the document body. Scoped 44-pixel targets and full-screen Tab
+containment correct those findings; refreshed native verification remains pending.
+All 117 focused capture/profile/span, Current Sky and SQLite gallery cases passed
+with warnings as errors. CameraAgent Unit discovery is now 2,923, and the solution
+inventory is 4,977; Integration and Manual inventories are unchanged.

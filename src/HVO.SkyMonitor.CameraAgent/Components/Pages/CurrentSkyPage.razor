@@ -71,6 +71,7 @@
             }
             <div><dt>LogicHost</dt><dd><a href="/operations/delivery" title="@CentralStatusReason">@CentralStatusLabel</a></dd></div>
             <div><dt>Storage</dt><dd><a href="/operations/storage" title="@StorageStatusReason">@StorageStatusLabel</a></dd></div>
+            <div><dt>Capture cadence</dt><dd>@CaptureCadenceLabel</dd></div>
         </dl>
     </section>
 
@@ -206,7 +207,7 @@
                             <div class="source-entry @(endpoint ? "reference" : "")" title="Source artifact @sourceId">
                                 @if (previewable)
                                 {
-                                    <a href="/gallery/@source!.CaptureId"><img loading="lazy" src="/api/v1/operations/artifacts/@sourceId.ToString("D")/preview" alt="@(endpoint ? "Window endpoint capture" : "Capture") @(source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D"))" @onerror="() => _failedSourcePreviews.Add(sourceId)" /></a>
+                                    <a href="/gallery/@source!.CaptureId"><RetainedPreviewImage @key="sourceId" Source="@($"/api/v1/operations/artifacts/{sourceId:D}/preview")" Alt="@($"{(endpoint ? "Window endpoint capture" : "Capture")} {source.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? sourceId.ToString("D")}")" OnFailure="() => _failedSourcePreviews.Add(sourceId)" /></a>
                                 }
                                 else { <span class="unavailable source-placeholder"><b>Preview unavailable</b></span> }
                                 <span>@(endpoint ? "Endpoint N" : $"N-{lineage.SourceArtifactIds.Count - 1 - index}")</span><small title="Artifact @sourceId">@(source?.CaptureSequence is { } sequence ? $"#{sequence}" : $"Source {index + 1}")</small>
@@ -216,7 +217,7 @@
                     <dl class="lineage-facts">
                         <div><dt>Included</dt><dd>@IncludedFramesLabel(lineage)</dd></div>
                         <div><dt>Total integration</dt><dd>@TotalIntegrationLabel(lineage)</dd></div>
-                        <div><dt>Observation span</dt><dd class="fact-unavailable">Not recorded</dd></div>
+                        <div><dt>Observation span</dt><dd>@(_combinedObservationSpan is { } span ? FormattableString.Invariant($"{span.TotalSeconds:0.###} seconds (first to last start)") : "Unavailable: complete source timing not retained")</dd></div>
                         <div><dt>Window endpoint</dt><dd>Capture #@_facts.CaptureSequence</dd></div>
                     </dl>
                     @if (lineage.SourceCount > 8 || _combinedProduct?.SourcesTruncated == true) { <p>Source display is bounded to the first eight recorded IDs.</p> }
@@ -319,12 +320,12 @@
             </section>
 
             <section class="inspector-card rig-facts" aria-labelledby="rig-heading">
-                <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>@(_facts?.RigId ?? "Rig unavailable")</span></header>
+                <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>@(_facts?.CaptureProfile is null ? "Not retained" : "Recorded")</span></header>
                 <dl>
-                    <div><dt>Camera</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
-                    <div><dt>Optics</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
-                    <div><dt>Projection</dt><dd class="fact-unavailable">No measured fit</dd></div>
-                    <div><dt>Site</dt><dd class="fact-unavailable">Not in capture summary</dd></div>
+                    <div><dt>Sensor sample</dt><dd>@SensorSampleLabel</dd></div>
+                    <div><dt>Optics</dt><dd>@OpticsLabel</dd></div>
+                    <div><dt>Projection</dt><dd>@ProjectionLabel</dd></div>
+                    <div><dt>Site</dt><dd class="fact-unavailable">Location not retained in this summary</dd></div>
                     <div><dt>Profile</dt><dd>@(_facts?.ProcessingProfile is { } profile ? $"{profile.Name} / {profile.Version}" : "Unavailable")</dd></div>
                 </dl>
             </section>

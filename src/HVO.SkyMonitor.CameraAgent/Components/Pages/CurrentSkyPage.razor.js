@@ -34,9 +34,19 @@ export async function requestFullScreen(figure, reference) {
     if (document.fullscreenElement === figure) return true;
     const trigger = figure.querySelector('.image-tool');
     const exitOnEscape = event => {
+        if (document.fullscreenElement !== figure) return;
         if (event.key === 'Escape' && document.fullscreenElement === figure) {
             event.preventDefault();
             document.exitFullscreen().catch(() => {});
+        } else if (event.key === 'Tab') {
+            const targets = [...figure.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), [tabindex="0"]')]
+                .filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+            if (!targets.length) { event.preventDefault(); return; }
+            const index = targets.indexOf(document.activeElement);
+            if (index < 0 || (!event.shiftKey && index === targets.length - 1) || (event.shiftKey && index === 0)) {
+                event.preventDefault();
+                targets[event.shiftKey ? targets.length - 1 : 0].focus({ preventScroll: true });
+            }
         }
     };
     const restoreFocus = () => {
@@ -54,6 +64,7 @@ export async function requestFullScreen(figure, reference) {
         document.addEventListener('keydown', exitOnEscape, true);
         fullScreenBindings.set(figure, binding);
         await figure.requestFullscreen();
+        figure.querySelector('.fullscreen-controls button:not(:disabled)')?.focus({ preventScroll: true });
         return true;
     } catch {
         document.removeEventListener('fullscreenchange', restoreFocus);

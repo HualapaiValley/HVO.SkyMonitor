@@ -11,6 +11,41 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class CurrentSkyPageTests
 {
     [TestMethod]
+    [DataRow("normal")]
+    [DataRow("missing")]
+    [DataRow("denied")]
+    public void SourceTimingUsesTheExactWindowAndAuthorizationDenialClearsTheImage(string outcome)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var (lineage, product, captures) = Gallery.CameraAgentCombinedSpanProjectorTests.CreateWindow();
+        context.JSInterop.SetupModule("./Components/Presentation/RetainedPreviewImage.razor.js")
+            .Setup<bool>("hasFailed", _ => true).SetResult(false);
+        var endpoint = captures[^1];
+        var facts = CameraAgentCurrentSkyFactsProjector.Project(endpoint, ObservingDayCalendar.Utc) with { CombinedLineage = lineage };
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(OperatorUiTestData.CurrentImage(), facts, null)));
+        service.ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Success(product));
+        service.DetailHandler = (id, _) => ValueTask.FromResult(outcome == "denied"
+            ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
+            : outcome == "missing"
+                ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.NotFound, "Missing")
+                : OperatorUiResult<CameraAgentGalleryCapture>.Success(captures.Single(capture => capture.CaptureId == id)));
+        var cut = context.Render<CurrentSkyPage>();
+        if (outcome == "denied")
+        {
+            var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+            cut.WaitForAssertion(() => Assert.IsTrue(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+        }
+        else
+        {
+            cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".lineage-facts").TextContent,
+                outcome == "normal" ? "17 seconds (first to last start)" : "complete source timing not retained", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".lineage-facts").TextContent, "2 seconds", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
     [DataRow("not-found")]
     [DataRow("unavailable")]
     [DataRow("exception")]
@@ -140,6 +175,7 @@ public sealed class CurrentSkyPageTests
         var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000103");
         capture = capture with
         {
+            Detail = capture.Detail! with { CaptureProfile = new CameraAgentCaptureProfileFacts(3.75, 2.8, 180, "Equidistant", TimeSpan.FromSeconds(5), HVO.SkyMonitor.AgentCore.CaptureCadenceMode.MinimumStartInterval) },
             Artifacts =
             [
                 .. capture.Artifacts,
@@ -164,7 +200,11 @@ public sealed class CurrentSkyPageTests
             StringAssert.Contains(summary, "1 s", StringComparison.Ordinal);
             StringAssert.Contains(summary, "640 x 480", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "rig-test", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "3.75 µm", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "2.8 mm · 180° field", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".rig-facts").TextContent, "configured; no measured fit", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".rig-facts").TextContent.Contains("rig-test", StringComparison.Ordinal));
+            StringAssert.Contains(cut.Find(".dashboard-status").TextContent, "5 s recorded interval", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "3 source frames", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".stack-lineage").TextContent, "rolling-mean", StringComparison.Ordinal);
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001", cut.Find(".layers-link").GetAttribute("href"));
