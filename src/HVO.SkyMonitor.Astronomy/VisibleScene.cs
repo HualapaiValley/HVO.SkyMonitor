@@ -243,6 +243,14 @@ public sealed class VisibleScene
 
     /// <summary>Gets topology and ephemeris provider identities actually used by the builder.</summary>
     public VisibleSceneComputationProvenance ComputationProvenance { get; }
+
+    /// <summary>Filters instantaneous stellar references by a separately evaluated admission set.</summary>
+    public VisibleScene WithSelectedStars(IReadOnlySet<string> admittedIds)
+    {
+        ArgumentNullException.ThrowIfNull(admittedIds);
+        return new(Request, Objects.Where(item => item.Kind != CelestialObjectKind.Star || admittedIds.Contains(item.Id)),
+            Segments, ComputationProvenance);
+    }
 }
 
 /// <summary>Builds deterministic visible scenes without persistence or rendering dependencies.</summary>
