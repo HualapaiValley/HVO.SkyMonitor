@@ -1881,6 +1881,41 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual("stellar-exposure-temporal-budget-exceeded", exception.Message);
     }
 
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task FixedCelestialClockDoesNotChangeDeploymentValidity(bool captureIsEffective)
+    {
+        var celestialStart = captureIsEffective ? FixtureUtc.AddDays(-30) : FixtureUtc;
+        var options = JsonSerializer.SerializeToElement(new { fixedSceneUtc = celestialStart });
+        var baseline = CreateConfig() with { Module = new CameraModuleDescriptor("VirtualSky", options) };
+        var deployment = DeploymentLocationSnapshot.Create("capture-clock-site", 1, "fixture", null,
+            FixtureUtc.AddMinutes(-1), FixtureUtc.AddMinutes(1), 35.347, -113.878, 0, "America/Phoenix");
+        var config = baseline with
+        {
+            Observatory = new(-31.2733, 149.0700, 1165, "Australia/Sydney"),
+            DeploymentLocation = deployment
+        };
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(captureIsEffective ? FixtureUtc : FixtureUtc.AddHours(1),
+            TimeSpan.FromSeconds(1), CaptureMode.Still);
+        if (!captureIsEffective)
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual("Deployment location is not effective for the capture time.", exception.Message);
+            return;
+        }
+        var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(deployment.IsEffectiveAt(result.Frame!.TimestampUtc));
+        Assert.IsFalse(deployment.IsEffectiveAt(result.Frame.Metadata.Scene!.SceneUtc!.Value));
+        var expectedModule = CreateModule(FixtureUtc);
+        await expectedModule.InitializeAsync(baseline, CancellationToken.None).ConfigureAwait(false);
+        var expected = await expectedModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(expected.Frame!.PixelData.ToArray(), result.Frame.PixelData.ToArray());
+    }
+
     private static VirtualSkyCameraModule CreateModule(DateTimeOffset utc)
     {
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, -113.878) / 15d;

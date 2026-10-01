@@ -185,7 +185,8 @@ public sealed class VirtualSkyCameraModule(
                 (true, true) => VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc
             });
         var sceneUtc = virtualExposure.CelestialMidpointUtc;
-        var observatory = config.ResolveObservatory(sceneUtc);
+        // Deployment validity binds the operational capture, not a shifted celestial clock.
+        var observatory = config.ResolveObservatory(request.RequestedStartUtc);
         var cloud = _cloudField is null ? null : new VirtualCloudRenderContext(_cloudField, timelineUtc, setpoint.Exposure);
         var transient = _transientScenario is null ? null : new VirtualTransientRenderContext(_transientScenario, timelineUtc, setpoint.Exposure);
         LinearSceneRenderOptions initialRenderOptions = sensor.PixelFormat switch

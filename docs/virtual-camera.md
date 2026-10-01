@@ -444,7 +444,9 @@ Central V2 resolves each source's acknowledged capture-bound deployment version
 and checks its descriptor provenance, canonical coordinate hash and effective
 interval against actual capture time. Missing or conflicting location evidence
 returns NeedsReview; registration coordinates never substitute for it. The
-virtual celestial clock does not change deployment validity. Legacy V1 keeps
+virtual celestial clock does not change deployment validity. VirtualSky likewise
+checks the deployment interval against the operational capture request, independently
+of a fixed celestial or scenario epoch. Legacy V1 keeps
 its historical registration-based behavior for frozen receipts.
 
 The legacy instantaneous mask remains the default. A swept profile must declare

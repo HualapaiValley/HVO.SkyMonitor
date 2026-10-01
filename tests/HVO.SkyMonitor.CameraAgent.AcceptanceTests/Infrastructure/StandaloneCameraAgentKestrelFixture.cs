@@ -120,6 +120,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Logging:LogLevel:Default"] = "Warning",
                 ["Serilog:MinimumLevel:Default"] = "Warning"
             };
+            if (useEnvironmentalAcquisition)
+            {
+                // This history/restart fixture requires a location valid over its periodic
+                // source schedule, including the first slot preceding host startup.
+                overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z";
+            }
             if (useSidingSpringLocation)
             {
                 overrides["CameraAgent:Observatory:LatitudeDegrees"] = "-31.2733";
