@@ -4,6 +4,7 @@
     --border-strong: var(--hvo-border-strong);
     --text: var(--hvo-body-color);
     --muted: var(--hvo-muted);
+    --muted-strong: var(--hvo-muted-strong);
     --blue: #58a6ff;
     --blue-soft: rgba(47, 129, 247, .16);
     --amber-soft: rgba(210, 153, 34, .12);
@@ -28,8 +29,8 @@
 .event-summary span { color: var(--muted); font-size: .65rem; text-transform: uppercase; }
 .event-summary strong { margin-top: .22rem; font-size: 1rem; }
 .event-summary small { margin-top: .13rem; color: var(--muted); font-size: .65rem; }
-.event-toolbar { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: .65rem; align-items: end; margin-bottom: .65rem; }
-.event-toolbar label { display: grid; gap: .3rem; color: var(--muted); font-size: .65rem; font-weight: 700; text-transform: uppercase; }
+.event-toolbar { display: grid; grid-template-columns: repeat(3, minmax(10rem, 1fr)) auto; gap: .6rem; align-items: end; margin-bottom: .8rem; padding: .7rem; border: 1px solid var(--border); border-radius: .5rem; background: rgba(9, 15, 24, .86); }
+.event-toolbar label { display: grid; gap: .28rem; color: var(--muted-strong); font-size: .65rem; font-weight: 700; }
 .event-toolbar select, .event-toolbar input { width: 100%; min-height: 2.3rem; padding: .4rem .5rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text); background: var(--surface); font-size: .7rem; }
 .event-toolbar select:disabled { opacity: .65; cursor: not-allowed; }
 .view-switcher { display: inline-flex; }
@@ -96,6 +97,7 @@ a, button, select, input, summary { outline-offset: 3px; }
     .transient-page { padding: 0 .65rem 3rem; }
     .event-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .event-toolbar, .event-card, .event-card-facts { grid-template-columns: 1fr; }
+    .archive-heading-actions .btn { flex: 1; }
     .event-card-media, .event-media-placeholder { min-height: 13rem; }
     .event-card-facts > div { border-top: 1px solid var(--border); border-left: 0; }
     .event-month-day { min-height: 4rem; padding: .25rem; }
