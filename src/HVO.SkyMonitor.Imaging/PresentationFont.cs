@@ -49,6 +49,21 @@ public static class PresentationFont
         return path.Bounds;
     }
 
+    /// <summary>Returns the same bounded text plate rectangle for both rendering targets.</summary>
+    public static SKRect BackplateBounds(PresentationTextBlockV1 block, int width, int height, SKFont font)
+    {
+        ArgumentNullException.ThrowIfNull(block);
+        var bounds = SKRect.Empty;
+        for (var index = 0; index < block.Lines.Count; index++)
+        {
+            var (x, y) = LineOrigin(block, width, height, font, block.Lines[index], index);
+            var line = LineBounds(font, block.Lines[index], x, y);
+            bounds = index == 0 ? line : SKRect.Union(bounds, line);
+        }
+        bounds.Inflate(block.Backplate?.Padding ?? 0, block.Backplate?.Padding ?? 0);
+        return new(MathF.Floor(bounds.Left), MathF.Floor(bounds.Top), MathF.Ceiling(bounds.Right), MathF.Ceiling(bounds.Bottom));
+    }
+
     public static (float X, float Y) LineOrigin(PresentationTextBlockV1 block, int width, int height,
         SKFont font, string line, int index)
     {

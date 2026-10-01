@@ -93,7 +93,14 @@
 .product-badge.source { border-color: rgba(57, 197, 207, .4); color: #95e6eb; background: rgba(57, 197, 207, .1); }
 
 .sky-figure { position: relative; margin: 0; overflow: hidden; background: #000; }
-.sky-figure:fullscreen { display: grid; grid-template-rows: minmax(0, 1fr) auto; background: #000; }
+.sky-figure:fullscreen { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; background: #000; }
+.fullscreen-controls { display: none; }
+.sky-figure:fullscreen .fullscreen-controls { display: block; max-height: 35vh; overflow-y: auto; padding: .65rem .8rem; border-top: 1px solid var(--border); color: var(--text); background: var(--surface); }
+.fullscreen-controls-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; font-size: .7rem; }
+.fullscreen-controls-heading button { margin-left: auto; }
+.fullscreen-layer-list { display: flex; flex-wrap: wrap; gap: .4rem .8rem; margin-top: .45rem; }
+.fullscreen-layer-list label { display: flex; align-items: center; gap: .4rem; min-height: 2.2rem; font-size: .65rem; }
+.fullscreen-layer-list label small { display: none; }
 .sky-figure:fullscreen .sky-image-stage { width: 100%; height: 100%; }
 .technical-evidence-error { margin: 0; padding: .65rem .8rem; color: var(--hvo-danger-fg); background: var(--hvo-surface); }
 .sky-figure:fullscreen ::deep .capture-image { width: 100%; height: 100%; min-height: 0; max-height: none; }
@@ -113,18 +120,6 @@
 /* Semantic styling from the prototype's per-layer rules, keyed on the retained layer kind. The renderer emits
    filled glyph paths for text and stroked primitives for geometry; these rules give each kind the prototype's
    color, dash and weight without altering pixel-coordinate registration. */
-.sky-layer-overlay ::deep g[data-layer-kind="scene-image-circle"] :is(ellipse, circle, line) { stroke: rgba(116, 209, 255, .45); stroke-width: 2; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-image-circle"] line { stroke: rgba(116, 209, 255, .12); stroke-width: 1; stroke-dasharray: 4 12; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-constellations"] line { stroke: rgba(188, 140, 255, .78); stroke-width: 3; stroke-dasharray: 10 8; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-constellations"] path { fill: #cfb4f5; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-cardinals"] path { fill: #c3ecff; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-cardinals"] rect { fill: rgba(2, 8, 14, .84); stroke: rgba(116, 209, 255, .38); }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-annotation"] :is(circle, ellipse) { stroke: #d2b8f4; stroke-width: 1.5; }
-.sky-layer-overlay ::deep g[data-layer-kind="scene-annotation"] path { fill: #d8eafa; }
-.sky-layer-overlay ::deep g[data-layer-kind="environment"] path { fill: #d8e5f6; }
-.sky-layer-overlay ::deep g[data-layer-kind="cloud-mask"] path { stroke: rgba(65, 189, 211, .55); }
-.sky-layer-overlay ::deep g[data-layer-kind="cloud-labels"] path { fill: #a4eff2; }
-.sky-layer-overlay ::deep path[stroke="#000000"] { stroke: rgba(3, 8, 14, .95); }
 
 .scene-semantics { display: flex; flex-wrap: wrap; justify-content: center; gap: .35rem; }
 .scene-semantics span { padding: .22rem .38rem; border: 1px solid currentColor; border-radius: 999px; background: rgba(5, 10, 17, .82); font: 700 .5rem ui-monospace, monospace; text-transform: uppercase; }

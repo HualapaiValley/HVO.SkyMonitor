@@ -12,6 +12,62 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed class PresentationLayerPayloadTests
 {
     [TestMethod]
+    public void SemanticStylesBindCanonicalIdentityAndRejectInvalidBoundsWithoutChangingV1()
+    {
+        const string retained = """
+            {"contentIdentitySha256":"F83D3FE6028B724F311B87DED68FA299047DE9F9CFE61372438FC8FC16C74201","ellipses":[{"center":{"x":968,"y":608},"color":{"blue":96,"green":96,"red":96},"radiusX":595.8400000000001,"radiusY":595.8400000000001}],"heightPixels":1216,"markers":[],"schemaVersion":"presentation-layer-payload-v1","segments":[],"sourceIdentitySha256":"ECE5224E3FF2C236B20460A5DF2C112C52432487CACB6CC5C69C3EB569106BF7","textBlocks":[],"tileMask":null,"widthPixels":1936}
+            """;
+        var retainedBytes = Encoding.UTF8.GetBytes(retained);
+        var retainedPayload = PresentationLayerPayloadJson.Parse(retainedBytes).Payload;
+        Assert.IsNotNull(retainedPayload);
+        CollectionAssert.AreEqual(retainedBytes, PresentationLayerPayloadJson.Serialize(retainedPayload));
+        var plain = PresentationLayerPayloadJson.Create(new string('A', 64), 100, 100,
+            segments: [new(new(1, 1), new(90, 1), 2, new(188, 140, 255))]);
+        var legacy = plain with { SchemaVersion = PresentationLayerPayloadV1.PreviousSchemaVersion };
+        legacy = legacy with { ContentIdentitySha256 = PresentationLayerPayloadJson.ComputeIdentity(legacy) };
+        var bytes = PresentationLayerPayloadJson.Serialize(legacy);
+        Assert.IsTrue(PresentationLayerPayloadJson.Parse(bytes).IsValid);
+        var json = Encoding.UTF8.GetString(bytes);
+        Assert.IsFalse(json.Contains("stroke", StringComparison.Ordinal));
+        Assert.IsFalse(json.Contains("backplate", StringComparison.Ordinal));
+        var styled = plain with { Segments = [plain.Segments[0] with { Stroke = new(10, 8, 780_000, 3) }] };
+        styled = styled with { ContentIdentitySha256 = PresentationLayerPayloadJson.ComputeIdentity(styled) };
+        Assert.AreNotEqual(plain.ContentIdentitySha256, styled.ContentIdentitySha256);
+        Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(styled)).IsValid);
+        foreach (var stroke in new[] { new PresentationStrokeV2(65, 8, 1), new(1, 0, 1), new(1, 1, -1), new(1, 1, 1, double.NaN) })
+            Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerPayloadJson.Create(new string('A', 64), 100, 100,
+                segments: [plain.Segments[0] with { Stroke = stroke }]));
+        Assert.ThrowsExactly<ArgumentException>(() => (styled with { SchemaVersion = PresentationLayerPayloadV1.PreviousSchemaVersion }).ValidateStructure());
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerPayloadJson.Create(new string('A', 64), 100, 100,
+            textBlocks: [new(PresentationTextAnchor.Point, new(20, 20), ["N"], 2, 0, 0, new(), new(new(), 1, new(), 33, 1))]));
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerPayloadJson.Create(new string('A', 64), 100, 100,
+            textBlocks: [new(PresentationTextAnchor.Point, new(double.MaxValue, 20), ["N"], 2, 0, 0, new())]));
+    }
+
+    [TestMethod]
+    public void SvgEmitsPersistedDashesCrosshairsAndTextBoundBackplates()
+    {
+        var compatibility = new PresentationCompatibilityDescriptor(200, 120, new string('D', 64), new string('E', 64));
+        var source = new PresentationProductReference(Guid.NewGuid(), new string('A', 64), "image/png", compatibility);
+        var layer = LayeredPresentationJson.CreateLayer("expected", source, null, PresentationCoordinateSpace.ScenePixels,
+            PresentationLayerCompositor.AlgorithmVersion, PresentationLayerProducers.SceneProducerVersion, 0,
+            PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { }));
+        var manifest = LayeredPresentationJson.CreateManifest(source, null, [layer]);
+        var payload = PresentationLayerPayloadJson.Create(new string('A', 64), 200, 120,
+            markers: [new(new(40, 60), 6, new(210, 184, 244), true)],
+            segments: [new(new(10, 80), new(180, 80), 2, new(188, 140, 255), new(10, 8, 780_000, 4))],
+            textBlocks: [new(PresentationTextAnchor.Point, new(90, 20), ["N"], 3, 0, 0, new(195, 236, 255),
+                new(new(2, 8, 14), 840_000, new(44, 79, 97), 5, 0))]);
+        var svg = Encoding.UTF8.GetString(GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('F', 64)).Svg.Span);
+        StringAssert.Contains(svg, "stroke-dasharray=\"10 8\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke-dashoffset=\"4\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "stroke=\"#BC8CFF\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "fill-opacity=\"0.84\"", StringComparison.Ordinal);
+        StringAssert.Contains(svg, "fill=\"#C3ECFF\"", StringComparison.Ordinal);
+        Assert.IsFalse(svg.Contains("<text", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void PayloadRoundTripsCanonicallyWithStableContentIdentity()
     {
         var payload = PresentationLayerPayloadJson.Create(new string('A', 64), 640, 480,

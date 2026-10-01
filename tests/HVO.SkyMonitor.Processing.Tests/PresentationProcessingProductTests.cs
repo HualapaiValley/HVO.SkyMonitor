@@ -66,6 +66,14 @@ public sealed class PresentationProcessingProductTests
         Assert.AreNotEqual(all.ChecksumSha256, one.ChecksumSha256);
         Assert.IsTrue(all.Algorithms.Any(algorithm => algorithm.Name == PresentationMaterializationExecutor.PackedEncoderName &&
             algorithm.Version == PresentationMaterializationExecutor.PackedEncoderVersion));
+        Assert.IsTrue(all.Algorithms.Any(algorithm => algorithm.Name == "presentation-compositor" &&
+            algorithm.Version == "typed-presentation-compositor-v5-single-coverage"));
+        var oldRequest = LayeredPresentationJson.CreateMaterializationRequest(manifest,
+            [first.Layer.LayerIdentitySha256, second.Layer.LayerIdentitySha256], "typed-presentation-compositor-v4-semantic",
+            PresentationMaterializationExecutor.PackedEncoderName, PresentationMaterializationExecutor.PackedEncoderVersion,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { format = "packed" }), all.SourceArtifactIds);
+        Assert.AreNotEqual(oldRequest.MaterializationIdentitySha256,
+            all.Recipe.Descriptor.Options.GetProperty("MaterializationIdentitySha256").GetString());
         Assert.ThrowsExactly<ArgumentException>(() => PresentationMaterializationExecutor.MaterializePacked(
             baseArtifact, manifestArtifact, manifest, [first, second], [first.Layer.LayerIdentitySha256], "flat",
             new("packed", "arbitrary")));
@@ -73,6 +81,14 @@ public sealed class PresentationProcessingProductTests
             first.Product.ArtifactId, second.Product.ArtifactId }, all.SourceArtifactIds.ToArray());
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, all.Role);
         Assert.AreEqual(ProcessingProductKind.PixelData, all.Kind);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, all.Layout!.PixelFormat);
+        Assert.AreEqual(24, all.Layout.StrideBytes);
+        Assert.AreEqual(all.Payload.Length, all.Layout.ByteLength);
+        Assert.IsTrue(all.Layout.Validate().IsValid);
+        var off = PresentationMaterializationExecutor.MaterializePacked(baseArtifact, manifestArtifact, manifest,
+            [first, second], [], "flat");
+        Assert.AreEqual(baseArtifact.Layout, off.Layout);
+        CollectionAssert.AreEqual(baseArtifact.Payload.ToArray(), off.Payload.ToArray());
     }
 
     [TestMethod]
@@ -141,6 +157,10 @@ public sealed class PresentationProcessingProductTests
         var cloud = PresentationLayerPayloadJson.Create(new string('B', 64), width, height,
             tileMask: new PresentationTileMaskV1(16, 16, PresentationTileMaskV1.RowMajorLsbFirst,
                 cloudMask, 1, new PresentationColor(255, 255, 255)));
+        // This conformance fixture pins the retained v1 raster, not v2 SVG-style coverage.
+        constellations = Legacy(constellations);
+        scene = Legacy(scene);
+        cloud = Legacy(cloud);
         var typedFinal = PresentationLayerCompositor.Composite(layout, basePixels,
         [
             new(constellations, true, PresentationRasterBlendMode.Normal, 800_000),
@@ -150,6 +170,12 @@ public sealed class PresentationProcessingProductTests
 
         CollectionAssert.AreEqual(oldFinal, typedFinal);
         Assert.AreEqual(3, new[] { constellations, scene, cloud }.Length);
+
+        static PresentationLayerPayloadV1 Legacy(PresentationLayerPayloadV1 payload)
+        {
+            var legacy = payload with { SchemaVersion = PresentationLayerPayloadV1.PreviousSchemaVersion };
+            return legacy with { ContentIdentitySha256 = PresentationLayerPayloadJson.ComputeIdentity(legacy) };
+        }
     }
 
     [TestMethod]

@@ -138,11 +138,11 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
         var style = new PresentationAnnotationStyleV1(
             Options.MarkerRadius, Options.LabelScale, Options.MaximumLabelCharacters, Options.MaximumLabelMagnitude,
             Options.ConstellationLineThickness, Options.ConstellationIds,
-            new(Options.MarkerValue, Options.MarkerValue, Options.MarkerValue),
-            new(Options.LabelValue, Options.LabelValue, Options.LabelValue),
+            Options.MarkerValue is { } marker ? new(marker, marker, marker) : null,
+            Options.LabelValue is { } label ? new(label, label, label) : null,
             new(Options.ConstellationLineRed, Options.ConstellationLineGreen, Options.ConstellationLineBlue),
-            new(Options.ImageCircleValue, Options.ImageCircleValue, Options.ImageCircleValue),
-            new(Options.CardinalValue, Options.CardinalValue, Options.CardinalValue), Options.CardinalScale);
+            Options.ImageCircleValue is { } circle ? new(circle, circle, circle) : null,
+            Options.CardinalValue is { } cardinal ? new(cardinal, cardinal, cardinal) : null, Options.CardinalScale);
         var payloads = PresentationLayerProducers.FromProjectedSceneGroupsV2(
             scene, style, Options.DrawMarkers, Options.DrawLabels, Options.DrawConstellationLines,
             Options.DrawImageCircle, Options.DrawCardinalDirections);
@@ -482,13 +482,13 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     public bool DrawConstellationLines { get; init; } = true;
     public bool DrawImageCircle { get; init; } = true;
     public bool DrawCardinalDirections { get; init; } = true;
-    [Range(0, 255)] public byte MarkerValue { get; init; } = 144;
-    [Range(0, 255)] public byte LabelValue { get; init; } = 255;
-    [Range(0, 255)] public byte ConstellationLineRed { get; init; } = 96;
-    [Range(0, 255)] public byte ConstellationLineGreen { get; init; } = 160;
+    [Range(0, 255)] public byte? MarkerValue { get; init; }
+    [Range(0, 255)] public byte? LabelValue { get; init; }
+    [Range(0, 255)] public byte ConstellationLineRed { get; init; } = 188;
+    [Range(0, 255)] public byte ConstellationLineGreen { get; init; } = 140;
     [Range(0, 255)] public byte ConstellationLineBlue { get; init; } = 255;
-    [Range(0, 255)] public byte ImageCircleValue { get; init; } = 96;
-    [Range(0, 255)] public byte CardinalValue { get; init; } = 255;
+    [Range(0, 255)] public byte? ImageCircleValue { get; init; }
+    [Range(0, 255)] public byte? CardinalValue { get; init; }
     [Range(1, 8)] public int CardinalScale { get; init; } = 2;
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

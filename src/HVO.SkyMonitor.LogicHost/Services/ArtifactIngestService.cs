@@ -2340,7 +2340,7 @@ internal sealed partial class ArtifactIngestService(
         {
             return source.Ordinal > 0 &&
                 string.Equals(resolved.MediaType, PresentationLayerPayloadJson.MediaType, StringComparison.OrdinalIgnoreCase) &&
-                structured.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion &&
+                PresentationLayerPayloadV1.SupportsSchema(structured.ProductSchemaVersion) &&
                 string.Equals(structured.ContentIdentitySha256, expectedIdentity, StringComparison.Ordinal) &&
                 structured.PresentationWidthPixels == source.ExpectedWidthPixels &&
                 structured.PresentationHeightPixels == source.ExpectedHeightPixels &&

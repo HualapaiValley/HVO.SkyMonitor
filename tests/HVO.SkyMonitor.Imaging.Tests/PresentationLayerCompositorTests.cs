@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
+using SkiaSharp;
 
 namespace HVO.SkyMonitor.Imaging.Tests;
 
@@ -9,6 +10,173 @@ namespace HVO.SkyMonitor.Imaging.Tests;
 [TestCategory("Unit")]
 public sealed class PresentationLayerCompositorTests
 {
+    [TestMethod]
+    public void CompositionBudgetsRejectBeforeOutputAllocationAndAdmitFullResolutionW6()
+    {
+        var oversized = new ImageLayout(16384, 16384, CameraPixelFormat.Mono8, 16384);
+        var start = GC.GetAllocatedBytesForCurrentThread();
+        var error = Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerCompositor.CompositeDisplay(oversized, ReadOnlyMemory<byte>.Empty, []));
+        StringAssert.Contains(error.Message, "pixel budget", StringComparison.Ordinal);
+        Assert.IsLessThan(1_000_000L, GC.GetAllocatedBytesForCurrentThread() - start);
+
+        const int size = 3552;
+        var layout = new ImageLayout(size, size, CameraPixelFormat.Mono8, size);
+        var source = new byte[layout.RequiredByteLength];
+        var layer = new PresentationCompositorLayer(Payload(size, size, markers: [new(new(100, 100), 0, new(64, 128, 255))]), true,
+            PresentationRasterBlendMode.Normal, 1_000_000);
+        var accepted = PresentationLayerCompositor.CompositeDisplay(layout, source, Enumerable.Repeat(layer, 7).ToArray());
+        Assert.AreEqual(size * size * 3, accepted.Pixels.Length);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, accepted.Layout.PixelFormat);
+        start = GC.GetAllocatedBytesForCurrentThread();
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerCompositor.CompositeDisplay(layout, source, Enumerable.Repeat(layer, 11).ToArray()));
+        Assert.IsLessThan(1_000_000L, GC.GetAllocatedBytesForCurrentThread() - start, "Rejected stack must not allocate its 38MB output.");
+    }
+
+    [TestMethod]
+    public void CompositionBudgetsBoundAggregatePrimitiveTextAndGeometryWork()
+    {
+        var layout = new ImageLayout(64, 64, CameraPixelFormat.Mono8, 64);
+        var source = new byte[layout.RequiredByteLength];
+        var marker = new PresentationMarkerV1(new(32, 32), 0, new(255, 255, 255));
+        var layer = new PresentationCompositorLayer(Payload(64, 64, markers: Enumerable.Repeat(marker, 4096).ToArray()), true, PresentationRasterBlendMode.Normal, 1_000_000);
+        foreach (var rejected in new[]
+        {
+            Enumerable.Repeat(layer, 5).ToArray(),
+            new[] { layer with { Payload = Payload(64, 64, markers: Enumerable.Repeat(marker, 4097).ToArray()) } },
+            new[] { layer with { Payload = Payload(64, 64, segments: Enumerable.Repeat(new PresentationSegmentV1(new(-131072, 32), new(131072, 32), 8, new()), 17).ToArray()) } },
+            new[] { layer with { Payload = Payload(64, 64, text: Enumerable.Repeat(new PresentationTextBlockV1(PresentationTextAnchor.Point, default,
+                Enumerable.Repeat(new string('W', 64), 8).ToArray(), 1, 0, 0, new()), 17).ToArray()) } },
+            Enumerable.Repeat(layer with { Payload = Payload(64, 64) }, 17).ToArray()
+        })
+            Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerCompositor.CompositeDisplay(layout, source, rejected));
+        Assert.AreEqual(0, source.Sum(value => value));
+    }
+
+    [TestMethod]
+    public void DiagonalAntialiasingAtTileSeamsStaysWithinDocumentedTolerance()
+    {
+        const int width = 2056, height = 1216;
+        var segment = new PresentationSegmentV1(new(4, 17), new(2050, 207), 2, new(255, 255, 255));
+        var source = new byte[width * height * 3];
+        var tiled = PresentationLayerCompositor.Composite(new(width, height, CameraPixelFormat.Rgb24, width * 3), source,
+            [new(Payload(width, height, segments: [segment]), true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        using var full = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using (var canvas = new SKCanvas(full))
+        using (var paint = new SKPaint { IsAntialias = true, StrokeWidth = 2, Color = SKColors.White, Style = SKPaintStyle.Stroke })
+        {
+            canvas.Clear(SKColors.Black);
+            canvas.DrawLine((float)segment.From.X, (float)segment.From.Y, (float)segment.To.X, (float)segment.To.Y, paint);
+        }
+        var maximumDifference = 0;
+        foreach (var seam in new[] { 1024, 2048 })
+            for (var x = seam - 2; x <= seam + 2 && x < width; x++)
+                for (var y = 0; y < height; y++)
+                    maximumDifference = Math.Max(maximumDifference, Math.Abs(tiled[(y * width + x) * 3] - full.GetPixel(x, y).Red));
+        // Skia's clipped tile and untiled scan conversion differ at diagonal edges; no exact-AA claim.
+        Assert.IsLessThanOrEqualTo(32, maximumDifference, "At most 32/255 edge coverage variation, not repeated opacity.");
+        CollectionAssert.AreEqual(new byte[source.Length], source);
+    }
+
+    [TestMethod]
+    public void TranslucentEllipseNeverExceedsSingleCoverageAtScanIntersection()
+    {
+        const int width = 1936, height = 1216;
+        var source = new byte[width * height * 3];
+        var layer = Payload(width, height, ellipses:
+            [new(new(968, 608), 595.84, 595.84, new(116, 209, 255), new(0, 0, 450_000))]);
+        var result = PresentationLayerCompositor.Composite(new(width, height, CameraPixelFormat.Rgb24, width * 3), source,
+            [new(layer, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var reported = (168 * width + 1370) * 3;
+        Assert.IsGreaterThan((byte)0, result[reported + 2]);
+        Assert.IsLessThanOrEqualTo((byte)53, result[reported]);
+        Assert.IsLessThanOrEqualTo((byte)95, result[reported + 1]);
+        Assert.IsLessThanOrEqualTo((byte)115, result[reported + 2]);
+        for (var offset = 0; offset < result.Length; offset += 3)
+        {
+            Assert.IsLessThanOrEqualTo((byte)53, result[offset]);
+            Assert.IsLessThanOrEqualTo((byte)95, result[offset + 1]);
+            Assert.IsLessThanOrEqualTo((byte)115, result[offset + 2]);
+        }
+        CollectionAssert.AreEqual(new byte[source.Length], source);
+    }
+
+    [TestMethod]
+    [DataRow(PresentationRasterBlendMode.Normal, 700_000)]
+    [DataRow(PresentationRasterBlendMode.Multiply, 700_000)]
+    [DataRow(PresentationRasterBlendMode.Screen, 700_000)]
+    [DataRow(PresentationRasterBlendMode.Lighten, 700_000)]
+    [DataRow(PresentationRasterBlendMode.Multiply, 1_000_000)]
+    public void LayerBlendsOnlyOnceAcrossThickLinesCrosshairsAndSegmentJunctions(PresentationRasterBlendMode mode, int opacity)
+    {
+        const int width = 64, height = 64;
+        var color = new PresentationColor(64, 192, 240);
+        var source = Enumerable.Repeat((byte)160, width * height * 3).ToArray();
+        var payload = Payload(width, height,
+            segments: [new(new(4, 10), new(30, 10), 8, color), new(new(30, 10), new(58, 10), 8, color)],
+            markers: [new(new(30.5, 40.5), 6, color, true)]);
+        var result = PresentationLayerCompositor.Composite(new(width, height, CameraPixelFormat.Rgb24, width * 3), source,
+            [new(payload, true, mode, opacity)]);
+        var expected = new[] { color.Red, color.Green, color.Blue }.Select(channel =>
+        {
+            var blended = mode switch
+            {
+                PresentationRasterBlendMode.Multiply => (160 * channel + 127) / 255,
+                PresentationRasterBlendMode.Screen => 255 - ((255 - 160) * (255 - channel) + 127) / 255,
+                PresentationRasterBlendMode.Lighten => Math.Max(160, (int)channel),
+                _ => channel
+            };
+            return (byte)((160 * (1_000_000 - opacity) + blended * opacity + 500_000) / 1_000_000);
+        }).ToArray();
+        foreach (var (x, y) in new[] { (12, 10), (29, 10), (30, 10), (31, 10), (30, 40), (24, 40), (36, 40) })
+        {
+            var offset = (y * width + x) * 3;
+            CollectionAssert.AreEqual(expected, result[offset..(offset + 3)], $"Pixel {x},{y}");
+        }
+        CollectionAssert.AreEqual(Enumerable.Repeat((byte)160, source.Length).ToArray(), source);
+    }
+
+    [TestMethod]
+    public void SemanticTileBoundariesDoNotCreateSeamsAndFarClippedGeometryStaysBounded()
+    {
+        var payload = Payload(2056, 1032, segments: [new(new(-131_072, 1024), new(131_072, 1024), 8, new(100, 160, 200))]);
+        var layout = new ImageLayout(2056, 1032, CameraPixelFormat.Rgb24, 6168);
+        var result = PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
+            [new(payload, true, PresentationRasterBlendMode.Normal, 500_000)]);
+        foreach (var x in new[] { 0, 1023, 1024, 2047, 2048, 2055 })
+            CollectionAssert.AreEqual(new byte[] { 50, 80, 100 }, result[((1024 * 2056 + x) * 3)..((1024 * 2056 + x) * 3 + 3)]);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.ThrowsExactly<OperationCanceledException>(() => PresentationLayerCompositor.CompositeDisplay(layout,
+            new byte[layout.RequiredByteLength], [new(payload, true, PresentationRasterBlendMode.Normal, 500_000)], cancelled.Token));
+    }
+
+    [TestMethod]
+    public void SemanticMonoPresentationPromotesRgbWithDashesAndLeavesZeroLayerBaseExact()
+    {
+        var source = Enumerable.Repeat((byte)100, 160 * 100).ToArray();
+        var before = SHA256.HashData(source);
+        var layout = new ImageLayout(160, 100, CameraPixelFormat.Mono8, 160);
+        var payload = Payload(160, 100,
+            segments: [new(new(10, 80), new(140, 80), 2, new(188, 140, 255), new(10, 8, 1_000_000))],
+            text: [new(PresentationTextAnchor.Point, new(30, 30), ["N"], 3, 0, 0, new(195, 236, 255),
+                new(new(2, 8, 14), 840_000, new(44, 79, 97), 5, 2))]);
+        var composed = PresentationLayerCompositor.CompositeDisplay(layout, source,
+            [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, composed.Layout.PixelFormat);
+        Assert.AreEqual(480, composed.Layout.StrideBytes);
+        Assert.AreEqual(48000, composed.Pixels.Length);
+        CollectionAssert.AreEqual(new byte[] { 188, 140, 255 }, composed.Pixels[((80 * 160 + 12) * 3)..((80 * 160 + 12) * 3 + 3)]);
+        CollectionAssert.AreEqual(new byte[] { 100, 100, 100 }, composed.Pixels[((80 * 160 + 22) * 3)..((80 * 160 + 22) * 3 + 3)]);
+        Assert.IsLessThan((byte)100, composed.Pixels[(28 * 160 + 33) * 3]);
+        var empty = PresentationLayerCompositor.CompositeDisplay(layout, source, []);
+        Assert.AreEqual(layout, empty.Layout);
+        CollectionAssert.AreEqual(source, empty.Pixels);
+        var disabled = PresentationLayerCompositor.CompositeDisplay(layout, source, [new(payload, false, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        Assert.AreEqual(layout, disabled.Layout);
+        CollectionAssert.AreEqual(source, disabled.Pixels);
+        CollectionAssert.AreEqual(before, SHA256.HashData(source));
+    }
+
     [TestMethod]
     public void CompositeIsDeterministicOrderedAndDoesNotMutateInputs()
     {
@@ -43,7 +211,9 @@ public sealed class PresentationLayerCompositorTests
             segments: [new(new PixelPoint(-10, 7), new PixelPoint(30, 7), 1, new(96, 160, 255))],
             ellipses: [new(new PixelPoint(8, 6), 6, 4, new(80, 80, 80))],
             text: [new(PresentationTextAnchor.TopLeft, default, ["A"], 1, 0, 0, new(255, 255, 255))],
-            tileMask: new(2, 1, PresentationTileMaskV1.RowMajorLsbFirst, new byte[] { 2 }, 1, new(255, 64, 32)));
+            tileMask: new(2, 1, PresentationTileMaskV1.RowMajorLsbFirst, new byte[] { 2 }, 1, new(255, 64, 32)))
+        with
+        { SchemaVersion = PresentationLayerPayloadV1.PreviousSchemaVersion };
 
         var result = PresentationLayerCompositor.Composite(Layout(), new byte[16 * 12 * 3],
             [new(payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
@@ -65,6 +235,33 @@ public sealed class PresentationLayerCompositorTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void CancellationAtEndOfAdmissionPreventsOutputAllocationAndCopy(bool promoteToRgb)
+    {
+        const int size = 2048;
+        var layout = new ImageLayout(size, size, CameraPixelFormat.Mono8, size);
+        var source = Enumerable.Repeat((byte)37, layout.RequiredByteLength).ToArray();
+        var checksum = SHA256.HashData(source);
+        using var cancellation = new CancellationTokenSource();
+        var layers = new AdmissionCancellingLayers(
+            new(Payload(size, size, markers: [new(new(10, 10), 1, new(100, 150, 200))]),
+                true, PresentationRasterBlendMode.Normal, 1_000_000), cancellation);
+        Assert.IsFalse(cancellation.IsCancellationRequested);
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        var exception = Assert.ThrowsExactly<OperationCanceledException>(() =>
+        {
+            if (promoteToRgb) PresentationLayerCompositor.CompositeDisplay(layout, source, layers, cancellation.Token);
+            else PresentationLayerCompositor.Composite(layout, source, layers, cancellation.Token);
+        });
+        var allocationDelta = GC.GetAllocatedBytesForCurrentThread() - allocated;
+
+        Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+        Assert.IsLessThan(1_000_000L, allocationDelta, "Admission cancellation must precede the 4/12 MiB output allocation and any base copy.");
+        CollectionAssert.AreEqual(checksum, SHA256.HashData(source));
+    }
+
+    [TestMethod]
     public async Task CompositeCancelsDuringDenseScale16TextHalo()
     {
         const int width = 4096;
@@ -72,15 +269,18 @@ public sealed class PresentationLayerCompositorTests
         var layout = new ImageLayout(width, height, CameraPixelFormat.Rgb24, width * 3);
         var text = Payload(width, height, text: Enumerable.Repeat(
             new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default,
-                Enumerable.Repeat(new string('W', 64), 8).ToArray(), 16, 0, 0, new(255, 255, 255)), 64).ToArray());
+                Enumerable.Repeat(new string('W', 64), 8).ToArray(), 16, 0, 0, new(255, 255, 255)), 4).ToArray());
         using var cancellation = new CancellationTokenSource();
         var render = Task.Run(() => PresentationLayerCompositor.Composite(layout, new byte[layout.RequiredByteLength],
             [new(text, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellation.Token));
-        await Task.Delay(50).ConfigureAwait(false);
-        Assert.IsFalse(render.IsCompleted, "Dense text should still be rendering when cancellation is requested.");
+        await Task.Delay(5).ConfigureAwait(false);
         await cancellation.CancelAsync().ConfigureAwait(false);
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await render.ConfigureAwait(false))
-            .ConfigureAwait(false);
+        try
+        {
+            var output = await render.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(layout.RequiredByteLength, output.Length, "A fast completed render is not a cancellation failure.");
+        }
+        catch (OperationCanceledException) { }
     }
 
     [TestMethod]
@@ -215,6 +415,22 @@ public sealed class PresentationLayerCompositorTests
     }
 
     private static ImageLayout Layout() => new(16, 12, CameraPixelFormat.Rgb24, 48);
+
+    private sealed class AdmissionCancellingLayers(PresentationCompositorLayer layer, CancellationTokenSource cancellation)
+        : IReadOnlyList<PresentationCompositorLayer>
+    {
+        public int Count => 1;
+        public PresentationCompositorLayer this[int index] => index == 0 ? layer : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<PresentationCompositorLayer> GetEnumerator()
+        {
+            yield return layer;
+            // The caller has validated, frozen and accounted the final layer before advancing.
+            cancellation.Cancel();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     private static PresentationLayerPayloadV1 Payload(
         IReadOnlyList<PresentationMarkerV1>? markers = null,

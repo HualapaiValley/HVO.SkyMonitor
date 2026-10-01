@@ -96,9 +96,9 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v5-plex-star-scale";
-    public const string MetadataProducerVersion = "metadata-corner-presentation-v2-plex";
-    public const string CloudProducerVersion = "cloud-presentation-v2-plex";
+    public const string SceneProducerVersion = "projected-scene-presentation-v6-semantic";
+    public const string MetadataProducerVersion = "metadata-corner-presentation-v4-compact-backed";
+    public const string CloudProducerVersion = "cloud-presentation-v3-semantic";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -160,11 +160,11 @@ public static class PresentationLayerProducers
             style.SegmentThickness is < 1 or > 8 || style.CardinalScale is < 1 or > 8 || style.ConstellationIds is null ||
             style.ConstellationIds.Count > 256 || style.ConstellationIds.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentOutOfRangeException(nameof(style));
-        var markerColor = style.MarkerColor ?? new(144, 144, 144);
-        var labelColor = style.LabelColor ?? new(255, 255, 255);
-        var segmentColor = style.SegmentColor ?? new(96, 160, 255);
-        var imageCircleColor = style.ImageCircleColor ?? new(96, 96, 96);
-        var cardinalColor = style.CardinalColor ?? new(255, 255, 255);
+        var markerColor = style.MarkerColor ?? new(210, 184, 244);
+        var labelColor = style.LabelColor ?? new(210, 184, 244);
+        var segmentColor = style.SegmentColor ?? new(188, 140, 255);
+        var imageCircleColor = style.ImageCircleColor ?? new(116, 209, 255);
+        var cardinalColor = style.CardinalColor ?? new(195, 236, 255);
         var annotatedObjects = scene.Objects.Where(item => IsNamed(item.Id, item.DisplayName) &&
             (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= style.MaximumLabelMagnitude)).ToArray();
         var width = scene.ImageTransform.OutputWidthPixels;
@@ -174,10 +174,23 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var markers = includeMarkers ? annotatedObjects.Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor)) : [];
-        var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
-            style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
-            .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor)) : [];
+        var markers = includeMarkers ? annotatedObjects.Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true)) : [];
+        var segments = new List<PresentationSegmentV1>();
+        PixelPoint? previousEnd = null;
+        var dashOffset = 0d;
+        if (includeConstellations)
+            foreach (var segment in scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
+                style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase)))
+            {
+                // Great-circle arcs arrive tessellated; restarting each short piece would erase the gaps.
+                if (previousEnd != segment.FromPixel) dashOffset = 0;
+                segments.Add(new(segment.FromPixel, segment.ToPixel, style.SegmentThickness, segmentColor,
+                    new(10, 8, 1_000_000, dashOffset)));
+                var dx = segment.ToPixel.X - segment.FromPixel.X;
+                var dy = segment.ToPixel.Y - segment.FromPixel.Y;
+                dashOffset = (dashOffset + Math.Sqrt(dx * dx + dy * dy)) % 18;
+                previousEnd = segment.ToPixel;
+            }
         var starTexts = new List<PresentationTextBlockV1>();
         var ellipses = new List<PresentationEllipseV1>();
         PixelPoint? cardinalCenter = null;
@@ -196,7 +209,7 @@ public static class PresentationLayerProducers
                     var radiusX = Math.Max(Math.Abs(xVector.X), Math.Abs(yVector.X));
                     var radiusY = Math.Max(Math.Abs(xVector.Y), Math.Abs(yVector.Y));
                     if (radiusX > 0 && radiusY > 0)
-                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor));
+                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, new(0, 0, 450_000)));
                 }
             }
             if (includeCardinalDirections)
@@ -235,11 +248,11 @@ public static class PresentationLayerProducers
             foreach (var (label, point) in cardinalPoints)
             {
                 var bounds = PresentationFont.LineBounds(font, label, (float)point.X, (float)point.Y);
-                bounds.Inflate(PresentationFont.Halo(cardinalScale), PresentationFont.Halo(cardinalScale));
+                bounds.Inflate(cardinalScale * 2, cardinalScale * 2);
                 if (width >= 640 && height >= 480 && reserved.Any(box => Overlaps(box, bounds))) continue;
                 reserved.Add(bounds);
                 cardinalTexts.Add(new(PresentationTextAnchor.Point, point, new ReadOnlyCollection<string>([label]),
-                    cardinalScale, 0, 0, cardinalColor));
+                    cardinalScale, 0, 0, cardinalColor, new(new(2, 8, 14), 840_000, new(44, 79, 97), cardinalScale, 0)));
             }
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
@@ -325,6 +338,7 @@ public static class PresentationLayerProducers
         int scale = 1, int inset = 4, int lineSpacing = 2)
     {
         ArgumentNullException.ThrowIfNull(facts);
+        inset = Math.Max(inset, Math.Min(32, Math.Max(4, heightPixels / 60)));
         var textScale = PresentationFont.FrameScale(widthPixels, heightPixels, scale);
         // The metadata payload has no knowledge of the scene. Fit its actual glyph bounds into
         // the same outer thirds reserved by the scene producer.
@@ -339,7 +353,8 @@ public static class PresentationLayerProducers
         return PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, widthPixels, heightPixels, textBlocks: blocks);
 
         PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines) =>
-            new(anchor, default, lines, textScale, inset, lineSpacing, color ?? new(255, 255, 255));
+            new(anchor, default, lines, textScale, inset, lineSpacing, color ?? new(216, 229, 246),
+                new(new(5, 10, 17), 780_000, new(88, 166, 255), Math.Min(8, inset / 2), 2));
 
         bool Fits(int candidate)
         {
@@ -404,7 +419,7 @@ public static class PresentationLayerProducers
         return new(
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels,
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
-                    bits, lineThickness, color ?? new PresentationColor(255, 64, 32))),
+                    bits, lineThickness, color ?? new PresentationColor(57, 197, 207))),
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels, textBlocks: texts));
     }
 }

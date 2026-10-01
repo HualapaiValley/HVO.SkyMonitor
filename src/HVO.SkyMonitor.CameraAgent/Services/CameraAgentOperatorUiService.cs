@@ -222,7 +222,15 @@ public sealed record CameraAgentCaptureDetailView(
 internal sealed record CameraAgentCurrentSkyView(
     CameraAgentCurrentImagePresentation Presentation,
     CameraAgentCurrentSkyFacts? Facts,
-    string? FactsUnavailableReason);
+    string? FactsUnavailableReason,
+    CameraAgentCurrentSkyOperations? Operations = null);
+
+// Current operational facts are separate from the retained capture's historical acquisition/profile facts.
+internal sealed record CameraAgentCurrentSkyOperations(
+    bool CentralIntegrationEnabled,
+    bool ArtifactUploadEnabled,
+    RawIngressReconciliationReport? RawReconciliation,
+    DerivedProductReconciliationReport? ProductReconciliation);
 
 internal interface ICameraAgentOperatorUiService
 {
@@ -787,10 +795,14 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
         }
+        var operations = new CameraAgentCurrentSkyOperations(
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
+            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
         var displayed = presentation.Value.DisplayCapture ?? presentation.Value.LatestCapture;
         if (displayed is null)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null, operations));
         }
         var combinedArtifactId = presentation.Value.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
@@ -800,18 +812,18 @@ internal sealed class CameraAgentOperatorUiService(
         if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null, operations));
         }
         try
         {
             var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained."));
+                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained.", operations));
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null, operations));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -820,7 +832,7 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable."));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable.", operations));
         }
     }
 

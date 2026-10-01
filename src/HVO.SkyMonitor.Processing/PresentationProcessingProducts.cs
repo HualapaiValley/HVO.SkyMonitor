@@ -53,7 +53,7 @@ public static class PresentationProcessingProducts
             PresentationLayerPayloadJson.MediaType, null, PresentationLayerPayloadJson.Serialize(payload), identity,
             [new("presentation-layer-producer", producerVersion)], canonicalSources, TimeSpan.Zero,
             canonicalSources[0].Compatibility, ProcessingProductKind.Metadata,
-            PresentationLayerPayloadV1.CurrentSchemaVersion, payload.ContentIdentitySha256);
+            payload.SchemaVersion, payload.ContentIdentitySha256);
     }
 
     public static ProcessingProduct CreateMetadataFactsProduct(
@@ -210,7 +210,7 @@ public static class PresentationProcessingProducts
         if (artifact.Layout is { } layout)
             return new(layout.Width, layout.Height, ComputeLayoutIdentity(layout), NormalizeSha256(coordinateIdentitySha256));
         if (artifact.ProductKind == ProcessingProductKind.Metadata &&
-            string.Equals(artifact.SchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            PresentationLayerPayloadV1.SupportsSchema(artifact.SchemaVersion) &&
             PresentationLayerPayloadJson.Parse(artifact.Payload).Payload is { } payload)
             return new(payload.WidthPixels, payload.HeightPixels, new string('0', 64), NormalizeSha256(coordinateIdentitySha256));
         throw new ArgumentException("Artifact has no presentation dimensions.", nameof(artifact));
@@ -220,8 +220,9 @@ public static class PresentationProcessingProducts
     {
         var parsed = PresentationLayerPayloadJson.Parse(input.Product.Payload);
         return input.Product.ProductKind == ProcessingProductKind.Metadata &&
-            string.Equals(input.Product.SchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            PresentationLayerPayloadV1.SupportsSchema(input.Product.SchemaVersion) &&
             parsed.Payload is { } payload &&
+            input.Product.SchemaVersion == payload.SchemaVersion &&
             string.Equals(input.Product.ContentIdentitySha256, payload.ContentIdentitySha256, StringComparison.Ordinal) &&
             payload.WidthPixels == input.Layer.SourceProduct.Compatibility.WidthPixels &&
             payload.HeightPixels == input.Layer.SourceProduct.Compatibility.HeightPixels;
@@ -325,8 +326,10 @@ public static class PresentationMaterializationExecutor
         var sourceIds = new[] { baseArtifact.ArtifactId, manifestArtifact.ArtifactId }
             .Concat(manifest.Layers.Where(layer => enabled.Contains(layer.LayerIdentitySha256))
                 .Select(static layer => layer.SourceProduct.ArtifactId)).Distinct().ToArray();
+        var compositorVersion = manifest.Layers.All(layer => layer.RendererVersion == PresentationLayerCompositor.PreviousAlgorithmVersion)
+            ? PresentationLayerCompositor.PreviousAlgorithmVersion : PresentationLayerCompositor.AlgorithmVersion;
         var request = LayeredPresentationJson.CreateMaterializationRequest(manifest, enabled,
-            PresentationLayerCompositor.AlgorithmVersion, options.EncoderName, options.EncoderVersion,
+            compositorVersion, options.EncoderName, options.EncoderVersion,
             JsonSerializer.SerializeToElement(new { format = "packed" }), sourceIds);
         var compositorLayers = new List<PresentationCompositorLayer>();
         foreach (var layer in manifest.Layers)
@@ -348,14 +351,16 @@ public static class PresentationMaterializationExecutor
             }, layer.OpacityMillionths));
         }
         var layout = new ImageLayout(descriptor.Width, descriptor.Height, descriptor.PixelFormat, descriptor.StrideBytes);
-        var output = PresentationLayerCompositor.Composite(layout, baseArtifact.Payload, compositorLayers, cancellationToken);
+        var composed = PresentationLayerCompositor.CompositeDisplay(layout, baseArtifact.Payload, compositorLayers, cancellationToken);
+        var output = composed.Pixels;
+        descriptor = descriptor with { PixelFormat = composed.Layout.PixelFormat, StrideBytes = composed.Layout.StrideBytes, ByteLength = output.LongLength };
         var identity = PresentationProcessingProducts.Identity(PresentationProcessingProducts.MaterializationRecipeName,
             "typed-presentation-materialization-v1", new { request.MaterializationIdentitySha256 });
         var sources = sourceIds.Select(id => id == baseArtifact.ArtifactId ? baseArtifact : id == manifestArtifact.ArtifactId
             ? manifestArtifact : layerProducts.Single(item => item.Product.ArtifactId == id).Product).ToArray();
         return ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.AnnotatedPreview, outputVariant,
             "application/x-hvo-packed-image", descriptor, output, identity,
-            [new("presentation-compositor", PresentationLayerCompositor.AlgorithmVersion),
+            [new("presentation-compositor", compositorVersion),
              new(options.EncoderName, options.EncoderVersion)], sources, baseArtifact.Integration,
             baseArtifact.Compatibility);
     }

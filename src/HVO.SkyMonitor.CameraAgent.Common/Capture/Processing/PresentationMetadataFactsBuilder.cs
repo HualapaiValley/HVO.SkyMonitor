@@ -130,7 +130,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             });
         var processing = JsonSerializer.SerializeToElement(descriptor.Profiles.Processing);
         var corners = new PresentationMetadataFactsV1(string.Empty,
-            DisplayLines([$"AGENT {descriptor.Capture.AgentId}", $"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}",
+            DisplayLines([$"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}", $"AGENT {descriptor.Capture.AgentId[..Math.Min(16, descriptor.Capture.AgentId.Length)]}",
              $"UTC {descriptor.Timing.ExposureStartedUtc.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.fffZ}"]),
             DisplayLines([$"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
               $"EXPOSURE {descriptor.Controls.EffectiveExposure.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
@@ -138,10 +138,10 @@ internal sealed class PresentationMetadataFactsBuilder(
               $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
               $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
             DisplayLines(environment.Count == 0 ? ["ENVIRONMENT MISSING"] : environment.Select(static item => item.DisplayLine)),
-            DisplayLines([$"CATALOG {scene.Catalog.Name} {scene.Catalog.Version} {scene.Catalog.ChecksumSha256[..12]}",
-              $"CALIBRATION {descriptor.Profiles.Calibration.Name} {descriptor.Profiles.Calibration.Version} {descriptor.Profiles.Calibration.Sha256[..12]}",
+            DisplayLines([$"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
+              $"CALIBRATION {descriptor.Profiles.Calibration.Version} / {descriptor.Profiles.Calibration.Sha256[..12]}",
               stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
-              $"PROFILE {descriptor.Profiles.Processing.Name} {descriptor.Profiles.Processing.Version} {descriptor.Profiles.Processing.Sha256[..12]}"]));
+              $"PROFILE {descriptor.Profiles.Processing.Version} / {descriptor.Profiles.Processing.Sha256[..12]}"]));
         var facts = new PresentationMetadataFactsProductV1(
             PresentationMetadataFactsProductV1.CurrentSchemaVersion, string.Empty, descriptor.Capture.CaptureId,
             descriptor.Capture.CaptureSequence, capture, environment, catalog, calibration, stack,
