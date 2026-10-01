@@ -1,4 +1,5 @@
 using Bunit;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -159,6 +160,74 @@ public sealed class HealthPageTests
     [DataRow(-1d, "0m 0s")]
     public void FormatDuration_ScalesSpans(double seconds, string expected)
         => Assert.AreEqual(expected, HealthPage.FormatDuration(TimeSpan.FromSeconds(seconds)));
+
+    [TestMethod]
+    public void ClockDrift_ShowsTheMeasuredDriftAndWhenItWasMeasured()
+    {
+        using var context = new BunitContext();
+        Configure(context, out var system, out _);
+        system.HealthHandler = _ => ValueTask.FromResult(OperatorUiResult<SystemHealthView>.Success(
+            TestSystemUiService.Health() with
+            {
+                Clock = new SystemClockFact(
+                    ClockSyncStatus.InTolerance, TimeSpan.FromMilliseconds(12), OperatorUiTestData.Now.AddMinutes(-4))
+            }));
+
+        var cut = context.Render<HealthPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("+12 ms", cut.Find("#health-clock-drift").TextContent);
+            Assert.AreEqual(
+                "This agent's clock minus network time, measured 4 min ago",
+                cut.Find("#health-clock-drift").GetAttribute("title"));
+        });
+    }
+
+    [TestMethod]
+    public void ClockDrift_WithoutAMeasurement_SaysWhy()
+    {
+        using var context = new BunitContext();
+        Configure(context, out var system, out _);
+        var cut = context.Render<HealthPage>();
+
+        cut.WaitForAssertion(() => Assert.AreEqual("Unknown", cut.Find("#health-clock-drift").TextContent));
+
+        system.HealthHandler = _ => ValueTask.FromResult(OperatorUiResult<SystemHealthView>.Success(
+            TestSystemUiService.Health() with { Clock = new SystemClockFact(ClockSyncStatus.NotMeasured, null, null) }));
+        cut.Find("#health-refresh").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Not measured", cut.Find("#health-clock-drift").TextContent);
+            Assert.AreEqual("This agent's clock minus network time", cut.Find("#health-clock-drift").GetAttribute("title"));
+        });
+    }
+
+    [TestMethod]
+    [DataRow(ClockSyncStatus.HostSynchronized, "Host synced",
+        "No time server answered; the host's time service reports the clock synchronized")]
+    [DataRow(ClockSyncStatus.Unverified, "Unverified",
+        "No time server answered, and the host's time service does not report the clock synchronized")]
+    public void ClockDrift_WhenNoServerAnswered_SaysSoRatherThanNamingNetworkTime(
+        ClockSyncStatus status, string text, string title)
+    {
+        using var context = new BunitContext();
+        Configure(context, out var system, out _);
+        system.HealthHandler = _ => ValueTask.FromResult(OperatorUiResult<SystemHealthView>.Success(
+            TestSystemUiService.Health() with
+            {
+                Clock = new SystemClockFact(status, null, OperatorUiTestData.Now.AddMinutes(-4))
+            }));
+
+        var cut = context.Render<HealthPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(text, cut.Find("#health-clock-drift").TextContent);
+            Assert.AreEqual(title, cut.Find("#health-clock-drift").GetAttribute("title"));
+        });
+    }
 
     internal static void Configure(BunitContext context, out TestSystemUiService system, out TestOperatorUiService operations)
     {

@@ -12,7 +12,7 @@
 <OperationsPageHeading Eyebrow="System / authenticated local actions" Title="System control" HeadingId="control-heading"
                        Description="Perform only bounded CameraAgent controls that preserve accepted evidence and produce an auditable terminal receipt.">
     <Actions>
-        <button type="button" id="control-refresh" class="button secondary" disabled="@(_loading || _submitting)" @onclick="LoadAsync">@(_loading ? "Refreshing…" : "Refresh")</button>
+        <button type="button" id="control-refresh" class="button secondary" disabled="@(_loading || _submitting)" @onclick="RefreshAsync">@(_loading ? "Refreshing…" : "Refresh")</button>
     </Actions>
 </OperationsPageHeading>
 
@@ -109,6 +109,8 @@ else
         </div>
     </section>
 </div>
+
+<TimeSyncPanel Generation="@_timeGeneration" />
 
 <section class="ops-panel ops-grid" aria-labelledby="control-receipts-heading">
     <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>UTC</span></header>

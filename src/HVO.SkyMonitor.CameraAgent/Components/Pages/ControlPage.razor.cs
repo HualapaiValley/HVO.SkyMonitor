@@ -38,6 +38,7 @@ public sealed partial class ControlPage : ComponentBase, IAsyncDisposable
     private string? _commandError;
     private string? _focusTargetId;
     private string? _dialogFocusId;
+    private int _timeGeneration;
     private bool _loading = true;
     private bool _submitting;
     private bool _restarting;
@@ -119,6 +120,13 @@ public sealed partial class ControlPage : ComponentBase, IAsyncDisposable
                 "import", "./Components/Pages/ControlPage.razor.js").ConfigureAwait(false);
             await _module.InvokeVoidAsync("focusById", target, FocusFallbackId).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>The page's Refresh: reads the capture state and receipts, and has the Time panel read the clock again.</summary>
+    private Task RefreshAsync()
+    {
+        _timeGeneration++;
+        return LoadAsync();
     }
 
     private async Task LoadAsync()

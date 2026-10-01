@@ -498,6 +498,25 @@ public sealed class ControlPageTests
     }
 
     [TestMethod]
+    public void Refresh_ReadsTheClockAgainWithTheRestOfThePage()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var time = new TestTimeSyncUiService();
+        context.Services.AddSingleton<ICameraAgentTimeSyncUiService>(time);
+        var cut = context.Render<ControlPage>();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("In tolerance", cut.Find("#time-status").TextContent);
+            Assert.AreEqual(1, time.Reads);
+        });
+
+        cut.Find("#control-refresh").Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(2, time.Reads));
+    }
+
+    [TestMethod]
     [DataRow(null, "None given")]
     [DataRow("", "None given")]
     [DataRow("operator-maintenance", "Maintenance (no note given)")]
@@ -520,6 +539,8 @@ public sealed class ControlPageTests
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(operations);
         context.Services.AddSingleton<ICameraAgentSystemUiService>(system);
         context.Services.AddSingleton(rig.Object);
+        context.Services.AddSingleton<ICameraAgentTimeSyncUiService>(new TestTimeSyncUiService());
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         return (operations, system, rig);
     }
 

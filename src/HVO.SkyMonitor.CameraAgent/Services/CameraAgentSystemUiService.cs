@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -55,12 +56,16 @@ internal sealed record SystemHostFacts(
     string Runtime,
     string RuntimeIdentifier);
 
+/// <param name="Drift">This agent's clock minus network time, positive when it runs ahead; null when not measured.</param>
+internal sealed record SystemClockFact(ClockSyncStatus Status, TimeSpan? Drift, DateTimeOffset? MeasuredUtc);
+
 internal sealed record SystemHealthView(
     DateTimeOffset EvaluatedUtc,
     SystemCheckState Overall,
     IReadOnlyList<SystemHealthCheck> Checks,
     SystemHostFacts Host,
-    bool CentralIntegrationEnabled);
+    bool CentralIntegrationEnabled,
+    SystemClockFact? Clock = null);
 
 internal sealed record SystemCatalogView(
     string CatalogId,
@@ -125,7 +130,8 @@ internal sealed class CameraAgentSystemUiService(
     CatalogSnapshotResult catalog,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
-    ILogger<CameraAgentSystemUiService> logger) : ICameraAgentSystemUiService
+    ILogger<CameraAgentSystemUiService> logger,
+    IClockSyncMonitor? clockMonitor = null) : ICameraAgentSystemUiService
 {
     internal const int MaxReceipts = 25;
     internal static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(15);
@@ -143,6 +149,7 @@ internal sealed class CameraAgentSystemUiService(
             ["disk-pressure"] = ("Storage capacity", "Local", "/operations/storage"),
             ["camera-configuration"] = ("Camera configuration", "Acquisition", "/operations/camera"),
             ["capture-admission"] = ("Capture admission", "Acquisition", "/operations/control"),
+            ["clock"] = ("Clock", "Acquisition", "/operations/control"),
             ["raw-ingress"] = ("Raw ingress", "Acquisition", "/operations/storage"),
             ["capture-lanes"] = ("Capture lanes", "Acquisition", "/operations/storage"),
             ["environmental-acquisition"] = ("Environmental acquisition", "Acquisition", "/operations/environment"),
@@ -184,7 +191,7 @@ internal sealed class CameraAgentSystemUiService(
                 .DefaultIfEmpty(SystemCheckState.Healthy)
                 .Max();
             return OperatorUiResult<SystemHealthView>.Success(new SystemHealthView(
-                timeProvider.GetUtcNow(), overall, checks, SampleHost(), centralEnabled));
+                timeProvider.GetUtcNow(), overall, checks, SampleHost(), centralEnabled, ClockFact()));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -342,6 +349,22 @@ internal sealed class CameraAgentSystemUiService(
                 _ => SystemCheckState.Unhealthy
             };
         return new SystemHealthCheck(name, label, scope, state, entry.Duration, href);
+    }
+
+    private SystemClockFact? ClockFact()
+    {
+        if (clockMonitor is null)
+        {
+            return null;
+        }
+        var settings = clockMonitor.Settings;
+        var latest = clockMonitor.Latest;
+        var status = ClockAssessment.Evaluate(settings, latest).Status;
+        if (!settings.Enabled || latest is null || !latest.Enabled)
+        {
+            return new SystemClockFact(status, null, null);
+        }
+        return new SystemClockFact(status, latest.Selected?.Offset?.Negate(), latest.MeasuredUtc);
     }
 
     private SystemHostFacts SampleHost()

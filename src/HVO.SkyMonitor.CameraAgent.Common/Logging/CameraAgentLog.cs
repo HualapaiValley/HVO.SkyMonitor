@@ -223,6 +223,22 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2072, Level = LogLevel.Information, Message = "Capture processing graph completed with {Outcome}")]
     public static partial void CaptureProcessingGraphCompleted(this ILogger logger, string outcome);
 
+    [LoggerMessage(EventId = 2093, Level = LogLevel.Information, Message = "Clock check measured an offset of {OffsetMilliseconds} ms (round trip {RoundTripMilliseconds} ms, stratum {Stratum}, {Answered} of {Queried} servers answered, kernel {KernelStatus})")]
+    public static partial void ClockMeasured(
+        this ILogger logger,
+        double offsetMilliseconds,
+        double roundTripMilliseconds,
+        int stratum,
+        int answered,
+        int queried,
+        string kernelStatus);
+
+    [LoggerMessage(EventId = 2094, Level = LogLevel.Warning, Message = "Clock check found no usable time server ({Queried} queried, {Ignored} configured entries ignored as invalid); kernel {KernelStatus}")]
+    public static partial void ClockUnmeasured(this ILogger logger, int queried, int ignored, string kernelStatus);
+
+    [LoggerMessage(EventId = 2095, Level = LogLevel.Warning, Message = "Clock check round failed with {ExceptionType}")]
+    public static partial void ClockCheckFailed(this ILogger logger, string exceptionType);
+
     [LoggerMessage(EventId = 2090, Level = LogLevel.Information, Message = "CameraAgent operator {Actor} completed presentation materialization {OutputIdentity} for capture {CaptureId} as artifact {ArtifactId} (Replayed={Replayed})")]
     public static partial void PresentationMaterializationCompleted(
         this ILogger logger,
