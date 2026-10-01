@@ -112,3 +112,45 @@ record and all preceding archive data remain preserved. A separate private
 validation state is prepared for a 1936×1216 virtual sensor, the production HYG
 catalog, and a complete typed pipeline configured from startup. It uses LAN port
 5132, with no cloud reference substituted and no installed-instance changes.
+
+## Genuine typed output and native interaction evidence
+
+The separate private runtime `/home/roys/.hvo-ui-1035-layered-v3` runs committed
+source `b3daf27d` at `http://192.168.2.45:5132/`. It uses the original retained
+active module profile, a 1936×1216 Mono16 virtual sensor with a matching 3872-byte
+stride, the verified production HYG snapshot, and twelve production pipeline
+nodes. Acquisition is paused at capture #32; all 32 executions completed.
+Earlier failed setup states remain preserved separately. No rows or artifacts
+were fabricated to create this evidence, and cloud nodes are omitted because a
+real clear reference was not provided.
+
+Capture #32 retains five interactive layers: expected catalog stars, constellation
+lines, cardinal directions, image geometry and frame facts. Native authenticated
+browser checks at 1440×900, 390×844 and 320×844 passed default selection, all layers
+off, restore defaults, full-screen layer toggling, forward-Tab containment, Escape
+and trigger-focus return, and immutable saved-stack downloads. All widths preserve
+the base URL and have no overflow or browser errors. At desktop, the image and SVG
+have identical 979.125×614.984375 CSS bounds; the source is 1936×1216 and the SVG
+viewBox is `0 0 1936 1216`.
+
+All three saved originals have 7,062,528 RGB bytes with stride 5808 and the same
+SHA-256 `8549fbaa442eeeba380f5c2fe9dd22a8e0baf9f859b0825059d934fc2f438fc8`.
+Their 191,327 chromatic pixels verify that colors survive composition over the
+monochrome source. The retained SVG includes purple `#BC8CFF` geometry with a
+`10 8` dash array, pale-cyan `#C3ECFF` cardinals, cyan `#74D1FF` geometry and blue
+`#58A6FF` fact-card borders. These invariants establish real output and registration;
+they do not establish full SVG/raster pixel parity or prototype acceptance.
+The source window reports five of five frames, five seconds of integration and
+an 8.031-second first-to-last-start span, separately derived from retained facts.
+
+Evidence is in `after-layered.json`, `layer-interactions.json`,
+`native-output-invariants.json`, the layered screenshots/SVG, saved originals and
+display JPEGs under `/home/roys/.cache/hvo/1035/`. The original capture #543
+before/after evidence remains separate and unchanged. A matched rendering
+baseline for the new capture and resource qualification remain required.
+
+The four CI-control guards passed again at `b3daf27d`; its classifier selects the
+same shared, CameraAgent, LogicHost, combined and delivery lanes, with
+`mode=full complete=false deployment=false` over 35 paths. The complete Tier C
+candidate gate, independent exact-range review and separate operator page review
+are still outstanding.
