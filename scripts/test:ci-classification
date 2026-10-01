@@ -417,7 +417,8 @@ comm -12 <(printf '%s\n' "${link_including_projects[@]}") <(printf '%s\n' "${src
   printf 'No src/ project file contributed a link record; the enumerator narrowed to tests/.\n' >&2
   exit 1
 }
-printf '%s\n' "${link_records[@]}" | grep -qE '^[^|]*\|(docs|deploy)/' || {
+# Consume every record: an early grep -q exit can SIGPIPE printf and fail under pipefail.
+printf '%s\n' "${link_records[@]}" | grep -E '^[^|]*\|(docs|deploy)/' >/dev/null || {
   printf 'No link outside src/, tests/, and tools/ was resolved; the depth widening regressed.\n' >&2
   exit 1
 }
