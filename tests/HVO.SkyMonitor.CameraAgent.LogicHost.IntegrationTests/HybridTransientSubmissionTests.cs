@@ -325,6 +325,66 @@ public sealed class HybridTransientSubmissionTests
             Assert.AreEqual(CentralDerivativeJobStatus.Completed, await db.CentralDerivativeJobs.AsNoTracking()
                 .Where(item => item.Id == jobId).Select(item => item.Status).SingleAsync().ConfigureAwait(false));
         }
+        await VerifyPayloadReleaseAsync(fixture, eventId, derivativeIds).ConfigureAwait(false);
+    }
+
+    private static async Task VerifyPayloadReleaseAsync(
+        CameraAgentIntegrationFixture fixture, Guid eventId, Guid[] derivativeIds)
+    {
+        using var scope = fixture.CreateHostScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("sub", "combined-transient-admin"),
+            new Claim("account_type", "User"),
+            new Claim("scope", "api.admin")
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
+        var current = await db.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+        var releaseService = new CentralTransientPayloadReleaseService(
+            db, services.GetRequiredService<ICentralArtifactRetentionReferences>(),
+            services.GetRequiredService<IObjectStore>(),
+            Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
+            TimeProvider.System);
+        var beforeReview = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-before-review", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Ineligible, beforeReview.Status);
+        var review = await services.GetRequiredService<ICentralTransientReviewService>().ReviewAsync(
+            principal, eventId, current.RowVersion, "combined-review-for-release",
+            new CentralTransientReviewRequest(current.ActiveAssessmentId,
+                TransientReviewDisposition.Rejected, null, ["human.retention-approved"]),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientReviewMutationStatus.Applied, review.Status);
+        current = await db.CentralTransientEventCurrent.AsNoTracking()
+            .SingleAsync(item => item.CentralTransientEventId == eventId).ConfigureAwait(false);
+        var retainedVersions = await db.CentralTransientEventVersions.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).OrderBy(item => item.Version)
+            .Select(item => item.CanonicalEventSha256).ToArrayAsync().ConfigureAwait(false);
+        var release = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-release", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, release.Status);
+        Assert.IsNotNull(release.Response);
+        Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, release.Response.State);
+        var replay = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+            "combined-release", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, replay.Status);
+        Assert.IsNotNull(replay.Response);
+        Assert.AreEqual(release.Response with { Replayed = true }, replay.Response);
+        Assert.AreEqual(1, await db.CentralTransientPayloadReleases.CountAsync(
+            item => item.CentralTransientEventId == eventId).ConfigureAwait(false));
+        CollectionAssert.AreEqual(retainedVersions, await db.CentralTransientEventVersions.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).OrderBy(item => item.Version)
+            .Select(item => item.CanonicalEventSha256).ToArrayAsync().ConfigureAwait(false));
+        CollectionAssert.AreEquivalent(derivativeIds, await db.CentralTransientDerivatives.AsNoTracking()
+            .Where(item => item.CentralTransientEventId == eventId).Select(item => item.DerivativeId)
+            .ToArrayAsync().ConfigureAwait(false));
+        var retrieval = services.GetRequiredService<ICentralTransientDerivativeRetrievalService>();
+        foreach (var id in derivativeIds)
+        {
+            await using var content = await retrieval.GetAsync(principal, eventId, id, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.AreEqual(CentralTransientDerivativeLookupStatus.Gone, content.Status);
+        }
     }
 
     private static async Task<HttpResponseMessage> SendAsync(
