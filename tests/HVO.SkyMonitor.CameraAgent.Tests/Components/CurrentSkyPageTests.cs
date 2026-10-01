@@ -11,6 +11,75 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class CurrentSkyPageTests
 {
     [TestMethod]
+    [DataRow("absent", "No retained outcome")]
+    [DataRow("central", "No retained outcome")]
+    [DataRow("waiting", "Waiting for detector")]
+    [DataRow("unassessed", "Not assessed")]
+    [DataRow("clear", "No causal candidates")]
+    [DataRow("candidate", "2 causal candidates")]
+    [DataRow("failed", "Detector failed")]
+    [DataRow("retry", "Detector retrying")]
+    [DataRow("unavailable", "Outcome unavailable")]
+    [DataRow("foreign", "Outcome unavailable")]
+    [DataRow("denied", "")]
+    public void TransientCardUsesOnlyTheDisplayedCapturesRetainedOutcome(string scenario, string expected)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.TransientHandler = (id, _) =>
+        {
+            if (scenario == "unavailable") throw new IOException("private-storage-location");
+            if (scenario == "denied") return ValueTask.FromResult(
+                OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+            var run = scenario is "absent" or "central" ? null : new HVO.SkyMonitor.CameraAgent.Common.Transients.TransientCaptureRunState(
+                scenario == "failed" ? "quarantined" : "completed",
+                scenario switch { "waiting" => null, "retry" => "retry_wait", "failed" => "quarantined", _ => "completed" },
+                scenario is "clear" or "candidate" or "foreign" ? true : null,
+                1, scenario == "candidate" ? 2 : 0, scenario == "candidate" ? 1 : 0, 0, OperatorUiTestData.Now);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
+                scenario == "foreign" ? Guid.NewGuid() : id,
+                scenario == "central" ? HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central
+                    : HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, run)));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+
+        if (scenario == "denied")
+        {
+            var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+            cut.WaitForAssertion(() => Assert.IsTrue(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".sky-image-stage img"));
+            return;
+        }
+        cut.WaitForAssertion(() => Assert.AreEqual(expected, cut.Find(".metric-icon.transient + div strong").TextContent));
+        Assert.IsNotEmpty(cut.FindAll(".sky-image-stage img"));
+        Assert.IsFalse(cut.Markup.Contains("#1005", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Markup.Contains("private-storage-location", StringComparison.Ordinal));
+        if (scenario == "candidate")
+            StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "Candidates are not confirmed events", StringComparison.Ordinal);
+        if (scenario is "absent" or "central")
+            StringAssert.Contains(cut.Find(".metric-icon.transient + div").TextContent, "now", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task AnOptionalTransientReadDoesNotDelayTheImageAndDisposalDiscardsItsResult()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentCaptureTransientView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.TransientHandler = (_, _) => new(pending.Task);
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".sky-image-stage img");
+        Assert.AreEqual("Outcome not loaded", cut.Find(".metric-icon.transient + div strong").TextContent);
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        pending.SetResult(OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        Assert.IsFalse(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     [DataRow("normal")]
     [DataRow("missing")]
     [DataRow("denied")]

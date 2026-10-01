@@ -17,6 +17,9 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private CameraAgentCurrentImagePresentation? _presentation;
     private CameraAgentCurrentSkyFacts? _facts;
     private CameraAgentCurrentSkyOperations? _operations;
+    private CameraAgentCaptureTransientView? _transient;
+    private string? _transientMessage;
+    private long _transientGeneration;
     private CameraAgentProductDetail? _combinedProduct;
     private TimeSpan? _combinedObservationSpan;
     private string? _lineageMessage;
@@ -112,6 +115,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             display, display, false, archive.Presentation.SelectedStage, archive.Presentation.Stages, false, false);
         _facts = archive.Facts?.CaptureId == capture.CaptureId ? archive.Facts : null;
         _operations = null;
+        _transient = null;
+        _transientMessage = null;
         _initialLoading = false;
         _selectedStage = ResolveSelection(_presentation, sameCapture ? _selectedStage : null);
         _liveExecutionId = null;
@@ -125,6 +130,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         if (_lineageArtifactId is { } artifactId)
             _ = LoadLineageAsync(artifactId, capture.CaptureId, _lifetime.Token);
         _ = LoadLiveRunLinkAsync(capture.CaptureId, _lifetime.Token);
+        _ = LoadTransientAsync(capture.CaptureId, _lifetime.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -235,6 +241,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     _operations = result.Value.Operations;
                     if (_runCaptureId != displayCaptureId)
                     {
+                        _transient = null;
+                        _transientMessage = null;
                         _liveExecutionId = null;
                         _runCaptureId = displayCaptureId;
                         _combinedProduct = null;
@@ -279,6 +287,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 // The image is already visible. A slow optional run-link lookup cannot make
                 // the five-second current-sky refresh appear to have failed.
                 _ = LoadLiveRunLinkAsync(captureId, cancellationToken);
+                _ = LoadTransientAsync(captureId, cancellationToken);
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -375,6 +384,8 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _presentation = null;
         _facts = null;
         _operations = null;
+        _transient = null;
+        _transientMessage = null;
         _layers = null;
         _combinedProduct = null;
         _combinedObservationSpan = null;
@@ -711,8 +722,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)"
             : SelectedSlot?.Label ?? "Unavailable";
 
-    // The prototype caption names an event outcome; no transient detection exists yet (#1005), so the caption
-    // reports the capture's own processing state instead of a fixture event.
+    // Image-stage availability and retained detector outcomes remain separate facts.
     private string CaptureOutcomeIconClass => _presentation?.DisplayCapture is null
         ? "pending"
         : UnavailableStageCount > 0 ? "warning" : "success";
@@ -724,8 +734,69 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string CaptureOutcomeSubtitle => _presentation?.DisplayCapture is null
         ? "Waiting for the first displayable capture"
         : UnavailableStageCount > 0
-            ? $"{UnavailableStageCount} of {_presentation.Stages.Count} stages unavailable / transient detection arrives with #1005"
-            : "Transient detection arrives with #1005; no event is claimed for this capture";
+            ? $"{UnavailableStageCount} of {_presentation.Stages.Count} stages unavailable / {TransientOutcomeLabel}"
+            : TransientOutcomeLabel;
+
+    private string TransientOutcomeLabel => _transient?.Run switch
+    {
+        { WorkState: "quarantined" } or { FrameState: "quarantined" } => "Detector failed",
+        { WorkState: "abandoned" } or { FrameState: "abandoned" } => "Detector work abandoned",
+        { FrameState: "retry_wait" } => "Detector retrying",
+        { CandidateCount: > 0 } run => $"{run.CandidateCount} causal candidate{(run.CandidateCount == 1 ? "" : "s")}",
+        { CausalSucceeded: true } => "No causal candidates",
+        { FrameState: null or "queued" } => "Waiting for detector",
+        not null => "Not assessed",
+        _ when _transientMessage is not null => "Outcome unavailable",
+        _ when _transient is not null => "No retained outcome",
+        _ => "Outcome not loaded"
+    };
+
+    private string TransientOutcomeReason => _transient?.Run switch
+    {
+        { WorkState: "quarantined" } or { FrameState: "quarantined" } =>
+            "The recorded detector work is quarantined. Open Operations for its retained evidence.",
+        { WorkState: "abandoned" } or { FrameState: "abandoned" } => "The recorded detector work was abandoned.",
+        { FrameState: "retry_wait" } run => $"Recorded attempt {run.FrameAttempts}; the detector is waiting to retry.",
+        { CandidateCount: > 0 } run => $"{run.CompletedCandidates} complete / {run.QuarantinedCandidates} quarantined. Candidates are not confirmed events.",
+        { CausalSucceeded: true } => "The recorded causal pass completed without candidates.",
+        not null => "No successful causal pass is recorded for this capture.",
+        _ => _transientMessage ?? (_transient?.CurrentMode switch
+        {
+            HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off => "Detection is off now; this capture has no retained local outcome.",
+            HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central => "Central detection is configured now; no local outcome is retained for this capture.",
+            not null => "This capture has no retained local detector outcome.",
+            _ => "Reading this capture's retained detector outcome."
+        })
+    };
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An optional detector read must not fail or hide the image.")]
+    private async Task LoadTransientAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        var generation = Interlocked.Increment(ref _transientGeneration);
+        OperatorUiResult<CameraAgentCaptureTransientView> result;
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            result = await OperatorService.GetCaptureTransientAsync(captureId, timeout.Token).AsTask()
+                .WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+        catch (Exception)
+        {
+            result = OperatorUiResult<CameraAgentCaptureTransientView>.Failure(
+                OperatorUiResultKind.Unavailable, "The retained transient outcome is temporarily unavailable.");
+        }
+        await InvokeAsync(() =>
+        {
+            if (_disposeStarted != 0 || _accessDenied || _runCaptureId != captureId ||
+                generation != Volatile.Read(ref _transientGeneration)) return;
+            if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+            _transient = result.IsSuccess && result.Value?.CaptureId == captureId ? result.Value : null;
+            _transientMessage = _transient is null ? "The retained transient outcome is temporarily unavailable." : null;
+            StateHasChanged();
+        }).ConfigureAwait(false);
+    }
 
     private string LiveIndicatorLabel => _presentation?.ImageFreshness switch
     {

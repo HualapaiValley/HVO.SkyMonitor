@@ -33,6 +33,46 @@ public sealed class CameraAgentOperatorUiServiceTests
 {
     [TestMethod]
     [DataRow("denied", "Unauthorized")]
+    [DataRow("invalid", "Invalid")]
+    [DataRow("failure", "Unavailable")]
+    [DataRow("absent", "Success")]
+    [DataRow("recorded", "Success")]
+    public async Task CaptureTransientReadAuthorizesBeforeAccessAndPreservesMissingOutcome(string scenario, string expected)
+    {
+        var captureId = scenario == "invalid" ? Guid.Empty : Guid.NewGuid();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(scenario == "denied" ? AuthorizationResult.Failed() : AuthorizationResult.Success());
+        var runtime = new Mock<ITransientRuntimeManagement>(MockBehavior.Strict);
+        var run = new TransientCaptureRunState("completed", "completed", true, 1, 0, 0, 0, OperatorUiTestData.Now);
+        if (scenario == "failure")
+            runtime.Setup(value => value.ReadCaptureRunAsync(captureId, CancellationToken.None))
+                .ThrowsAsync(new IOException("private-storage-location"));
+        else if (scenario is "recorded" or "absent")
+            runtime.Setup(value => value.ReadCaptureRunAsync(captureId, CancellationToken.None))
+                .ReturnsAsync(scenario == "recorded" ? run : null);
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            hostOptions: new CameraAgentHostOptions { RawIngressRoot = "/unused", TransientDetection = new() { Mode = TransientOperatingMode.Off } },
+            transientRuntime: runtime.Object);
+
+        var result = await service.GetCaptureTransientAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, result.Kind.ToString());
+        Assert.IsFalse(result.Message?.Contains("private-storage-location", StringComparison.Ordinal) ?? false);
+        if (result.IsSuccess)
+        {
+            Assert.AreEqual(captureId, result.Value!.CaptureId);
+            Assert.AreEqual(TransientOperatingMode.Off, result.Value.CurrentMode);
+            Assert.AreSame(scenario == "recorded" ? run : null, result.Value.Run);
+        }
+        runtime.Verify(value => value.ReadCaptureRunAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            scenario is "denied" or "invalid" ? Times.Never() : Times.Once());
+        runtime.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow("denied", "Unauthorized")]
     [DataRow("foreign", "NotFound")]
     [DataRow("failure", "Unavailable")]
     [DataRow("exact", "Success")]
@@ -159,6 +199,7 @@ public sealed class CameraAgentOperatorUiServiceTests
             "reference-token", "d331-0821084607", new string('D', 64), true,
             CancellationToken.None).ConfigureAwait(false);
         var currentSky = await service.GetCurrentSkyViewAsync(CancellationToken.None).ConfigureAwait(false);
+        var transient = await service.GetCaptureTransientAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var calendar = await service.GetArchiveCalendarAsync(
             new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 3)), CancellationToken.None).ConfigureAwait(false);
         var neighbours = await service.GetGalleryNeighboursAsync(Guid.NewGuid(), new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
@@ -167,7 +208,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         var delivery = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
         var reconciliation = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(18, authentication.ReadCount);
+        Assert.AreEqual(19, authentication.ReadCount);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, transient.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, delivery.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, reconciliation.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, currentSky.Kind);
@@ -189,7 +231,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(14));
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(15));
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
@@ -606,7 +648,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         IArtifactOutbox? artifactOutbox = null,
         CameraAgentHostOptions? hostOptions = null,
         RawIngressState? rawIngressState = null,
-        CaptureProcessingState? captureProcessingState = null) => new(
+        CaptureProcessingState? captureProcessingState = null,
+        ITransientRuntimeManagement? transientRuntime = null) => new(
             authentication,
             authorization,
             operationsProvider: null!,
@@ -621,7 +664,7 @@ public sealed class CameraAgentOperatorUiServiceTests
             artifactOutbox!,
             null!,
             null!,
-            null!,
+            transientRuntime!,
             configuration!,
             scheduleRuntime,
             [],

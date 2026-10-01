@@ -307,6 +307,10 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
             ? OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null))
             : OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "unavailable");
     }
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>>> TransientHandler { get; set; } =
+        (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
+            id, HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, null)));
+    public ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(Guid captureId, CancellationToken cancellationToken) => TransientHandler(captureId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(CameraAgentGalleryCalendarQuery query, CancellationToken cancellationToken) => CalendarHandler(query, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>> GetGalleryNeighboursAsync(Guid captureId, CameraAgentGalleryQuery filters, CancellationToken cancellationToken) => NeighboursHandler(captureId, filters, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentProductPage>> GetProductPageAsync(CameraAgentProductQuery query, CancellationToken cancellationToken) => ProductPageHandler(query, cancellationToken);

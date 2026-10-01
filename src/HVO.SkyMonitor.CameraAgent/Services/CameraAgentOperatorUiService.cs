@@ -232,6 +232,12 @@ internal sealed record CameraAgentCurrentSkyOperations(
     RawIngressReconciliationReport? RawReconciliation,
     DerivedProductReconciliationReport? ProductReconciliation);
 
+// The current mode describes configuration now; only Run describes the requested capture's retained outcome.
+internal sealed record CameraAgentCaptureTransientView(
+    Guid CaptureId,
+    TransientOperatingMode CurrentMode,
+    TransientCaptureRunState? Run);
+
 internal interface ICameraAgentOperatorUiService
 {
     ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken);
@@ -271,6 +277,9 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(
         CameraAgentGalleryCalendarQuery query,
@@ -786,6 +795,27 @@ internal sealed class CameraAgentOperatorUiService(
 
     private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentCaptureTransientView>();
+        if (captureId == Guid.Empty)
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Invalid, "A capture is required.");
+        try
+        {
+            var run = await transientRuntime.ReadCaptureRunAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(captureId, _hostOptions.TransientDetection.Mode, run));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent capture transient outcome UI read failed.");
+            return Unavailable<CameraAgentCaptureTransientView>("The retained transient outcome is temporarily unavailable.");
+        }
+    }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
