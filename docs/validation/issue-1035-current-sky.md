@@ -93,7 +93,22 @@ Source thumbnails use the existing cached-failure-aware image component.
 
 The native coarse-pointer probe found six undersized control types and Tab focus
 escaping to the document body. Scoped 44-pixel targets and full-screen Tab
-containment correct those findings; refreshed native verification remains pending.
-All 117 focused capture/profile/span, Current Sky and SQLite gallery cases passed
-with warnings as errors. CameraAgent Unit discovery is now 2,923, and the solution
-inventory is 4,977; Integration and Manual inventories are unchanged.
+containment correct those findings. The refreshed native 390-pixel coarse-pointer
+probe has no undersized visible controls, and all twelve forward-Tab observations
+stay in the full-screen figure. All three page widths have no overflow or browser
+errors. Full layer selection and saved output remain pending.
+
+The preserved capture's virtual projection has no physical focal length. Missing
+physical values are now nullable facts rather than a reason to discard a valid
+sensor/cadence snapshot. All 118 focused capture/profile/span, Current Sky and
+SQLite gallery cases passed with warnings as errors. CameraAgent Unit discovery
+is now 2,924, and the solution inventory is 4,978; Integration and Manual
+inventories are unchanged.
+
+The first genuine-layer attempt on the preserved private state retained capture
+#544 and failed its required projected-scene node because that capture profile
+did not retain the requested scene input. Capture was paused again; that failure
+record and all preceding archive data remain preserved. A separate private
+validation state is prepared for a 1936×1216 virtual sensor, the production HYG
+catalog, and a complete typed pipeline configured from startup. It uses LAN port
+5132, with no cloud reference substituted and no installed-instance changes.

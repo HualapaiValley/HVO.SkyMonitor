@@ -26,14 +26,11 @@ internal static class CameraAgentCaptureProfileProjector
                 configuration!.AgentId != descriptor.Capture.AgentId ||
                 submission.Request.RequestedStartUtc.ToUnixTimeMilliseconds() != descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
                 !string.Equals(CameraRigProfileIdentity.ComputeSha256(rig), descriptor.Profiles.Rig.Sha256, StringComparison.OrdinalIgnoreCase) ||
-                !double.IsFinite(rig.Sensor.PixelSizeMicrons) || rig.Sensor.PixelSizeMicrons <= 0 ||
-                !double.IsFinite(rig.Optics.FocalLengthMillimeters) || rig.Optics.FocalLengthMillimeters <= 0 ||
-                !double.IsFinite(rig.Optics.FieldOfViewDegrees) || rig.Optics.FieldOfViewDegrees <= 0 ||
                 string.IsNullOrWhiteSpace(rig.Optics.ProjectionModel) || rig.Optics.ProjectionModel.Length > 64 ||
                 submission.EffectiveInterval < TimeSpan.Zero)
                 return null;
-            return new(rig.Sensor.PixelSizeMicrons, rig.Optics.FocalLengthMillimeters,
-                rig.Optics.FieldOfViewDegrees, rig.Optics.ProjectionModel,
+            return new(Positive(rig.Sensor.PixelSizeMicrons), Positive(rig.Optics.FocalLengthMillimeters),
+                Positive(rig.Optics.FieldOfViewDegrees), rig.Optics.ProjectionModel,
                 submission.EffectiveInterval, descriptor.CycleEvidence?.CadenceMode);
         }
         catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
@@ -41,4 +38,6 @@ internal static class CameraAgentCaptureProfileProjector
             return null;
         }
     }
+
+    private static double? Positive(double value) => double.IsFinite(value) && value > 0 ? value : null;
 }

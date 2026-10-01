@@ -11,6 +11,21 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 public sealed class CameraAgentCaptureProfileProjectorTests
 {
     [TestMethod]
+    public void VirtualPixelGeometryKeepsCadenceWhileUnrecordedPhysicalValuesRemainMissing()
+    {
+        var (descriptor, configuration, submission) = CreateCapture();
+        configuration = configuration with { Rig = configuration.Rig with { Sensor = configuration.Rig.Sensor with { PixelSizeMicrons = 0 }, Optics = configuration.Rig.Optics with { FocalLengthMillimeters = 0, FieldOfViewDegrees = 0 } } };
+        descriptor = descriptor with { Profiles = descriptor.Profiles with { Rig = descriptor.Profiles.Rig with { Sha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig) } } };
+        var context = CaptureLaneEnvelopeSerializer.Serialize(configuration, submission);
+        var facts = CameraAgentCaptureProfileProjector.Project(descriptor, context.Json, context.Sha256);
+        Assert.IsNotNull(facts);
+        Assert.IsNull(facts.PixelSizeMicrons);
+        Assert.IsNull(facts.FocalLengthMillimeters);
+        Assert.IsNull(facts.FieldOfViewDegrees);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), facts.EffectiveInterval);
+    }
+
+    [TestMethod]
     public void UsesTheVerifiedCaptureEnvelopeWithoutGuessingLegacyCadenceMode()
     {
         var (descriptor, configuration, submission) = CreateCapture();

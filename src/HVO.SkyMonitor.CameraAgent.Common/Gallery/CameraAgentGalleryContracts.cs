@@ -59,9 +59,9 @@ public sealed record CameraAgentGalleryCaptureDetail(
 // A deliberately small projection of the verified capture-time envelope. Module
 // options, device identity and precise location are never part of this UI contract.
 public sealed record CameraAgentCaptureProfileFacts(
-    double PixelSizeMicrons,
-    double FocalLengthMillimeters,
-    double FieldOfViewDegrees,
+    double? PixelSizeMicrons,
+    double? FocalLengthMillimeters,
+    double? FieldOfViewDegrees,
     string ProjectionModel,
     TimeSpan EffectiveInterval,
     CaptureCadenceMode? CadenceMode);

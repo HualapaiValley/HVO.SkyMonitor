@@ -762,12 +762,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             ? "Continuous at capture time"
             : FormattableString.Invariant($"{profile.EffectiveInterval.TotalSeconds:0.###} s recorded interval");
 
-    private string SensorSampleLabel => _facts?.CaptureProfile is { } profile
-        ? FormattableString.Invariant($"{profile.PixelSizeMicrons:0.###} µm")
+    private string SensorSampleLabel => _facts?.CaptureProfile?.PixelSizeMicrons is { } pixelSize
+        ? FormattableString.Invariant($"{pixelSize:0.###} µm")
         : "Not retained for this capture";
 
     private string OpticsLabel => _facts?.CaptureProfile is { } profile
-        ? FormattableString.Invariant($"{profile.FocalLengthMillimeters:0.###} mm · {profile.FieldOfViewDegrees:0.###}° field")
+        ? $"{(profile.FocalLengthMillimeters is { } focal ? FormattableString.Invariant($"{focal:0.###} mm") : "Focal length not retained")} · {(profile.FieldOfViewDegrees is { } fieldAngle ? FormattableString.Invariant($"{fieldAngle:0.###}° field") : "Field angle not retained")}"
         : "Not retained for this capture";
 
     private string ProjectionLabel => _facts?.CaptureProfile is { } profile
