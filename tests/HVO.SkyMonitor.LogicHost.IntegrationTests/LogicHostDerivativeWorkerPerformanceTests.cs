@@ -290,7 +290,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 ServerGarbageCollection = GCSettings.IsServerGC,
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 SqlServer = DescribeSqlEndpoint(fixture.SqlServerConnectionString),
-                ExternalS3Endpoint = (string?)null,
+                ExternalS3Endpoint = "N/A: filesystem provider",
                 ObjectStore = "Filesystem; fixture-owned local root"
             },
             UnavailableEvidence = new
@@ -1242,7 +1242,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     RigId = "issue-100-queue",
                     CaptureSequence = index + 1,
                     CapturedAtUtc = captured,
-                    FirstReceivedAtUtc = captured
+                    FirstReceivedAtUtc = captured,
+                    LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+                    Location = new CentralCaptureLocation
+                    {
+                        LocationId = "issue-100-queue-location",
+                        Version = 1,
+                        Source = "issue-100-performance",
+                        EffectiveFromUtc = now.AddDays(-1)
+                    }
                 };
                 frame.Timing = new CentralCaptureTiming
                 {
