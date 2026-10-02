@@ -62,8 +62,13 @@ for ((i = 0; i < count; i++)); do
         reports='[]'
         while read -r pattern; do
             pattern=${pattern//\{value\}/$value}
-            match=$(find "$dir" -path "*/$pattern" -print -quit)
-            if [[ -z "$match" ]]; then status=failed; failed=1; reports=$(jq --arg p "$pattern" '. + [{report: $p, missing: true}]' <<<"$reports"); continue; fi
+            # MSTest keeps attached result files flat under In/<id>/<host>/, without the partition directory.
+            mapfile -t matches < <(find "$dir" -type f -name "$(basename "$pattern")")
+            if [[ ${#matches[@]} -ne 1 ]]; then
+                status=failed; failed=1
+                reports=$(jq --arg p "$pattern" --argjson n "${#matches[@]}" '. + [{report: $p, matches: $n}]' <<<"$reports"); continue
+            fi
+            match=${matches[0]}
             target="$out/reports/$name/$(basename "$pattern")"; mkdir -p "$(dirname "$target")"; cp "$match" "$target"
             reports=$(jq --arg p "$pattern" --arg s "$(sha256sum "$target" | cut -d' ' -f1)" --arg b "$(stat -c %s "$target")" \
                 '. + [{report: $p, sha256: $s, bytes: ($b | tonumber)}]' <<<"$reports")

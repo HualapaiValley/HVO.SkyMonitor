@@ -7,7 +7,7 @@
     "Every run executes at one committed, clean development/v1-based revision built in Release; HVO_EVIDENCE_REVISION must equal that revision and each harness that checks the assembly InformationalVersion must accept it.",
     "Only final/held-out partitions run. Tuning partitions are closed: their methods are not executed and never count as final evidence.",
     "Seeds, sky times, profiles, readouts, partitions and numerical tolerances are those compiled into each harness at the measured revision. This manifest pins the harness set; the harness sources at that revision are the predeclared workload. Each source blob id is recorded in the evidence index.",
-    "Every run must execute exactly expectedPassed tests, with zero failed and zero not-executed tests, in a fresh results directory. A run that executes fewer tests, or that matches no test, fails the qualification. It is never treated as a skip.",
+    "Every run must execute exactly expectedPassed tests, with zero failed and zero not-executed tests, in a fresh results directory, and must attach exactly one file named like each listed report (MSTest stores attachments without the partition directory shown in the path). A run that executes fewer tests, or that matches no test, fails the qualification. It is never treated as a skip.",
     "Runs are sequential on an otherwise idle host so that resource figures are not perturbed by concurrent heavy work. Docker is not required.",
     "A harness failure is retained and reported. Tolerances are not changed after measurement. Changing an acceptance threshold requires a documented scientific reason and fresh held-out evidence on a later revision."
   ],
