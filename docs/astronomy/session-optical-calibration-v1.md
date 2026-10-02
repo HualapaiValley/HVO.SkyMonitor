@@ -52,6 +52,11 @@ and cropped or binned readouts are views derived from it. It builds on the
 
 **Parameters.** Every member of `OpticalCalibrationOptions` is part of the options identity.
 
+**Input identity.** `InputIdentitySha256` hashes, in order, every offered fit frame and every withheld frame:
+its full frame context (source, descriptor, payload, observer, exposure and detection settings), readout view,
+readout identity and detections. It holds even for frames an early rejection never reached. It is part of the
+result identity, so different inputs never produce one calibration version.
+
 | Parameter | Fitted | Default bound |
 | --- | --- | --- |
 | Focal scale (one shared scale on fx and fy; log-parameterized) | Always | ±5% of nominal |
@@ -121,8 +126,13 @@ reproduces the calibrated native model exactly.
 
 **Decisions.**
 - **Accept.**
-  - Re-reviews first, and refuses a stale review (changed rig or optics revision).
-  - Writes one immutable optics revision and composes one draft rig revision.
+  - Re-reviews first, and refuses a stale review (changed rig or optics revision, or a changed selection version).
+  - `SqliteNamedRigProfileStore.RetainCalibratedOpticsAsync` then does everything else in one SQLite transaction:
+    - rechecks that the reviewed revision is still active at the reviewed selection version with nothing pending
+    - looks up an existing draft with the same profile, camera, mount and optics
+    - otherwise writes one immutable optics revision and composes one draft rig revision
+  - A stage, activation or cancellation after review is a conflict.
+  - A failure or cancellation before commit writes nothing, and concurrent accepts serialize into one draft.
   - Never stages or activates. Activation follows the existing preview, stage and restart path.
   - Accepting the same result again returns the existing revision.
 - **Reject.** Writes nothing. Reject decisions are not durably journaled in v1.
@@ -132,13 +142,14 @@ Both keep the previously active revision and its optics unchanged.
 ## Evidence
 
 **Unit**
-- `RadialDistortionTests` (5) cover:
+- `RadialDistortionTests` (6) cover:
   - inversion
   - every family's round trip against the closed form
   - noninvertible and out-of-range rejection
   - zero-coefficient serialization identity
   - readout-view mapping
-- `OpticalCalibrationSessionTests` (10) cover:
+  - blind-search scales kept inside the supported domain for distorted perspective optics
+- `OpticalCalibrationSessionTests` (11) cover:
   - recovery within tolerance, with pose kept per frame and out of the session optics
   - ROI/bin views derived from one native calibration
   - determinism and option identity
@@ -148,9 +159,11 @@ Both keep the previously active revision and its optics unchanged.
   - ambiguity (a rotationally symmetric sky)
   - incomplete catalog and invalid inputs
   - exhausted budget
-- `VirtualOpticalCalibrationReviewServiceTests` (4) cover:
+  - an input identity bound to every fit and withheld frame input
+- `VirtualOpticalCalibrationReviewServiceTests` (6) cover:
   - accept, reject, retention and idempotency
-  - stale reviews
+  - stale reviews, including a stage or cancellation between review and accept
+  - failure or cancellation between the optics and rig writes, and concurrent accepts
   - physical-rig and foreign-nominal blocks
   - `CreateCalibratedOptics` refusals
 

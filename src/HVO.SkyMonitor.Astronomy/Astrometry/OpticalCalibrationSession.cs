@@ -71,6 +71,7 @@ public static class OpticalCalibrationSession
         if (all.Select(f => f.Frame.CaptureId).Distinct().Count() != all.Length)
             throw new ArgumentException("Fit and validation frames must have distinct capture identities.", nameof(validationFrames));
 
+        var inputIdentity = InputIdentitySha256(frames, validationFrames);
         var watch = Stopwatch.StartNew();
         var control = new AstrometricWorkControl(options.BudgetMilliseconds, cancellationToken);
         var shared0 = new Shared(0, nominalNative.PrincipalPointX, nominalNative.PrincipalPointY, nominalNative.RadialDistortionK1);
@@ -85,7 +86,7 @@ public static class OpticalCalibrationSession
                 Parameters(nominalNative, options, shared ?? shared0, errors, shared is not null),
                 works.Count > 0 ? works.Select(FrameSummary) : frames.Select(f => new OpticalCalibrationFrameResult(f.Frame.CaptureId, f.ReadoutIdentitySha256, "not-attempted", 0, null, null, null, 0, 0, null, null)),
                 validations ?? [], (diagnostics ?? new Diagnostics()).ToContract(skyRotation, works.Count(w => w.Status == "fitted")),
-                catalog.IdentitySha256, catalog.SelectionIdentitySha256, options.IdentitySha256, solverOptions.IdentitySha256,
+                inputIdentity, catalog.IdentitySha256, catalog.SelectionIdentitySha256, options.IdentitySha256, solverOptions.IdentitySha256,
                 new(watch.Elapsed.TotalMilliseconds, acquisitionMs, fitMs, validationMs));
 
         if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < solverOptions.MaximumCatalogMagnitude)
@@ -188,6 +189,22 @@ public static class OpticalCalibrationSession
             return Result(OpticalCalibrationStatus.BudgetExceeded, "time-budget",
                 "Cooperative calibration budget exceeded; no proposed calibration replaces the accepted one.", ["time-budget"]);
         }
+    }
+
+    /// <summary>
+    /// Identity of the offered evidence: each fit and withheld frame's complete context, readout declaration and
+    /// identity, and ordered detections. Distinct measurements therefore never share a retained calibration identity.
+    /// </summary>
+    public static string InputIdentitySha256(IReadOnlyList<OpticalCalibrationFrame> frames, IReadOnlyList<OpticalCalibrationFrame> validationFrames)
+    {
+        ArgumentNullException.ThrowIfNull(frames); ArgumentNullException.ThrowIfNull(validationFrames);
+        static object Entry(OpticalCalibrationFrame f) => new { f.Frame, f.Readout, f.ReadoutIdentitySha256, f.Detections };
+        return AstrometricIdentity.Hash(new
+        {
+            schema = "optical-calibration-input-v1",
+            fit = frames.Select(Entry).ToArray(),
+            validation = validationFrames.Select(Entry).ToArray()
+        });
     }
 
     /// <summary>Applies session optics to the nominal native model, keeping family, parity, aperture and orientation.</summary>

@@ -207,15 +207,25 @@ internal static class AstrometricSolverCore
         var associations = evaluation.Candidate.Matches.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, false)).Concat(evaluation.Held.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, true))).ToArray();
         return new(true, "accepted", "Warm local fit and withheld-star gates passed; proposed next configuration", solution, candidate.Scale, evaluation.Quality, associations, 0, 0, 0, 0, 1, false, watch.Elapsed.TotalMilliseconds, domain);
     }
-    private static double MinimumPhysicalScale(SolverOptics config) => config.RadialDistortionK1 != 0 && config.Model != ProjectionModel.Perspective
-        ? config.CircleRadius!.Value / (RadialDistortion.MaximumDistortedRadius(config.Model, config.RadialDistortionK1) * config.FocalX)
-        : config.Model switch
+    /// <summary>
+    /// Smallest focal scale whose scaled aperture edge stays inside the family and distortion domain. Scaling focal
+    /// length by <c>s</c> divides the normalized edge radius by <c>s</c>, for circular and rectangular apertures alike.
+    /// </summary>
+    internal static double MinimumPhysicalScale(SolverOptics config)
+    {
+        if (config.RadialDistortionK1 != 0)
+        {
+            var maximum = RadialDistortion.MaximumDistortedRadius(config.Model, config.RadialDistortionK1);
+            return double.IsFinite(maximum) ? RadialDistortion.ApertureEdgeRadius(config.Context()) / maximum : 0;
+        }
+        return config.Model switch
         {
             ProjectionModel.EquidistantFisheye => config.CircleRadius!.Value / (Math.PI * config.FocalX),
             ProjectionModel.EquisolidFisheye => config.CircleRadius!.Value / (2 * config.FocalX),
             ProjectionModel.OrthographicFisheye => config.CircleRadius!.Value / config.FocalX,
             _ => 0
         };
+    }
     private static (Candidate Candidate, List<Pair> Held, CoreQuality Quality) Evaluate(Candidate c, List<Star> stars, List<Star> training,
         List<Star> verification, IReadOnlyList<CoreDetection> detections, SolverOptics configuration)
     {

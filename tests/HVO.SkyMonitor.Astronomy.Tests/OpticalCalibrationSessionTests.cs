@@ -108,6 +108,40 @@ public sealed class OpticalCalibrationSessionTests
     }
 
     [TestMethod]
+    public void InputIdentity_BindsEveryFitAndWithheldFrameInput()
+    {
+        var fit = new[] { Frame(DistortedTruth, 0, FullFrame), Frame(DistortedTruth, 1.5, Binned), Frame(DistortedTruth, 3, FullFrame) };
+        var withheld = new[] { Frame(DistortedTruth, 2.2, CentralRoi) };
+        var baseline = OpticalCalibrationSession.InputIdentitySha256(fit, withheld);
+        Assert.AreEqual(Recovered.Value.InputIdentitySha256, OpticalCalibrationSession.InputIdentitySha256(fit, [withheld[0], Frame(DistortedTruth, 4.1, FullFrame)]));
+
+        var first = fit[0];
+        var other = AstrometricTestFixture.Hash("other");
+        var changed = new[]
+        {
+            first with { Frame = first.Frame with { SourcePayloadSha256 = other } },
+            first with { Frame = first.Frame with { SourceDescriptorSha256 = other } },
+            first with { Frame = first.Frame with { DetectionSettingsIdentitySha256 = other } },
+            first with { Frame = first.Frame with { SourceArtifactId = Guid.NewGuid() } },
+            first with { ReadoutIdentitySha256 = other },
+            first with { Readout = first.Readout with { BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 } },
+            first with { Detections = [.. first.Detections.Take(first.Detections.Count - 1)] },
+            first with { Detections = [first.Detections[0] with { Flux = first.Detections[0].Flux * 2 }, .. first.Detections.Skip(1)] }
+        };
+        foreach (var frame in changed)
+            Assert.AreNotEqual(baseline, OpticalCalibrationSession.InputIdentitySha256([frame, fit[1], fit[2]], withheld));
+        Assert.AreNotEqual(baseline, OpticalCalibrationSession.InputIdentitySha256([fit[1], fit[0], fit[2]], withheld));
+        Assert.AreNotEqual(baseline, OpticalCalibrationSession.InputIdentitySha256(fit, [withheld[0] with { Frame = withheld[0].Frame with { SourcePayloadSha256 = other } }]));
+
+        // An early terminal outcome attempts no frame but still binds its unattempted inputs into the result identity.
+        var early = OpticalCalibrationSession.Fit(Nominal, fit[..2], withheld, Catalog, WithDistortion, Search);
+        var earlyChanged = OpticalCalibrationSession.Fit(Nominal, fit[..2], [withheld[0] with { ReadoutIdentitySha256 = other }], Catalog, WithDistortion, Search);
+        Assert.AreEqual("insufficient-frames", early.ReasonCode);
+        Assert.AreEqual(OpticalCalibrationSession.InputIdentitySha256(fit[..2], withheld), early.InputIdentitySha256);
+        Assert.AreNotEqual(early.IdentitySha256, earlyChanged.IdentitySha256);
+    }
+
+    [TestMethod]
     public void Fit_OmittedDistortionLeavesSignificantRadialBias()
     {
         var result = OpticalCalibrationSession.Fit(Nominal,

@@ -93,6 +93,36 @@ public sealed class RadialDistortionTests
     }
 
     [TestMethod]
+    public void BlindSearch_KeepsDistortedPerspectiveScalesInsideTheSupportedDomain()
+    {
+        // Corner radius 2.404163 sits just inside the k1 = -0.02 supported maximum 2.405626, so scale 0.99 would leave it.
+        var context = new ProjectionContext(ProjectionModel.Perspective, 1700, 1700, 1000, 1000, 3400, 3400, ProjectionAperture.Rectangular, null,
+            BoresightAltitudeDegrees: 90, BoresightAzimuthDegrees: 0, RollDegrees: 0, RadialDistortionK1: -.02);
+        context.Validate();
+        var optics = SolverOptics.From(context);
+        var minimum = AstrometricSolverCore.MinimumPhysicalScale(optics);
+        Assert.AreEqual(RadialDistortion.ApertureEdgeRadius(context) / RadialDistortion.MaximumDistortedRadius(ProjectionModel.Perspective, -.02), minimum, 1e-15);
+        Assert.IsGreaterThan(.99, minimum);
+        Assert.IsLessThan(1, minimum);
+        _ = new AstrometricRayCamera(optics, minimum);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new AstrometricRayCamera(optics, .99));
+
+        // The default ±10% blind search and the acquisition path return reason-coded outcomes instead of throwing.
+        var detections = Enumerable.Range(0, 40).Select(i => new CoreDetection(i, 200 + 73 * i % 3000, 300 + 131 * i % 2800, 1000 - i, 100)).ToArray();
+        var site = new CoreSite(35, -114);
+        var utc = new DateTimeOffset(2026, 3, 1, 6, 0, 0, TimeSpan.Zero);
+        var solved = AstrometricSolverCore.Solve(detections, AstrometricTestFixture.Catalog().Stars, optics, site, utc);
+        Assert.IsFalse(solved.Accepted);
+        var candidates = new List<CoreCandidate>();
+        _ = AstrometricSolverCore.Acquire(detections, AstrometricTestFixture.Catalog().Stars, optics, site, utc, candidates);
+        Assert.IsTrue(candidates.All(c => c.Scale >= minimum));
+
+        // Undistorted and positive-coefficient perspective views keep an unbounded lower scale.
+        Assert.AreEqual(0, AstrometricSolverCore.MinimumPhysicalScale(SolverOptics.From(context with { RadialDistortionK1 = 0 })));
+        Assert.AreEqual(0, AstrometricSolverCore.MinimumPhysicalScale(SolverOptics.From(context with { RadialDistortionK1 = .02 })));
+    }
+
+    [TestMethod]
     public void ZeroCoefficient_KeepsExistingSerializedIdentities()
     {
         var context = Distorted[0] with { RadialDistortionK1 = 0 };

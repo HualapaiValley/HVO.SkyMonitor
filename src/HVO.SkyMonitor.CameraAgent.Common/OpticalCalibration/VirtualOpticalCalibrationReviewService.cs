@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
@@ -12,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 public sealed record VirtualOpticalCalibrationReview(
     string RigRevisionId,
     string ProfileId,
+    long SelectionVersion,
     string OpticsRevisionId,
     string CalibrationIdentitySha256,
     OpticalCalibrationStatus Status,
@@ -80,14 +80,15 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
                 blocker = "unrepresentable";
             }
         }
-        return new(active.RevisionId, active.ProfileId, active.OpticsRevisionId, result.IdentitySha256, result.Status,
+        return new(active.RevisionId, active.ProfileId, catalog.Selection.Version, active.OpticsRevisionId, result.IdentitySha256, result.Status,
             result.ReasonCode, result.Rejections, blocker is null, blocker, active.Rig.Optics, proposed, result.Parameters,
             result.Diagnostics, result.CatalogIdentitySha256, result.OptionsIdentitySha256);
     }
 
     /// <summary>
     /// Retains an accepted calibration as a new optics revision and a draft rig revision of the reviewed profile.
-    /// The review must still describe the active rig; accepting the same calibration again returns the retained draft.
+    /// The review must still describe the active rig at the reviewed selection version, and the retention is one store
+    /// transaction; accepting the same calibration again returns the retained draft.
     /// </summary>
     public async Task<VirtualOpticalCalibrationDecision> AcceptAsync(VirtualOpticalCalibrationReview review,
         OpticalCalibrationResult result, CancellationToken cancellationToken)
@@ -97,24 +98,16 @@ public sealed class VirtualOpticalCalibrationReviewService(SqliteNamedRigProfile
         if (!string.Equals(review.CalibrationIdentitySha256, result.IdentitySha256, StringComparison.Ordinal))
             throw new ArgumentException("The review does not describe this calibration.", nameof(review));
         var current = await ReviewAsync(result, cancellationToken).ConfigureAwait(false);
-        if (current.RigRevisionId != review.RigRevisionId || current.OpticsRevisionId != review.OpticsRevisionId)
+        if (current.RigRevisionId != review.RigRevisionId || current.OpticsRevisionId != review.OpticsRevisionId ||
+            current.SelectionVersion != review.SelectionVersion)
             throw new CaptureScheduleStoreConflictException("The active named rig changed after review.");
         if (!current.CanAccept || current.ProposedOptics is not { } optics)
             throw new InvalidOperationException($"The calibration cannot be accepted ({current.Blocker}).");
 
-        var catalog = await store.GetAsync(cancellationToken).ConfigureAwait(false);
-        var active = catalog.Revisions.Single(revision => revision.RevisionId == current.RigRevisionId);
-        var retained = catalog.Revisions.FirstOrDefault(revision => revision.ProfileId == active.ProfileId &&
-            revision.CameraRevisionId == active.CameraRevisionId && revision.MountRevisionId == active.MountRevisionId &&
-            revision.Rig.Optics == optics);
-        if (retained is not null)
-            return new("accepted", result.IdentitySha256, active.RevisionId, retained.RevisionId, retained.OpticsRevisionId);
-
-        var definition = await store.SaveEquipmentAsync(null, "optics", $"Calibrated optics {result.IdentitySha256[..12]}",
-            JsonSerializer.SerializeToElement(optics), cancellationToken).ConfigureAwait(false);
-        var candidate = await store.ComposeAsync(active.ProfileId, active.CameraRevisionId, definition.RevisionId,
-            active.MountRevisionId, cancellationToken).ConfigureAwait(false);
-        return new("accepted", result.IdentitySha256, active.RevisionId, candidate.RevisionId, definition.RevisionId);
+        // The store rechecks the reviewed selection and writes the optics and draft rig revisions atomically.
+        var candidate = await store.RetainCalibratedOpticsAsync(current.RigRevisionId, current.SelectionVersion,
+            $"Calibrated optics {result.IdentitySha256[..12]}", optics, cancellationToken).ConfigureAwait(false);
+        return new("accepted", result.IdentitySha256, current.RigRevisionId, candidate.RevisionId, candidate.OpticsRevisionId);
     }
 
     /// <summary>Records an explicit rejection. Nothing is written and the active calibration is unchanged.</summary>

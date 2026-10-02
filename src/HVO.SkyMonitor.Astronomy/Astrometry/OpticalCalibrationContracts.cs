@@ -117,8 +117,8 @@ public sealed class OpticalCalibrationResult
         IEnumerable<string> rejections, ProjectionContext nominalNative, ProjectionContext? calibratedNative,
         IEnumerable<OpticalCalibrationParameter> parameters, IEnumerable<OpticalCalibrationFrameResult> frames,
         IEnumerable<OpticalCalibrationValidation> validations, OpticalCalibrationDiagnostics diagnostics,
-        string catalogIdentitySha256, string catalogSelectionIdentitySha256, string optionsIdentitySha256,
-        string solverSettingsIdentitySha256, OpticalCalibrationMetrics metrics)
+        string inputIdentitySha256, string catalogIdentitySha256, string catalogSelectionIdentitySha256,
+        string optionsIdentitySha256, string solverSettingsIdentitySha256, OpticalCalibrationMetrics metrics)
     {
         Status = status; ReasonCode = reasonCode; Reason = reason;
         Rejections = Array.AsReadOnly(rejections.ToArray());
@@ -127,6 +127,7 @@ public sealed class OpticalCalibrationResult
         Frames = Array.AsReadOnly(frames.ToArray());
         Validations = Array.AsReadOnly(validations.ToArray());
         Diagnostics = diagnostics;
+        InputIdentitySha256 = inputIdentitySha256;
         CatalogIdentitySha256 = catalogIdentitySha256; CatalogSelectionIdentitySha256 = catalogSelectionIdentitySha256;
         OptionsIdentitySha256 = optionsIdentitySha256; SolverSettingsIdentitySha256 = solverSettingsIdentitySha256;
         Metrics = metrics;
@@ -145,6 +146,7 @@ public sealed class OpticalCalibrationResult
             Frames,
             Validations,
             Diagnostics,
+            InputIdentitySha256,
             CatalogIdentitySha256,
             CatalogSelectionIdentitySha256,
             OptionsIdentitySha256,
@@ -162,6 +164,12 @@ public sealed class OpticalCalibrationResult
     public ReadOnlyCollection<OpticalCalibrationFrameResult> Frames { get; }
     public ReadOnlyCollection<OpticalCalibrationValidation> Validations { get; }
     public OpticalCalibrationDiagnostics Diagnostics { get; }
+
+    /// <summary>
+    /// Identity of every offered fit and withheld frame, in order: complete frame context, readout declaration and
+    /// identity, and ordered detections. It is bound even when a terminal outcome attempted none of them.
+    /// </summary>
+    public string InputIdentitySha256 { get; }
     public string CatalogIdentitySha256 { get; }
     public string CatalogSelectionIdentitySha256 { get; }
     public string OptionsIdentitySha256 { get; }

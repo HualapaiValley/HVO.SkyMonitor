@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.OpticalCalibration;
@@ -130,6 +131,90 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
     }
 
     [TestMethod]
+    public async Task Accept_IsBoundToTheReviewedSelectionAndSerializesConcurrentAccepts()
+    {
+        var result = Accepted.Value;
+        using var harness = await Harness.CreateAsync("VirtualSky").ConfigureAwait(false);
+        var service = new VirtualOpticalCalibrationReviewService(harness.Named);
+        var review = await service.ReviewAsync(result, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(review.CanAccept, review.Blocker);
+        var opticsBefore = await harness.ScalarAsync(CountOptics).ConfigureAwait(false);
+        var initial = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var active = initial.Revisions.Single(revision => revision.RevisionId == review.RigRevisionId);
+
+        // A rig change staged between review and accept is a conflict, and so is retaining against the new version.
+        var draft = await harness.Named.ComposeAsync(active.ProfileId, active.CameraRevisionId, active.OpticsRevisionId,
+            active.MountRevisionId, CancellationToken.None).ConfigureAwait(false);
+        var preview = await harness.Named.PreviewAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+        _ = await harness.Named.StageAsync(draft.RevisionId, review.SelectionVersion, "calibration-race-stage", "owner", true,
+            preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+        var pending = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(draft.RevisionId, pending.Selection.PendingRevisionId);
+        await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => service.AcceptAsync(review, result,
+            CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => harness.Named.RetainCalibratedOpticsAsync(
+            review.RigRevisionId, pending.Selection.Version, "Calibrated optics", review.ProposedOptics!,
+            CancellationToken.None)).ConfigureAwait(false);
+        await AssertUnchangedAsync(harness, pending).ConfigureAwait(false);
+
+        // Cancelling restores the reviewed active rig with nothing pending, but the review's selection version is spent.
+        _ = await harness.Named.CancelPendingAsync(draft.RevisionId, pending.Selection.Version, "calibration-race-cancel",
+            "owner", CancellationToken.None).ConfigureAwait(false);
+        var cancelled = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(review.RigRevisionId, cancelled.Selection.ActiveRevisionId);
+        Assert.IsNull(cancelled.Selection.PendingRevisionId);
+        await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => service.AcceptAsync(review, result,
+            CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => harness.Named.RetainCalibratedOpticsAsync(
+            review.RigRevisionId, review.SelectionVersion, "Calibrated optics", review.ProposedOptics!,
+            CancellationToken.None)).ConfigureAwait(false);
+        await AssertUnchangedAsync(harness, cancelled).ConfigureAwait(false);
+        Assert.AreEqual(opticsBefore, await harness.ScalarAsync(CountOptics).ConfigureAwait(false));
+
+        // Concurrent accepts of a fresh review retain exactly one optics revision and one draft rig revision.
+        var fresh = await service.ReviewAsync(result, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(cancelled.Selection.Version, fresh.SelectionVersion);
+        var decisions = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+            service.AcceptAsync(fresh, result, CancellationToken.None)))).ConfigureAwait(false);
+        Assert.IsTrue(decisions.All(decision => decision == decisions[0]));
+        var after = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(cancelled.Selection, after.Selection);
+        Assert.HasCount(cancelled.Revisions.Count + 1, after.Revisions);
+        Assert.AreEqual(opticsBefore + 1, await harness.ScalarAsync(CountOptics).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Accept_FailureOrCancellationBetweenWrites_WritesNothing()
+    {
+        var result = Accepted.Value;
+        using var harness = await Harness.CreateAsync("VirtualSky").ConfigureAwait(false);
+        var service = new VirtualOpticalCalibrationReviewService(harness.Named);
+        var review = await service.ReviewAsync(result, CancellationToken.None).ConfigureAwait(false);
+        var before = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var opticsBefore = await harness.ScalarAsync(CountOptics).ConfigureAwait(false);
+
+        // The draft rig insert fails after the optics revision was written inside the same transaction.
+        harness.Ingress.InjectRigFailure = true;
+        var failure = await Assert.ThrowsExactlyAsync<SqliteException>(() => service.AcceptAsync(review, result,
+            CancellationToken.None)).ConfigureAwait(false);
+        StringAssert.Contains(failure.Message, "injected rig failure", StringComparison.Ordinal);
+        harness.Ingress.InjectRigFailure = false;
+        await AssertUnchangedAsync(harness, before).ConfigureAwait(false);
+        Assert.AreEqual(opticsBefore, await harness.ScalarAsync(CountOptics).ConfigureAwait(false));
+
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => service.AcceptAsync(review, result, cancellation.Token))
+            .ConfigureAwait(false);
+        await AssertUnchangedAsync(harness, before).ConfigureAwait(false);
+        Assert.AreEqual(opticsBefore, await harness.ScalarAsync(CountOptics).ConfigureAwait(false));
+
+        var accepted = await service.AcceptAsync(review, result, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("accepted", accepted.Decision);
+        Assert.AreEqual(opticsBefore + 1, await harness.ScalarAsync(CountOptics).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task PhysicalRigsAndForeignNominalOpticsAreNeverRevised()
     {
         using (var physical = await Harness.CreateAsync("ZwoAsi").ConfigureAwait(false))
@@ -222,6 +307,8 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
             Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(stars))), "test-generated", "1"), stars, true, 7);
     }
 
+    private const string CountOptics = "SELECT COUNT(*) FROM named_equipment_definitions WHERE kind = 'optics';";
+
     private static string Hash(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
     private static OpticalCalibrationFrame Frame(ProjectionContext truth, double hours)
@@ -255,6 +342,23 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
 
         public SqliteNamedRigProfileStore Named { get; private set; } = default!;
 
+        public JournalInitializer Ingress { get; private set; } = default!;
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+            Justification = "Only fixed test SQL statements are passed.")]
+        public async Task<long> ScalarAsync(string sql)
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(_root, "journal", "raw-ingress.db"),
+                Pooling = false
+            }.ToString());
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(await command.ExecuteScalarAsync().ConfigureAwait(false) ?? 0L, CultureInfo.InvariantCulture);
+        }
+
         public static async Task<Harness> CreateAsync(string moduleType, OpticsProfile? optics = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-optical-calibration-review", Guid.NewGuid().ToString("N"));
@@ -265,6 +369,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
                 var configuration = Configuration(moduleType, optics);
                 var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
                 var ingress = new JournalInitializer(root);
+                harness.Ingress = ingress;
                 var schedule = harness.Own(new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System));
                 var active = await schedule.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
                 var telemetry = harness.Own(new CaptureControlTelemetry());
@@ -306,9 +411,38 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
 
     private sealed class JournalInitializer(string root) : IRawCaptureIngress
     {
+        private readonly string _database = Path.Combine(root, "journal", "raw-ingress.db");
+
+        /// <summary>Fails every named rig revision insert; installed only after the canonical schema is validated.</summary>
+        public bool InjectRigFailure { get; set; }
+
         public async ValueTask InitializeAsync(CancellationToken cancellationToken)
-            => await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), busyTimeoutSeconds: 5)
+        {
+            if (File.Exists(_database))
+                await ExecuteAsync("DROP TRIGGER IF EXISTS inject_rig_failure;", cancellationToken).ConfigureAwait(false);
+            await new SqliteRawCaptureJournal(_database, busyTimeoutSeconds: 5)
                 .InitializeAsync(cancellationToken).ConfigureAwait(false);
+            if (InjectRigFailure)
+                await ExecuteAsync("""
+                    CREATE TRIGGER inject_rig_failure BEFORE INSERT ON named_rig_revisions
+                    BEGIN SELECT RAISE(ABORT, 'injected rig failure'); END;
+                    """, cancellationToken).ConfigureAwait(false);
+        }
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+            Justification = "Only fixed test SQL statements are passed.")]
+        private async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = _database,
+                Pooling = false
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         public ValueTask<RawCaptureReceipt?> AcceptAsync(CameraModuleConfig configuration,
             CaptureLoopSubmission submission, CancellationToken cancellationToken)
