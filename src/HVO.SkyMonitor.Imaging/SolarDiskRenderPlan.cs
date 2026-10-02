@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Imaging;
 /// <summary>Bounded uniform disk/illuminated-hemisphere raster in incident electron-rate space.</summary>
 public sealed class SolarDiskRenderPlan
 {
-    public const string AlgorithmVersion = "solar-lunar-geometric-disk-bilinear-v1";
+    public const string AlgorithmVersion = "solar-lunar-geometric-disk-bilinear-v2-projection-bound";
     private readonly Dictionary<int, double> _rates = [];
 
     public SolarDiskRenderPlan(ProjectionContext projection, IReadOnlyList<SolarDiskAppearance> disks,
@@ -35,7 +35,14 @@ public sealed class SolarDiskRenderPlan
             var limb = disk.BrightLimbAngleDegrees * Math.PI / 180;
             var phaseCosine = 2 * disk.IlluminatedFraction - 1;
             var phaseSine = Math.Sqrt(Math.Max(0, 1 - phaseCosine * phaseCosine));
-            var samples = Math.Clamp((int)Math.Ceiling(8 * radius * Math.Max(projection.FocalLengthXPixels, projection.FocalLengthYPixels)), 32, 512);
+            var angularScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(projection, disk.Direction, radius);
+            if (angularScale == 0) continue;
+            // At least one quadrature sample per projected pixel across either grid axis; prefer four.
+            // Refuse excessive magnification rather than silently capping into a visibly perforated disk.
+            var minimumSamples = Math.Ceiling(2 * radius * angularScale);
+            if (!double.IsFinite(minimumSamples) || minimumSamples > 512)
+                throw new InvalidOperationException("Solar disk projection sampling budget exceeded.");
+            var samples = (int)Math.Clamp(Math.Ceiling(8 * radius * angularScale), 32, 512);
             var points = new List<PixelPoint>();
             var illuminated = 0;
             for (var y = 0; y < samples; y++)

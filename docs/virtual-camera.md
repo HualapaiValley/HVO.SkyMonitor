@@ -988,3 +988,13 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
 
 Portfolio order is owned by `docs/roadmap.md`, virtual-first phase order by
 `docs/project-plan.md`, and live status by the linked GitHub issues.
+
+Disk raster version `solar-lunar-geometric-disk-bilinear-v2-projection-bound`
+uses an Astronomy angular-to-pixel Jacobian bound, including off-axis
+magnification and radial distortion. The grid prefers four samples per projected
+pixel and requires at least one per grid axis. Cases needing more than 512
+samples across an axis fail explicitly with a projection-sampling budget error;
+they are not silently rendered with dark sampling gaps. The existing 524,288
+sparse-pixel bound remains. Resolved disk light receives cloud transmission but
+is excluded from the diffuse background-scatter term. This is a correction to
+existing cloud interaction, not an atmospheric scattering simulation.

@@ -34,13 +34,15 @@ public record LinearSceneRenderOptions
 
     internal double BackgroundRate(int x, int y, int channel)
     {
-        if (SkyIllumination is null && SolarDisks is null) return BackgroundElectronsPerSecond;
+        if (SkyIllumination is null) return BackgroundElectronsPerSecond;
         var response = this is BayerRggb16RenderOptions bayer
             ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1;
-        var sky = SkyIllumination is null ? BackgroundElectronsPerSecond :
-            BackgroundElectronsPerSecond * (SkyIllumination.IsUniformNight ? 1 : SkyIllumination.Multiplier(x, y, channel)) * response;
-        return sky + (SolarDisks?.ElectronRate(x, y) ?? 0) * response;
+        return BackgroundElectronsPerSecond *
+            (SkyIllumination.IsUniformNight ? 1 : SkyIllumination.Multiplier(x, y, channel)) * response;
     }
+
+    internal double DiskRate(int x, int y, int channel) => SolarDisks is null ? 0 : SolarDisks.ElectronRate(x, y) *
+        (this is BayerRggb16RenderOptions bayer ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1);
 
     private double MaximumChannelResponse => this is BayerRggb16RenderOptions bayer
         ? Math.Max(bayer.ChannelResponse.Red, Math.Max(bayer.ChannelResponse.Green, bayer.ChannelResponse.Blue)) : 1;
@@ -459,7 +461,7 @@ public static class Mono16SceneRenderer
             {
                 if (InsideAperture(x, y, projection))
                 {
-                    rates[y * layout.Width + x] = options.BackgroundRate(x, y, skyChannel);
+                    rates[y * layout.Width + x] = options.BackgroundRate(x, y, skyChannel) + options.DiskRate(x, y, skyChannel);
                 }
             }
         }

@@ -82,4 +82,47 @@ public sealed class SolarSkyIlluminationTests
             BackgroundElectronsPerSecond = 1e12
         }.Validate());
     }
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task CloudScatterDoesNotRestoreResolvedDiskLight(CameraPixelFormat format)
+    {
+        var scene = await SceneTestFactory.CreateEmptyAsync(64, 64, 31).ConfigureAwait(false);
+        var layout = new ImageLayout(64, 64, format, 64 * ImageLayout.BytesPerPixel(format));
+        var disk = new SolarDiskAppearance(SolarSystemBody.Sun, scene.Request.Utc,
+            new(90, 0), .25, 0, 1, 0, 149600000);
+        var disks = new SolarDiskRenderPlan(scene.Request.Projection, [disk], 400);
+        var cloud = new VirtualCloudRenderContext(new VirtualCloudField(new VirtualCloudScenarioDefinition
+        {
+            ScenarioId = "disk-cloud-conformance",
+            ScenarioVersion = "1",
+            Seed = 104,
+            EpochUtc = scene.Request.Utc,
+            SpatialFrequency = 2,
+            Octaves = 2,
+            EdgeSoftness = 1e-9,
+            HorizonFadeDegrees = 0,
+            TemporalSampleCount = 2,
+            Keyframes = [new() { Coverage = 1, MaximumOpacity = 1, ScatterFraction = 1 }]
+        }), scene.Request.Utc, TimeSpan.FromSeconds(1));
+        SceneRenderResult Render(VirtualCloudRenderContext? field, SolarDiskRenderPlan? bodies) => format switch
+        {
+            CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(scene, layout, new()
+            { BackgroundElectronsPerSecond = 20, Cloud = field, SolarDisks = bodies }),
+            CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, new()
+            { BackgroundElectronsPerSecond = 20, Cloud = field, SolarDisks = bodies }),
+            _ => BayerRggb16Renderer.Render(scene, layout, new()
+            { ChannelResponse = new(1, 1, 1), BackgroundElectronsPerSecond = 20, Cloud = field, SolarDisks = bodies })
+        };
+        var clear = Render(null, disks);
+        var obscured = Render(cloud, disks);
+        var skyOnly = Render(cloud, null);
+        Assert.IsTrue(clear.Statistics.Mean > obscured.Statistics.Mean);
+        CollectionAssert.AreEqual(skyOnly.Pixels.ToArray(), obscured.Pixels.ToArray(),
+            "Opaque cloud may scatter background but must not restore the resolved source.");
+        CollectionAssert.AreEqual(Render(null, null).Pixels.ToArray(), skyOnly.Pixels.ToArray(),
+            "Unit background scattering retains the existing scalar sky response.");
+    }
+
 }

@@ -46,6 +46,27 @@ public sealed partial class HostRecipeContractConformanceTests
         CollectionAssert.AreEquivalent(references.Select(a => a.ArtifactId).ToArray(),
             recorder.Request.AuxiliaryInputs!.Where(a => a.Kind == ProcessingAuxiliaryInputKind.Artifact).Select(a => a.ArtifactId!.Value).ToArray());
 
+        var native = light with
+        {
+            Layout = light.Layout! with
+            {
+                SampleDepthBits = 12,
+                BlackLevel = 64,
+                WhiteLevel = 4095,
+                StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
+                LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+            },
+            Payload = new byte[] { 100, 0, 120, 0, 100, 0, 120, 0 }
+        };
+        var normalized = await Run(inputs.Select(i => i.Artifact!.ArtifactId == light.ArtifactId
+            ? i with { Artifact = native, Payload = native.Payload } : i).ToArray());
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, normalized.Status, normalized.ReasonCode);
+        var nativeProduct = Assert.ContainsSingle(normalized.Products);
+        CollectionAssert.AreEqual(new byte[] { 162, 3, 22, 3, 162, 3, 22, 3 }, nativeProduct.Payload.ToArray());
+        Assert.AreEqual(16, nativeProduct.Layout!.SampleDepthBits);
+        Assert.AreEqual(FrameStoredCodeTransform.IdentityV1, nativeProduct.Layout.StoredCodeTransform);
+        AssertContract(recorder.Request!, nativeProduct);
+
         var missing = await Run(inputs.Where(i => i.BindingName != "dark-reference").ToArray());
         Assert.AreEqual(ProcessingReasonCodes.MissingCalibrationReference, missing.ReasonCode);
         Assert.HasCount(0, missing.Products);
@@ -60,6 +81,15 @@ public sealed partial class HostRecipeContractConformanceTests
             ? i with { Artifact = i.Artifact! with { Layout = i.Artifact.Layout! with { PixelFormat = CameraPixelFormat.BayerRggb16, CfaPattern = ColorFilterArrayPattern.Rggb } } } : i).ToArray());
         Assert.AreEqual(ProcessingReasonCodes.CalibrationReferenceLayoutMismatch, wrongLayout.ReasonCode);
         Assert.HasCount(0, wrongLayout.Products);
+        var expired = profile with { EffectiveUntilUtc = light.CreatedUtc.AddSeconds(-1) };
+        auxiliary = auxiliary with
+        {
+            Payload = ReferenceCalibrationProfileJson.Serialize(expired),
+            IdentitySha256 = ReferenceCalibrationProfileJson.ComputeIdentitySha256(expired)
+        };
+        var stale = await Run(inputs);
+        Assert.AreEqual(ProcessingReasonCodes.StaleCalibrationProfile, stale.ReasonCode);
+        Assert.HasCount(0, stale.Products);
     }
 
     [TestMethod]
