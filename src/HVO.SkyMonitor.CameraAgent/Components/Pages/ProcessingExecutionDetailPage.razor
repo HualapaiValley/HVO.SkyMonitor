@@ -8,7 +8,7 @@
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Execution detail</PageTitle>
+<PageTitle>Pipeline run</PageTitle>
 
 <div class="execution-page">
     @if (_loading && _view is null)
@@ -26,8 +26,8 @@
         var execution = _view.Execution;
         <section class="run-workspace" aria-label="Pipeline run">
             <aside class="run-workspace__rail" aria-label="Pipeline navigation">
-                <header class="run-rail__heading"><div><p class="eyebrow">Local operations</p><h2>Pipeline runs</h2></div><button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshAsync" aria-label="Refresh pipeline run">↻</button></header>
-                <div class="run-rail__controls"><label><span class="visually-hidden">Filter captures</span><input type="search" placeholder="Filter captures" @bind="_runSearch" /></label><label><span class="visually-hidden">Filter by outcome</span><select @bind="_outcomeFilter"><option value="all">All outcomes</option><option value="Completed">Succeeded</option><option value="Running">In progress</option><option value="Failed">Failed</option></select></label></div>
+                <header class="run-rail__heading"><div><p class="eyebrow">Local operations</p><h2>Pipeline runs</h2></div><button type="button" class="icon-button" disabled="@_loading" @onclick="RefreshAsync" aria-label="Refresh pipeline run"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7" /></svg></button></header>
+                <div class="run-rail__controls"><label class="search-field"><span class="visually-hidden">Filter captures</span><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input type="search" placeholder="Filter captures" @bind="_runSearch" @bind:event="oninput" /></label><label><span class="visually-hidden">Filter by outcome</span><select @bind="_outcomeFilter"><option value="all">All outcomes</option><option value="Completed">Succeeded</option><option value="Running">In progress</option><option value="Pending">Pending</option><option value="Failed">Failed</option><option value="Cancelled">Cancelled</option><option value="Expired">Expired</option></select></label></div>
                 <div class="run-rail__section"><div class="run-rail__label"><h3>Recent captures</h3><small>UTC</small></div>
                 @if (_recent is null)
                 {
@@ -35,51 +35,66 @@
                 }
                 else
                 {
-                    @foreach (var run in FilteredRuns)
+                    <div class="run-list">@foreach (var run in FilteredRuns)
                     {
-                        <a class="@(run.ExecutionId == execution.ExecutionId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" href="/operations/pipeline/executions/@run.ExecutionId"><strong>@StatusGlyph(run.Status.ToString()) @RunCaptureLabel(run.CaptureId)</strong><span>@run.ExecutionClass / @run.Status / @run.AcceptedUtc.ToString("HH:mm") UTC</span></a>
-                    }
+                        <a class="run-item @(run.ExecutionId == execution.ExecutionId ? "selected" : "")" aria-current="@(run.ExecutionId == execution.ExecutionId ? "page" : null)" href="/operations/pipeline/executions/@run.ExecutionId"><span class="status-icon @PipelineRunPresentation.StatusClass(run.Status.ToString())" aria-hidden="true"></span><span class="run-copy"><strong>@RunCaptureLabel(run.CaptureId)</strong><small>@PipelineRunPresentation.StatusLabel(run.Status.ToString()) / @run.ExecutionClass</small></span><time datetime="@run.AcceptedUtc.ToString("O")">@run.AcceptedUtc.ToString("HH:mm")</time></a>
+                    }</div>
                     @if (FilteredRuns.Count == 0) { <p class="muted">No captures match this filter.</p> }
                 }
                 </div>
-                <div class="run-rail__section"><div class="run-rail__label"><h3>All stages</h3><button type="button" class="run-rail__filter" aria-pressed="@_requiredOnly" @onclick="() => _requiredOnly = !_requiredOnly">Required only</button></div>
-                    @foreach (var node in _view.Nodes.Where(node => !_requiredOnly || node.Required))
+                <div class="run-rail__section stage-section"><div class="run-rail__label"><h3>All stages</h3><button type="button" class="run-rail__filter" aria-pressed="@_requiredOnly.ToString().ToLowerInvariant()" @onclick="() => _requiredOnly = !_requiredOnly"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M6 10h8m-5 5h2" /></svg>Required only</button></div>
+                    <div class="stage-list">@foreach (var node in _view.Nodes.Where(node => !_requiredOnly || node.Required))
                     {
-                        <button type="button" class="@(node.NodeId == _selectedNodeId ? "run-rail__item run-rail__item--selected" : "run-rail__item")" @onclick="() => _selectedNodeId = node.NodeId">@StatusGlyph(node.Status) @node.NodeId <small>@node.Status / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } started && node.CompletedUtc is { } completed ? completed - started : null)</small></button>
-                    }
+                        <button type="button" class="stage-item @(node.NodeId == _selectedNodeId ? "selected" : "")" aria-pressed="@((node.NodeId == _selectedNodeId).ToString().ToLowerInvariant())" @onclick="() => SelectNode(node.NodeId)"><span class="status-icon @PipelineRunPresentation.StatusClass(node.Status)" aria-hidden="true"></span><span title="@node.NodeId">@PipelineRunPresentation.Name(node)</span><small>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(node))</small></button>
+                    }</div>
                 </div>
             </aside>
             <div class="run-workspace__main">
-                <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a> / <a href="/operations/pipeline/executions">Pipeline</a> / Run</p><div class="run-title"><span class="run-title__glyph @TitleStatusClass" aria-hidden="true">@StatusGlyph(execution.Status.ToString())</span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@execution.Status / @execution.ExecutionClass execution</p></div></div></div><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId">Reprocess</a></header>
-                <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><strong>Triggered by @execution.TriggerKind</strong><span>@(execution.TriggerReference ?? $"Accepted {execution.AcceptedUtc:u}")</span></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@execution.Status</dd></div><div><dt>Total duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.Sum(static node => node.Outputs.Count)</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
-                <section class="graph-card" aria-label="Capture-time dependency graph"><header class="graph-card__heading"><div><p class="eyebrow">Capture-time dependency graph</p><h2>Pipeline revision @GraphRevisionLabel</h2></div><div class="graph-card__legend"><span class="legend-success">● Succeeded</span><span class="legend-running">● Running</span><span class="legend-attention">! Attention</span><span>○ Skipped</span></div></header><ExecutionRunDiagram Nodes="@_view.Nodes" TransientEvents="@(_transient?.Events ?? [])" TransientEnabled="@TransientEnabled" TransientUnavailable="@_transientUnavailable" SelectedNodeId="@_selectedNodeId" NodeSelected="id => _selectedNodeId = id" />
+                <header class="run-overview"><div><p class="run-breadcrumb"><a href="/operations">Operations</a><span>/</span><a href="/operations/pipeline/executions">Pipeline</a><span>/</span>Run</p><div class="run-title"><span class="run-title__glyph @TitleStatusClass status-icon @PipelineRunPresentation.StatusClass(execution.Status.ToString())" aria-hidden="true"></span><div><h1>@(_captureSequence is { } sequence ? $"Capture #{sequence}" : "Capture pipeline run")</h1><p>@PipelineRunPresentation.StatusLabel(execution.Status.ToString()) / @execution.ExecutionClass execution</p></div></div></div><div class="heading-actions"><a class="btn btn-outline-light" href="/operations/pipeline/replays/new?captureId=@execution.CaptureId"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7" /></svg>Reprocess</a><button type="button" class="icon-button" disabled aria-label="More run actions unavailable: no additional action contract" title="No additional run actions available"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1" /><circle cx="10" cy="10" r="1" /><circle cx="16" cy="10" r="1" /></svg></button></div></header>
+                <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><span class="camera-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9H2V9a2 2 0 0 1 2-2Z" /><circle cx="12" cy="12.5" r="4" /></svg></span><div><span>Triggered by @execution.TriggerKind</span><strong>@TriggerLabel</strong><small>Graph @GraphRevisionLabel / @ScheduleLabel</small></div></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@PipelineRunPresentation.StatusLabel(execution.Status.ToString())</dd></div><div><dt>Total duration</dt><dd>@PipelineRunPresentation.Duration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.SelectMany(static node => node.Outputs).Select(static output => output.ArtifactId).Distinct().Count()</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
+                @if (execution.FailureReason is not null || execution.Status == ProcessingGraphExecutionStatus.Failed)
+                {
+                    <section class="run-notice failure" role="note"><span class="status-icon failure" aria-hidden="true"></span><div><strong>Recorded execution failure</strong><p>@(execution.FailureReason ?? "This execution failed; no detailed reason was retained.")</p></div><a href="#run-inspector">Inspect evidence</a></section>
+                }
+                else if (_transient?.Events.Any(static stage => stage.CandidateId is not null) == true)
+                {
+                    <section class="run-notice warning" role="note"><span class="status-icon warning" aria-hidden="true"></span><div><strong>Independent candidate evidence retained</strong><p>Recorded local transient milestones are separate from the image pipeline. No central confirmation is implied.</p></div><a href="/transients/@_transient.Events.First(static stage => stage.CandidateId is not null).CandidateId">View candidate</a></section>
+                }
+                <section class="graph-card" aria-label="Capture-time dependency graph"><ExecutionRunDiagram @key="execution.ExecutionId" Nodes="@_view.Nodes" GraphTitle="@($"Pipeline revision {GraphRevisionLabel}")" TransientEvents="@(_transient?.Events ?? [])" TransientEnabled="@(TransientEnabled || _transient?.Events.Count > 0)" TransientUnavailable="@_transientUnavailable" SelectedNodeId="@_selectedNodeId" NodeSelected="SelectNode" SelectedTransientKey="@(_selectedTransient is null ? null : ExecutionRunDiagram.StageKey(_selectedTransient))" TransientSelected="SelectTransient" />
                 </section>
-                <section class="run-inspector" aria-label="Selected stage">
-                    <nav class="run-inspector__tabs" aria-label="Stage details">
-                        <button type="button" aria-pressed="@(_tab == "stage")" @onclick="SelectStageTab">Stage summary</button>
-                        <button type="button" aria-pressed="@(_tab == "artifacts")" @onclick="SelectArtifactsTab">Artifacts</button>
-                        <button type="button" aria-pressed="@(_tab == "attempts")" @onclick="SelectAttemptsTab">Attempts</button>
+                <section id="run-inspector" class="run-inspector detail-card" aria-label="Selected stage">
+                    <nav class="run-inspector__tabs detail-tabs" role="tablist" aria-label="Stage details">
+                        <button id="run-tab-stage" type="button" role="tab" aria-selected="@((_tab == "stage").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "stage" ? 0 : -1)" @onclick="SelectStageTab" @onkeydown="args => TabKeyAsync(args, 0)">Stage summary</button>
+                        <button id="run-tab-artifacts" type="button" role="tab" aria-selected="@((_tab == "artifacts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "artifacts" ? 0 : -1)" @onclick="SelectArtifactsTab" @onkeydown="args => TabKeyAsync(args, 1)">Artifacts <span>@_view.Nodes.Sum(static node => node.Outputs.Count)</span></button>
+                        <button id="run-tab-attempts" type="button" role="tab" aria-selected="@((_tab == "attempts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "attempts" ? 0 : -1)" @onclick="SelectAttemptsTab" @onkeydown="args => TabKeyAsync(args, 2)">Attempts</button>
                     </nav>
-                    @if (SelectedNode is { } selected)
+                    <div id="run-panel" class="tab-panel" role="tabpanel" aria-labelledby="@($"run-tab-{_tab}")" @ref="_panel">
+                    @if (_selectedTransient is { } transient)
                     {
-                        <h3>@selected.NodeId <span class="hvo-chip hvo-chip--neutral">@selected.Status</span></h3>
+                        <header class="detail-heading"><div><p class="eyebrow">Independent transient lane / recorded milestone</p><h2>@ExecutionRunDiagram.TransientName(transient.StageKey)</h2><p>@transient.State / @(transient.CandidateId is { } candidateId ? $"Candidate {candidateId:D}" : "Capture-scoped milestone")</p></div><span class="state-chip pending">@transient.State</span></header>
+                        <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Recorded</dt><dd>@transient.RecordedUtc.ToString("HH:mm:ss.fff") UTC</dd></div><div><dt>Duration</dt><dd>Not recorded</dd></div><div><dt>Attempt</dt><dd>Not recorded</dd></div><div><dt>Runner</dt><dd>Independent transient lane</dd></div></dl><h3>Dependencies</h3><p class="unavailable-copy">Only evidenced predecessor edges are drawn.</p><h3>Outputs</h3><p class="unavailable-copy">Artifact inventory is unavailable for this milestone.</p></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded milestone</span></div><ol><li><time>@transient.RecordedUtc.ToString("HH:mm:ss.fff")</time><span class="event-level">Recorded</span><p>@transient.StageKey / @transient.State</p></li></ol><p class="unavailable-copy">@(_tab == "attempts" ? "Attempt history is not recorded by this milestone contract." : _tab == "artifacts" ? "No output artifact identities are recorded by this milestone contract." : "No inferred start, completion or attempt duration is shown.")</p></section></div>
+                    }
+                    else if (SelectedNode is { } selected)
+                    {
                         @if (_tab == "stage")
                         {
-                            <p>@(selected.Required ? "Required" : "Optional") stage / @ProcessingExecutionsPage.FormatDuration(selected.StartedUtc is { } start && selected.CompletedUtc is { } end ? end - start : null) / @selected.Outputs.Count output(s).</p>
-                            <p>Depends on: @(selected.Dependencies.Count == 0 ? "none" : string.Join(", ", selected.Dependencies.Select(static dependency => dependency.ProducerId)))</p>
-                            @if (selected.Reason is not null) { <p>@selected.Reason</p> }
+                            <header class="detail-heading"><div><p class="eyebrow">Edge processing / @(selected.Required ? "Required" : "Optional")</p><h2>@PipelineRunPresentation.Name(selected)</h2><p>@PipelineRunPresentation.Description(selected)</p></div><span class="state-chip @PipelineRunPresentation.StatusClass(selected.Status)">@PipelineRunPresentation.StatusLabel(selected.Status)</span></header>
+                            <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Started</dt><dd>@(selected.StartedUtc?.ToString("HH:mm:ss.fff") is { } started ? $"{started} UTC" : "Not recorded")</dd></div><div><dt>Completed</dt><dd>@(selected.CompletedUtc?.ToString("HH:mm:ss.fff") is { } ended ? $"{ended} UTC" : "Not recorded")</dd></div><div><dt>Duration</dt><dd>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(selected))</dd></div><div><dt>Attempts</dt><dd>@selected.AttemptCount recorded</dd></div><div><dt>Runner</dt><dd>@PipelineRunPresentation.Runner(selected)</dd></div><div><dt>Stage</dt><dd>@selected.NodeId</dd></div></dl><h3>Dependencies</h3><div class="token-list">@if (selected.Dependencies.Count == 0) { <span>No dependencies recorded</span> } @foreach (var dependency in selected.Dependencies) { <span>@dependency.ProducerId / @(dependency.Required ? "required" : "optional")</span> }</div><h3>Outputs</h3><div class="token-list outputs">@if (selected.Outputs.Count == 0) { <span>No outputs recorded</span> } @foreach (var output in selected.Outputs) { <span>@output.Role / @output.Variant / @output.AvailabilityState</span> }</div></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded execution facts</span></div><ol>@foreach (var fact in StageFacts(selected)) { <li><time>@(fact.Time?.ToString("HH:mm:ss.fff") ?? "Not timed")</time><span class="event-level @fact.Tone">@fact.Label</span><p>@fact.Message</p></li> }</ol><p class="unavailable-copy">Journal facts are shown at their recorded times; no log messages or successful commits are synthesized.</p></section></div>
                         }
                         else if (_tab == "artifacts")
                         {
-                            <ul>@foreach (var output in selected.Outputs) { <li>@output.Role / @output.Variant / @output.AvailabilityState</li> }</ul>
-                            @if (selected.Outputs.Count == 0) { <p>No outputs recorded.</p> }
+                            <header class="panel-heading"><div><p class="eyebrow">Immutable run evidence</p><h2>Produced artifacts</h2></div><button type="button" class="btn btn-outline-light" disabled title="No run manifest download contract">Download manifest unavailable</button></header>
+                            <div class="artifact-table-wrap"><table><caption class="visually-hidden">Recorded artifacts for this execution</caption><thead><tr><th>Artifact</th><th>Producer</th><th>Size</th><th>Retention</th><th>Publication</th></tr></thead><tbody>@foreach (var node in _view.Nodes) { @foreach (var output in node.Outputs) { var artifact = _capture?.Artifacts.FirstOrDefault(item => item.ArtifactId == output.ArtifactId); <tr><td><strong>@output.Role / @output.Variant</strong><small>@output.ArtifactId</small></td><td>@node.NodeId</td><td>@(artifact?.ByteLength is { } length ? FormatBytes(length) : "Not recorded")</td><td>@output.AvailabilityState</td><td>@(output.Published ? "Published locally" : "Not published")<small>@(output.AvailabilityReason ?? "Central delivery is a separate fact")</small></td></tr> } }</tbody></table></div>
+                            @if (_view.Nodes.All(static node => node.Outputs.Count == 0)) { <p class="unavailable-copy">No outputs recorded.</p> }
                         }
                         else
                         {
-                            <ol>@foreach (var attempt in selected.Attempts) { <li>Attempt @attempt.AttemptNumber: @attempt.Status / @attempt.ExecutionRoute / @ProcessingExecutionsPage.FormatDuration(attempt.Duration)</li> }</ol>
-                            @if (selected.Attempts.Count == 0) { <p>No attempts recorded.</p> }
+                            <header class="panel-heading"><div><p class="eyebrow">Immutable execution history</p><h2>@PipelineRunPresentation.Name(selected) attempts</h2></div><span class="quiet-label">Newest first</span></header><ol class="attempt-list">@foreach (var attempt in selected.Attempts.OrderByDescending(static item => item.AttemptNumber)) { <li><span class="status-icon @PipelineRunPresentation.StatusClass(attempt.Status)" aria-hidden="true"></span><span class="attempt-copy"><strong>Attempt @attempt.AttemptNumber — @PipelineRunPresentation.StatusLabel(attempt.Status)</strong><span>@attempt.ExecutionRoute / @PipelineRunPresentation.Duration(attempt.Duration)</span><span>@(attempt.Reason ?? attempt.Outcome ?? "No outcome recorded")</span></span><time>@attempt.StartedUtc.ToString("HH:mm:ss.fff") UTC</time></li> }</ol>
+                            @if (selected.Attempts.Count == 0) { <p class="unavailable-copy">No attempts recorded.</p> }
                         }
                     }
+                    else { <p class="unavailable-copy">No processing stage is recorded. Designed cloud, meteor and central slots remain explicitly unavailable in the graph.</p> }
+                    </div>
                 </section>
             </div>
         </section>

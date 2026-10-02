@@ -38,6 +38,8 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.AreEqual(35.33, detail?.Detail?.Location?.LatitudeDegrees);
         Assert.AreEqual(7L, detail?.Detail?.Location?.DeploymentVersion);
         Assert.IsNull(source?.Detail?.Location);
+        Assert.IsNull(detail?.Detail?.Schedule, "An absent capture-time admission must not be replaced by current schedule state.");
+        Assert.IsNull(source?.Detail?.Schedule);
         history.Verify(store => store.Resolve(captured.ToProvenance(), Utc(1)), Times.Once());
         history.VerifyNoOtherCalls();
     }

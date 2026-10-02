@@ -55,7 +55,18 @@ public sealed record CameraAgentGalleryCaptureDetail(
     CameraAgentGalleryCloudAssessment CloudAssessment,
     ProfileIdentityDescriptor? ProcessingProfile = null,
     CameraAgentCaptureProfileFacts? CaptureProfile = null,
-    CameraAgentCaptureLocationFacts? Location = null);
+    CameraAgentCaptureLocationFacts? Location = null)
+{
+    public CameraAgentCaptureScheduleFacts? Schedule { get; init; }
+}
+
+// Small read-only projection of verified capture-time schedule admission, never current settings.
+public sealed record CameraAgentCaptureScheduleFacts(
+    string RevisionId,
+    string RevisionSha256,
+    string SetpointProfileId,
+    string Reason,
+    DateTimeOffset DecisionUtc);
 
 // Local owner-facing facts resolved from the exact manifest provenance and protected deployment history.
 public sealed record CameraAgentCaptureLocationFacts(

@@ -24,8 +24,15 @@ public sealed class ProcessingExecutionPagesTests
 
     private static void ConfigureTransientRun(BunitContext context)
     {
+        ConfigureDiagram(context);
         context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions()));
         context.Services.AddSingleton<ICameraAgentTransientUiService>(new RecordedTransientUiService());
+    }
+
+    private static void ConfigureDiagram(BunitContext context)
+    {
+        context.JSInterop.SetupModule("./Components/Operations/ExecutionRunDiagram.razor.js").Mode = JSRuntimeMode.Loose;
+        context.JSInterop.SetupModule("./Components/Pages/ProcessingExecutionDetailPage.razor.js").Mode = JSRuntimeMode.Loose;
     }
 
     private sealed class RecordedTransientUiService : ICameraAgentTransientUiService
@@ -140,7 +147,10 @@ public sealed class ProcessingExecutionPagesTests
                 new CameraAgentProcessingNodeView("telemetry", false, new string('T', 64), "Failed", "sensitive-tool crashed", 2, Now.AddSeconds(-3), Now, [], [], [])
             ]);
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService { Detail = detail });
-        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture(id)))
+        });
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(static page => page.ExecutionId, CompletedId));
 
@@ -210,6 +220,7 @@ public sealed class ProcessingExecutionPagesTests
     public void DetailPage_TransientBandShowsOnlyAuthorizedRecordedMilestones()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions
         {
             TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Hybrid }
@@ -250,6 +261,7 @@ public sealed class ProcessingExecutionPagesTests
     public void RunDiagram_ConnectsOnlyEvidencedPredecessorsWithinTheirCandidate()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         var first = Guid.NewGuid();
         var second = Guid.NewGuid();
         var events = new TransientStageEvent[]
@@ -278,6 +290,7 @@ public sealed class ProcessingExecutionPagesTests
     public void RunDiagram_OrdersCandidateRowsByPersistedSlotAndDescribesEvents()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         var lowerGuid = Guid.Parse("11111111-1111-1111-1111-111111111111");
         var higherGuid = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
         var events = new TransientStageEvent[]
@@ -296,7 +309,7 @@ public sealed class ProcessingExecutionPagesTests
         var labels = cut.FindAll(".run-diagram__transient-label").Select(static item => item.TextContent).ToArray();
         CollectionAssert.AreEqual(new[] { "Capture", $"Candidate {higherGuid:D}", $"Candidate {lowerGuid:D}" }, labels);
         Assert.HasCount(3, cut.FindAll(".run-diagram__transient-edge"));
-        var description = cut.Find(".run-diagram desc").TextContent;
+        var description = cut.Find(".run-diagram [id^='execution-graph-description-']").TextContent;
         StringAssert.Contains(description, $"Candidate {higherGuid:D}: Candidate allocated pending", StringComparison.Ordinal);
         StringAssert.Contains(description, "Causal candidate scan succeeded", StringComparison.Ordinal);
     }
@@ -305,6 +318,7 @@ public sealed class ProcessingExecutionPagesTests
     public void RunDiagram_DrawsFrozenOptionalEdgeAndSelectsNodes()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         string? selected = null;
         var nodes = new CameraAgentProcessingNodeView[]
         {
@@ -326,24 +340,25 @@ public sealed class ProcessingExecutionPagesTests
         Assert.HasCount(1, cut.FindAll(".run-diagram__cloud-placeholder"));
         Assert.HasCount(1, cut.FindAll(".run-diagram__transient-empty"));
         Assert.IsEmpty(cut.FindAll(".run-diagram__transient-edge"));
-        Assert.AreEqual("Fit (min 85%)", cut.Find(".run-diagram__zoom").TextContent);
-        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width: max(100%,", StringComparison.Ordinal);
-        cut.FindAll(".run-diagram__node")[1].KeyDown("Enter");
+        Assert.AreEqual("50%", cut.Find(".run-diagram__zoom").TextContent);
+        cut.FindAll(".run-diagram__node")[1].Click();
         Assert.AreEqual("preview", selected);
         cut.Render(parameters => parameters.Add(component => component.SelectedNodeId, "preview"));
         Assert.HasCount(2, cut.FindAll(".run-diagram__edge--highlighted"));
         cut.Find("button[aria-label='Zoom in']").Click();
-        Assert.AreEqual("110%", cut.Find(".run-diagram__zoom").TextContent);
-        Assert.IsFalse(cut.Find(".run-diagram").GetAttribute("style")!.Contains("max(100%", StringComparison.Ordinal));
+        Assert.AreEqual("60%", cut.Find(".run-diagram__zoom").TextContent);
+        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "transform:scale(0.6)", StringComparison.Ordinal);
         cut.Find("button[aria-label='Fit graph']").Click();
-        Assert.AreEqual("Fit (min 85%)", cut.Find(".run-diagram__zoom").TextContent);
-        StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "width: max(100%,", StringComparison.Ordinal);
+        cut.InvokeAsync(() => cut.Instance.ViewportChanged(900, 600, false)).GetAwaiter().GetResult();
+        cut.WaitForAssertion(() => Assert.AreNotEqual("60%", cut.Find(".run-diagram__zoom").TextContent));
+        Assert.HasCount(1, cut.FindAll("button[aria-label='Graph fullscreen']"));
     }
 
     [TestMethod]
     public void RunDiagram_KeepsCloudPlaceholderWhenStageHasNoProduct()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         var nodes = new CameraAgentProcessingNodeView[]
         {
             new("cloud-assessment", false, "plan", "Completed", null, 1, Now, Now, [], [], [])
@@ -358,6 +373,7 @@ public sealed class ProcessingExecutionPagesTests
     public void RunDiagram_OnlyRecordedAssessmentProductRemovesCloudPlaceholder()
     {
         using var context = new BunitContext();
+        ConfigureDiagram(context);
         var weather = new ProcessingGraphExecutionOutputState(0, new string('A', 64), Guid.NewGuid(),
             FrameArtifactRole.Preview, "weather-cloud-overlay-v1", "Available", null, false);
         var assessment = weather with { Role = FrameArtifactRole.Metadata, Variant = "custom-assessment" };
@@ -428,6 +444,109 @@ public sealed class ProcessingExecutionPagesTests
         Assert.IsTrue(navigation.Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void DetailPage_RevokedOptionalReadClearsProtectedFactsAndStopsEnrichment()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        var reads = 0;
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => { reads++; throw new InvalidOperationException("Must not read after denial"); }
+        });
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)), "shared", "local", []),
+            Failure = OperatorUiResult<CameraAgentProcessingExecutionsView>.Failure(OperatorUiResultKind.Unauthorized, "denied")
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+            Assert.IsEmpty(cut.FindAll(".graph-card"));
+            Assert.AreEqual(0, reads);
+        });
+    }
+
+    [TestMethod]
+    public async Task DetailPage_RapidNavigationRejectsPreviousExecutionCompletionAsync()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        var stale = new TaskCompletionSource<OperatorUiResult<CameraAgentProcessingExecutionDetailView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var current = new CameraAgentProcessingExecutionDetailView(Now,
+            CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)), "shared", "local",
+            [new("current-stage", true, "plan", "Completed", null, 1, Now, Now, [], [], [])]);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            DetailHandler = id => id == RunningId ? new(stale.Task) : ValueTask.FromResult(OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(current))
+        });
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, RunningId));
+        cut.Render(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement("[data-node-id='current-stage']");
+        stale.SetResult(OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(current with
+        {
+            Nodes = [new("stale-stage", true, "plan", "Failed", null, 1, Now, Now, [], [], [])]
+        }));
+        await Task.Yield();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find("[data-node-id='current-stage']"));
+            Assert.IsEmpty(cut.FindAll("[data-node-id='stale-stage']"));
+        });
+    }
+
+    [TestMethod]
+    public void DetailPage_ShowsCustomOutputsActualAttemptsAndRecordedSchedule()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        var capture = OperatorUiTestData.Capture(CaptureId);
+        capture = capture with { Detail = capture.Detail! with { Schedule = new("captured-schedule", "sha", "night", "WeeklyWindow", Now) } };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentGalleryCapture>.Success(capture))
+        });
+        var output = new ProcessingGraphExecutionOutputState(0, "custom-identity", Guid.NewGuid(), FrameArtifactRole.Metadata, "custom-payload", "Missing", "retained bytes missing", false);
+        var node = new CameraAgentProcessingNodeView("custom-node", false, "plan", "Failed", "recorded failure", 2, Now, Now.AddSeconds(3), [],
+            [new(2, Now, Now.AddSeconds(3), "Failed", "Failed", "recorded failure", TimeSpan.FromSeconds(3), "LocalRunner")], [output]);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Replay, ProcessingGraphExecutionStatus.Failed)), "shared", "local", [node])
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".run-summary").TextContent, "captured-sch", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Find(".stage-facts").TextContent, "custom-payload / Missing", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".event-log").TextContent, "recorded failure", StringComparison.Ordinal);
+        cut.Find("#run-tab-attempts").Click();
+        Assert.HasCount(1, cut.FindAll(".attempt-list li"));
+        StringAssert.Contains(cut.Find(".attempt-list").TextContent, "Attempt 2", StringComparison.Ordinal);
+        cut.Find("#run-tab-artifacts").Click();
+        StringAssert.Contains(cut.Find(".artifact-table-wrap").TextContent, "Not recorded", StringComparison.Ordinal);
+        Assert.IsNotNull(cut.Find("button[disabled][title='No run manifest download contract']"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_RecordedPendingMilestonesAreNotMarkedSucceededAndCanBeSelected()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        TransientStageEvent? selected = null;
+        var pending = new TransientStageEvent("frame-staged", null, "pending", "recorded", Now);
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, [])
+            .Add(component => component.TransientEnabled, true)
+            .Add(component => component.TransientEvents, [pending])
+            .Add(component => component.TransientSelected, item => selected = item));
+        Assert.IsNotNull(cut.Find(".run-diagram__transient-node .status-icon.pending"));
+        Assert.IsEmpty(cut.FindAll(".run-diagram__transient-node .status-icon.success"));
+        cut.Find(".run-diagram__transient-node").Click();
+        Assert.AreEqual(pending, selected);
+        Assert.HasCount(4, cut.FindAll(".ownership-zone"));
+        Assert.IsNotNull(cut.Find(".central.unavailable"));
+    }
+
     internal static ProcessingGraphExecutionState Execution(Guid id, ProcessingGraphExecutionClass executionClass, ProcessingGraphExecutionStatus status) => new(
         id, executionClass, status, CaptureId, Guid.NewGuid(), "graph-rev-1", new string('G', 64), new string('S', 64), new string('L', 64),
         executionClass == ProcessingGraphExecutionClass.Live ? "live-capture" : "operator", null, 0,
@@ -448,6 +567,7 @@ public sealed class ProcessingExecutionPagesTests
         public CameraAgentProcessingExecutionDetailView? Detail { get; set; }
         public OperatorUiResult<CameraAgentProcessingExecutionDetailView>? DetailFailure { get; set; }
         public int ExecutionReads { get; private set; }
+        public Func<Guid, ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>>>? DetailHandler { get; set; }
         public Task<OperatorUiResult<CameraAgentProcessingExecutionsView>>? PendingExecutions { get; set; }
 
         public async ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(int maximumPerClass, CancellationToken cancellationToken)
@@ -459,7 +579,7 @@ public sealed class ProcessingExecutionPagesTests
         }
 
         public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionDetailView>> GetExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(DetailFailure ?? OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(Detail!));
+            => DetailHandler?.Invoke(executionId) ?? ValueTask.FromResult(DetailFailure ?? OperatorUiResult<CameraAgentProcessingExecutionDetailView>.Success(Detail!));
 
         public OperatorUiResult<CameraAgentLiveRunLink>? LiveRunResult { get; set; }
 
