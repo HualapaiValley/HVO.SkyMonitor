@@ -134,3 +134,21 @@ test-only additions use the previously passing Integration reports for the
 same production revision; no cross-lane report borrowing or denominator
 exclusions were introduced. Global discovery is now 5296 Unit cases. Independent
 review and exact-head protected CI remain separate requirements.
+
+## Initial review corrections
+
+Independent review of PR #1139 found off-axis perspective disk undersampling
+and resolved disk light entering the cloud background-scatter term. New
+regressions fail on the prior `334ef377` renderer (five failures, seven existing
+cases pass) and pass with the fixes. Astronomy now bounds projection stretch,
+including aperture and distortion, and Imaging rejects an excessive sampling
+budget rather than producing holes. Cloud transmission attenuates disk light
+without restoring it as diffuse background. Disk raster identity advances to v2.
+Twelve numerical projection-bound cases cover all projection families and both
+distortion signs; the host calibration corpus additionally checks native 12-bit
+normalization and expired profile rejection. Global Unit discovery is 5313.
+
+The accepted POC artifacts remain pinned to their original renderer/assembly
+identities. Their clear all-sky and centered detail geometries do not exercise
+the two reported defect scenarios. Final correction gates and exact-range
+rereview are recorded separately in the PR ledger.
