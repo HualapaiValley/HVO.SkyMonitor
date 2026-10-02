@@ -67,6 +67,48 @@ public sealed partial class HostRecipeContractConformanceTests
         Assert.AreEqual(FrameStoredCodeTransform.IdentityV1, nativeProduct.Layout.StoredCodeTransform);
         AssertContract(recorder.Request!, nativeProduct);
 
+        async Task<ProcessingOutcome> ReplaceReference(string kind, byte[] bytes, ProcessingArtifact? source = null)
+        {
+            var previousAuxiliary = auxiliary;
+            var changedProfile = profile with
+            {
+                References = profile.References.Select(reference => reference.Kind == kind
+                    ? reference with { PayloadSha256 = PayloadChecksum.ComputeSha256(bytes) } : reference).ToArray()
+            };
+            auxiliary = auxiliary with
+            {
+                Payload = ReferenceCalibrationProfileJson.Serialize(changedProfile),
+                IdentitySha256 = ReferenceCalibrationProfileJson.ComputeIdentitySha256(changedProfile)
+            };
+            try
+            {
+                return await Run(inputs.Select(input => input.BindingName == $"{kind}-reference"
+                    ? input with { Payload = bytes, Artifact = input.Artifact! with { Payload = bytes } }
+                    : source is not null && input.Artifact!.ArtifactId == light.ArtifactId
+                        ? input with { Payload = source.Payload, Artifact = source } : input).ToArray());
+            }
+            finally
+            {
+                auxiliary = previousAuxiliary;
+            }
+        }
+        var outlier = light with { Payload = new byte[] { 255, 255, 108, 2, 114, 1, 108, 2 } };
+        var defectMask = new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 };
+        var repaired = await ReplaceReference(CalibrationReferenceKinds.Defect, defectMask, outlier);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, repaired.Status, repaired.ReasonCode);
+        var repairedProduct = Assert.ContainsSingle(repaired.Products);
+        CollectionAssert.AreEqual(new byte[] { 244, 1, 244, 1, 244, 1, 244, 1 }, repairedProduct.Payload.ToArray());
+        Assert.AreEqual(PayloadChecksum.ComputeSha256(defectMask), repairedProduct.Compatibility.Mask);
+        AssertContract(recorder.Request!, repairedProduct);
+        var unrepairable = await ReplaceReference(CalibrationReferenceKinds.Defect, [1, 0, 1, 0, 1, 0, 1, 0]);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, unrepairable.Status);
+        Assert.AreEqual(ProcessingReasonCodes.UnrepairableCalibrationDefect, unrepairable.ReasonCode);
+        Assert.HasCount(0, unrepairable.Products);
+        var invalidFlat = await ReplaceReference(CalibrationReferenceKinds.Flat, new byte[8]);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, invalidFlat.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidCalibrationFlat, invalidFlat.ReasonCode);
+        Assert.HasCount(0, invalidFlat.Products);
+
         var missing = await Run(inputs.Where(i => i.BindingName != "dark-reference").ToArray());
         Assert.AreEqual(ProcessingReasonCodes.MissingCalibrationReference, missing.ReasonCode);
         Assert.HasCount(0, missing.Products);

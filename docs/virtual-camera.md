@@ -989,7 +989,7 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
 Portfolio order is owned by `docs/roadmap.md`, virtual-first phase order by
 `docs/project-plan.md`, and live status by the linked GitHub issues.
 
-Disk raster version `solar-lunar-geometric-disk-bilinear-v2-projection-bound`
+Disk raster version `solar-lunar-geometric-disk-bilinear-v3-stellar-charge`
 uses an Astronomy angular-to-pixel Jacobian bound, including off-axis
 magnification and radial distortion. The grid prefers four samples per projected
 pixel and requires at least one per grid axis. Cases needing more than 512
