@@ -15,7 +15,7 @@
         <a class="button secondary" href="/">Current sky</a>
         @if (CanDiscard)
         {
-            <button type="button" id="focus-discard" class="button secondary" disabled="@_busy" @onclick="DiscardAsync">Discard</button>
+            <button type="button" id="focus-discard" class="button secondary" disabled="@Busy" @onclick="DiscardAsync">Discard</button>
         }
         <button type="button" id="focus-start" class="button primary" disabled="@(!PrimaryEnabled)"
                 aria-describedby="@(PrimaryEnabled ? null : "focus-unavailable-reason")" title="@(PrimaryEnabled ? null : ControlReason)"
@@ -88,7 +88,7 @@
                     <button type="button" id="focus-automatic-target" class="button secondary small" disabled="@(!CanAdjust)"
                             @onclick="AutomaticTargetAsync">Automatic target</button>
                 }
-                <button type="button" id="focus-select-region" class="button secondary small" disabled="@(Images is null)"
+                <button type="button" id="focus-select-region" class="button secondary small" disabled="@(Images is null || !RendererInfo.IsInteractive)"
                         aria-pressed="@(_viewer == FocusViewer.Field ? "true" : "false")"
                         @onclick="ToggleViewer">@(_viewer == FocusViewer.Field ? "Show target star" : "Select region")</button>
             </span>
@@ -135,10 +135,12 @@
             }
         </div>
         <div class="focus-controls">
-            <label>Preview exposure<input id="focus-exposure" type="text" @bind="_exposureText" @bind:event="oninput" @bind:after="MarkDirty" disabled="@(!CanEditSettings)"
-                       aria-describedby="@(CanEditSettings ? "focus-exposure-help" : "focus-unavailable-reason")" inputmode="decimal"></label>
-            <label>Preview gain<input id="focus-gain" type="number" min="0" max="@Limits.MaximumGain.ToString(Culture)" step="1" @bind="_gain" @bind:event="oninput" @bind:after="MarkDirty"
-                       disabled="@(!CanEditSettings)" aria-describedby="@(CanEditSettings ? null : "focus-unavailable-reason")"></label>
+            <label>Preview exposure<input id="focus-exposure" type="text" @ref="_exposureInput" @bind="_exposureText" @bind:event="oninput" @bind:after="MarkDirty" disabled="@(!CanEditSettings)"
+                       aria-invalid="@InvalidAttribute(SettingsField.Exposure)" inputmode="decimal"
+                       aria-describedby="@(!CanEditSettings ? "focus-unavailable-reason" : _invalidField == SettingsField.Exposure ? "focus-settings-error focus-exposure-help" : "focus-exposure-help")"></label>
+            <label>Preview gain<input id="focus-gain" type="number" min="0" max="@Limits.MaximumGain.ToString(Culture)" step="1" @ref="_gainInput" @bind="_gain" @bind:event="oninput" @bind:after="MarkDirty"
+                       disabled="@(!CanEditSettings)" aria-invalid="@InvalidAttribute(SettingsField.Gain)"
+                       aria-describedby="@(!CanEditSettings ? "focus-unavailable-reason" : _invalidField == SettingsField.Gain ? "focus-settings-error" : null)"></label>
             <label>Safety limit<select id="focus-safety-limit" @bind="_safetyMinutes" disabled="@(!CanStartSession)"
                         aria-describedby="@(CanStartSession ? "focus-safety-help" : "focus-unavailable-reason")">
                 @foreach (var minutes in SafetyChoices)
@@ -146,11 +148,15 @@
                     <option value="@minutes">@minutes minutes</option>
                 }
             </select></label>
-            <label>Metric<select id="focus-metric-kind" @bind="_metric">
+            <label>Metric<select id="focus-metric-kind" @bind="_metric" disabled="@(!RendererInfo.IsInteractive)">
                 <option value="@MetricHfd">Half-flux diameter</option>
                 <option value="@MetricFwhm">FWHM</option>
             </select></label>
         </div>
+        @if (_settingsError is not null)
+        {
+            <p id="focus-settings-error" class="focus-settings-error" role="alert">@_settingsError</p>
+        }
         <p id="focus-exposure-help" class="focus-help">Exposure as seconds (1.5 or 1.5s) or milliseconds (500ms), @Seconds(Limits.MinimumExposure) to @Seconds(Limits.MaximumExposure).</p>
         <p id="focus-safety-help" class="focus-help">The loop exposes back to back until you end it. The safety limit ends it even if nobody does.</p>
         @if (SimulatedFocus is { } model)
@@ -161,7 +167,8 @@
                     <button type="button" class="button secondary small" @onclick="() => NudgeAsync(-50)" aria-label="Move simulated focus 50 steps in">&minus;50</button>
                     <button type="button" class="button secondary small" @onclick="() => NudgeAsync(-10)" aria-label="Move simulated focus 10 steps in">&minus;10</button>
                     <input id="focus-position" type="number" step="1" min="@model.MinimumPosition.ToString(Culture)" max="@model.MaximumPosition.ToString(Culture)"
-                           @bind="_position" @bind:event="oninput" @bind:after="MarkDirty" aria-label="Simulated focus position">
+                           @ref="_positionInput" @bind="_position" @bind:event="oninput" @bind:after="MarkDirty" aria-label="Simulated focus position"
+                           aria-invalid="@InvalidAttribute(SettingsField.Position)" aria-describedby="@(_invalidField == SettingsField.Position ? "focus-settings-error" : null)">
                     <button type="button" class="button secondary small" @onclick="() => NudgeAsync(10)" aria-label="Move simulated focus 10 steps out">+10</button>
                     <button type="button" class="button secondary small" @onclick="() => NudgeAsync(50)" aria-label="Move simulated focus 50 steps out">+50</button>
                 </div>
@@ -240,7 +247,7 @@
                 {
                     var selected = string.Equals(record.RecordId, SelectedExport?.RecordId, StringComparison.Ordinal);
                     <tr class="@(selected ? "selected" : null)">
-                        <td><button type="button" class="focus-record" aria-pressed="@(selected ? "true" : "false")" disabled="@(!record.Verified)"
+                        <td><button type="button" class="focus-record" aria-pressed="@(selected ? "true" : "false")" disabled="@(!record.Verified || !RendererInfo.IsInteractive)"
                                     @onclick="() => _selectedRecordId = record.RecordId">@RecordTitle(record)</button></td>
                         <td>@(record.BestHalfFluxDiameterPixels is { } hfd ? hfd.ToString("F2", Culture) + " px" : "—")</td>
                         <td>@(record.BestTargetSource switch { ManualFocusTargetSource.Operator => "Operator pick", ManualFocusTargetSource.Automatic => "Automatic", _ => "—" })</td>

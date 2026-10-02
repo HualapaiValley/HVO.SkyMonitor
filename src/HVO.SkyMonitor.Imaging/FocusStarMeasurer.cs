@@ -43,6 +43,8 @@ public static class FocusStarReasonCodes
 /// <summary>
 /// Declared geometry and gates for <see cref="FocusStarMeasurer"/>, in linear sample units and source-frame pixels.
 /// The aperture holds the star; the annulus beyond it estimates the local background and noise.
+/// <see cref="ApertureRadiusPixels"/> is the largest aperture; each star is measured in an aperture sized from its own
+/// profile, never smaller than <see cref="MinimumApertureRadiusPixels"/>.
 /// </summary>
 public sealed record FocusStarMeasurementOptions(
     double ApertureRadiusPixels = 32,
@@ -58,7 +60,8 @@ public sealed record FocusStarMeasurementOptions(
     int MaximumSaturatedSamples = 0,
     double MaximumHalfFluxApertureFraction = 0.5,
     double MaximumOuterFluxFraction = 0.05,
-    int MaximumTargetCandidates = 4096);
+    int MaximumTargetCandidates = 4096,
+    double MinimumApertureRadiusPixels = 8);
 
 /// <summary>
 /// One immutable single-star measurement. Coordinates are source-frame pixel-edge coordinates (sample centers at
@@ -105,7 +108,12 @@ public sealed record FocusStarTarget(PixelPoint? Position, double? PeakAboveBack
 /// fitted to an annulus by sigma-clipped least squares, extended to a quadratic surface when an F-test finds curvature
 /// such as vignetting, so gradients are subtracted per sample; the noise is the residual standard deviation. The centroid is the iterated
 /// thresholded first moment of background-subtracted samples, refined by a Gaussian-windowed moment sized from the star,
-/// so it is always measured from image pixels. The half-flux
+/// so it is always measured from image pixels. The aperture is sized from the star: twice the radius at which the
+/// median background excess of one-pixel rings becomes consistent with the sky, clamped to the declared range. A fixed
+/// wide aperture would integrate the many faint stars of a crowded wide field, each below detection but together
+/// comparable to the target, and report a broad but valid width for a sharp star; the ring median ignores both those and
+/// a compact neighbour. A neighbour inside the sized aperture still adds its flux, so an isolated star should be chosen.
+/// The half-flux
 /// radius is the radius at which cumulative background-subtracted aperture flux reaches half the total, evaluated on a
 /// four-by-four sub-sample grid in fine radial bins; the half-flux diameter is twice it. FWHM is reported separately as
 /// the Gaussian-equivalent width of the background-subtracted second moments within three half-flux radii, corrected
@@ -120,7 +128,7 @@ public sealed record FocusStarTarget(PixelPoint? Position, double? PeakAboveBack
 /// </summary>
 public static class FocusStarMeasurer
 {
-    public const string AlgorithmVersion = "focus-star-hfr-v1";
+    public const string AlgorithmVersion = "focus-star-hfr-v3";
 
     private const double FwhmPerSigma = 2.3548200450309493;
     private const double MadToSigma = 1.4826;
@@ -144,6 +152,24 @@ public static class FocusStarMeasurer
 
     private const double OuterRingFraction = 0.85;
     private const double OuterRingNoiseSigmas = 3;
+
+    /// <summary>
+    /// A ring whose median excess is within this many standard errors of the sky holds no star light. At two, about one
+    /// ring in forty read as star light by chance, which grew the aperture of a compact star over its neighbours.
+    /// </summary>
+    private const double QuietRingSigmas = 3;
+
+    /// <summary>
+    /// Consecutive quiet rings that mark where the star meets the sky, so that one noisy ring median in a faint wing does
+    /// not truncate the aperture. Longer runs measured no better on faint isolated stars and admit more neighbours.
+    /// </summary>
+    private const int QuietRingsAtEdge = 2;
+
+    /// <summary>Standard error of a median relative to that of a mean, for Gaussian noise: sqrt(pi / 2).</summary>
+    private const double MedianStandardErrorFactor = 1.2533141373155003;
+
+    /// <summary>The sized aperture is this multiple of the radius where the star meets the sky.</summary>
+    private const double ApertureExtentFactor = 2;
 
     /// <summary>Bound on per-object annulus confirmations in one selection.</summary>
     private const int MaximumConfirmations = 256;
@@ -179,6 +205,7 @@ public static class FocusStarMeasurer
         var cy = initial.Y - originY;
         var sky = default(LocalSky);
         double noise = 0;
+        var radius = options.ApertureRadiusPixels;
         var converged = false;
         for (var iteration = 0; iteration < options.MaximumCentroidIterations && !converged; iteration++)
         {
@@ -194,9 +221,10 @@ public static class FocusStarMeasurer
                     Frame(cx, cy, originX, originY), identity);
             }
             var threshold = options.CentroidThresholdSigma * noise;
+            // Sized about the current position each pass so that neighbours never pull the thresholded moment.
+            radius = StarApertureRadius(pixels, validMask, width, height, cx, cy, sky, noise, options);
             if (iteration == 0 && noise > 0 &&
-                PeakExcess(pixels, validMask, width, height, cx, cy, options.ApertureRadiusPixels, sky) <
-                options.MinimumPeakSigma * noise)
+                PeakExcess(pixels, validMask, width, height, cx, cy, radius, sky) < options.MinimumPeakSigma * noise)
             {
                 // Without a significant peak the thresholded moment would only chase noise.
                 return Invalid(FocusStarStatus.NoStar, FocusStarReasonCodes.NoStar, null, identity) with
@@ -206,7 +234,7 @@ public static class FocusStarMeasurer
                 };
             }
             double sum = 0, sumX = 0, sumY = 0;
-            var centroidAperture = new Aperture(cx, cy, options.ApertureRadiusPixels, width, height);
+            var centroidAperture = new Aperture(cx, cy, radius, width, height);
             for (var y = centroidAperture.MinimumY; y <= centroidAperture.MaximumY; y++)
             {
                 for (var x = centroidAperture.MinimumX; x <= centroidAperture.MaximumX; x++)
@@ -253,7 +281,7 @@ public static class FocusStarMeasurer
 
         // The thresholded moment above admits background noise from the whole aperture, which biases a faint star toward
         // the aperture centre and any sky gradient. Refine it with a Gaussian-windowed moment sized from the star itself.
-        var coarseHalfFlux = HalfFluxRadius(pixels, width, height, cx, cy, options.ApertureRadiusPixels, sky, out _, out _);
+        var coarseHalfFlux = HalfFluxRadius(pixels, width, height, cx, cy, radius, sky, out _, out _);
         if (double.IsFinite(coarseHalfFlux) && coarseHalfFlux > 0)
         {
             (cx, cy) = RefineWindowedCentroid(pixels, validMask, width, height, cx, cy, sky,
@@ -271,9 +299,10 @@ public static class FocusStarMeasurer
         }
 
         var centroid = Frame(cx, cy, originX, originY);
+        radius = StarApertureRadius(pixels, validMask, width, height, cx, cy, sky, noise, options);
         double total = 0, peak = double.NegativeInfinity;
         int samples = 0, saturated = 0, masked = 0;
-        var aperture = new Aperture(cx, cy, options.ApertureRadiusPixels, width, height);
+        var aperture = new Aperture(cx, cy, radius, width, height);
         for (var y = aperture.MinimumY; y <= aperture.MaximumY; y++)
         {
             for (var x = aperture.MinimumX; x <= aperture.MaximumX; x++)
@@ -316,18 +345,18 @@ public static class FocusStarMeasurer
             return measured with { Status = FocusStarStatus.NoStar, ReasonCode = FocusStarReasonCodes.NoStar };
         }
 
-        var halfFluxRadius = HalfFluxRadius(pixels, width, height, cx, cy, options.ApertureRadiusPixels, sky,
+        var halfFluxRadius = HalfFluxRadius(pixels, width, height, cx, cy, radius, sky,
             out var outerFlux, out var outerSamples);
         // Flux in the outer ring beyond the declared fraction means the star overflows the aperture; the allowance for
         // sky noise summed over the ring keeps a faint, compact star from failing on noise alone.
         if (!double.IsFinite(halfFluxRadius) ||
-            halfFluxRadius > options.MaximumHalfFluxApertureFraction * options.ApertureRadiusPixels ||
+            halfFluxRadius > options.MaximumHalfFluxApertureFraction * radius ||
             outerFlux > options.MaximumOuterFluxFraction * total + OuterRingNoiseSigmas * noise * Math.Sqrt(outerSamples))
         {
             return measured with { Status = FocusStarStatus.NotContained, ReasonCode = FocusStarReasonCodes.NotContained };
         }
 
-        var momentRadius = Math.Min(options.ApertureRadiusPixels, 3 * halfFluxRadius);
+        var momentRadius = Math.Min(radius, 3 * halfFluxRadius);
         double momentSum = 0, momentXx = 0, momentYy = 0;
         var momentAperture = new Aperture(cx, cy, momentRadius, width, height);
         for (var y = momentAperture.MinimumY; y <= momentAperture.MaximumY; y++)
@@ -363,7 +392,9 @@ public static class FocusStarMeasurer
     /// object whose aperture holds no masked sample wins; when only clipped objects remain the brightest of them is returned so that measurement reports
     /// <see cref="FocusStarStatus.Saturated"/> rather than nothing. With <paramref name="near"/> the confirmed object
     /// nearest that position within <paramref name="searchRadiusPixels"/> wins, clipped or not. The target is never taken
-    /// from a catalog.
+    /// from a catalog. When too little unclipped sky remains to estimate the background, the reason is
+    /// <see cref="FocusStarReasonCodes.Saturated"/> if clipped samples outnumber the unclipped ones and
+    /// <see cref="FocusStarReasonCodes.BackgroundUnavailable"/> otherwise.
     /// </summary>
     public static FocusStarTarget SelectTarget(
         ReadOnlySpan<double> pixels,
@@ -382,20 +413,32 @@ public static class FocusStarMeasurer
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(searchRadiusPixels);
         var stride = Math.Max(1, (int)Math.Sqrt(pixels.Length / 65536.0));
         var sample = new List<double>(65536 + 1024);
+        var clippedSky = 0;
         for (var y = 0; y < height; y += stride)
         {
             for (var x = 0; x < width; x += stride)
             {
                 var index = y * width + x;
-                if (validMask[index] && (saturatedMask.IsEmpty || !saturatedMask[index]))
+                if (!validMask[index])
+                {
+                    continue;
+                }
+                if (saturatedMask.IsEmpty || !saturatedMask[index])
                 {
                     sample.Add(pixels[index]);
+                }
+                else
+                {
+                    clippedSky++;
                 }
             }
         }
         if (sample.Count < options.MinimumAnnulusSamples)
         {
-            return new(null, null, 0, FocusStarReasonCodes.BackgroundUnavailable);
+            // A clipped sky (daylight, or far too much exposure) is a saturation fault, not a missing background.
+            return new(null, null, 0, clippedSky > sample.Count
+                ? FocusStarReasonCodes.Saturated
+                : FocusStarReasonCodes.BackgroundUnavailable);
         }
         var (background, noise) = RobustStatistics(sample, options.BackgroundClipSigma);
         var peakGate = background + options.MinimumPeakSigma * Math.Max(noise, double.Epsilon);
@@ -824,6 +867,71 @@ public static class FocusStarMeasurer
         return peak;
     }
 
+    /// <summary>
+    /// Sizes the aperture to the star at (<paramref name="cx"/>, <paramref name="cy"/>): twice the outer edge of the first
+    /// of <see cref="QuietRingsAtEdge"/> consecutive one-pixel rings whose median sky excess is consistent with zero, clamped to the declared limits.
+    /// A ring median ignores a neighbour that covers less than half of the ring, so a crowded field cannot widen it.
+    /// </summary>
+    private static double StarApertureRadius(
+        ReadOnlySpan<double> pixels,
+        ReadOnlySpan<bool> validMask,
+        int width,
+        int height,
+        double cx,
+        double cy,
+        in LocalSky sky,
+        double noise,
+        FocusStarMeasurementOptions options)
+    {
+        var maximum = options.ApertureRadiusPixels;
+        if (noise <= 0)
+        {
+            return maximum;
+        }
+        var rings = new List<double>[(int)maximum + 1];
+        for (var ring = 0; ring < rings.Length; ring++)
+        {
+            rings[ring] = [];
+        }
+        var aperture = new Aperture(cx, cy, maximum, width, height);
+        for (var y = aperture.MinimumY; y <= aperture.MaximumY; y++)
+        {
+            for (var x = aperture.MinimumX; x <= aperture.MaximumX; x++)
+            {
+                var index = y * width + x;
+                if (!aperture.Contains(x, y) || !validMask[index])
+                {
+                    continue;
+                }
+                var dx = x + 0.5 - cx;
+                var dy = y + 0.5 - cy;
+                rings[(int)Math.Sqrt(dx * dx + dy * dy)].Add(pixels[index] - sky.At(x, y));
+            }
+        }
+        var quietRun = 0;
+        for (var ring = 0; ring < rings.Length; ring++)
+        {
+            var values = rings[ring];
+            if (values.Count == 0)
+            {
+                quietRun = 0;
+                continue;
+            }
+            var sorted = values.ToArray();
+            Array.Sort(sorted);
+            quietRun = Median(sorted) <= QuietRingSigmas * MedianStandardErrorFactor * noise / Math.Sqrt(sorted.Length)
+                ? quietRun + 1
+                : 0;
+            if (quietRun == QuietRingsAtEdge)
+            {
+                // The star meets the sky at the outer edge of the first quiet ring of the run.
+                var edge = ring - QuietRingsAtEdge + 2;
+                return Math.Clamp(ApertureExtentFactor * edge, options.MinimumApertureRadiusPixels, maximum);
+            }
+        }
+        return maximum;
+    }
+
     /// <summary>Sample-center circle bounds clipped to the supplied pixels.</summary>
     private readonly struct Aperture
     {
@@ -1174,7 +1282,9 @@ public static class FocusStarMeasurer
             !(options.CentroidConvergencePixels > 0) || !(options.MinimumPeakSigma >= 0) ||
             !(options.MinimumSignalToNoise >= 0) || options.MaximumSaturatedSamples < 0 ||
             !(options.MaximumHalfFluxApertureFraction is > 0 and <= 1) ||
-            !(options.MaximumOuterFluxFraction is > 0 and <= 1) || options.MaximumTargetCandidates < 2)
+            !(options.MaximumOuterFluxFraction is > 0 and <= 1) || options.MaximumTargetCandidates < 2 ||
+            !(options.MinimumApertureRadiusPixels >= 2) ||
+            !(options.MinimumApertureRadiusPixels <= options.ApertureRadiusPixels))
         {
             throw new ArgumentException("The focus star measurement options are invalid.", nameof(options));
         }

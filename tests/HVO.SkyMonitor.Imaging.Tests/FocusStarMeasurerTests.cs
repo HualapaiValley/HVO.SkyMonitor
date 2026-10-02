@@ -84,6 +84,71 @@ public sealed class FocusStarMeasurerTests
     }
 
     [TestMethod]
+    public void CrowdedWideField_SizesTheApertureToTheStarSoNeighboursNeitherWidenNorPullIt()
+    {
+        var random = new Random(1110);
+        var pixels = Field(Size, Size, 1000);
+        for (var index = 0; index < pixels.Length; index++)
+        {
+            pixels[index] += Gaussian(random) * 5;
+        }
+        AddIntegratedGaussian(pixels, Size, 80.3, 79.6, 1.5, 60000);
+        // A fisheye field: a brighter neighbour and a ring of faint stars between the star and the fixed aperture edge.
+        AddIntegratedGaussian(pixels, Size, 80.3 + 18, 79.6 - 4, 1.5, 30000);
+        for (var neighbour = 0; neighbour < 12; neighbour++)
+        {
+            var angle = neighbour * Math.PI / 6 + 0.3;
+            var distance = 16 + neighbour % 4 * 4;
+            AddIntegratedGaussian(pixels, Size, 80.3 + distance * Math.Cos(angle), 79.6 + distance * Math.Sin(angle), 1.5, 4000);
+        }
+
+        var result = FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(80, 80));
+        var fixedAperture = FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(80, 80),
+            options: new(MinimumApertureRadiusPixels: 32));
+
+        Assert.AreEqual(FocusStarStatus.Valid, result.Status, result.ReasonCode);
+        var expected = HalfFluxRadiusPerSigma * Math.Sqrt(1.5 * 1.5 + 1.0 / 12);
+        Assert.AreEqual(expected, result.HalfFluxRadiusPixels!.Value, expected * 0.05);
+        Assert.AreEqual(80.3, result.Centroid!.Value.X, 0.05);
+        Assert.AreEqual(79.6, result.Centroid.Value.Y, 0.05);
+        Assert.AreEqual(60000, result.TotalFlux!.Value, 60000 * 0.02);
+        // The same field through a fixed 32-pixel aperture is what the sizing exists to prevent.
+        Assert.IsTrue(fixedAperture.Status != FocusStarStatus.Valid || fixedAperture.HalfFluxRadiusPixels > 1.5 * expected,
+            $"{fixedAperture.Status} {fixedAperture.HalfFluxRadiusPixels}");
+    }
+
+    [TestMethod]
+    public void CompactStarWithFaintNeighbours_NoiseNeverGrowsTheApertureOverThem()
+    {
+        // A compact star at a modest signal with faint neighbours 11 to 17 pixels away, as VirtualSky renders Deneb.
+        const double sigma = 1.1;
+        var expected = 2 * HalfFluxRadiusPerSigma * Math.Sqrt(sigma * sigma + 1.0 / 12);
+        var valid = 0;
+        for (var seed = 0; seed < 300; seed++)
+        {
+            var random = new Random(seed);
+            var pixels = Field(Size, Size, 1000);
+            for (var index = 0; index < pixels.Length; index++)
+            {
+                pixels[index] += Gaussian(random) * 5;
+            }
+            AddIntegratedGaussian(pixels, Size, 80.3, 79.6, sigma, 1167);
+            AddIntegratedGaussian(pixels, Size, 80.3 - 9.2, 79.6 + 5.6, 0.9, 333);
+            AddIntegratedGaussian(pixels, Size, 80.3 - 14.8, 79.6 - 8.4, 0.9, 208);
+            AddIntegratedGaussian(pixels, Size, 80.3 + 11.8, 79.6 + 3.1, 0.9, 125);
+
+            var result = FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(80, 80));
+
+            if (result.Status == FocusStarStatus.Valid)
+            {
+                valid++;
+                Assert.AreEqual(expected, 2 * result.HalfFluxRadiusPixels!.Value, expected * 0.2, $"seed {seed}");
+            }
+        }
+        Assert.IsGreaterThanOrEqualTo(295, valid);
+    }
+
+    [TestMethod]
     public void WindowOrigin_ReportsSourceFrameCoordinates()
     {
         var pixels = Field(Size, Size, 50);
@@ -263,6 +328,22 @@ public sealed class FocusStarMeasurerTests
     }
 
     [TestMethod]
+    public void SelectTarget_ClippedSkyIsSaturatedAndAMaskedSkyHasNoBackground()
+    {
+        var pixels = Field(Size, Size, 4095);
+        var clipped = Enumerable.Repeat(true, pixels.Length).ToArray();
+        var masked = new bool[pixels.Length];
+
+        var daylight = FocusStarMeasurer.SelectTarget(pixels, Valid(pixels.Length), clipped, Size, Size);
+        var outsideCircle = FocusStarMeasurer.SelectTarget(pixels, masked, [], Size, Size);
+
+        Assert.IsFalse(daylight.Selected);
+        Assert.AreEqual(FocusStarReasonCodes.Saturated, daylight.ReasonCode);
+        Assert.IsFalse(outsideCircle.Selected);
+        Assert.AreEqual(FocusStarReasonCodes.BackgroundUnavailable, outsideCircle.ReasonCode);
+    }
+
+    [TestMethod]
     public void VignettedSky_CurvatureIsSubtractedAndNeverMakesAStar()
     {
         // Vignetting brightest at the star: 40 counts of fall-off at 48 px, far above the 1.5-count noise.
@@ -414,6 +495,9 @@ public sealed class FocusStarMeasurerTests
         Assert.ThrowsExactly<ArgumentException>(() =>
             FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(80, 80),
                 options: new(ApertureRadiusPixels: 40, AnnulusInnerRadiusPixels: 30)));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(80, 80),
+                options: new(MinimumApertureRadiusPixels: 33)));
         Assert.ThrowsExactly<ArgumentException>(() =>
             FocusStarMeasurer.Measure(pixels, Valid(pixels.Length), [], Size, Size, new(double.NaN, 80)));
         Assert.AreNotEqual(

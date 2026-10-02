@@ -12,8 +12,10 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 /// <summary>
 /// The manual focus workspace. The page polls the one CameraAgent focus session every second, and while the signed-in
-/// operator owns a running session each poll is also the owner heartbeat: closing the page or losing authorization
-/// stops the heartbeat, and the coordinator ends the session at its observer timeout. Every number shown is measured
+/// operator owns a running session each poll is also the owner heartbeat: closing the page, losing the browser
+/// connection, or losing authorization stops the heartbeat, and the coordinator ends the session at its observer
+/// timeout. The server keeps a disconnected circuit's timers running, so the heartbeat is sent only while
+/// <see cref="CircuitConnectionState"/> reports a connected browser. Every number shown is measured
 /// from the preview's own pixels; nothing here moves hardware.
 /// </summary>
 public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
@@ -55,6 +57,13 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
     private string? _message;
     private bool _messageIsError;
 
+    private string? _settingsError;
+    private SettingsField _invalidField;
+    private bool _focusInvalidField;
+    private ElementReference _exposureInput;
+    private ElementReference _gainInput;
+    private ElementReference _positionInput;
+
     private ElementReference _fieldElement;
     private IJSObjectReference? _module;
     private DotNetObjectReference<FocusPage>? _reference;
@@ -64,11 +73,20 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
+    [Inject] internal CircuitConnectionState Connection { get; set; } = default!;
 
     private enum FocusViewer
     {
         Star,
         Field
+    }
+
+    private enum SettingsField
+    {
+        None,
+        Exposure,
+        Gain,
+        Position
     }
 
     private static OperationsSection Section => OperationsSectionCatalog.Get("focus");
@@ -96,16 +114,19 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
     private bool CanDiscard => HasEnded && IsOwner && Session.History.Count > 0 &&
         Session.Retention == ManualFocusRetentionState.InMemoryOnly;
 
+    // Prerendered markup has no circuit behind it, so input given before the page is live would be silently lost.
+    private bool Busy => _busy || !RendererInfo.IsInteractive;
+
     private bool CanStartSession => _status is { CanControl: true, Availability.Available: true } && !Session.IsRunning &&
-        !CanSave && !_busy;
+        !CanSave && !Busy;
 
-    private bool CanEditSettings => CanStartSession || (Session.IsRunning && IsOwner && !_busy);
+    private bool CanEditSettings => CanStartSession || (Session.IsRunning && IsOwner && !Busy);
 
-    private bool CanAdjust => Session.IsRunning && IsOwner && !_busy;
+    private bool CanAdjust => Session.IsRunning && IsOwner && !Busy;
 
     private bool CanApply => CanAdjust && _dirty;
 
-    private bool PrimaryEnabled => !_busy && _status is not null && (Session.IsRunning ? IsOwner : CanSave || CanStartSession);
+    private bool PrimaryEnabled => !Busy && _status is not null && (Session.IsRunning ? IsOwner : CanSave || CanStartSession);
 
     private string PrimaryLabel => Session.IsRunning ? "End session"
         : CanSave ? "Save session result"
@@ -119,6 +140,10 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             if (_status is null)
             {
                 return null;
+            }
+            if (!RendererInfo.IsInteractive)
+            {
+                return "Connecting to CameraAgent; the controls are enabled when the page is live.";
             }
             if (!_status.CanControl)
             {
@@ -292,6 +317,23 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_focusInvalidField && _disposeStarted == 0)
+        {
+            _focusInvalidField = false;
+            try
+            {
+                // The rejected field may be far from the button that submitted it; focusing it brings the reason into view.
+                await (_invalidField switch
+                {
+                    SettingsField.Gain => _gainInput,
+                    SettingsField.Position => _positionInput,
+                    _ => _exposureInput,
+                }).FocusAsync();
+            }
+            catch (Exception exception) when (exception is JSException or JSDisconnectedException or OperationCanceledException)
+            {
+            }
+        }
         if (!_bindPicker || _viewer != FocusViewer.Field || Images is null || _disposeStarted != 0)
         {
             return;
@@ -337,7 +379,8 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             timeout.CancelAfter(RefreshTimeout);
             var generation = Interlocked.Read(ref _commandGeneration);
             var result = await FocusService.GetStatusAsync(timeout.Token).ConfigureAwait(false);
-            if (result is { IsSuccess: true, Value: { Session.IsRunning: true, IsOwner: true } observed })
+            if (Connection.IsConnected &&
+                result is { IsSuccess: true, Value: { Session.IsRunning: true, IsOwner: true } observed })
             {
                 var heartbeat = await FocusService.ObserveAsync(observed.Session.SessionId, timeout.Token).ConfigureAwait(false);
                 if (heartbeat.Kind == OperatorUiResultKind.Unauthorized)
@@ -616,22 +659,33 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
         if (!TryParseExposure(_exposureText, out var exposure) ||
             exposure < Limits.MinimumExposure || exposure > Limits.MaximumExposure)
         {
-            SetMessage($"Enter a preview exposure from {Seconds(Limits.MinimumExposure)} to {Seconds(Limits.MaximumExposure)}, for example 1.5s or 500ms.", error: true);
-            return false;
+            return RejectSettings(SettingsField.Exposure, $"Enter a preview exposure from {Seconds(Limits.MinimumExposure)} to {Seconds(Limits.MaximumExposure)}, for example 1.5s or 500ms.");
         }
         if (!double.IsFinite(_gain) || _gain < 0 || _gain > Limits.MaximumGain)
         {
-            SetMessage($"Enter a preview gain from 0 to {Limits.MaximumGain.ToString(Culture)}.", error: true);
-            return false;
+            return RejectSettings(SettingsField.Gain, $"Enter a preview gain from 0 to {Limits.MaximumGain.ToString(Culture)}.");
         }
         if (SimulatedFocus is { } model && !model.Contains(_position))
         {
-            SetMessage($"Enter a simulated focus position from {model.MinimumPosition.ToString("0", Culture)} to {model.MaximumPosition.ToString("0", Culture)}.", error: true);
-            return false;
+            return RejectSettings(SettingsField.Position, $"Enter a simulated focus position from {model.MinimumPosition.ToString("0", Culture)} to {model.MaximumPosition.ToString("0", Culture)}.");
         }
+        _settingsError = null;
+        _invalidField = SettingsField.None;
         settings = new ManualFocusPreviewSettings(exposure, _gain);
         return true;
     }
+
+    private bool RejectSettings(SettingsField field, string message)
+    {
+        // Shown beside the settings rather than in the page banner, which is off screen from the Apply button.
+        _settingsError = message;
+        _invalidField = field;
+        _focusInvalidField = true;
+        _message = null;
+        return false;
+    }
+
+    private string? InvalidAttribute(SettingsField field) => _invalidField == field ? "true" : null;
 
     internal static bool TryParseExposure(string? text, out TimeSpan exposure)
     {
@@ -778,6 +832,8 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
                 $"Sample #{sample.Sequence}: HFD {Value(measurement.HalfFluxDiameterPixels)} px, FWHM {Value(measurement.FwhmPixels)} px, SNR {measurement.SignalToNoise?.ToString("F0", Culture) ?? "—"}.",
             FocusStarStatus.NoStar =>
                 $"Sample #{sample.Sequence}: no star is bright enough in the target region. Increase exposure or gain, or pick another star.",
+            FocusStarStatus.Saturated when measurement.Centroid is null =>
+                $"Sample #{sample.Sequence}: the sky itself is clipped, so no star can be found. Reduce exposure or gain.",
             FocusStarStatus.Saturated =>
                 $"Sample #{sample.Sequence}: {measurement.SaturatedSampleCount} pixels are clipped, so the width is not measured. Reduce exposure or gain.",
             FocusStarStatus.ApertureTruncated when measurement.ReasonCode == FocusStarReasonCodes.ApertureMasked =>
@@ -786,6 +842,8 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
                 $"Sample #{sample.Sequence}: the aperture leaves the frame. Pick a star farther from the edge.",
             FocusStarStatus.NotContained =>
                 $"Sample #{sample.Sequence}: the star is too broad to bound. Move toward sharper focus.",
+            FocusStarStatus.BackgroundUnavailable when measurement.Centroid is null =>
+                $"Sample #{sample.Sequence}: too little unmasked sky in the search region to find a star. Pick a region inside the image circle.",
             FocusStarStatus.BackgroundUnavailable =>
                 $"Sample #{sample.Sequence}: too little clean sky surrounds the star for a background estimate. Pick a more isolated star.",
             _ => $"Sample #{sample.Sequence} was not measured."

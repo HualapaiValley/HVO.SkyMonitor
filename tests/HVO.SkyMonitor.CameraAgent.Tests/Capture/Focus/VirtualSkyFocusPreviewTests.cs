@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
@@ -27,21 +28,27 @@ public sealed class VirtualSkyFocusPreviewTests
     {
         var module = FocusTestModules.Create(magnitude: 0);
         await using var lifetime = module.ConfigureAwait(false);
+        // The same sky without the star renders identical noise, so the difference is the rendered star exactly.
+        var starless = FocusTestModules.Create(magnitude: 30);
+        await using var starlessLifetime = starless.ConfigureAwait(false);
         var config = FocusTestModules.Config();
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
-        var measurements = new List<(double Position, double Truth, FocusStarMeasurement Measurement)>();
+        await starless.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var measurements = new List<(double Position, double Truth, double TruthFlux, FocusStarMeasurement Measurement)>();
 
         foreach (var position in SweepPositions)
         {
             var frame = await PreviewAsync(module, position, 20, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            var sky = await PreviewAsync(starless, position, 20, TimeSpan.FromSeconds(1)).ConfigureAwait(false);
             var sigma = double.Parse(frame.Metadata.Extra!["psfSigmaPixels"], CultureInfo.InvariantCulture);
             var measurement = Measure(config, frame);
-            measurements.Add((position, HalfFluxDiameterPerSigma * Math.Sqrt(sigma * sigma + 1d / 12), measurement));
+            var truthFlux = RenderedFlux(frame, sky);
+            measurements.Add((position, HalfFluxDiameterPerSigma * Math.Sqrt(sigma * sigma + 1d / 12), truthFlux, measurement));
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"position {position,5}: sigma {sigma:F3} truth HFD {measurements[^1].Truth:F3} measured {measurement.HalfFluxDiameterPixels:F3} FWHM {measurement.FwhmPixels:F3} flux {measurement.TotalFlux:F0} centroid {measurement.Centroid?.X:F3},{measurement.Centroid?.Y:F3} SNR {measurement.SignalToNoise:F0}"));
+                $"position {position,5}: sigma {sigma:F3} truth HFD {measurements[^1].Truth:F3} measured {measurement.HalfFluxDiameterPixels:F3} FWHM {measurement.FwhmPixels:F3} flux {measurement.TotalFlux:F0} rendered {truthFlux:F0} centroid {measurement.Centroid?.X:F3},{measurement.Centroid?.Y:F3} SNR {measurement.SignalToNoise:F0}"));
         }
 
-        foreach (var (position, truth, measurement) in measurements)
+        foreach (var (position, truth, _, measurement) in measurements)
         {
             Assert.AreEqual(FocusStarStatus.Valid, measurement.Status, $"{position}: {measurement.ReasonCode}");
             Assert.AreEqual(truth, measurement.HalfFluxDiameterPixels!.Value, 0.04 * truth, $"HFD at {position}");
@@ -62,11 +69,13 @@ public sealed class VirtualSkyFocusPreviewTests
         var meanX = measurements.Average(static item => item.Measurement.Centroid!.Value.X);
         var meanY = measurements.Average(static item => item.Measurement.Centroid!.Value.Y);
         var meanFlux = measurements.Average(static item => item.Measurement.TotalFlux!.Value);
-        foreach (var (position, _, measurement) in measurements)
+        foreach (var (position, _, truthFlux, measurement) in measurements)
         {
             Assert.AreEqual(meanX, measurement.Centroid!.Value.X, 0.1, $"Centroid X must not move with focus ({position})");
             Assert.AreEqual(meanY, measurement.Centroid.Value.Y, 0.1, $"Centroid Y must not move with focus ({position})");
-            Assert.AreEqual(meanFlux, measurement.TotalFlux!.Value, 0.01 * meanFlux, $"Flux must not change with focus ({position})");
+            // The aperture follows the star, so the sky-fit residual summed over it is largest for the broadest profile.
+            Assert.AreEqual(meanFlux, measurement.TotalFlux!.Value, 0.015 * meanFlux, $"Flux must not change with focus ({position})");
+            Assert.AreEqual(truthFlux, measurement.TotalFlux.Value, 0.025 * truthFlux, $"Flux must match the rendered star ({position})");
         }
         Assert.AreEqual(FocusTestModules.ZenithStar.X, meanX, 0.1);
         Assert.AreEqual(FocusTestModules.ZenithStar.Y, meanY, 0.1);
@@ -208,6 +217,18 @@ public sealed class VirtualSkyFocusPreviewTests
     private static FocusStarMeasurement Measure(CameraModuleConfig config, CameraFrame frame)
         => ManualFocusPreviewMeasurement.Measure(frame, 1, null, null, CancellationToken.None,
             CameraModuleRunner.ResolveMeteringImageCircle(config, frame)).Measurement;
+
+    private static double RenderedFlux(CameraFrame star, CameraFrame sky)
+    {
+        var starPixels = star.PixelData.Span;
+        var skyPixels = sky.PixelData.Span;
+        double flux = 0;
+        for (var index = 0; index < starPixels.Length; index += 2)
+        {
+            flux += BinaryPrimitives.ReadUInt16LittleEndian(starPixels[index..]) - BinaryPrimitives.ReadUInt16LittleEndian(skyPixels[index..]);
+        }
+        return flux;
+    }
 
     private static string Sha(CameraFrame frame) => Convert.ToHexStringLower(SHA256.HashData(frame.PixelData.Span));
 }

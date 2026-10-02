@@ -54,6 +54,8 @@
 .focus-sample-detail, .focus-best { margin: .35rem 0 0; color: var(--muted-strong); font-size: .58rem; line-height: 1.4; }
 .focus-sample-detail.invalid { color: #f1c96f; }
 .focus-help { margin: 0; color: var(--muted); font-size: .55rem; line-height: 1.4; }
+.focus-settings-error { margin: 0; color: var(--red); font-size: .6rem; line-height: 1.4; }
+.focus-controls input[aria-invalid="true"], .focus-simulated input[aria-invalid="true"] { border-color: var(--red); }
 .focus-simulated { display: grid; gap: .4rem; min-width: 0; margin: 0; padding: .6rem; border: 1px dashed var(--border); border-radius: .4rem; }
 .focus-simulated legend { padding: 0 .3rem; color: var(--muted-strong); font-size: .58rem; }
 .focus-simulated legend small { display: block; color: var(--muted); font-size: .52rem; }

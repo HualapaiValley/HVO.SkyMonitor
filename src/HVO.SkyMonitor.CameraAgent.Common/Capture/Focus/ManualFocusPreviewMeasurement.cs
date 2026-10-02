@@ -47,9 +47,10 @@ internal static class ManualFocusPreviewMeasurement
         var selected = false;
         FocusStarMeasurement measurement;
         ManualFocusFrameWindow? window = null;
+        FocusStarTarget? selection = null;
         if (target is null)
         {
-            var selection = SelectTarget(frame, hint, options, cancellationToken, imageCircle);
+            selection = SelectTarget(frame, hint, options, cancellationToken, imageCircle);
             if (selection.Position is { } position)
             {
                 target = position;
@@ -58,8 +59,16 @@ internal static class ManualFocusPreviewMeasurement
         }
         if (target is not { } current)
         {
-            measurement = new FocusStarMeasurement(FocusStarStatus.NoStar,
-                hint is null ? FocusStarReasonCodes.NoCandidate : FocusStarReasonCodes.NoCandidateNearSelection,
+            // Keep the selector's own reason: a clipped or starved sky is not the same fault as a sky without stars.
+            var (status, reason) = selection?.ReasonCode switch
+            {
+                FocusStarReasonCodes.Saturated => (FocusStarStatus.Saturated, FocusStarReasonCodes.Saturated),
+                FocusStarReasonCodes.BackgroundUnavailable =>
+                    (FocusStarStatus.BackgroundUnavailable, FocusStarReasonCodes.BackgroundUnavailable),
+                _ => (FocusStarStatus.NoStar,
+                    hint is null ? FocusStarReasonCodes.NoCandidate : FocusStarReasonCodes.NoCandidateNearSelection)
+            };
+            measurement = new FocusStarMeasurement(status, reason,
                 null, null, null, null, null, null, null, null, 0, 0, FocusStarMeasurer.SettingsIdentity(options));
         }
         else
@@ -79,7 +88,7 @@ internal static class ManualFocusPreviewMeasurement
                 target = centroid;
             }
         }
-        var images = CreateImages(frame, sequence, measurement, window, cancellationToken);
+        var images = CreateImages(frame, sequence, measurement, window, imageCircle, cancellationToken);
         return new ManualFocusPreviewOutcome(measurement, target, selected, window, frameSha256, images);
     }
 
@@ -129,10 +138,13 @@ internal static class ManualFocusPreviewMeasurement
         long sequence,
         FocusStarMeasurement measurement,
         ManualFocusFrameWindow? window,
+        MeteringImageCircle? imageCircle,
         CancellationToken cancellationToken)
     {
-        var overview = ManualFocusFrameSampler.CreateOverview(frame, OverviewMaximumDimension, cancellationToken);
-        var (low, high) = Percentiles(overview.Pixels, 0.01, 0.999);
+        var overview = ManualFocusFrameSampler.CreateOverview(frame, OverviewMaximumDimension, cancellationToken, imageCircle);
+        // Stretch from the sky only: the dark corners outside an image circle would otherwise set the black point and
+        // push the whole sky to white.
+        var (low, high) = Percentiles(overview.Pixels, 0.01, 0.999, overview.SkyMask);
         var overviewJpeg = Encode(overview.Pixels, overview.Width, overview.Height, low, high, squareRoot: true,
             cancellationToken);
         byte[]? starJpeg = null;
@@ -169,13 +181,17 @@ internal static class ManualFocusPreviewMeasurement
             .ToArray();
     }
 
-    private static (double Low, double High) Percentiles(double[] pixels, double lowFraction, double highFraction)
+    private static (double Low, double High) Percentiles(
+        double[] pixels,
+        double lowFraction,
+        double highFraction,
+        bool[]? mask = null)
     {
         var step = Math.Max(1, pixels.Length / 65536);
         var sample = new List<double>(pixels.Length / step + 1);
         for (var index = 0; index < pixels.Length; index += step)
         {
-            if (double.IsFinite(pixels[index]))
+            if (double.IsFinite(pixels[index]) && (mask is null || mask[index]))
             {
                 sample.Add(pixels[index]);
             }

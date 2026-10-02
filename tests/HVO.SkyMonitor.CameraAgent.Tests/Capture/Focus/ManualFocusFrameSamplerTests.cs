@@ -109,6 +109,61 @@ public sealed class ManualFocusFrameSamplerTests
         Assert.AreEqual((3, 500, 334), (monoOverview.BinFactor, monoOverview.Width, monoOverview.Height));
         Assert.IsTrue(monoOverview.Pixels.All(static value => value == 500));
         Assert.AreEqual(4, bayerOverview.BinFactor);
+        Assert.IsTrue(monoOverview.SkyMask.All(static sky => sky));
+    }
+
+    [TestMethod]
+    public void CreateOverview_MarksOnlyCellsCentredInsideTheImageCircleAsSky()
+    {
+        var frame = Mono16(40, 20, static (_, _) => 500);
+
+        var overview = ManualFocusFrameSampler.CreateOverview(frame, 20, CancellationToken.None, new MeteringImageCircle(19.5, 9.5, 8));
+
+        // Bin 2: cell (9,4) is centred on source 18.5,8.5 (inside); cell (0,0) on 0.5,0.5 and cell (14,4) on 28.5,8.5 (outside).
+        Assert.AreEqual((2, 20, 10), (overview.BinFactor, overview.Width, overview.Height));
+        Assert.IsTrue(overview.SkyMask[4 * 20 + 9]);
+        Assert.IsFalse(overview.SkyMask[0]);
+        Assert.IsFalse(overview.SkyMask[4 * 20 + 14]);
+    }
+
+    [TestMethod]
+    public void Measure_StretchesTheOverviewFromTheImageCircleSkyNotTheDarkCorners()
+    {
+        // A fisheye frame: black outside a 60-pixel circle, a 1000-1100 sky gradient inside, no star.
+        var circle = new MeteringImageCircle(99.5, 79.5, 60);
+        var frame = Mono16(200, 160, (x, y) =>
+            (x - circle.CenterX) * (x - circle.CenterX) + (y - circle.CenterY) * (y - circle.CenterY) > circle.Radius * circle.Radius
+                ? (ushort)0
+                : (ushort)(1000 + x / 2));
+
+        var images = ManualFocusPreviewMeasurement.Measure(frame, 1, null, null, CancellationToken.None, circle).Images;
+
+        var decoded = JpegImageCodec.DecodeJpeg(images.OverviewJpeg).PixelData.Span;
+        var inside = new List<byte>();
+        for (var y = 50; y < 110; y++)
+        {
+            for (var x = 70; x < 130; x++)
+            {
+                inside.Add(decoded[y * images.OverviewWidth + x]);
+            }
+        }
+        // Stretched from the corners the whole sky would sit at 243-255; stretched from the sky it spans the range.
+        Assert.IsLessThan(160, inside.Min());
+        Assert.IsGreaterThan(200, inside.Max());
+    }
+
+    [TestMethod]
+    public void Measure_ReportsAClippedSkyAsSaturatedRatherThanStarless()
+    {
+        var daylight = Mono16(200, 160, static (_, _) => ushort.MaxValue);
+        var night = Mono16(200, 160, static (x, y) => (ushort)(1000 + (x * 7 + y * 13) % 5));
+
+        var clipped = ManualFocusPreviewMeasurement.Measure(daylight, 1, null, null, CancellationToken.None).Measurement;
+        var starless = ManualFocusPreviewMeasurement.Measure(night, 2, null, null, CancellationToken.None).Measurement;
+
+        Assert.AreEqual((FocusStarStatus.Saturated, FocusStarReasonCodes.Saturated), (clipped.Status, clipped.ReasonCode));
+        Assert.IsNull(clipped.Centroid);
+        Assert.AreEqual((FocusStarStatus.NoStar, FocusStarReasonCodes.NoCandidate), (starless.Status, starless.ReasonCode));
     }
 
     private static CameraFrame Mono16(int width, int height, Func<int, int, ushort> value)

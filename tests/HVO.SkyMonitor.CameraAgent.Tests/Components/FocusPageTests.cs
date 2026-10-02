@@ -205,6 +205,30 @@ public sealed class FocusPageTests
     }
 
     [TestMethod]
+    public async Task DisconnectedBrowser_StopsTheHeartbeatWhileTheRetainedCircuitKeepsPolling()
+    {
+        var service = new FakeFocusService(Status(Running(Sample(1, 3.0))));
+        using var context = CreateContext(service, out var time);
+        var connection = context.Services.GetRequiredService<CircuitConnectionState>();
+        var cut = context.Render<FocusPage>();
+        Assert.AreEqual(1, service.ObserveCount);
+
+        // The server retains a disconnected circuit and its timer; the poll still runs but must not claim an observer.
+        await connection.OnConnectionDownAsync(null!, CancellationToken.None).ConfigureAwait(false);
+        var reads = service.StatusReads;
+        time.Tick();
+        cut.WaitForAssertion(() => Assert.AreEqual(reads + 1, service.StatusReads));
+        time.Tick();
+        cut.WaitForAssertion(() => Assert.AreEqual(reads + 2, service.StatusReads));
+        Assert.AreEqual(1, service.ObserveCount);
+
+        // A browser that reconnects within the observer timeout resumes the heartbeat.
+        await connection.OnConnectionUpAsync(null!, CancellationToken.None).ConfigureAwait(false);
+        time.Tick();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.ObserveCount));
+    }
+
+    [TestMethod]
     public void InvalidSamples_StateTheirReasonAndCarryNoWidth()
     {
         var saturated = Sample(2, 0, FocusStarStatus.Saturated);
@@ -221,6 +245,21 @@ public sealed class FocusPageTests
         StringAssert.Contains(latestRow.TextContent, "Saturated", StringComparison.Ordinal);
         Assert.AreEqual("—", latestRow.QuerySelectorAll("td")[2].TextContent.Trim());
         Assert.HasCount(1, cut.FindAll(".focus-trend circle.latest"));
+    }
+
+    [TestMethod]
+    public void ClippedSky_SaysTheSkyIsClippedRatherThanAskingForMoreExposure()
+    {
+        var daylight = Sample(2, 0, FocusStarStatus.Saturated);
+        daylight = daylight with { Measurement = daylight.Measurement with { Centroid = null, SaturatedSampleCount = 0 } };
+        var service = new FakeFocusService(Status(Running(daylight), images: Images(2)));
+        using var context = CreateContext(service, out _);
+        var cut = context.Render<FocusPage>();
+
+        var detail = cut.Find("#focus-sample-detail").TextContent;
+        StringAssert.Contains(detail, "the sky itself is clipped", StringComparison.Ordinal);
+        StringAssert.Contains(detail, "Reduce exposure or gain", StringComparison.Ordinal);
+        Assert.DoesNotContain("Increase exposure", detail, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -251,6 +290,24 @@ public sealed class FocusPageTests
     }
 
     [TestMethod]
+    public void PrerenderedPage_OffersNoControlsUntilItIsLive()
+    {
+        var service = new FakeFocusService(Status(Running(Sample(1, 3.0))));
+        using var context = CreateContext(service, out _);
+        context.SetRendererInfo(new RendererInfo("Static", isInteractive: false));
+
+        var cut = context.Render<FocusPage>();
+
+        // Input given to prerendered markup has no circuit behind it and would be lost when the page goes live.
+        foreach (var id in new[] { "#focus-start", "#focus-exposure", "#focus-gain", "#focus-sample", "#focus-metric-kind" })
+        {
+            Assert.IsTrue(cut.Find(id).HasAttribute("disabled"), id);
+        }
+        Assert.IsTrue(cut.Find(".focus-simulated").HasAttribute("disabled"));
+        StringAssert.Contains(cut.Find("#focus-unavailable-reason").TextContent, "Connecting to CameraAgent", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void InvalidSettings_AreRejectedBeforeAnyCommand()
     {
         var service = new FakeFocusService(Status(Running(Sample(1, 3.0))));
@@ -259,7 +316,12 @@ public sealed class FocusPageTests
 
         cut.Find("#focus-exposure").Input("two seconds");
         cut.Find("#focus-sample").Click();
-        StringAssert.Contains(cut.Find(".focus-message[role=alert]").TextContent, "Enter a preview exposure", StringComparison.Ordinal);
+        // The reason sits beside the settings and the rejected field takes focus; the page banner is off screen from Apply.
+        StringAssert.Contains(cut.Find("#focus-settings-error[role=alert]").TextContent, "Enter a preview exposure", StringComparison.Ordinal);
+        Assert.AreEqual("true", cut.Find("#focus-exposure").GetAttribute("aria-invalid"));
+        Assert.AreEqual("focus-settings-error focus-exposure-help", cut.Find("#focus-exposure").GetAttribute("aria-describedby"));
+        Assert.IsEmpty(cut.FindAll(".focus-message[role=alert]"));
+        context.JSInterop.VerifyFocusAsyncInvoke();
 
         cut.Find("#focus-exposure").Input("61s");
         cut.Find("#focus-sample").Click();
@@ -267,8 +329,17 @@ public sealed class FocusPageTests
         cut.Find("#focus-gain").Input("1001");
         cut.Find("#focus-sample").Click();
 
-        StringAssert.Contains(cut.Find(".focus-message[role=alert]").TextContent, "Enter a preview gain", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("#focus-settings-error").TextContent, "Enter a preview gain", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("#focus-exposure").HasAttribute("aria-invalid"));
+        Assert.AreEqual("true", cut.Find("#focus-gain").GetAttribute("aria-invalid"));
         Assert.IsEmpty(service.Adjustments);
+
+        cut.Find("#focus-gain").Input("120");
+        cut.Find("#focus-sample").Click();
+
+        Assert.IsEmpty(cut.FindAll("#focus-settings-error"));
+        Assert.IsFalse(cut.Find("#focus-gain").HasAttribute("aria-invalid"));
+        Assert.HasCount(1, service.Adjustments);
     }
 
     [TestMethod]
@@ -461,6 +532,8 @@ public sealed class FocusPageTests
         time = new ManualTimeProvider();
         context.Services.AddSingleton<ICameraAgentFocusUiService>(service);
         context.Services.AddSingleton<TimeProvider>(time);
+        context.Services.AddSingleton(new CircuitConnectionState());
+        context.SetRendererInfo(new RendererInfo("Server", isInteractive: true));
         return context;
     }
 

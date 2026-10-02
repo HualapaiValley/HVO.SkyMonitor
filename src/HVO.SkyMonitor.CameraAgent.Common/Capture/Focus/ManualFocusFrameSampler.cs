@@ -14,8 +14,11 @@ internal sealed record ManualFocusFrameWindow(
     bool[] ValidMask,
     bool[] SaturatedMask);
 
-/// <summary>A binned display overview. One overview pixel covers <see cref="BinFactor"/> source pixels per axis.</summary>
-internal sealed record ManualFocusFrameOverview(int Width, int Height, int BinFactor, double[] Pixels);
+/// <summary>
+/// A binned display overview. One overview pixel covers <see cref="BinFactor"/> source pixels per axis.
+/// <see cref="SkyMask"/> marks the pixels whose cell centre lies inside the image circle (all of them without one).
+/// </summary>
+internal sealed record ManualFocusFrameOverview(int Width, int Height, int BinFactor, double[] Pixels, bool[] SkyMask);
 
 /// <summary>
 /// Reads stored camera codes into linear luminance for focus measurement. Values are stored codes (linear in signal for
@@ -72,7 +75,8 @@ internal static class ManualFocusFrameSampler
     public static ManualFocusFrameOverview CreateOverview(
         CameraFrame frame,
         int maximumDimension,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MeteringImageCircle? imageCircle = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumDimension, 16);
         var reader = FrameReader.Create(frame);
@@ -84,6 +88,8 @@ internal static class ManualFocusFrameSampler
         var width = (frame.Width + bin - 1) / bin;
         var height = (frame.Height + bin - 1) / bin;
         var pixels = new double[checked(width * height)];
+        var sky = new bool[pixels.Length];
+        var limit = imageCircle is { } bounds ? bounds.Radius * bounds.Radius : double.PositiveInfinity;
         for (var oy = 0; oy < height; oy++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -93,6 +99,10 @@ internal static class ManualFocusFrameSampler
             {
                 var sx0 = ox * bin;
                 var sx1 = Math.Min(frame.Width, sx0 + bin);
+                // Same sample-index convention as ExtractWindow, applied at the cell centre.
+                var dx = (sx0 + sx1 - 1) / 2d - (imageCircle?.CenterX ?? 0);
+                var dy = (sy0 + sy1 - 1) / 2d - (imageCircle?.CenterY ?? 0);
+                sky[oy * width + ox] = dx * dx + dy * dy <= limit;
                 double sum = 0;
                 for (var sy = sy0; sy < sy1; sy++)
                 {
@@ -104,7 +114,7 @@ internal static class ManualFocusFrameSampler
                 pixels[oy * width + ox] = sum / ((sx1 - sx0) * (sy1 - sy0));
             }
         }
-        return new(width, height, bin, pixels);
+        return new(width, height, bin, pixels, sky);
     }
 
     private static ManualFocusFrameWindow ExtractDirectWindow(
