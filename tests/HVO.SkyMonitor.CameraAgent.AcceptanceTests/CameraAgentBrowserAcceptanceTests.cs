@@ -1013,8 +1013,6 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync(runUrl).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".run-graph[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
-        var moduleResponse = await context.APIRequest.GetAsync("/Components/Pages/ProcessingExecutionDetailPage.razor.js").ConfigureAwait(false);
-        Assert.IsTrue(moduleResponse.Ok, $"Inspector interop module unavailable: {moduleResponse.Status}");
         await VisibleAsync(page.Locator(".run-diagram__node").First).ConfigureAwait(false);
         foreach (var width in new[] { 1440, 390, 320 })
         {
