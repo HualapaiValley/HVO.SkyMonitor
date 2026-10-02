@@ -29,6 +29,10 @@ review/activation; see
 #1105 adds per-frame astrometric uncertainty with separate conditional, systematic
 and shared-calibration components; see
 [astrometric uncertainty](../astronomy/astrometric-uncertainty-v1.md).
+#1106 reran every harness at one integrated revision and audited all nine
+criteria; see the
+[final qualification report](../astronomy/virtual-astrometry-qualification-v1.md)
+for the supported virtual envelope, results and the #1107 hardware handoff.
 
 The standalone #1084/#1085/#1087 experiments are prior evidence, not production
 renderer implementations. #1102 records the remaining #1087 crop/bin
@@ -82,7 +86,9 @@ production recipe or unrelated presentation redesign is included.
 
 These rows map the nine completion criteria in #1098 in their original order.
 All start **pending**. Merged code plus review and measured evidence, not an
-issue's creation or this table, establishes completion.
+issue's creation or this table, establishes completion. The #1106
+[final audit](../astronomy/virtual-astrometry-qualification-v1.md#audit-of-the-nine-completion-criteria)
+records each criterion as met for the declared virtual envelope.
 
 | Criterion | Owning issues | Required closure evidence |
 | --- | --- | --- |
