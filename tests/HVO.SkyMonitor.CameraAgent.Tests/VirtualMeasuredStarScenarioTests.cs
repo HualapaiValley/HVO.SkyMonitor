@@ -120,8 +120,13 @@ public sealed class VirtualMeasuredStarScenarioTests
         var run = await RefineAsync("clipped", _ => { }, profileName: "mono-roi").ConfigureAwait(false);
         Report(run);
         AssertNoFalseAssociation(run);
-        Assert.IsTrue(Count(run.Diagnostics.UnmatchedPredictionReasonCounts, R.NearEdge) +
-            Count(run.Diagnostics.UnmatchedPredictionReasonCounts, R.OutsideAperture) > 0);
+        // Off-readout predictions must reach the outside-aperture classification rather than being dropped by the sensor-bounded projector.
+        var layout = run.Pixels.Layout;
+        bool OffReadout(PixelPoint p) => p.X < 0 || p.Y < 0 || p.X >= layout.Width || p.Y >= layout.Height;
+        var outside = run.Diagnostics.UnmatchedPredictions.Where(u => u.ReasonCode == R.OutsideAperture).ToArray();
+        Assert.IsTrue(outside.Any(u => OffReadout(u.Predicted)), $"{outside.Length}");
+        Assert.AreEqual(outside.Length, Count(run.Diagnostics.UnmatchedPredictionReasonCounts, R.OutsideAperture));
+        Assert.IsFalse(run.Diagnostics.UnmatchedPredictions.Where(u => u.ReasonCode == R.NearEdge).Any(u => OffReadout(u.Predicted)));
         Assert.IsTrue(run.Measured.ExclusionCounts.GetValueOrDefault(StellarExclusionReasons.ImageEdge) > 0);
     }
 

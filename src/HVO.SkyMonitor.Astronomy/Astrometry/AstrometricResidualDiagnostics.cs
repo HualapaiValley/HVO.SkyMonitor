@@ -144,7 +144,8 @@ public static class AstrometricResidualAnalyzer
         if (!assessment.HasMeasuredMapping) return Create(false, 0, 0, [], [], [], [], [], null, null, null);
 
         var projection = AstrometricMapping.Projection(calibration, assessment);
-        var projector = ProjectorFactory.Create(projection);
+        // Sensor bounds are not enforced so that clipped-readout predictions reach the outside-aperture classification.
+        var projector = ProjectorFactory.Create(projection with { EnforceSensorBounds = false });
         var utc = assessment.Frame.MidpointUtc; var site = new CoreSite(assessment.Frame.Observer.LatitudeDegrees, assessment.Frame.Observer.LongitudeDegrees);
         var predictions = new List<Prediction>();
         foreach (var star in catalog.Stars.Where(s => s.Magnitude <= solverOptions.MaximumCatalogMagnitude))
@@ -259,6 +260,8 @@ public static class AstrometricResidualAnalyzer
             throw new ArgumentException("Time summaries require at most 100000 current-schema diagnostics.", nameof(frames));
         if (frames.Count == 0) return [];
         var origin = frames.Min(f => f.MidpointUtc);
+        if ((frames.Max(f => f.MidpointUtc) - origin).Ticks / binWidth.Ticks > int.MaxValue)
+            throw new ArgumentException("The frames span more time bins than an index can represent at this bin width.", nameof(binWidth));
         return [.. frames.GroupBy(f => (int)((f.MidpointUtc - origin).Ticks / binWidth.Ticks)).OrderBy(g => g.Key).Select(g =>
         {
             var residuals = g.SelectMany(f => f.Residuals).ToArray(); var missing = g.Sum(f => f.UnmatchedPredictions.Count(u => IsEligibleReason(u.ReasonCode)));

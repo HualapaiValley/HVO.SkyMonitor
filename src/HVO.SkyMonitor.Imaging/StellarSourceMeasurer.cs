@@ -12,6 +12,8 @@ namespace HVO.SkyMonitor.Imaging;
 /// propagated variance; when null only the locally measured background noise is propagated.
 /// <see cref="NoiseEstimator"/> must match the image's spatial noise correlation: interpolated CFA luminance correlates
 /// neighboring samples, so adjacent differences understate its noise and it must use the clipped spread.
+/// <see cref="MaximumComponentSamples"/> and <see cref="MaximumWindowSamples"/> together bound each candidate's work:
+/// a sparse elongated component can have few samples but a large bounding window.
 /// </remarks>
 public sealed record StellarMeasurementOptions(
     int BackgroundTileSizePixels = 64,
@@ -36,7 +38,8 @@ public sealed record StellarMeasurementOptions(
     double? ElectronsPerSampleUnit = null,
     int MaximumPixelCount = StellarDetector.MaximumSupportedPixels,
     int MaximumCandidateCount = StellarDetector.MaximumSupportedCandidates,
-    StellarNoiseEstimator NoiseEstimator = StellarNoiseEstimator.AdjacentDifferences);
+    StellarNoiseEstimator NoiseEstimator = StellarNoiseEstimator.AdjacentDifferences,
+    int MaximumWindowSamples = 4096);
 
 /// <summary>How each background tile's per-sample noise is estimated.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<StellarNoiseEstimator>))]
@@ -61,6 +64,7 @@ public static class StellarExclusionReasons
     public const string HotPixelOrCosmicRay = "hot-pixel-or-cosmic-ray";
     public const string TooBroad = "too-broad";
     public const string TrailTooLong = "trail-too-long";
+    public const string CentroidUnconverged = "centroid-unconverged";
     public const string Blended = "blended";
     public const string Crowded = "crowded";
     public const string LowSignalToNoise = "low-snr";
@@ -70,7 +74,7 @@ public static class StellarExclusionReasons
     public static IReadOnlyList<string> All { get; } = Array.AsReadOnly(new[]
     {
         ImageEdge, ExtendedRegion, BackgroundUnavailable, MaskedAperture, SaturatedExcessive,
-        HotPixelOrCosmicRay, TooBroad, TrailTooLong, Blended, Crowded, LowSignalToNoise
+        HotPixelOrCosmicRay, TooBroad, TrailTooLong, CentroidUnconverged, Blended, Crowded, LowSignalToNoise
     });
 }
 
@@ -145,8 +149,10 @@ public sealed class StellarMeasurementResult
 /// <see cref="StellarMeasurementOptions.SaturationDilationPixels"/> to one so that interpolated neighbors of a saturated
 /// photosite are also counted, and select <see cref="StellarNoiseEstimator.ClippedSpread"/> because interpolation
 /// correlates neighboring samples.</para>
-/// <para>Centroids are iterative Gaussian-windowed first moments. The centroid covariance propagates the declared
-/// per-sample noise model through the window's fixed-point equation. It ignores interpolation-correlated noise, PSF
+/// <para>Compact-source centroids are iterative Gaussian-windowed first moments; one whose iteration does not converge
+/// is excluded as <see cref="StellarExclusionReasons.CentroidUnconverged"/>. A narrow window has no unique fixed point
+/// along a trail, so a trailed source's centroid is the flux-weighted first moment of its grown footprint. The centroid
+/// covariance propagates the declared per-sample noise model through the corresponding estimator. It ignores interpolation-correlated noise, PSF
 /// model error, and saturation clipping, so it is reported as unvalidated and must not be treated as calibrated
 /// coverage. No caller buffers are retained or modified.</para>
 /// </remarks>
@@ -155,6 +161,8 @@ public static class StellarSourceMeasurer
     public const string AlgorithmVersion = "linear-stellar-local-v2";
 
     private const int MinimumDimension = 16;
+    private const int MaximumCentroidIterations = 100;
+    private const double CentroidConvergencePixels = 1e-6;
 
     /// <exception cref="ArgumentException">The layout, options, masks, or samples are invalid.</exception>
     /// <exception cref="OperationCanceledException">Cancellation was requested.</exception>
@@ -353,12 +361,12 @@ public static class StellarSourceMeasurer
         {
             return new(null, StellarExclusionReasons.ImageEdge);
         }
-        if (component.Count > options.MaximumComponentSamples)
+        var windowWidth = x1 - x0 + 1;
+        var windowHeight = y1 - y0 + 1;
+        if (component.Count > options.MaximumComponentSamples || (long)windowWidth * windowHeight > options.MaximumWindowSamples)
         {
             return new(null, StellarExclusionReasons.ExtendedRegion);
         }
-        var windowWidth = x1 - x0 + 1;
-        var windowHeight = y1 - y0 + 1;
         var excess = new double[windowWidth * windowHeight];
         var variance = new double[excess.Length];
         var usable = new bool[excess.Length];
@@ -425,7 +433,8 @@ public static class StellarSourceMeasurer
         var cx = sx / sum;
         var cy = sy / sum;
         var sigmaSquared = options.WindowSigmaPixels * options.WindowSigmaPixels;
-        for (var iteration = 0; iteration < 60; iteration++)
+        var converged = false;
+        for (var iteration = 0; iteration < MaximumCentroidIterations; iteration++)
         {
             double weighted = 0, mx = 0, my = 0;
             for (var local = 0; local < excess.Length; local++)
@@ -453,35 +462,53 @@ public static class StellarSourceMeasurer
             {
                 return new(null, StellarExclusionReasons.LowSignalToNoise);
             }
-            if (Math.Abs(stepX) + Math.Abs(stepY) < 1e-7)
+            if (Math.Abs(stepX) + Math.Abs(stepY) < CentroidConvergencePixels)
             {
+                converged = true;
                 break;
             }
         }
 
         // Flux and shape use the own footprint grown by the window radius, excluding other candidates' samples.
+        // Shape moments are central about the aperture's own first moment, independent of the windowed centroid.
         var grow = Math.Max(2, (int)Math.Ceiling(2 * options.WindowSigmaPixels));
         var aperture = Grow(own, windowWidth, windowHeight, grow);
-        double flux = 0, fluxVariance = 0, positive = 0, mxx = 0, myy = 0, mxy = 0;
+        double flux = 0, fluxVariance = 0, fx = 0, fy = 0, positive = 0, px = 0, py = 0;
         for (var local = 0; local < excess.Length; local++)
         {
             if (!aperture[local] || !usable[local])
             {
                 continue;
             }
+            var x = local % windowWidth + 0.5;
+            var y = local / windowWidth + 0.5;
             flux += excess[local];
             fluxVariance += variance[local];
+            fx += excess[local] * x;
+            fy += excess[local] * y;
             var weight = Math.Max(0, excess[local]);
-            var dx = local % windowWidth + 0.5 - cx;
-            var dy = local / windowWidth + 0.5 - cy;
             positive += weight;
-            mxx += weight * dx * dx;
-            myy += weight * dy * dy;
-            mxy += weight * dx * dy;
+            px += weight * x;
+            py += weight * y;
         }
         if (!(flux > 0) || !(positive > 0))
         {
             return new(null, StellarExclusionReasons.LowSignalToNoise);
+        }
+        px /= positive;
+        py /= positive;
+        double mxx = 0, myy = 0, mxy = 0;
+        for (var local = 0; local < excess.Length; local++)
+        {
+            if (!aperture[local] || !usable[local] || !(excess[local] > 0))
+            {
+                continue;
+            }
+            var dx = local % windowWidth + 0.5 - px;
+            var dy = local / windowWidth + 0.5 - py;
+            mxx += excess[local] * dx * dx;
+            myy += excess[local] * dy * dy;
+            mxy += excess[local] * dx * dy;
         }
         mxx /= positive;
         myy /= positive;
@@ -504,6 +531,18 @@ public static class StellarSourceMeasurer
         {
             return new(null, StellarExclusionReasons.TrailTooLong);
         }
+        // A narrow window has no unique fixed point along a trail's flat ridge, so a trail's centroid is its aperture's
+        // flux-weighted first moment. A compact source whose windowed centroid did not converge is not measured.
+        var trailed = trail >= options.MinimumTrailLengthPixels;
+        if (!trailed && !converged)
+        {
+            return new(null, StellarExclusionReasons.CentroidUnconverged);
+        }
+        if (trailed)
+        {
+            cx = fx / flux;
+            cy = fy / flux;
+        }
         mesh.TrySample(component.PeakIndex % width, component.PeakIndex / width, out _, out var peakNoise);
         if (IsBlended(excess, own, windowWidth, windowHeight, component, x0, y0, width, options, peakNoise))
         {
@@ -516,14 +555,14 @@ public static class StellarSourceMeasurer
             return new(null, StellarExclusionReasons.LowSignalToNoise, neighbors);
         }
 
-        var (covariance, covarianceStatus) = Covariance(excess, variance, usable, windowWidth, cx, cy, sigmaSquared,
-            component.SaturatedCount);
+        var (covariance, covarianceStatus) = trailed
+            ? ApertureCovariance(excess, variance, usable, aperture, windowWidth, cx, cy, flux, component.SaturatedCount)
+            : Covariance(excess, variance, usable, windowWidth, cx, cy, sigmaSquared, component.SaturatedCount);
         var flags = StellarSourceConditions.None;
         if (component.SaturatedCount > 0)
         {
             flags |= StellarSourceConditions.Saturated;
         }
-        var trailed = trail >= options.MinimumTrailLengthPixels;
         if (trailed)
         {
             flags |= StellarSourceConditions.Trailed;
@@ -596,6 +635,35 @@ public static class StellarSourceMeasurer
         return (covariance, saturatedCount > 0
             ? "propagated-noise-saturation-inflated-unvalidated"
             : "propagated-noise-unvalidated");
+    }
+
+    private static (StellarCentroidCovariance? Covariance, string Status) ApertureCovariance(double[] excess,
+        double[] variance, bool[] usable, bool[] aperture, int windowWidth, double cx, double cy, double flux, int saturatedCount)
+    {
+        // The first moment c = sum I r / sum I has dc/dI_i = (r_i - c) / F, so Cov(c) = sum var_i (r_i - c)(r_i - c)^T / F^2.
+        double sxx = 0, sxy = 0, syy = 0;
+        for (var local = 0; local < excess.Length; local++)
+        {
+            if (!aperture[local] || !usable[local])
+            {
+                continue;
+            }
+            var dx = local % windowWidth + 0.5 - cx;
+            var dy = local / windowWidth + 0.5 - cy;
+            sxx += variance[local] * dx * dx;
+            syy += variance[local] * dy * dy;
+            sxy += variance[local] * dx * dy;
+        }
+        var scale = (saturatedCount > 0 ? 1 + saturatedCount : 1) / (flux * flux);
+        var covariance = new StellarCentroidCovariance(sxx * scale, sxy * scale, syy * scale);
+        if (!(covariance.XX > 0) || !(covariance.YY > 0) || !double.IsFinite(covariance.XX) || !double.IsFinite(covariance.YY) ||
+            !double.IsFinite(covariance.XY) || covariance.XX * covariance.YY - covariance.XY * covariance.XY <= 0)
+        {
+            return (null, "unavailable-singular-window");
+        }
+        return (covariance, saturatedCount > 0
+            ? "propagated-noise-trail-moment-saturation-inflated-unvalidated"
+            : "propagated-noise-trail-moment-unvalidated");
     }
 
     private static bool IsBlended(double[] excess, bool[] own, int windowWidth, int windowHeight, Component component,
@@ -721,7 +789,7 @@ public static class StellarSourceMeasurer
             options.ElectronsPerSampleUnit is { } gain && !Positive(gain) ||
             options.MaximumPixelCount is < 256 or > StellarDetector.MaximumSupportedPixels ||
             options.MaximumCandidateCount is < 1 or > StellarDetector.MaximumSupportedCandidates ||
-            !Enum.IsDefined(options.NoiseEstimator))
+            !Enum.IsDefined(options.NoiseEstimator) || options.MaximumWindowSamples is < 64 or > 1 << 20)
         {
             throw new ArgumentException("Stellar measurement thresholds or resource limits are invalid.", nameof(options));
         }

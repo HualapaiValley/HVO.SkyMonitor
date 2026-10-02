@@ -7,6 +7,8 @@ namespace HVO.SkyMonitor.Imaging.Tests;
 [TestCategory("Unit")]
 public sealed class StellarSourceMeasurerTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly int[] ExpectedFluxOrder = [0, 1, 2];
     private static readonly int[] ExpectedFluxOrderColumns = [80, 135, 25];
 
@@ -45,6 +47,7 @@ public sealed class StellarSourceMeasurerTests
         var xs = new List<double>();
         var ys = new List<double>();
         var predicted = new List<StellarCentroidCovariance>();
+        var trailed = 0;
         for (var trial = 0; trial < trials; trial++)
         {
             var pixels = Field(width, height);
@@ -54,9 +57,15 @@ public sealed class StellarSourceMeasurerTests
             xs.Add(star.Pixel.X);
             ys.Add(star.Pixel.Y);
             predicted.Add(star.CentroidCovariance!.Value);
-            Assert.AreEqual("propagated-noise-unvalidated", star.CentroidCovarianceStatus);
+            // Noise elongates some round stars past the trail floor; those take the aperture-moment centroid and covariance.
+            trailed += star.Conditions.HasFlag(StellarSourceConditions.Trailed) ? 1 : 0;
+            Assert.AreEqual(star.Conditions.HasFlag(StellarSourceConditions.Trailed)
+                ? "propagated-noise-trail-moment-unvalidated"
+                : "propagated-noise-unvalidated", star.CentroidCovarianceStatus);
             Assert.IsTrue(star.SignalToNoise > 10);
         }
+        TestContext.WriteLine($"noise-trailed {trailed}/{trials}");
+        Assert.IsTrue(trailed < trials / 4, $"{trailed}");
         var meanX = xs.Average();
         var meanY = ys.Average();
         var varianceX = xs.Sum(x => (x - meanX) * (x - meanX)) / (trials - 1);
@@ -206,6 +215,39 @@ public sealed class StellarSourceMeasurerTests
     }
 
     [TestMethod]
+    public void NoisyTrail_UsesTheApertureFluxCentroidWithItsOwnCovariance()
+    {
+        const int width = 96, height = 96, trials = 60;
+        var random = new Random(110302);
+        var errors = new List<double>();
+        for (var trial = 0; trial < trials; trial++)
+        {
+            var pixels = Field(width, height);
+            AddTrail(pixels, width, 48.3, 47.6, 12, 25, 1, 20000);
+            AddNoise(pixels, random, 5);
+            var star = Measure(pixels, width, height).Detections.Single();
+            Assert.IsTrue(star.Conditions.HasFlag(StellarSourceConditions.Trailed));
+            StringAssert.Contains(star.CentroidCovarianceStatus, "trail-moment", StringComparison.Ordinal);
+            errors.Add(Math.Sqrt(Math.Pow(star.Pixel.X - 48.3, 2) + Math.Pow(star.Pixel.Y - 47.6, 2)));
+        }
+        Assert.IsTrue(errors.Average() < 0.1, $"mean {errors.Average():F3}");
+        Assert.IsTrue(errors.Max() < 0.3, $"max {errors.Max():F3}");
+    }
+
+    [TestMethod]
+    public void MeasurementWindowAboveTheDeclaredBound_IsAnExtendedRegion()
+    {
+        const int width = 96, height = 96;
+        var pixels = Field(width, height);
+        AddTrail(pixels, width, 48.5, 48.5, 12, 45, 1, 20000);
+
+        Assert.HasCount(1, Measure(pixels, width, height).Detections);
+        var bounded = Measure(pixels, width, height, options: new(MaximumWindowSamples: 64));
+        Assert.IsEmpty(bounded.Detections);
+        Assert.AreEqual(StellarExclusionReasons.ExtendedRegion, bounded.Exclusions.Single().ReasonCode);
+    }
+
+    [TestMethod]
     public void SeparatedSaddle_IsBlendedButNeighborComponentIsCrowded()
     {
         const int width = 128, height = 64;
@@ -332,7 +374,7 @@ public sealed class StellarSourceMeasurerTests
             new(MaximumComponentSamples: 0), new(MaximumSaturatedSamples: -1), new(SaturationDilationPixels: 3),
             new(BlendSaddleFraction: 0), new(CrowdingPeakRatio: 0), new(MinimumSignalToNoise: -1),
             new(ElectronsPerSampleUnit: 0), new(MaximumPixelCount: 100), new(MaximumCandidateCount: 0),
-            new(NoiseEstimator: (StellarNoiseEstimator)2)
+            new(NoiseEstimator: (StellarNoiseEstimator)2), new(MaximumWindowSamples: 63), new(MaximumWindowSamples: (1 << 20) + 1)
         ];
         foreach (var options in invalid)
         {

@@ -162,6 +162,18 @@ public sealed class AstrometricResidualDiagnosticsTests
         Assert.Throws<ArgumentOutOfRangeException>(() => AstrometricResidualAnalyzer.SummarizeByTime([first], TimeSpan.Zero));
     }
 
+    [TestMethod]
+    public void SummarizeByTime_RejectsBinIndicesBeyondTheIndexRange()
+    {
+        var f = Accepted.Value; var first = AstrometricResidualAnalyzer.Analyze(f.Calibration, f.Catalog, new(), f.Result, f.Detections);
+        var last = first with { MidpointUtc = first.MidpointUtc.AddTicks(int.MaxValue) };
+        Assert.AreEqual(int.MaxValue, AstrometricResidualAnalyzer.SummarizeByTime([first, last], TimeSpan.FromTicks(1))[1].Index);
+        var beyond = first with { MidpointUtc = first.MidpointUtc.AddTicks(int.MaxValue + 1L) };
+        Assert.Throws<ArgumentException>(() => AstrometricResidualAnalyzer.SummarizeByTime([first, beyond], TimeSpan.FromTicks(1)));
+        var month = first with { MidpointUtc = first.MidpointUtc.AddDays(30) };
+        Assert.Throws<ArgumentException>(() => AstrometricResidualAnalyzer.SummarizeByTime([first, month], TimeSpan.FromMilliseconds(1)));
+    }
+
     private static bool IsEligible(string reason) => reason is not (AstrometricDiagnosticReasons.OutsideAperture or AstrometricDiagnosticReasons.NearEdge or AstrometricDiagnosticReasons.CrowdedPrediction);
 
     private static bool IsFarFromPredictions(PixelPoint pixel)
