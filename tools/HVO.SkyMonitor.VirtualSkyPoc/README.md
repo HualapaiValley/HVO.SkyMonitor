@@ -149,3 +149,11 @@ and SolarDriven with disks, using five warm-up and thirty measured captures per
 configuration at day and night. CPU, elapsed/p95, allocation, peak working set,
 raw output bytes, disk writes and backlog boundaries are explicit. Measurements
 on a shared host are workload evidence, not a hardware qualification.
+
+## Build and CI ownership
+
+The standalone POC executable is registered under the solution's Tools folder
+so normal solution builds compile it. It is not registered in either host and
+introduces no production job or encoder service. The CI classification guard
+explicitly retains this cross-component harness on the complete matrix; it is
+not silently assigned a narrow host lane.
