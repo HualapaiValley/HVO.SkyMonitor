@@ -315,41 +315,12 @@ public static class AstrometricResidualAnalyzer
             for (var j = 0; j < 4; j++) for (var k = 0; k < 4; k++) normal[j * 4 + k] += dx[j] * dx[k] + dy[j] * dy[k];
         }
         if (used < 2) return new(used, null, null, null, "unavailable-insufficient-fitting-stars");
-        var eigen = SymmetricEigenvalues(normal, 4);
+        var eigen = AstrometricLinearAlgebra.SymmetricEigenvalues(normal, 4, 1e-30);
         var largest = eigen.Max(); var smallest = eigen.Min();
         if (!(largest > 0) || !double.IsFinite(largest)) return new(used, null, smallest, largest, "unavailable-degenerate");
         if (smallest <= largest * 1e-15) return new(used, null, smallest, largest, "singular");
         var condition = largest / smallest;
         return new(used, condition, smallest, largest, condition <= maximum ? "well-conditioned" : "ill-conditioned");
-    }
-
-    /// <summary>Cyclic Jacobi eigenvalues for a small symmetric matrix.</summary>
-    private static double[] SymmetricEigenvalues(double[] matrix, int n)
-    {
-        var a = (double[])matrix.Clone();
-        for (var sweep = 0; sweep < 100; sweep++)
-        {
-            var off = 0d; for (var p = 0; p < n; p++) for (var q = p + 1; q < n; q++) off += a[p * n + q] * a[p * n + q];
-            if (off < 1e-30) break;
-            for (var p = 0; p < n; p++) for (var q = p + 1; q < n; q++)
-            {
-                var apq = a[p * n + q]; if (Math.Abs(apq) < 1e-300) continue;
-                var theta = (a[q * n + q] - a[p * n + p]) / (2 * apq);
-                var t = Math.Sign(theta == 0 ? 1 : theta) / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1));
-                var c = 1 / Math.Sqrt(t * t + 1); var s = t * c;
-                for (var k = 0; k < n; k++)
-                {
-                    var akp = a[k * n + p]; var akq = a[k * n + q];
-                    a[k * n + p] = c * akp - s * akq; a[k * n + q] = s * akp + c * akq;
-                }
-                for (var k = 0; k < n; k++)
-                {
-                    var apk = a[p * n + k]; var aqk = a[q * n + k];
-                    a[p * n + k] = c * apk - s * aqk; a[q * n + k] = s * apk + c * aqk;
-                }
-            }
-        }
-        return [.. Enumerable.Range(0, n).Select(i => a[i * n + i])];
     }
 
     private sealed class Prediction(CelestialCatalogObject star, AltAzPoint horizontal, PixelPoint pixel)

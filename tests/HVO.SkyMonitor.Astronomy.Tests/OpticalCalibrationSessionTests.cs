@@ -55,6 +55,21 @@ public sealed class OpticalCalibrationSessionTests
     }
 
     [TestMethod]
+    public void Fit_PublishesSharedCovarianceThatReproducesReportedStandardErrors()
+    {
+        var result = Recovered.Value;
+        var covariance = result.SharedCovariance!;
+        Assert.AreEqual(OpticalCalibrationCovariance.ResidualScaledMarginal, covariance.Basis);
+        CollectionAssert.AreEqual(new[] { OpticalCalibrationCovariance.LogFocalScale, OpticalCalibrationCovariance.PrincipalPointX,
+            OpticalCalibrationCovariance.PrincipalPointY, OpticalCalibrationCovariance.RadialK1 }, covariance.Parameters.ToArray());
+        var focal = result.Parameters[0];
+        Assert.AreEqual(focal.StandardError!.Value, Math.Sqrt(covariance.Values[0]) * focal.Value, 1e-12);
+        for (var i = 1; i < 4; i++) Assert.AreEqual(result.Parameters[i].StandardError!.Value, Math.Sqrt(covariance.Values[i * 5]), 1e-15);
+        var shared = AstrometricCalibrationCovariance.FromSession(result);
+        Assert.AreEqual(result.IdentitySha256, shared.SourceIdentitySha256); Assert.AreEqual(result.CalibratedNative!.Value, shared.CalibratedNative);
+    }
+
+    [TestMethod]
     public void Fit_KeepsPoseOutOfSessionOpticsAndReportsPerFramePose()
     {
         var result = Recovered.Value;
@@ -149,6 +164,8 @@ public sealed class OpticalCalibrationSessionTests
             [Frame(DistortedTruth, 2.2, FullFrame)], Catalog, WithoutDistortion, Search);
         Assert.AreEqual(OpticalCalibrationStatus.Rejected, result.Status);
         Assert.IsNull(result.CalibratedNative);
+        Assert.IsNull(result.SharedCovariance);
+        Assert.Throws<ArgumentException>(() => AstrometricCalibrationCovariance.FromSession(result));
         Assert.IsTrue(result.Rejections.Any(r => r.StartsWith("radial-bias:", StringComparison.Ordinal)), string.Join(",", result.Rejections));
         Assert.IsFalse(result.Parameters.Single(p => p.Name == "radial-k1").Fitted);
     }

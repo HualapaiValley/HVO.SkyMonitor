@@ -265,7 +265,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
     private sealed record StellarMeasurementSummary(string Readout, double Hours, string Status, int Detections, int Candidates,
         VirtualMeasuredStarQualificationTests.ResourceSample Resources);
 
-    private static CameraRigConfig WithReadout(CameraRigConfig rig, string readout)
+    internal static CameraRigConfig WithReadout(CameraRigConfig rig, string readout)
     {
         var native = rig.Readout!;
         var roi = native with { Roi = new(240, 96, 1440, 1024) };
@@ -283,7 +283,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
         };
     }
 
-    private static AstrometricCalibration Calibration(CameraRigConfig rig, string version)
+    internal static AstrometricCalibration Calibration(CameraRigConfig rig, string version)
     {
         var readout = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout!);
         return new(RigProjectionContextFactory.Create(rig), version, CaptureContractJson.ComputeCanonicalJsonSha256(readout.Layout));
@@ -323,7 +323,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
         if (resources.PeakWorkingSetBytes > MaximumPeakWorkingSetBytes) failures.Add($"{label}: peak working set {resources.PeakWorkingSetBytes / 1048576.0:F0} MiB");
     }
 
-    private static (T Value, VirtualMeasuredStarQualificationTests.ResourceSample Resources) Sample<T>(Func<T> measure)
+    internal static (T Value, VirtualMeasuredStarQualificationTests.ResourceSample Resources) Sample<T>(Func<T> measure)
     {
         using var process = Process.GetCurrentProcess();
         var cpu = process.TotalProcessorTime;

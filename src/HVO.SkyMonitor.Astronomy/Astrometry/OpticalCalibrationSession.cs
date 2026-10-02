@@ -87,7 +87,8 @@ public static class OpticalCalibrationSession
                 works.Count > 0 ? works.Select(FrameSummary) : frames.Select(f => new OpticalCalibrationFrameResult(f.Frame.CaptureId, f.ReadoutIdentitySha256, "not-attempted", 0, null, null, null, 0, 0, null, null)),
                 validations ?? [], (diagnostics ?? new Diagnostics()).ToContract(skyRotation, works.Count(w => w.Status == "fitted")),
                 inputIdentity, catalog.IdentitySha256, catalog.SelectionIdentitySha256, options.IdentitySha256, solverOptions.IdentitySha256,
-                new(watch.Elapsed.TotalMilliseconds, acquisitionMs, fitMs, validationMs));
+                new(watch.Elapsed.TotalMilliseconds, acquisitionMs, fitMs, validationMs),
+                status == OpticalCalibrationStatus.Accepted ? diagnostics?.Covariance : null);
 
         if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < solverOptions.MaximumCatalogMagnitude)
             return Result(OpticalCalibrationStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.", ["catalog-incomplete"]);
@@ -450,6 +451,7 @@ public static class OpticalCalibrationSession
         public int Iterations { get; set; }
         public bool Converged { get; set; }
         public List<OpticalCalibrationResidualBin> Bins { get; } = [];
+        public OpticalCalibrationCovariance? Covariance { get; set; }
         public OpticalCalibrationDiagnostics ToContract(double skyRotation, int fittedFrames) => new(skyRotation, fittedFrames,
             FittingStars, VerificationStars, FittingRms, VerificationRms, OccupiedRadialBins, OccupiedAzimuthBins, ConditionNumber,
             Iterations, Converged, Bins.AsReadOnly());
@@ -552,7 +554,9 @@ public static class OpticalCalibrationSession
                 var correlation = new double[m * m];
                 for (var a = 0; a < m; a++) for (var b = 0; b < m; b++)
                     correlation[a * m + b] = block[a * m + b] / Math.Sqrt(Math.Max(1e-300, block[a * m + a] * block[b * m + b]));
-                var eigen = SymmetricEigenvalues(correlation, m);
+                result.Covariance = new(OpticalCalibrationCovariance.ResidualScaledMarginal,
+                    Array.AsReadOnly(sharedIndex.Select(i => CovarianceNames[i]).ToArray()), Array.AsReadOnly(block));
+                var eigen = AstrometricLinearAlgebra.SymmetricEigenvalues(correlation, m, 1e-24);
                 result.ConditionNumber = eigen.Min() > 0 ? eigen.Max() / eigen.Min() : double.PositiveInfinity;
                 if (!(result.ConditionNumber <= o.MaximumConditionNumber)) result.Rejections.Add("ill-conditioned");
                 var limits = new[] { o.MaximumFocalScaleStandardError, o.MaximumPrincipalPointStandardErrorPixels, o.MaximumPrincipalPointStandardErrorPixels, o.MaximumRadialDistortionStandardError };
@@ -588,6 +592,8 @@ public static class OpticalCalibrationSession
     }
 
     private static readonly string[] ParameterNames = ["focal-scale", "principal-point-x", "principal-point-y", "radial-k1"];
+    private static readonly string[] CovarianceNames = [OpticalCalibrationCovariance.LogFocalScale, OpticalCalibrationCovariance.PrincipalPointX,
+        OpticalCalibrationCovariance.PrincipalPointY, OpticalCalibrationCovariance.RadialK1];
 
     private static IEnumerable<OpticalCalibrationParameter> Parameters(ProjectionContext nominal, OpticalCalibrationOptions o, Shared shared,
         double?[]? errors, bool fitted)
@@ -651,34 +657,5 @@ public static class OpticalCalibrationSession
             for (var i = 0; i < n; i++) inverse[i * n + column] = x[i] * scale[i] * scale[column];
         }
         return inverse;
-    }
-
-    private static double[] SymmetricEigenvalues(double[] matrix, int n)
-    {
-        var a = (double[])matrix.Clone();
-        for (var sweep = 0; sweep < 100; sweep++)
-        {
-            var off = 0d;
-            for (var p = 0; p < n; p++) for (var q = p + 1; q < n; q++) off += a[p * n + q] * a[p * n + q];
-            if (off < 1e-24) break;
-            for (var p = 0; p < n; p++) for (var q = p + 1; q < n; q++)
-            {
-                if (Math.Abs(a[p * n + q]) < 1e-300) continue;
-                var theta = (a[q * n + q] - a[p * n + p]) / (2 * a[p * n + q]);
-                var t = Math.Sign(theta == 0 ? 1 : theta) / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1));
-                var c = 1 / Math.Sqrt(t * t + 1); var s = t * c;
-                for (var k = 0; k < n; k++)
-                {
-                    var akp = a[k * n + p]; var akq = a[k * n + q];
-                    a[k * n + p] = c * akp - s * akq; a[k * n + q] = s * akp + c * akq;
-                }
-                for (var k = 0; k < n; k++)
-                {
-                    var apk = a[p * n + k]; var aqk = a[q * n + k];
-                    a[p * n + k] = c * apk - s * aqk; a[q * n + k] = s * apk + c * aqk;
-                }
-            }
-        }
-        return Enumerable.Range(0, n).Select(i => a[i * n + i]).ToArray();
     }
 }
