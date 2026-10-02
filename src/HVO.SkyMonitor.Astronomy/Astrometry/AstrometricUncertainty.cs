@@ -370,7 +370,7 @@ public static class AstrometricUncertaintyEstimator
         for (; iteration < options.MaximumIterations; iteration++)
         {
             if (Linearize(optics, rotation, scale, fitting) is not { } system)
-                return Fail("derivative-unsupported", "A fitting star leaves the supported projection domain under a pose perturbation; the mapping cannot be differentiated there.");
+                return Fail("derivative-unsupported", "A fitting star or the focal scale leaves the supported projection domain under a perturbation; the mapping cannot be differentiated there.");
             (jacobian, residual) = system;
             var (normal, gradient) = Normal(jacobian, residual, weights);
             if (Scaled(normal) is not { } scaled) return Fail("rank-deficient", "The fitting stars do not constrain every pose parameter; add stars over a wider field.");
@@ -381,7 +381,7 @@ public static class AstrometricUncertaintyEstimator
         }
         if (!converged) return Fail("not-converged", "The fixed-association refit did not converge within its declared iteration bound.");
         if (Linearize(optics, rotation, scale, fitting) is not { } final)
-            return Fail("derivative-unsupported", "A fitting star leaves the supported projection domain at the refitted pose.");
+            return Fail("derivative-unsupported", "A fitting star or the focal scale leaves the supported projection domain at the refitted pose.");
         (jacobian, residual) = final;
         var (a, _) = Normal(jacobian, residual, weights);
         var conditioned = Scaled(a);
@@ -512,11 +512,14 @@ public static class AstrometricUncertaintyEstimator
 
     private static (double[] Jacobian, double[] Residual)? Linearize(SolverOptics optics, AstrometricRotation rotation, double scale, IReadOnlyList<Observation> observations)
     {
-        var camera = new AstrometricRayCamera(optics, scale);
+        // A focal scale at the lens family's physical limit (an image circle larger than the mapping can reach) has no
+        // two-sided derivative; that is unsupported, not an exception.
+        if (Camera(optics, scale) is not { } camera || Camera(optics, scale * Math.Exp(DerivativeStep)) is not { } larger ||
+            Camera(optics, scale * Math.Exp(-DerivativeStep)) is not { } smaller) return null;
         var plus = new[] { (camera, rotation.Increment(DerivativeStep, 0, 0)), (camera, rotation.Increment(0, DerivativeStep, 0)),
-            (camera, rotation.Increment(0, 0, DerivativeStep)), (new AstrometricRayCamera(optics, scale * Math.Exp(DerivativeStep)), rotation) };
+            (camera, rotation.Increment(0, 0, DerivativeStep)), (larger, rotation) };
         var minus = new[] { (camera, rotation.Increment(-DerivativeStep, 0, 0)), (camera, rotation.Increment(0, -DerivativeStep, 0)),
-            (camera, rotation.Increment(0, 0, -DerivativeStep)), (new AstrometricRayCamera(optics, scale * Math.Exp(-DerivativeStep)), rotation) };
+            (camera, rotation.Increment(0, 0, -DerivativeStep)), (smaller, rotation) };
         var jacobian = new double[observations.Count * 8]; var residual = new double[observations.Count * 2];
         for (var s = 0; s < observations.Count; s++)
         {
@@ -531,6 +534,12 @@ public static class AstrometricUncertaintyEstimator
             }
         }
         return (jacobian, residual);
+    }
+
+    private static AstrometricRayCamera? Camera(SolverOptics optics, double scale)
+    {
+        try { return new AstrometricRayCamera(optics, scale); }
+        catch (ArgumentException) { return null; }
     }
 
     /// <summary>Predicted-pixel response to each shared-calibration parameter through the frame's derived readout view; central where both sides exist.</summary>
@@ -553,7 +562,9 @@ public static class AstrometricUncertaintyEstimator
                 var view = RigProjectionContextFactory.CreateReadoutView(changed, input.Readout);
                 return new AstrometricRayCamera(SolverOptics.From(view with
                 {
-                    BoresightAltitudeDegrees = input.View.BoresightAltitudeDegrees, BoresightAzimuthDegrees = input.View.BoresightAzimuthDegrees, RollDegrees = input.View.RollDegrees
+                    BoresightAltitudeDegrees = input.View.BoresightAltitudeDegrees,
+                    BoresightAzimuthDegrees = input.View.BoresightAzimuthDegrees,
+                    RollDegrees = input.View.RollDegrees
                 }), scale);
             }
             catch (ArgumentException) { return null; }

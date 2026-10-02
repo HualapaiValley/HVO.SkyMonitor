@@ -24,7 +24,7 @@ public sealed class AstrometricUncertaintyCoverageTests
     private static readonly FrameReadoutDescriptor FullFrame = new(512, 512, 0, 0, 512, 512, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null);
 
     private sealed record Star(EnuVector Ray, PixelCovariance Covariance, bool Bright);
-    private sealed record Scene(AstrometricRotation Rotation, Star[] Fitting, Star[] Held);
+    private sealed record Scene(ProjectionContext Optics, AstrometricRotation Rotation, Star[] Fitting, Star[] Held);
     private sealed record Trial(double[] Error, double[] Covariance, AstrometricUncertaintyEstimator.CoreOutcome Outcome);
 
     [TestMethod]
@@ -34,6 +34,43 @@ public sealed class AstrometricUncertaintyCoverageTests
         var trials = Run(scene, 400, 20251105, new(), Truth(Native));
         AssertCoverage(trials, "ideal");
         Assert.IsLessThanOrEqualTo(6, trials.Count(t => t.Outcome.ModelFailure is not null), "A valid model withholds at the declared alpha.");
+    }
+
+    /// <summary>
+    /// The same predeclared coverage across every supported lens family, including a rectilinear (perspective) lens.
+    /// Each family's truth and fit use its own projection, so coverage is not borrowed from the fisheye result.
+    /// </summary>
+    [TestMethod]
+    [DataRow(ProjectionModel.EquidistantFisheye)]
+    [DataRow(ProjectionModel.EquisolidFisheye)]
+    [DataRow(ProjectionModel.OrthographicFisheye)]
+    [DataRow(ProjectionModel.StereographicFisheye)]
+    [DataRow(ProjectionModel.Perspective)]
+    public void EveryLensFamily_EllipsoidAndIntervalsCoverAtNominalLevels(ProjectionModel model)
+    {
+        var lens = model == ProjectionModel.Perspective
+            // A 90-degree rectilinear lens on the same 512-pixel sensor.
+            ? new ProjectionContext(model, 256, 256, 256, 256, 512, 512, ProjectionAperture.Rectangular, null, 90, 0, 0, true)
+            // An orthographic image circle cannot exceed its focal length, so that lens maps its horizon just outside the circle.
+            : model == ProjectionModel.OrthographicFisheye ? Native with { Model = model, FocalLengthXPixels = 240, FocalLengthYPixels = 240 }
+            : Native with { Model = model };
+        var scene = CreateScene(AstrometricTestFixture.Utc, 72, 243, 17, 1111 + (int)model, .05, .3, lens);
+        var trials = Run(scene, 300, 20251111 + (int)model, new(), Truth(lens));
+        AssertCoverage(trials, model.ToString());
+        Assert.IsLessThanOrEqualTo(5, trials.Count(t => t.Outcome.ModelFailure is not null), "A valid model withholds at the declared alpha.");
+    }
+
+    [TestMethod]
+    public void FocalScaleAtTheLensFamilyLimit_IsWithheldAsDerivativeUnsupported()
+    {
+        // An orthographic circle equal to the focal length: the mapping cannot shrink the focal scale and still reach it.
+        var lens = Native with { Model = ProjectionModel.OrthographicFisheye, FocalLengthXPixels = 232, FocalLengthYPixels = 232 };
+        var scene = CreateScene(AstrometricTestFixture.Utc, 72, 243, 17, 1112, .05, .3, lens);
+        Observation Exact(Star s) => new(s.Ray, Truth(lens).Pixel(s.Ray, scene.Rotation)!.Value, s.Covariance);
+        var outcome = AstrometricUncertaintyEstimator.Solve(SolverOptics.From(lens), scene.Rotation, 1,
+            [.. scene.Fitting.Select(Exact)], [.. scene.Held.Select(Exact)], null, new());
+        Assert.AreEqual("derivative-unsupported", outcome.Failure?.Code);
+        Assert.IsNull(outcome.Conditional);
     }
 
     [TestMethod]
@@ -133,8 +170,11 @@ public sealed class AstrometricUncertaintyCoverageTests
             var delta = Enumerable.Range(0, 4).Select(i => Enumerable.Range(0, i + 1).Sum(j => factor[i * 4 + j] * z[j])).ToArray();
             var truth = Truth(Native with
             {
-                FocalLengthXPixels = Native.FocalLengthXPixels * Math.Exp(delta[0]), FocalLengthYPixels = Native.FocalLengthYPixels * Math.Exp(delta[0]),
-                PrincipalPointX = Native.PrincipalPointX + delta[1], PrincipalPointY = Native.PrincipalPointY + delta[2], RadialDistortionK1 = delta[3]
+                FocalLengthXPixels = Native.FocalLengthXPixels * Math.Exp(delta[0]),
+                FocalLengthYPixels = Native.FocalLengthYPixels * Math.Exp(delta[0]),
+                PrincipalPointX = Native.PrincipalPointX + delta[1],
+                PrincipalPointY = Native.PrincipalPointY + delta[2],
+                RadialDistortionK1 = delta[3]
             });
             for (var f = 0; f < 2; f++) trials[f][t] = Single(scenes[f], random, new(), truth, input, 0, null);
             var sa = trials[0][t].Outcome.Sensitivity!; var sb = trials[1][t].Outcome.Sensitivity!;
@@ -227,22 +267,26 @@ public sealed class AstrometricUncertaintyCoverageTests
         var fitting = scene.Fitting.Select(Observe).ToArray(); var held = scene.Held.Select(Observe).ToArray();
         // Start a little away from the truth, as an accepted blind solve would, so the refit does real work.
         var start = scene.Rotation.Increment(2e-4 * Gaussian(random), 2e-4 * Gaussian(random), 2e-4 * Gaussian(random));
-        var outcome = AstrometricUncertaintyEstimator.Solve(SolverOptics.From(Native), start, 1 + 1e-4 * Gaussian(random), fitting, held, calibration, options);
+        var outcome = AstrometricUncertaintyEstimator.Solve(SolverOptics.From(scene.Optics), start, 1 + 1e-4 * Gaussian(random), fitting, held, calibration, options);
         Assert.IsNull(outcome.Failure, outcome.Failure?.Reason);
         var w = AstrometricUncertaintyEstimator.RotationVector(scene.Rotation, outcome.Rotation);
         var covariance = outcome.Conditional!.Select((v, i) => v + outcome.Systematic![i] + (outcome.Calibration?[i] ?? 0)).ToArray();
         return new([w.East, w.North, w.Up, Math.Log(outcome.Scale)], covariance, outcome);
     }
 
-    private static Scene CreateScene(DateTimeOffset utc, double altitude, double azimuth, double roll, int seed, double minimumSigma, double maximumSigma)
+    private static Scene CreateScene(DateTimeOffset utc, double altitude, double azimuth, double roll, int seed, double minimumSigma, double maximumSigma,
+        ProjectionContext? lens = null)
     {
+        var optics = lens ?? Native;
         var rotation = AstrometricRotation.FromPose(new(altitude, azimuth, roll));
-        var camera = new AstrometricRayCamera(SolverOptics.From(Native), 1);
+        var camera = new AstrometricRayCamera(SolverOptics.From(optics), 1);
         var site = new CoreSite(AstrometricTestFixture.Observer.LatitudeDegrees, AstrometricTestFixture.Observer.LongitudeDegrees);
         var random = new Random(seed);
         var stars = Catalog.Stars.OrderBy(s => s.Id, StringComparer.Ordinal).Select(s => (s.Magnitude, Horizontal: AstrometricMath.Horizontal(s, utc, site)))
             .Where(s => s.Horizontal.AltitudeDegrees > 5).Select(s => (s.Magnitude, Ray: CameraBasis.FromHorizontal(s.Horizontal)))
-            .Where(s => camera.Pixel(s.Ray, rotation) is { } p && Math.Sqrt(Math.Pow(p.X - Native.PrincipalPointX, 2) + Math.Pow(p.Y - Native.PrincipalPointY, 2)) < 210)
+            .Where(s => camera.Pixel(s.Ray, rotation) is { } p && (optics.Aperture == ProjectionAperture.Rectangular
+                ? p.X is > 16 and < 496 && p.Y is > 16 and < 496
+                : Math.Sqrt(Math.Pow(p.X - optics.PrincipalPointX, 2) + Math.Pow(p.Y - optics.PrincipalPointY, 2)) < 210))
             .Select(s =>
             {
                 var major = minimumSigma + (maximumSigma - minimumSigma) * random.NextDouble(); var minor = major * (.5 + .5 * random.NextDouble());
@@ -251,7 +295,7 @@ public sealed class AstrometricUncertaintyCoverageTests
                     major * major * sin * sin + minor * minor * cos * cos), s.Magnitude < 3.5);
             }).ToArray();
         Assert.IsGreaterThanOrEqualTo(64, stars.Length, "The scene needs 48 fitting and 16 held-out stars.");
-        return new(rotation, [.. stars.Where((_, i) => i % 4 != 3).Take(48)], [.. stars.Where((_, i) => i % 4 == 3).Take(16)]);
+        return new(optics, rotation, [.. stars.Where((_, i) => i % 4 != 3).Take(48)], [.. stars.Where((_, i) => i % 4 == 3).Take(16)]);
     }
 
     private static double Gaussian(Random random) => Math.Sqrt(-2 * Math.Log(1 - random.NextDouble())) * Math.Cos(2 * Math.PI * random.NextDouble());
