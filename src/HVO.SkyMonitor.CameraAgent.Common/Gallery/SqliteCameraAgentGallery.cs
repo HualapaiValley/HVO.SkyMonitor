@@ -181,7 +181,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return detail with
         {
             CaptureProfile = await ReadCaptureProfileAsync(row, manifest?.Descriptor, cancellationToken).ConfigureAwait(false),
-            Location = CameraAgentCaptureLocationProjector.Project(manifest?.Descriptor, _deploymentLocation)
+            Location = CameraAgentCaptureLocationProjector.Project(manifest?.Descriptor, _deploymentLocation),
+            Schedule = manifest?.Descriptor.CycleEvidence?.ScheduleAdmission is { } schedule
+                ? new CameraAgentCaptureScheduleFacts(schedule.ScheduleRevisionId, schedule.ScheduleRevisionSha256,
+                    schedule.SetpointProfileId, schedule.Reason.ToString(), schedule.DecisionUtc)
+                : null
         };
     }
 

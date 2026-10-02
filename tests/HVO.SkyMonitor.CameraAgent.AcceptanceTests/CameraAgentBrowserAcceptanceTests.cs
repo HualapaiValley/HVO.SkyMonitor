@@ -912,6 +912,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Captures", Level = 1 })).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var advanced = page.Locator(".advanced-filters");
         Assert.IsFalse(await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
         var firstCard = page.Locator(".capture-card")
@@ -922,6 +923,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal)).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Button, new() { Name = "Older captures" })).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
@@ -979,6 +981,81 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task OwnerPipelineRunPresentationAcceptanceAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        // An older genuine capture has finished its journal before graph inspection starts.
+        var runLink = page.Locator(".capture-card .run-link").Nth(3);
+        await VisibleAsync(runLink).ConfigureAwait(false);
+        var runUrl = await runLink.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(runUrl);
+        await page.GotoAsync(runUrl).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".run-graph[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".run-diagram__node").First).ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            Assert.IsFalse(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                $"Pipeline run overflowed at {width}px.");
+            var node = page.Locator(".run-diagram__node").First;
+            await node.FocusAsync().ConfigureAwait(false);
+            await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('.run-diagram__node')?.getAttribute('aria-pressed') === 'true'")
+                .ConfigureAwait(false);
+            await page.Locator("#run-tab-stage").FocusAsync().ConfigureAwait(false);
+            await page.Keyboard.PressAsync("ArrowRight").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('#run-tab-artifacts')?.getAttribute('aria-selected') === 'true'").ConfigureAwait(false);
+            TestContext.WriteLine(await page.EvaluateAsync<string>("() => JSON.stringify({active:document.activeElement?.id,selected:document.querySelector('#run-tab-artifacts')?.getAttribute('aria-selected')})").ConfigureAwait(false));
+            await page.WaitForFunctionAsync("() => document.activeElement?.id === 'run-tab-artifacts'").ConfigureAwait(false);
+            await VisibleAsync(page.Locator(".artifact-table-wrap")).ConfigureAwait(false);
+            await page.Keyboard.PressAsync("ArrowRight").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.activeElement?.id === 'run-tab-attempts'").ConfigureAwait(false);
+            await VisibleAsync(page.Locator(".attempt-list")).ConfigureAwait(false);
+        }
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        var fullscreen = page.GetByRole(AriaRole.Button, new() { Name = "Graph fullscreen", Exact = true });
+        await fullscreen.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('.run-graph')")
+            .ConfigureAwait(false);
+        Assert.IsTrue(await page.EvaluateAsync<bool>("""
+            () => {
+                const graph = document.querySelector('.run-graph').getBoundingClientRect();
+                return Math.abs(graph.width - innerWidth) <= 1 && Math.abs(graph.height - innerHeight) <= 1;
+            }
+            """).ConfigureAwait(false), "Graph fullscreen must use the actual viewport.");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.run-diagram__zoom')?.textContent.trim() !== '50%'")
+            .ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Fit graph", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Exit graph fullscreen", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, fullscreen).ConfigureAwait(false);
+
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
