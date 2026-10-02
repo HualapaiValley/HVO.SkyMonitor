@@ -20,11 +20,19 @@ A definition names exactly four things plus its identity:
 | `definitionId`, `name`, `enabled` | Identity and enablement. |
 
 There is deliberately no field that can hold a command line, a script, a path, an
-executable, or a URL, and no task kind that would interpret one. The only
-registered task kind is `EnvironmentalOnDemandAcquisition`, whose targets are the
-configured environmental sources that declare the `OnDemand` trigger. A save that
-names a target the registry does not publish is rejected with
-`automation.unregisteredTarget` before anything durable changes.
+executable, or a URL, and no task kind that would interpret one. Two task kinds are
+registered:
+
+| Task kind | Targets | Triggers |
+| --- | --- | --- |
+| `EnvironmentalOnDemandAcquisition` | The configured environmental sources that declare the `OnDemand` trigger. | `Periodic`, `CaptureRelative` |
+| `NightlyProductGeneration` | `keogram` and `star-trail`, only while `CameraAgent:NightlyProducts:Enabled` is `true`. | `Periodic` |
+
+A save that names a target the registry does not publish is rejected with
+`automation.unregisteredTarget` before anything durable changes. Rolling back to a
+build that predates a task kind is not transparent. That build cannot read a stored
+definition of the newer kind, so its automation store fails closed. Remove those
+definitions before such a rollback.
 
 Capture-relative triggers are evaluated by the automation runner from the durable
 capture sequence on its own timer. They are not the environmental capture trigger
@@ -100,6 +108,56 @@ Tables:
   never admits an exposure, never changes acquisition cadence, and never occupies the
   live processing slot.
 
+## Nightly Products
+
+A `NightlyProductGeneration` definition schedules keogram or star-trail generation
+from published Preview frames. Use one definition per target, with a `Periodic`
+interval of about 15 minutes so that hourly segments appear soon after they settle.
+Each run does the following:
+
+- **Windows.** It evaluates the previous and the current observing day. An observing
+  day runs from local noon to local noon in the observatory time zone, so a day has 23
+  or 25 segments across a daylight-saving change. A segment window is evaluated once
+  it closed at least `SettleSeconds` ago. The night product is composed once the whole
+  observing day has settled, at the next run after the noon rollover.
+- **Sources.** It reads the published, `Available` Preview outputs of the
+  `SourceNodeId` node, chosen by each raw capture's own exposure start. An output that
+  only an unpublished execution recorded is never a source. A capture that has several outputs contributes only its latest. A window
+  with more than 4096 candidates is `Rejected` with `nightly.window-source-bound`
+  rather than truncated.
+- **Admission.** A frame is admitted only if it was captured through the current rig
+  profile and the Sun was at or below the kind's altitude limit. The Sun's altitude is
+  evaluated at the frame's own exposure start and capture location. The default limits
+  are 0° for keograms and −18° for star trails. A frame without a usable location is
+  excluded, not assumed. Every exclusion is counted per reason code on the window.
+- **Composition.** A window is composed in ordered parts of at most
+  `MaximumSegmentSources` frames.
+  - A keogram samples the true north–zenith–south meridian. A gap longer than
+    `KeogramMaximumGapSeconds` is drawn as patterned columns.
+  - A keogram night is assembled from its segments, byte for byte the same as composing
+    every frame directly.
+  - A star-trail night is reduced through ordered rollups of at most
+    `MaximumSegmentSources` products each.
+  - A run stops after `MaximumSegmentsPerRun` recipe executions and reports the rest as
+    pending. Product identity is the recipe output identity, so the next run continues
+    without recomputing anything already published.
+- **Publication.** Products are immutable. The database is
+  `<raw-ingress-root>/.nightly-products/nightly-products.db`. Each product also has
+  three files under
+  `<raw-ingress-root>/nightly-products/<yyyy>/<MM>/<dd>/<target>/<product-id>`:
+  - `.bin`, the packed payload;
+  - `.jpg`, the rendition;
+  - `.provenance.json`, the ordered lineage, the recipe identity and the checksums.
+
+  The files are written and synchronized before the row commits. Database triggers
+  refuse to update or delete products and their lineage. A window re-evaluated over
+  different sources records new current products without removing the earlier ones.
+  The run detail reports windows evaluated, products published, pending, rejected, and
+  failed. A failed window does not stop the remaining windows.
+
+Nightly products are not pruned by capture retention. Video slots are not produced
+here; time-lapse generation is tracked by #1130.
+
 ## Restart Recovery
 
 `InitializeAsync` runs from the runner's `StartAsync`, so a store that fails any of
@@ -126,6 +184,26 @@ and verified from the runner's `StartAsync` before the flag is read, so a drifte
 corrupt store fails host startup whether or not the runner is enabled. That is
 deliberate: the store is durable operator state, and a CameraAgent that cannot read it
 must say so rather than start and silently present nothing.
+
+`CameraAgent:NightlyProducts` bounds nightly generation:
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| `Enabled` | `false` | |
+| `SourceNodeId` | none; required when enabled | the Preview-producing pipeline node |
+| `SegmentMinutes` | `60` | 15–240 |
+| `SettleSeconds` | `300` | 0–3600 |
+| `MaximumSegmentSources` | `32` | 1–512 |
+| `MaximumSegmentsPerRun` | `32` | 1–256 |
+| `StarTrailMaximumSolarAltitudeDegrees` | `-18` | −90–0 |
+| `KeogramMaximumSolarAltitudeDegrees` | `0` | −90–90 |
+| `KeogramMaximumGapSeconds` | `300` | 1–86400 |
+| `KeogramMaximumGapColumnCount` | `64` | 1–65536, at most `KeogramMaximumColumnCount` |
+| `KeogramMaximumColumnCount` | `16384` | 2–65536 |
+| `RenditionJpegQuality` | `90` | 1–100 |
+
+`MaximumSegmentSources` bounds a run's working set, because every source of one part
+is resident at once.
 
 ## Endpoints
 

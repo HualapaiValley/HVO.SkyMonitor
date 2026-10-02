@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -219,7 +220,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAssociationService>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
-        services.AddSingleton<ILocalAutomationTaskRegistry, EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<ILocalAutomationTaskRegistry>(static provider => new CompositeLocalAutomationTaskRegistry(
+            provider.GetRequiredService<EnvironmentalLocalAutomationTaskRegistry>(),
+            provider.GetRequiredService<NightlyProductAutomationTaskRegistry>()));
         services.AddSingleton<SqliteLocalAutomationStore>();
         services.AddSingleton<ILocalAutomationStore>(provider =>
             provider.GetRequiredService<SqliteLocalAutomationStore>());
@@ -274,6 +278,20 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddSingleton<SqliteNightlyProductStore>();
+        services.AddSingleton<INightlyProductCatalog>(static provider =>
+            provider.GetRequiredService<SqliteNightlyProductStore>());
+        services.AddSingleton<INightlyProductSourceReader, JournalNightlyProductSourceReader>();
+        services.AddSingleton(static provider => new NightlyProductGenerator(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            provider.GetRequiredService<IObservingDayCalendarProvider>(),
+            provider.GetRequiredService<INightlyProductSourceReader>(),
+            provider.GetRequiredService<SqliteNightlyProductStore>(),
+            provider.GetRequiredService<IPlanetEphemeris>(),
+            () => provider.GetService<IDeploymentLocationStore>(),
+            provider.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<NightlyProductAutomationTaskRegistry>();
         services.AddSingleton<ICameraAgentPresentationMaterializer, CameraAgentPresentationMaterializer>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();

@@ -121,7 +121,10 @@ public static class LocalAutomationContract
 public enum LocalAutomationTaskKind
 {
     /// <summary>Runs the existing on-demand acquisition of one registered environmental source.</summary>
-    EnvironmentalOnDemandAcquisition
+    EnvironmentalOnDemandAcquisition,
+
+    /// <summary>Runs the scheduled keogram or star-trail generation over settled observing-day windows.</summary>
+    NightlyProductGeneration
 }
 
 /// <summary>

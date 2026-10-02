@@ -413,7 +413,11 @@ internal sealed class CaptureProcessingPersistence(
         return await RestoreWindowInputsAsync(outputs, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreWindowInputsAsync(
+    /// <summary>
+    /// Restores committed outputs as processing inputs, verifying each sidecar, payload, recipe, and lineage identity
+    /// against durable state. A window recipe and the nightly product generator both consume this.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreWindowInputsAsync(
         IReadOnlyList<DurableProcessingOutput> outputs,
         CancellationToken cancellationToken)
     {

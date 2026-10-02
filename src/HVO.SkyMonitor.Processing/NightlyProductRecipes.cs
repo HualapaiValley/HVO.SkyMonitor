@@ -13,6 +13,16 @@ public sealed record KeogramRecipeOptions(
     int MaximumGapColumnCount = KeogramComposer.DefaultMaximumGapColumnCount,
     int MaximumColumnCount = KeogramComposer.DefaultMaximumColumnCount);
 
+/// <summary>Bounds shared by every nightly product recipe.</summary>
+public static class NightlyProductRecipeLimits
+{
+    /// <summary>
+    /// The most sources one keogram, star-trail, or keogram-assembly execution accepts. A longer night is composed in
+    /// ordered segments and assembled, never truncated.
+    /// </summary>
+    public const int MaximumSourceCount = 512;
+}
+
 /// <summary>
 /// The captured rig geometry a keogram samples: the readout-view projection of the source previews, the rig profile it
 /// was derived from, and the number of uniformly spaced north-zenith-south meridian rows.
@@ -364,7 +374,7 @@ internal sealed record KeogramAssemblyPlan(
 /// <summary>Shared deterministic source ordering and validation for the nightly product recipes and contracts.</summary>
 internal static class NightlyProductRecipeSupport
 {
-    internal const int MaximumSourceFrameCount = 512;
+    internal const int MaximumSourceFrameCount = NightlyProductRecipeLimits.MaximumSourceCount;
 
     internal static readonly IReadOnlyList<ProcessingAlgorithmIdentity> KeogramAlgorithms =
     [
