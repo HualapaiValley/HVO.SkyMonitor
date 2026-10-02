@@ -365,8 +365,6 @@ Mono16 data. Annotation marks and readable scalable labels are restricted to
 properly named stars at magnitude 2.5 or brighter and named solar-system
 bodies; constellation lines can still use all resolved endpoints.
 
-### Exposure-aware stellar visibility and motion
-
 ### Selectable sky illumination (#1131 prototype)
 
 `module.options.illuminationMode` is the single configuration source:
@@ -408,7 +406,7 @@ This prototype is available for the explicitly authorized #1134 preparation
 route; production qualification still requires the complete candidate and PR
 gates and the recorded sample disposition.
 
-### Exposure-aware stellar visibility and motion (continued)
+### Exposure-aware stellar visibility and motion
 
 The normal VirtualSky path uses `camera-aware-stellar-exposure-v1`. A frame now
 has two explicit logical intervals: the scenario clock for clouds/transients

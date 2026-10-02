@@ -107,6 +107,20 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    public async Task FractionalExposure_PreservesTicksWhenSecondsCannotRoundTrip()
+    {
+        var exposure = Enumerable.Range(10000, 10000).Select(TimeSpan.FromTicks)
+            .First(value => TimeSpan.FromSeconds(value.TotalSeconds) != value);
+        var module = CreateModule(FixtureUtc);
+        await module.InitializeAsync(CreateConfig(width: 64, height: 64), CancellationToken.None).ConfigureAwait(false);
+        var frame = (await module.CaptureAsync(new(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(exposure, 1, null, null)), CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var provenance = frame.Metadata.Scene!.VirtualExposure!;
+        Assert.AreEqual(exposure, provenance.CelestialEndUtc - provenance.CelestialStartUtc);
+        Assert.AreEqual(exposure, frame.Metadata.Exposure);
+    }
+
+    [TestMethod]
     public void ConfigurationPreflight_RejectsUnmappedVirtualSkyOptions()
     {
         var module = CreateModule(FixtureUtc);

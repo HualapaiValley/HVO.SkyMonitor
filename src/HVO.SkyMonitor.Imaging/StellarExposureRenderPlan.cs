@@ -173,7 +173,7 @@ public sealed class StellarExposureRenderPlan
         settings ??= new();
         settings.Validate();
         if (options.StellarExposure is not null ||
-            TimeSpan.FromSeconds(options.ExposureSeconds) != geometry.EndUtc - geometry.StartUtc)
+            options.ExposureSeconds != (geometry.EndUtc - geometry.StartUtc).TotalSeconds)
             throw new ArgumentException("Stellar geometry must bind the exact rendered exposure.", nameof(options));
         var temporalStep = TemporalPointSpreadRaster.MaximumTemporalStepPixels(options.PsfSigmaPixels, options.PsfRadiusPixels);
         if (geometry.MaximumSampleMotionPixels > temporalStep * (1 + 1e-12) ||
