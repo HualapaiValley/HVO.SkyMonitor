@@ -310,13 +310,15 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
     private static ProjectionContext ExpandProjection(ProjectionContext projection, double support)
     {
         if (projection.Model == ProjectionModel.Perspective) return projection with { EnforceSensorBounds = false };
-        var maximumRadius = projection.Model switch
-        {
-            ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
-            ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
-            ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
-            _ => double.MaxValue
-        };
+        var maximumRadius = projection.RadialDistortionK1 != 0
+            ? RadialDistortion.MaximumApertureRadiusPixels(projection)
+            : projection.Model switch
+            {
+                ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
+                ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
+                ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
+                _ => double.MaxValue
+            };
         return projection with
         {
             EnforceSensorBounds = false,
@@ -333,6 +335,23 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
             var x = (supportRadius + Math.Max(Math.Abs(projection.PrincipalPointX), Math.Abs(projection.WidthPixels - projection.PrincipalPointX))) / projection.FocalLengthXPixels;
             var y = (supportRadius + Math.Max(Math.Abs(projection.PrincipalPointY), Math.Abs(projection.HeightPixels - projection.PrincipalPointY))) / projection.FocalLengthYPixels;
             jacobian = 1 + x * x + y * y;
+            if (projection.RadialDistortionK1 != 0)
+            {
+                var ideal = IdealRadius(projection, Math.Sqrt(x * x + y * y));
+                jacobian = (1 + ideal * ideal) * DistortionSpeedFactor(projection, ideal);
+            }
+        }
+        else if (projection.RadialDistortionK1 != 0)
+        {
+            var ratio = IdealRadius(projection, projection.ImageCircleRadiusPixels!.Value / focal);
+            jacobian = projection.Model switch
+            {
+                ProjectionModel.EquidistantFisheye => ratio <= 1e-12 ? 1 : ratio / Math.Sin(ratio),
+                ProjectionModel.EquisolidFisheye => 1 / Math.Sqrt(1 - ratio * ratio / 4),
+                ProjectionModel.OrthographicFisheye => 1,
+                ProjectionModel.StereographicFisheye => 1 + ratio * ratio / 4,
+                _ => throw new ArgumentOutOfRangeException(nameof(projection))
+            } * DistortionSpeedFactor(projection, ratio);
         }
         else
         {
@@ -348,4 +367,15 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         }
         return MaximumSkyRadiansPerSecond * focal * jacobian;
     }
+
+    // Supported-domain inverse; an expanded support radius beyond the domain is bounded by the domain edge.
+    private static double IdealRadius(ProjectionContext projection, double distorted)
+    {
+        var ideal = RadialDistortion.Undistort(distorted, projection.Model, projection.RadialDistortionK1);
+        return double.IsFinite(ideal) ? ideal : RadialDistortion.MaximumIdealRadius(projection.Model, projection.RadialDistortionK1);
+    }
+
+    // Radial derivative 1 + 3 k1 rho^2 bounds both radial and tangential stretch; negative terms only compress.
+    private static double DistortionSpeedFactor(ProjectionContext projection, double idealRadius)
+        => 1 + 3 * Math.Max(0, projection.RadialDistortionK1) * idealRadius * idealRadius;
 }

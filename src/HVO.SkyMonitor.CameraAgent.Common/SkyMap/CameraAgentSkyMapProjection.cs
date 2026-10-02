@@ -405,7 +405,8 @@ public sealed class CameraAgentSkyMapProjection(
                 new CameraAgentSkyMapCardinal("South", 180, landmarks?.South.X, landmarks?.South.Y),
                 new CameraAgentSkyMapCardinal("West", 270, landmarks?.West.X, landmarks?.West.Y)
             ],
-            CreateAltitudeRings(projection));
+            CreateAltitudeRings(projection),
+            projection.RadialDistortionK1);
     }
 
     private CameraAgentSkyMapCaptureProvenance? ResolveLatestCaptureScene()

@@ -221,7 +221,8 @@ public static class PresentationLayerProducers
                     scene.Projection.WidthPixels, scene.Projection.HeightPixels, scene.Projection.Aperture,
                     scene.Projection.ImageCircleRadiusPixels, scene.Projection.BoresightAltitudeDegrees,
                     scene.Projection.BoresightAzimuthDegrees, scene.Projection.RollDegrees,
-                    scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds);
+                    scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds,
+                    scene.Projection.RadialDistortionK1);
                 if (RigProjectionContextFactory.CreateAnnotationLandmarks(projection) is { } landmarks)
                 {
                     cardinalCenter ??= ContainsCrop(landmarks.Center) ? landmarks.Center : null;
