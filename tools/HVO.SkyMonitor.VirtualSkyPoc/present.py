@@ -36,6 +36,7 @@ def main():
     parser.add_argument("samples", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("encoder", type=Path)
+    parser.add_argument("--details", type=Path)
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("Use a new output directory; retained review evidence is immutable.")
@@ -113,7 +114,7 @@ def main():
     for label, source in [("day", args.day), ("samples", args.samples)]:
         if (source / "harness-identity.json").exists():
             shutil.copy2(source / "harness-identity.json", args.output / (label + "-harness-identity.json"))
-            shutil.copy2(source / "harness-Program.cs", args.output / (label + "-harness.cs.txt"))
+            shutil.copy2(source / "harness-source.cs", args.output / (label + "-harness.cs.txt"))
     shutil.copy2(args.samples / "samples-resources.json", args.output / "samples-resources.json")
     (args.output / "samples.json").write_text(json.dumps(samples, indent=2))
     fields = ["slot", "source_utc", "acquired_utc", "exposure_seconds", "gain", "raw_mean", "p01", "p50", "p99", "adc_clipped_fraction", "raw_sha256", "display_pixels_sha256", "state", "trail_eligible", "daily_playback_seconds"]
@@ -169,13 +170,16 @@ def main():
         subprocess.run([str(ffmpeg), "-v", "error", "-xerror", "-nostdin", "-i", str(target), "-f", "null", "-"], check=True)
         videos.append({"file": target.name, "firstSlot": first, "sourceSlotCount": count, "fps": fps,
                        "nominalCompression": 60 * fps, "sourcePeriodStart": rows[first]["utc"],
-                       "sourcePeriodEndExclusive": min(end, stamp(rows[first]["utc"]) + timedelta(minutes=count)).isoformat(),
+                       "sourcePeriodEndExclusive": scenario["end"] if name == "daily" else "2026-10-13T02:00:00Z",
+                       "plannedPeriodStart": scenario["start"] if name == "daily" else "2026-10-13T01:00:00Z",
+                       "firstSourceUtc": rows[first]["utc"], "lastSourceUtc": rows[first + count - 1]["utc"],
                        "gapPolicy": "Missing slots are text slates at the same playback duration as captured slots; no frame interpolation or duplicate-sky hold.",
                        "mapping": "For playback frame j, daily slot = firstSlot + j; playback seconds = j / fps. Source times and exposure durations are in source-index.csv.",
                        "command": command, "ffprobe": probe, "sha256": digest(target), "encodeAndVerifySeconds": time.monotonic() - before})
     encoder_evidence = {"ffmpegVersion": subprocess.check_output([str(ffmpeg), "-version"], text=True),
                         "ffmpegSha256": digest(ffmpeg), "ffprobeSha256": digest(ffprobe), "videos": videos}
     (args.output / "video-evidence.json").write_text(json.dumps(encoder_evidence, indent=2))
+    build_visual_changes(args, samples)
     build_page(args.output, scenario, coverage, samples, videos, rows)
     (args.output / "presentation-resources.json").write_text(json.dumps({"elapsedSeconds": time.monotonic() - started,
         "videoEncoderThreads": 2, "annotatedFramesOnDisk": len(rows), "inMemoryFrames": 1}, indent=2))
@@ -185,6 +189,47 @@ def main():
     files.append("checksums.json")
     (args.output / "allowlist.json").write_text(json.dumps(files, indent=2))
     print(json.dumps({"reviewRoot": str(args.output), "allowlistedFiles": len(files), "videos": len(videos)}))
+
+
+def build_visual_changes(args, samples):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6), facecolor="#10171e")
+    for ax, name in zip(axes, ["day-policy", "night-policy"]):
+        ax.imshow(Image.open(args.samples / (name + ".png")))
+        ax.set_xlim(-25, 665); ax.set_ylim(665, -25); ax.set_facecolor("#10171e")
+        for x, y, label in [(320, -8, "N"), (-8, 320, "E"), (648, 320, "W"), (320, 648, "S")]:
+            ax.text(x, y, label, ha="center", va="center", color="#f4cb76", fontsize=14)
+        ax.set_title(name.replace("-", " ")); ax.axis("off")
+    fig.tight_layout(); fig.savefig(args.output / "orientation.png", dpi=130, facecolor=fig.get_facecolor()); plt.close(fig)
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), facecolor="#10171e")
+    for ax, name in zip(axes, ["day-policy", "sunset-policy", "night-policy"]):
+        panorama = args.samples / (name + "-panorama.png")
+        ax.imshow(Image.open(panorama), extent=(0, 360, 0, 90), aspect="auto")
+        ax.set_xticks([0, 90, 180, 270, 360], ["N · 0°", "E · 90°", "S · 180°", "W · 270°", "N · 360°"])
+        ax.set_yticks([0, 30, 60, 90]); ax.set_ylabel("Altitude °"); ax.set_title(name.replace("-", " "))
+        sample = next(s for s in samples if s["name"] == name)
+        for disk in json.loads(sample["extra"]["solarDiskAppearance"]):
+            direction = disk["Direction"]
+            if direction["AltitudeDegrees"] >= 0:
+                x, y = direction["AzimuthDegrees"], direction["AltitudeDegrees"]
+                ax.plot(x, y, marker="o", ms=10, mfc="none", mec="#f4cb76", lw=0)
+                ax.annotate("Sun" if disk["Body"] == 0 else "Moon", (x, y), xytext=(10, 9), textcoords="offset points", color="#f4cb76")
+        shutil.copy2(panorama, args.output / panorama.name)
+        shutil.copy2(args.samples / (name + "-panorama.json"), args.output / (name + "-panorama.json"))
+    fig.tight_layout(); fig.savefig(args.output / "panoramas.png", dpi=130, facecolor=fig.get_facecolor()); plt.close(fig)
+    if args.details is None:
+        raise ValueError("Revised review requires the actual narrow-field detail captures.")
+    details = json.loads((args.details / "details.json").read_text())
+    fig, axes = plt.subplots(1, len(details), figsize=(16, 5), facecolor="#10171e")
+    for ax, detail in zip(axes, details):
+        a, e = detail["appearance"], detail["source"]
+        ax.imshow(Image.open(args.details / (detail["name"] + ".png")))
+        ax.axis("off")
+        ax.set_title(detail["name"].replace("-", " ") + "\n" + a["utc"][:19] + " UTC", fontsize=10)
+        ax.text(.5, -.04, f"1.5° field · diameter {2*a['angularRadiusDegrees']:.3f}°\nLit {a['illuminatedFraction']:.1%} · {e['exposureSeconds']:.5g} s · gain {e['gain']}", transform=ax.transAxes, ha="center", va="top", fontsize=10)
+        shutil.copy2(args.details / (detail["name"] + ".png"), args.output / (detail["name"] + ".png"))
+    fig.tight_layout(); fig.savefig(args.output / "disk-details.png", dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor()); plt.close(fig)
+    for name in ["details.json", "details-resources.json", "harness-identity.json"]:
+        shutil.copy2(args.details / name, args.output / ("detail-" + name if name == "harness-identity.json" else name))
 
 
 def build_page(output, scenario, coverage, samples, videos, rows):
@@ -204,10 +249,13 @@ def build_page(output, scenario, coverage, samples, videos, rows):
 <style>:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{margin:0;background:#10171e;color:#dce5ed;font:16px/1.55 system-ui,sans-serif}}main{{max-width:1380px;margin:auto;padding:32px 24px 80px}}h1{{font-size:30px;font-weight:550}}h2{{margin-top:48px;font-size:23px;font-weight:550}}h3{{font-size:16px;font-weight:550}}a{{color:#8fbedf}}p{{max-width:1040px}}.note{{padding:18px 22px;background:#1b2833;border-left:3px solid #ddae60}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:20px}}article{{background:#16212a;padding:14px;border:1px solid #2b3b48}}img{{max-width:100%;height:auto}}article img{{width:100%;background:black}}article p{{font-size:14px}}video{{display:block;width:min(100%,960px);background:black}}table{{border-collapse:collapse;font-size:13px}}td,th{{padding:7px 12px;text-align:left;border-bottom:1px solid #30414f}}.scroll{{overflow:auto}}.caption{{color:#b1c1ce;font-size:14px}}nav{{display:flex;flex-wrap:wrap;gap:18px}}summary{{cursor:pointer;color:#8fbedf}}code{{font-size:13px}}footer{{margin-top:42px;border-top:1px solid #30414f;padding-top:16px}}</style>
 <main><p class="caption">HVO.SkyMonitor · issues #1131 and #1134 · operator review checkpoint</p><h1>A complete day, one continuous time axis</h1>
 <p class="note"><strong>Prototype evidence — awaiting visual acceptance.</strong> These are actual VirtualSky sensor outputs from the verified 119,625-row HYG catalog. Production scheduling, sunrise/calendar adoption and FFmpeg integration remain separate issues.</p>
-<nav><a href="#sources">Sources</a><a href="#exposure">Exposure comparison</a><a href="#keogram">Keogram</a><a href="#trail">Star trail</a><a href="#video">Playable videos</a><a href="#evidence">Evidence</a></nav>
+<nav><a href="#orientation">Orientation / panorama / disks</a><a href="#sources">Sources</a><a href="#exposure">Exposure comparison</a><a href="#keogram">Keogram</a><a href="#trail">Star trail</a><a href="#video">Playable videos</a><a href="#evidence">Evidence</a></nav>
 <p><strong>“The 12th” proposes sunrise on October 12 through sunrise on October 13.</strong><br>2026-10-12 06:39:23.1586721 → 2026-10-13 06:40:13.4408130 MST (UTC−7), at 35.347° N, 113.878° W, elevation 0 m. Shared Astronomy resolved the exact half-open period. It lasts 24 hours 50.282 seconds. Historical archive compatibility is not implemented.</p>
 <p>Daily finals become eligible after the ending sunrise and after source processing settles. The period, actual coverage, processing trigger and finality are distinct. This page proposes the date association; it does not change existing archives.</p>
-<h2 id="sources">Daylight, twilight and night</h2><p>640×640 RGGB, native 12-bit samples. Every display subtracts the same black level (64), divides by the same white range (4095−64), then applies fixed gamma 2.2. Linear displays are linked. There is no per-frame auto-stretch. The clear-sky color model is an approximation with no clouds, atmosphere solver, resolved Sun or Milky Way renderer.</p>
+<h2 id="orientation">Corrected upward-looking view</h2><p>North is up, East left, West right. These are newly rendered sources using the supported camera flip, not a relabeling of the old map-style frames. <a href="http://192.168.2.45:8094/">The original review remains preserved.</a></p><img src="orientation.png" alt="Source frames labeled North up, East left, West right, South down">
+<h3>Per-image 360° panorama</h3><p>A calibrated azimuth/altitude reprojection of each source: North–East–South–West–North from left to right, horizon at the bottom and zenith at the top. The zenith is stretched across the top edge. Black unavailable samples are not extrapolated. Body markers locate the actual Sun/Moon and do not represent their size.</p><img src="panoramas.png" alt="Day, sunset and night source panoramas with compass and altitude axes">
+<h3>True-size disks and separately labeled narrow-field captures</h3><p>The all-sky Sun and Moon are only a few pixels wide. These additional 1.5° perspective-field captures make their shapes readable; no oversized disks were pasted into the all-sky images. Sun/Moon positions and apparent sizes are topocentric. Lunar phase fraction is geocentric and the bright limb points toward the Sun. Geometry is sampled at each exposure midpoint. Refraction, surface texture, eclipses, occultations and optical flare are outside this approximation. Additional quarter/full dates are explicitly outside the daily sequence.</p><img src="disk-details.png" alt="Sun and lunar crescent, quarter and full phase narrow-field sensor captures"><p><a href="details.json">Exact detail times, rig, phase, exposure, gain and raw checksums</a></p>
+<h2 id="sources">Daylight, twilight and night</h2><p>640×640 RGGB, native 12-bit samples. Every display subtracts the same black level (64), divides by the same white range (4095−64), then applies fixed gamma 2.2. Linear displays are linked. There is no per-frame auto-stretch. The clear-sky color model is an approximation with no atmosphere solver, surface texture or Milky Way renderer. Opt-in Sun/Moon disks retain their true apparent angular size; their light passes through the sensor path.</p>
 <p>The sequence uses a declared open-loop exposure formula: clamp(2500 / modeled scalar sky rate, 1 µs, 20 s), gain 0. This is a POC recipe, not a claim of production automatic exposure. Actual acquisition timestamps and advancing celestial exposure times are retained separately.</p><div class="grid">{all_cards}</div>
 <h2 id="exposure">Exposure, gain and illumination mode</h2><p>Excessive daytime integration washes the sensor out. Controlled-night mode below uses actual daytime celestial geometry with a night background and is labeled separately. It is not representative daylight. ADC clipping counts samples exactly at 4095; full-well clipping followed by read noise can also produce codes just below white.</p><div class="grid">{compare_cards}</div>
 <details><summary>All matched raw numeric results</summary><div class="scroll"><table><thead><tr><th>Sample</th><th>Seconds</th><th>Gain</th><th>Raw mean</th><th>p01 / p50 / p99</th><th>ADC clipped</th><th>Admitted stars</th></tr></thead><tbody>{numeric_rows}</tbody></table></div></details>
@@ -219,7 +267,7 @@ def build_page(output, scenario, coverage, samples, videos, rows):
 <h2 id="video">Hourly and daily time-lapse coexist</h2><p>Both are genuine H.264 MP4s encoded with FFmpeg, inspected with ffprobe and fully decoded for verification. Source timestamps are burned in. Missing minute slots remain black text slates; their time is not silently compressed away.</p>
 <h3>Daily · {len(rows)} slots / 24 fps · {len(rows)/24:.3f} seconds · nominal 1440×</h3><video controls preload="metadata" src="daily.mp4"></video>
 <h3>Hourly · October 12, 18:00–19:00 MST bucket · 60 slots / 6 fps · 10 seconds · 360×</h3><video controls preload="metadata" src="hourly-18.mp4"></video><p class="caption">Source times follow the sunrise-anchored minute grid, at :23.1586721 each minute. The last daily slot represents the final 50.282 seconds. Playback is sampled time compression, not uninterrupted exposure or a live stream.</p>
-<h2 id="evidence">Evidence index</h2><ul><li><a href="scenario.json">Site, exact period, recipe, sensor and prototype identities</a></li><li><a href="samples.json">Matched sample settings, statistics, raw checksums and provenance</a></li><li><a href="source-index.csv">Every source slot, gap state and playback mapping (CSV)</a></li><li><a href="source-settings.jsonl">Complete per-source settings and provenance (JSON Lines)</a></li><li><a href="coverage.json">Dark selection, expected window, actual integration and gaps</a></li><li><a href="video-evidence.json">FFmpeg identity, exact commands, ffprobe results and video checksums</a></li><li><a href="day-resources.json">Capture CPU, memory, elapsed time and buffer bounds</a> · <a href="samples-resources.json">matched sample resources</a> · <a href="presentation-resources.json">presentation resources</a></li><li><a href="checksums.json">SHA-256 and byte sizes for every public artifact</a></li></ul>
+<h2 id="evidence">Evidence index</h2><ul><li><a href="scenario.json">Site, exact period, recipe, sensor and prototype identities</a></li><li><a href="samples.json">Matched sample settings, statistics, raw checksums and provenance</a></li><li><a href="source-index.csv">Every source slot, gap state and playback mapping (CSV)</a></li><li><a href="source-settings.jsonl">Complete per-source settings and provenance (JSON Lines)</a></li><li><a href="coverage.json">Dark selection, expected window, actual integration and gaps</a></li><li><a href="video-evidence.json">FFmpeg identity, exact commands, ffprobe results and video checksums</a></li><li><a href="day-resources.json">Capture CPU, memory, elapsed time and buffer bounds</a> · <a href="samples-resources.json">matched sample resources</a> · <a href="presentation-resources.json">presentation resources</a></li><li><a href="verification.json">Independent source, coverage, strip and trail checks</a></li><li><a href="day-harness-identity.json">Day harness and assembly identities</a> · <a href="samples-harness-identity.json">sample identities</a> · <a href="day-harness.cs.txt">retained capture source</a></li><li><a href="checksums.json">SHA-256 and byte sizes for every public artifact</a></li></ul>
 <footer><strong>Requested disposition:</strong> day/night appearance; keogram proportions and N–Z–S/time axes; full-period and gap mapping; hourly plus daily playback; and starting-sunrise date association. Acceptance is recorded explicitly in #1134. It does not deliver production issues #1135, #1136, #993 or #1130.</footer></main></html>'''
     (output / "index.html").write_text(page)
 

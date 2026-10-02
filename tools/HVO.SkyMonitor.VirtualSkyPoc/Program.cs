@@ -23,7 +23,8 @@ internal static class Program
     private static readonly DateTimeOffset LocalDateStart = new(2026, 10, 12, 7, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true, NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         Converters = { new JsonStringEnumConverter() }
     };
     private static readonly AstronomyEnginePlanetEphemeris Ephemeris = new();
@@ -32,10 +33,13 @@ internal static class Program
 
     public static async Task Main(string[] args)
     {
-        if (args.Length != 3 || args[0] is not ("samples" or "day" or "measure"))
-            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT");
+        if (args.Length != 3 || args[0] is not ("samples" or "day" or "measure" or "details"))
+            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure|details OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT");
         var output = Path.GetFullPath(args[1]);
+        if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
+            throw new ArgumentException("Use a new empty output directory; retained evidence is immutable.");
         Directory.CreateDirectory(output);
+        WriteIdentity(output);
         var snapshot = CatalogSnapshotResolver.Resolve(new(args[2], "hyg-v42-production")
         {
             ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
@@ -45,19 +49,29 @@ internal static class Program
         var end = Find(SolarEventKind.Sunrise, LocalDateStart.AddDays(1), LocalDateStart.AddDays(2));
         WriteJson(Path.Combine(output, "scenario.json"), new
         {
-            recipe = "virtualsky-full-day-poc-v1", label = "2026-10-12", timezone = "America/Phoenix",
+            recipe = "virtualsky-full-day-poc-v2",
+            label = "2026-10-12",
+            timezone = "America/Phoenix",
             dateMapping = "Starting sunrise: the 12th covers sunrise on the 12th through sunrise on the 13th",
-            interval = "[start,end)", start, end, publicationEligibleUtc = end,
+            interval = "[start,end)",
+            start,
+            end,
+            publicationEligibleUtc = end,
             finality = "Full-period output eligible only after end AND source processing settles; no production scheduler",
             historicalArchiveCompatibility = "Not implemented; historical noon-based captures are unchanged",
-            latitude = Latitude, longitude = Longitude, elevationMeters = Elevation,
+            latitude = Latitude,
+            longitude = Longitude,
+            elevationMeters = Elevation,
             solarEventAlgorithm = AstronomyEngineSolarEventCalculator.Version,
-            snapshot.SnapshotVersion, snapshot.DatabaseSha256, snapshot.RowCount,
-            renderingPrototype = "37338b3866248200b3aa0751c3457177766ca823",
+            snapshot.SnapshotVersion,
+            snapshot.DatabaseSha256,
+            snapshot.RowCount,
+            renderingPrototype = "33712845b6b31c9382b24bb8b0eb8ac63723b486",
             composerPrototype = "75185e7e794b1028f28ac3f09e7125c14a1b4e98",
             display = "black=64 white=4095 stored native 12-bit; fixed gamma 2.2 after linear Bayer reconstruction; no per-frame stretch",
             exposurePolicy = "Open-loop POC formula: clamp(2500 / modeled scalar sky rate, 1 microsecond, 20 seconds); gain 0. Not production automatic exposure.",
-            cadenceSeconds = 60, exposureIsNotCadence = true,
+            cadenceSeconds = 60,
+            exposureIsNotCadence = true,
             config
         });
         Console.WriteLine($"Verified catalog: {snapshot.RowCount} rows, {snapshot.DatabaseSha256}; {start:O} to {end:O}");
@@ -67,19 +81,46 @@ internal static class Program
         var timer = Stopwatch.StartNew();
         if (args[0] == "samples") await Samples(snapshot.Catalog, output, start, end).ConfigureAwait(false);
         else if (args[0] == "day") await Day(snapshot.Catalog, output, start, end).ConfigureAwait(false);
-        else await Measure(snapshot.Catalog, output).ConfigureAwait(false);
+        else if (args[0] == "measure") await Measure(snapshot.Catalog, output).ConfigureAwait(false);
+        else await Details(snapshot.Catalog, output).ConfigureAwait(false);
         process.Refresh();
         WriteJson(Path.Combine(output, args[0] + "-resources.json"), new
         {
             elapsedSeconds = timer.Elapsed.TotalSeconds,
             processCpuSeconds = (process.TotalProcessorTime - beforeCpu).TotalSeconds,
             allocatedBytes = GC.GetTotalAllocatedBytes() - beforeAllocated,
-            process.PeakWorkingSet64, process.WorkingSet64,
-            runtime = Environment.Version.ToString(), os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+            process.PeakWorkingSet64,
+            process.WorkingSet64,
+            runtime = Environment.Version.ToString(),
+            os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
             architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
-            concurrency = 1, frameWidth = Size, frameHeight = Size,
+            concurrency = 1,
+            frameWidth = Size,
+            frameHeight = Size,
             retention = "Matched samples keep raw. Sequence raw is checksummed then released; one current source and bounded product buffers in memory. PNG and per-source evidence remain on disk.",
-            backlog = 0, externalServices = "none", build = "Release"
+            backlog = 0,
+            externalServices = "none",
+            build = "Release"
+        });
+    }
+
+    private static void WriteIdentity(string output, [System.Runtime.CompilerServices.CallerFilePath] string source = "")
+    {
+        var assemblies = new[] { typeof(Program).Assembly, typeof(VirtualSkyCameraModule).Assembly,
+            typeof(SolarDiskEphemeris).Assembly, typeof(SolarDiskRenderPlan).Assembly };
+        var identities = assemblies.Select(assembly => new
+        {
+            name = assembly.GetName().Name,
+            informationalVersion = assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .Cast<System.Reflection.AssemblyInformationalVersionAttribute>().SingleOrDefault()?.InformationalVersion,
+            sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location)))
+        }).ToArray();
+        File.Copy(source, Path.Combine(output, "harness-source.cs"));
+        WriteJson(Path.Combine(output, "harness-identity.json"), new
+        {
+            assemblies = identities,
+            sourceSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))),
+            sourceBinding = "Source retained at launch; compiled assembly hashes and embedded Git identities are authoritative"
         });
     }
 
@@ -93,10 +134,10 @@ internal static class Program
         foreach (var phase in new[] { "day", "night" })
         {
             var utc = LocalDateStart.AddHours(phase == "day" ? 12 : 24);
-            foreach (var mode in new[] { "LegacyScalarSolar", "SolarDriven" })
+            foreach (var (mode, disks) in new[] { ("LegacyScalarSolar", false), ("SolarDriven", false), ("SolarDriven", true) })
             {
                 var setpoint = Policy(utc);
-                for (var i = 0; i < 5; i++) _ = await Capture(catalog, utc, setpoint, mode).ConfigureAwait(false);
+                for (var i = 0; i < 5; i++) _ = await Capture(catalog, utc, setpoint, mode, renderDisks: disks).ConfigureAwait(false);
                 var times = new List<double>();
                 var hashes = new HashSet<string>(StringComparer.Ordinal);
                 using var process = Process.GetCurrentProcess();
@@ -105,7 +146,7 @@ internal static class Program
                 for (var i = 0; i < 30; i++)
                 {
                     var clock = Stopwatch.StartNew();
-                    var frame = await Capture(catalog, utc, setpoint, mode).ConfigureAwait(false);
+                    var frame = await Capture(catalog, utc, setpoint, mode, renderDisks: disks).ConfigureAwait(false);
                     times.Add(clock.Elapsed.TotalMilliseconds);
                     hashes.Add(Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)));
                 }
@@ -114,13 +155,25 @@ internal static class Program
                 times.Sort();
                 var result = new
                 {
-                    phase, mode, sourceUtc = utc, setpoint, warmup = 5, measured = 30, concurrency = 1,
-                    medianMilliseconds = (times[14] + times[15]) / 2, p95Milliseconds = times[28],
-                    totalMilliseconds = times.Sum(), capturesPerSecond = 30000 / times.Sum(),
+                    phase,
+                    mode,
+                    renderSolarSystemDisks = disks,
+                    sourceUtc = utc,
+                    setpoint,
+                    warmup = 5,
+                    measured = 30,
+                    concurrency = 1,
+                    medianMilliseconds = (times[14] + times[15]) / 2,
+                    p95Milliseconds = times[28],
+                    totalMilliseconds = times.Sum(),
+                    capturesPerSecond = 30000 / times.Sum(),
                     cpuSeconds = (process.TotalProcessorTime - cpu).TotalSeconds,
                     allocatedBytes = GC.GetTotalAllocatedBytes() - allocated,
-                    process.PeakWorkingSet64, rawSha256 = hashes.Single(),
-                    rawBytesProduced = 30L * Size * Size * 2, diskBytes = 0, backlog = 0,
+                    process.PeakWorkingSet64,
+                    rawSha256 = hashes.Single(),
+                    rawBytesProduced = 30L * Size * Size * 2,
+                    diskBytes = 0,
+                    backlog = 0,
                     boundary = "Whole capture including independent module initialization and scene/sensor work; shared preloaded catalog and file writes excluded. Host also running unrelated candidate gates; CPU/allocation evidence retained separately from elapsed latency."
                 };
                 measurements.Add(result);
@@ -131,15 +184,23 @@ internal static class Program
     }
 
     private static CameraModuleConfig Config(string mode, CameraPixelFormat format = CameraPixelFormat.BayerRggb16,
-        DateTimeOffset? celestialStart = null)
+        DateTimeOffset? celestialStart = null, bool renderDisks = true)
         => new(new ObservatoryLocation(Latitude, Longitude, Elevation, "America/Phoenix"),
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
             {
-                illuminationMode = mode, fixedSceneUtc = celestialStart,
-                seed = 1131, maximumMagnitude = 6.5, maximumResults = 32768,
-                magnitudeZeroElectronsPerSecond = MagnitudeZeroRate, bortleClass = 3,
+                illuminationMode = mode,
+                fixedSceneUtc = celestialStart,
+                renderSolarSystemDisks = renderDisks,
+                seed = 1131,
+                maximumMagnitude = 6.5,
+                maximumResults = 32768,
+                magnitudeZeroElectronsPerSecond = MagnitudeZeroRate,
+                bortleClass = 3,
                 asi676Sensor = new { enabled = format != CameraPixelFormat.Rgb24, blackLevelAdu = 64 },
-                shotNoiseEnabled = true, vignettingStrength = .15, psfSigmaPixels = .85, psfRadiusPixels = 3.5
+                shotNoiseEnabled = true,
+                vignettingStrength = .15,
+                psfSigmaPixels = .85,
+                psfRadiusPixels = 3.5
             })),
             new CameraRigConfig(new SensorProfile("POC reduced all-sky sensor", Size, Size, 2,
                     format == CameraPixelFormat.Mono16 ? SensorColorMode.Mono : SensorColorMode.Color,
@@ -150,7 +211,7 @@ internal static class Program
                         _ => SensorResponseMode.BayerRaw
                     }, SensorRecipeVersion: "poc-asi676-reduced-native12-v1"),
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
-                    Size / 2d, Size / 2d, Size * .49, CalibrationVersion: "poc-640-equidistant-180-v1"),
+                    Size / 2d, Size / 2d, Size * .49, HorizontalFlip: true, CalibrationVersion: "poc-640-upward-equidistant-180-v2"),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromMinutes(1), TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(20), 0, 0)),
             CapturePipelineConfig.Empty);
@@ -165,12 +226,16 @@ internal static class Program
         return Nominal with { Exposure = TimeSpan.FromSeconds(Math.Clamp(2500 / rate, .000001, 20)) };
     }
 
-    private static async Task<CameraFrame> Capture(ICelestialCatalog catalog, DateTimeOffset utc, CaptureSetpoint setpoint,
-        string mode = "SolarDriven", CameraPixelFormat format = CameraPixelFormat.BayerRggb16)
+    private static Task<CameraFrame> Capture(ICelestialCatalog catalog, DateTimeOffset utc, CaptureSetpoint setpoint,
+        string mode = "SolarDriven", CameraPixelFormat format = CameraPixelFormat.BayerRggb16, bool renderDisks = true)
+        => CaptureConfigured(catalog, Config(mode, format, utc, renderDisks), setpoint);
+
+    private static async Task<CameraFrame> CaptureConfigured(ICelestialCatalog catalog, CameraModuleConfig config, CaptureSetpoint setpoint)
     {
         // A fresh module makes each recorded (time, options, seed) independently reproducible.
-        await using var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
-        await module.InitializeAsync(Config(mode, format, utc), CancellationToken.None).ConfigureAwait(false);
+        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        await using var moduleDisposal = module.ConfigureAwait(false);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         return (await module.CaptureAsync(new(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), CaptureMode.Still, setpoint),
             CancellationToken.None).ConfigureAwait(false)).Frame ?? throw new InvalidOperationException("Capture produced no frame.");
     }
@@ -214,10 +279,103 @@ internal static class Program
                 var evidence = Evidence(frame, name, display);
                 WriteJson(Path.Combine(output, name + ".json"), evidence);
                 index.Add(evidence);
+                if (variant == "policy") SavePanorama(output, name, display, frame);
                 Console.WriteLine($"sample {name}: exp={setpoint.Exposure.TotalSeconds:R}s gain={setpoint.Gain} sun={frame.Metadata.Extra!["stellarSolarAltitudeDegrees"]} admitted={frame.Metadata.Extra["stellarAdmittedCount"]}");
             }
         }
         WriteJson(Path.Combine(output, "samples.json"), index);
+    }
+
+    private static void SavePanorama(string output, string name, byte[] rgb, CameraFrame frame)
+    {
+        const int width = 1440, height = 360;
+        var projection = RigProjectionContextFactory.Create(Config("SolarDriven").Rig);
+        var projector = ProjectorFactory.Create(projection);
+        var panorama = new byte[width * height * 3];
+        var mapped = 0;
+        for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+            {
+                var direction = new AltAzPoint(90 - 90d * (y + .5) / height, 360d * (x + .5) / width);
+                if (projector.Project(direction) is not { } point) continue;
+                var sx = (int)Math.Floor(point.X - .5);
+                var sy = (int)Math.Floor(point.Y - .5);
+                if (sx < 0 || sy < 0 || sx + 1 >= Size || sy + 1 >= Size ||
+                    !projection.ContainsSample(sx + .5, sy + .5) || !projection.ContainsSample(sx + 1.5, sy + 1.5) ||
+                    !projection.ContainsSample(sx + 1.5, sy + .5) || !projection.ContainsSample(sx + .5, sy + 1.5)) continue;
+                var fx = point.X - .5 - sx;
+                var fy = point.Y - .5 - sy;
+                for (var c = 0; c < 3; c++)
+                    panorama[(y * width + x) * 3 + c] = (byte)Math.Round(
+                        rgb[(sy * Size + sx) * 3 + c] * (1 - fx) * (1 - fy) +
+                        rgb[(sy * Size + sx + 1) * 3 + c] * fx * (1 - fy) +
+                        rgb[((sy + 1) * Size + sx) * 3 + c] * (1 - fx) * fy +
+                        rgb[((sy + 1) * Size + sx + 1) * 3 + c] * fx * fy);
+                mapped++;
+            }
+        SavePng(Path.Combine(output, name + "-panorama.png"), panorama, width, height);
+        WriteJson(Path.Combine(output, name + "-panorama.json"), new
+        {
+            algorithm = "poc-shared-projector-equirectangular-bilinear-v1",
+            width,
+            height,
+            projection,
+            azimuthDegrees = "left 0 north; 90 east; 180 south; 270 west; right 360 north",
+            altitudeDegrees = "top 90 zenith; bottom 0 horizon; pixel centers sampled",
+            transfer = "Bilinear resampling of the existing fixed-gamma display; no new stretch",
+            missing = "Black where all four source samples are not available; no extrapolation",
+            mappedPixels = mapped,
+            unavailablePixels = width * height - mapped,
+            sourceRawSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)),
+            sourceDisplayPixelsSha256 = Convert.ToHexString(SHA256.HashData(rgb)),
+            panoramaPixelsSha256 = Convert.ToHexString(SHA256.HashData(panorama))
+        });
+    }
+
+    private static async Task Details(ICelestialCatalog catalog, string output)
+    {
+        var cases = new[]
+        {
+            ("sun-noon", SolarSystemBody.Sun, LocalDateStart.AddHours(12)),
+            ("moon-period-crescent", SolarSystemBody.Moon, LocalDateStart.AddHours(15)),
+            ("moon-additional-quarter", SolarSystemBody.Moon, LocalDateStart.AddDays(7).AddHours(18)),
+            ("moon-additional-full", SolarSystemBody.Moon, LocalDateStart.AddDays(14).AddHours(1))
+        };
+        var evidence = new List<object>();
+        foreach (var (name, body, utc) in cases)
+        {
+            var appearance = SolarDiskEphemeris.Get(body, utc, new(Latitude, Longitude, Elevation));
+            var config = Config("SolarDriven", celestialStart: utc);
+            config = config with
+            {
+                Rig = config.Rig with
+                {
+                    Optics = new OpticsProfile("Perspective", 0, 1.5, 0, LensKind.Rectilinear,
+                    HorizontalFlip: true, CalibrationVersion: "poc-disk-detail-1.5-degree-v1"),
+                    Orientation = new RigOrientation(appearance.Direction.AltitudeDegrees, appearance.Direction.AzimuthDegrees, 0)
+                }
+            };
+            var projection = RigProjectionContextFactory.Create(config.Rig);
+            var radiusPixels = projection.FocalLengthXPixels * Math.Tan(appearance.AngularRadiusDegrees * Math.PI / 180);
+            var litArea = Math.PI * radiusPixels * radiusPixels * appearance.IlluminatedFraction;
+            var flux = MagnitudeZeroRate * Math.Pow(10, -.4 * appearance.VisualMagnitude);
+            var setpoint = Nominal with { Exposure = TimeSpan.FromSeconds(Math.Clamp(1500 * litArea / flux, .000001, 1)) };
+            var frame = await CaptureConfigured(catalog, config, setpoint).ConfigureAwait(false);
+            var display = Display(frame, 2.2, config);
+            SavePng(Path.Combine(output, name + ".png"), display, Size, Size);
+            SavePng(Path.Combine(output, name + "-linear.png"), Display(frame, 1, config), Size, Size);
+            await File.WriteAllBytesAsync(Path.Combine(output, name + ".raw"), frame.PixelData.ToArray()).ConfigureAwait(false);
+            evidence.Add(new
+            {
+                name,
+                appearance,
+                fieldOfViewDegrees = 1.5,
+                label = "Separate narrow-field VirtualSky capture; not an enlarged disk pasted into the all-sky sequence",
+                exposurePolicy = "1500 electrons per illuminated projected disk pixel; clamped 1 microsecond to 1 second to stay within the existing stellar temporal budget",
+                source = Evidence(frame, name, display, config)
+            });
+        }
+        WriteJson(Path.Combine(output, "details.json"), evidence);
     }
 
     private static async Task Day(ICelestialCatalog catalog, string output, DateTimeOffset start, DateTimeOffset end)
@@ -285,9 +443,19 @@ internal static class Program
         WriteJson(Path.Combine(output, "sequence.json"), rows);
         WriteJson(Path.Combine(output, "coverage.json"), new
         {
-            start, end, count, cadenceSeconds = 60, darkStart, darkEnd, outageStart, outageEnd,
-            leadingEnd = start.AddMinutes(15), trailingStart = end.AddMinutes(-15),
-            darkSourceCount = trailTimes.Count, integratedSeconds, darkSourceTimes = trailTimes,
+            start,
+            end,
+            count,
+            cadenceSeconds = 60,
+            darkStart,
+            darkEnd,
+            outageStart,
+            outageEnd,
+            leadingEnd = start.AddMinutes(15),
+            trailingStart = end.AddMinutes(-15),
+            darkSourceCount = trailTimes.Count,
+            integratedSeconds,
+            darkSourceTimes = trailTimes,
             keogramAlgorithm = KeogramComposer.AlgorithmVersion,
             axisAlgorithm = "poc-fixed-planned-period-minute-slots-v1",
             trailAlgorithm = StarTrailComposer.AlgorithmVersion,
@@ -296,9 +464,9 @@ internal static class Program
         });
     }
 
-    private static object Evidence(CameraFrame frame, string name, byte[] display)
+    private static object Evidence(CameraFrame frame, string name, byte[] display, CameraModuleConfig? captureConfig = null)
     {
-        var projection = RigProjectionContextFactory.Create(Config("SolarDriven", frame.PixelFormat).Rig);
+        var projection = RigProjectionContextFactory.Create((captureConfig ?? Config("SolarDriven", frame.PixelFormat)).Rig);
         var samples = new List<int>();
         var saturated = 0;
         for (var y = 0; y < Size; y++)
@@ -313,27 +481,37 @@ internal static class Program
         samples.Sort();
         return new
         {
-            name, frame.TimestampUtc, sourceUtc = frame.Metadata.Scene!.VirtualExposure!.CelestialStartUtc,
-            exposureSeconds = frame.Metadata.Exposure.TotalSeconds, frame.Metadata.Gain,
-            configuration = Config(frame.Metadata.Extra!["skyIlluminationMode"], frame.PixelFormat,
+            name,
+            frame.TimestampUtc,
+            sourceUtc = frame.Metadata.Scene!.VirtualExposure!.CelestialStartUtc,
+            exposureSeconds = frame.Metadata.Exposure.TotalSeconds,
+            frame.Metadata.Gain,
+            configuration = captureConfig ?? Config(frame.Metadata.Extra!["skyIlluminationMode"], frame.PixelFormat,
                 frame.Metadata.Scene.VirtualExposure.CelestialStartUtc),
             rawSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)),
             displayPixelsSha256 = Convert.ToHexString(SHA256.HashData(display)),
-            rawMean = samples.Average(), p01 = samples[(int)(samples.Count * .01)],
-            p50 = samples[samples.Count / 2], p99 = samples[(int)(samples.Count * .99)],
+            rawMean = samples.Average(),
+            p01 = samples[(int)(samples.Count * .01)],
+            p50 = samples[samples.Count / 2],
+            p99 = samples[(int)(samples.Count * .99)],
             saturationFraction = saturated / (double)samples.Count,
-            activeSampleCount = samples.Count, linearMean = (samples.Average() - 64) / (4095 - 64),
-            frame.Layout, frame.Metadata.Extra, frame.Metadata.Scene,
-            displayBlack = 64, displayWhite = 4095, displayGamma = 2.2,
+            activeSampleCount = samples.Count,
+            linearMean = (samples.Average() - 64) / (4095 - 64),
+            frame.Layout,
+            frame.Metadata.Extra,
+            frame.Metadata.Scene,
+            displayBlack = 64,
+            displayWhite = 4095,
+            displayGamma = 2.2,
             source = "Actual VirtualSky output; no invented sky pixels"
         };
     }
 
-    private static byte[] Display(CameraFrame frame, double gamma)
+    private static byte[] Display(CameraFrame frame, double gamma, CameraModuleConfig? captureConfig = null)
     {
         var values = new double[Size * Size];
         var valid = new bool[values.Length];
-        var projection = RigProjectionContextFactory.Create(Config("SolarDriven", frame.PixelFormat).Rig);
+        var projection = RigProjectionContextFactory.Create((captureConfig ?? Config("SolarDriven", frame.PixelFormat)).Rig);
         for (var i = 0; i < values.Length; i++)
         {
             values[i] = (frame.PixelData.Span[i * 2] | frame.PixelData.Span[i * 2 + 1] << 8) - 64;

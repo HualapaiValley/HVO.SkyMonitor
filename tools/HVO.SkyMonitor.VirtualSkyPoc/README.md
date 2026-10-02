@@ -45,7 +45,7 @@ midpoint Sun altitude <= -18 degrees, enter the trail. The first run selects
 exposures leaves unsampled time even outside the deliberate outage. No missing
 arcs are interpolated.
 
-## Reproduce
+## Reproduce the revised sample set
 
 Use SDK 10.0.401. The full catalog must already be available and pass the normal
 read-only snapshot resolver (119,625 rows, database SHA-256
@@ -55,8 +55,9 @@ or installed-instance mutation is involved. Use a new output root for each run.
 ```bash
 dotnet run --project tools/HVO.SkyMonitor.VirtualSkyPoc --configuration Release -- samples /private/evidence/samples /verified/catalog/root
 dotnet run --project tools/HVO.SkyMonitor.VirtualSkyPoc --configuration Release -- day /private/evidence/day /verified/catalog/root
-python tools/HVO.SkyMonitor.VirtualSkyPoc/verify.py /private/evidence/day /private/evidence/samples
-python tools/HVO.SkyMonitor.VirtualSkyPoc/present.py /private/evidence/day /private/evidence/samples /public/review /private/encoder/bin
+dotnet run --project tools/HVO.SkyMonitor.VirtualSkyPoc --configuration Release -- details /private/evidence/details /verified/catalog/root
+python tools/HVO.SkyMonitor.VirtualSkyPoc/verify.py /private/evidence/day /private/evidence/samples --details /private/evidence/details
+python tools/HVO.SkyMonitor.VirtualSkyPoc/present.py /private/evidence/day /private/evidence/samples /public/review /private/encoder/bin --details /private/evidence/details
 python tools/HVO.SkyMonitor.VirtualSkyPoc/serve.py /public/review --bind 192.168.2.45 --port 8094
 ```
 
@@ -96,3 +97,53 @@ The first incomplete sample attempt is retained separately: a fractional
 duration round-trip check rejected the following-sunrise capture. The rendering
 prototype fixes that check without changing the exposure ticks. The replacement
 sample batch includes all 66 matched cases. Rejected samples remain evidence.
+
+## Operator-requested revision
+
+The operator accepted the concept with visual changes: correct East/West, add
+true-scale Sun and Moon/phase, and demonstrate a per-image panorama. On
+2026-10-02 the operator [accepted the revised POC and date label](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1134#issuecomment-5959367671)
+at http://192.168.2.45:8095/. October 12 means sunrise October 12 through
+sunrise October 13. Review-v1 is retained unchanged. Visual acceptance does not
+replace renderer qualification, independent review or production adoption.
+
+The revised renderer is pinned to
+`33712845b6b31c9382b24bb8b0eb8ac63723b486`. Revised matched samples use the
+upward-looking rig (`horizontalFlip: true`), with North up, East left and West
+right. `renderSolarSystemDisks: true` adds actual Sun/Moon light before exposure,
+noise, gain and clipping. The geometric disks use shared Astronomy topocentric
+position/distance, true angular scale, and geocentric lunar phase; the bright
+limb points toward the Sun. Positions advance with the source clock. Disk
+geometry is sampled at the exposure midpoint; no within-exposure disk trail,
+texture, refraction, occultation, eclipse, flare or bloom is claimed.
+
+`details` produces four additional 1.5-degree perspective-field sensor captures:
+the Sun, the observing-period crescent, and separately dated later lunar phases.
+They are separate VirtualSky captures, not enlarged disks pasted into all-sky
+sources. Exposure targets 1,500 electrons per illuminated projected disk pixel
+and is capped at 1 second to respect the existing stellar temporal budget.
+Failed longer-exposure/over-budget attempts remain excluded evidence.
+
+```bash
+dotnet run --project tools/HVO.SkyMonitor.VirtualSkyPoc --configuration Release -- details /private/evidence/details /verified/catalog/root
+python tools/HVO.SkyMonitor.VirtualSkyPoc/verify.py /private/evidence/day /private/evidence/samples --details /private/evidence/details
+python tools/HVO.SkyMonitor.VirtualSkyPoc/present.py /private/evidence/day /private/evidence/samples /public/review-v2 /private/encoder/bin --details /private/evidence/details
+```
+
+Every policy sample also emits a 1440×360 panorama and mapping record. It uses
+the shared calibrated projector to map azimuth 0–360 degrees and altitude 90–0
+degrees into the actual source, then bilinearly resamples its declared fixed
+transfer display. Four valid source samples are required; unavailable samples
+are black, without extrapolation. The axes are N–E–S–W–N and zenith-to-horizon;
+zenith stretching is inherent to this projection. Independent verification
+checks 108 panorama pixels against the pinned equidistant calibration.
+
+Revised runs retain launch-time harness source, assembly SHA-256 values and
+embedded build identities automatically. Use a new empty directory for each
+run. Build to completion before launching a run; interrupted preparation runs
+are preserved and excluded rather than represented as complete sequences.
+`measure` compares legacy illumination, SolarDriven illumination without disks,
+and SolarDriven with disks, using five warm-up and thirty measured captures per
+configuration at day and night. CPU, elapsed/p95, allocation, peak working set,
+raw output bytes, disk writes and backlog boundaries are explicit. Measurements
+on a shared host are workload evidence, not a hardware qualification.

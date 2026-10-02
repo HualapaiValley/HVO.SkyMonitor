@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("day", type=Path)
     parser.add_argument("samples", type=Path)
+    parser.add_argument("--details", type=Path)
     args = parser.parse_args()
     samples = json.loads((args.samples / "samples.json").read_text())
     yy, xx = np.mgrid[:640, :640]
@@ -32,6 +33,42 @@ def main():
         assert values.max() <= 4095
         rgb = np.array(Image.open(args.samples / (sample["name"] + ".png")).convert("RGB"))
         assert hashlib.sha256(rgb.tobytes()).hexdigest().upper() == sample["displayPixelsSha256"]
+    panorama_checks = 0
+    for name in ["day-policy", "sunset-policy", "night-policy"]:
+        map_file = args.samples / (name + "-panorama.json")
+        if not map_file.exists():
+            continue
+        mapping = json.loads(map_file.read_text())
+        projection = mapping["projection"]
+        assert projection["horizontalFlip"] is True
+        assert projection["model"] == "EquidistantFisheye"
+        panorama = np.array(Image.open(args.samples / (name + "-panorama.png")).convert("RGB"))
+        source = np.array(Image.open(args.samples / (name + ".png")).convert("RGB"), dtype=float)
+        assert hashlib.sha256(source.astype(np.uint8).tobytes()).hexdigest().upper() == mapping["sourceDisplayPixelsSha256"]
+        assert hashlib.sha256(panorama.tobytes()).hexdigest().upper() == mapping["panoramaPixelsSha256"]
+        for px in [0, 180, 359, 540, 719, 900, 1079, 1260, 1439]:
+            for py in [1, 60, 180, 300]:
+                azimuth = np.deg2rad(360*(px+.5)/1440)
+                radius = projection["focalLengthXPixels"] * np.deg2rad(90*(py+.5)/360)
+                x = projection["principalPointX"] - radius*np.sin(azimuth) - .5
+                y = projection["principalPointY"] - radius*np.cos(azimuth) - .5
+                xi, yi = int(np.floor(x)), int(np.floor(y)); dx, dy = x-xi, y-yi
+                expected = source[yi,xi]*(1-dx)*(1-dy)+source[yi,xi+1]*dx*(1-dy)+source[yi+1,xi]*(1-dx)*dy+source[yi+1,xi+1]*dx*dy
+                assert np.max(np.abs(expected-panorama[py,px])) <= 1
+                panorama_checks += 1
+    detail_count = 0
+    if args.details:
+        for detail in json.loads((args.details / "details.json").read_text()):
+            e = detail["source"]
+            raw = (args.details / (detail["name"] + ".raw")).read_bytes()
+            assert hashlib.sha256(raw).hexdigest().upper() == e["rawSha256"]
+            values = np.frombuffer(raw, dtype="<u2")
+            assert values.max() <= 4095 and abs(float(values.mean())-e["rawMean"]) < 1e-9
+            pixels = np.array(Image.open(args.details / (detail["name"] + ".png")).convert("RGB"))
+            assert hashlib.sha256(pixels.tobytes()).hexdigest().upper() == e["displayPixelsSha256"]
+            assert e["configuration"]["rig"]["optics"]["horizontalFlip"] is True
+            assert 0 < e["exposureSeconds"] <= 1
+            detail_count += 1
     records = json.loads((args.day / "sequence.json").read_text())
     coverage = json.loads((args.day / "coverage.json").read_text())
     start, end = utc(coverage["start"]), utc(coverage["end"])
@@ -81,7 +118,7 @@ def main():
                 expected = (source[yi, xi] * (1-dx)*(1-dy) + source[yi, xi+1]*dx*(1-dy) +
                             source[yi+1, xi]*(1-dx)*dy + source[yi+1, xi+1]*dx*dy)
                 assert np.max(np.abs(expected - keogram[y, slot])) <= 1
-    result = {"rawSamplesVerified": len(samples), "sourceSlotsVerified": len(records), "coverageStates": counts,
+    result = {"rawSamplesVerified": len(samples), "panoramaIndependentPixelChecks": panorama_checks, "narrowFieldRawCapturesVerified": detail_count, "sourceSlotsVerified": len(records), "coverageStates": counts,
               "trailSourcesVerified": trail_count, "integratedSecondsVerified": integral,
               "keogramIndependentBilinearColumnChecks": 5,
               "checks": "raw hashes/ADU means/clipping, fixed display pixel hashes, separate clocks, exact minute source grid, full-period dimensions, dark eligibility, streaming maximum composite, independently sampled strips"}
