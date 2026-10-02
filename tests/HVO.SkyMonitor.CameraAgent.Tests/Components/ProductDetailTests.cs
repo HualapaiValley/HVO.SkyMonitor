@@ -18,7 +18,7 @@ public sealed class ProductDetailTests
     private static TestOperatorUiService Configure(BunitContext context, CameraAgentProductDetail detail, bool failed = false)
     {
         RetainedPreviewImageTestSupport.Configure(context, failed);
-        context.JSInterop.SetupModule("./Components/Pages/ProductDetail.razor.js").Mode = JSRuntimeMode.Loose;
+        ProductDetailTestSupport.Configure(context);
         var service = new TestOperatorUiService
         {
             ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Success(detail))
@@ -96,11 +96,29 @@ public sealed class ProductDetailTests
         Configure(context, Detail(status: "Running"));
         var cut = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, ArtifactId));
         cut.WaitForElement(".product-inspector");
-        StringAssert.Contains(cut.Markup, "Generation in progress", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Markup, "Pending completion / not recorded", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".product-inspector").TextContent, "Current step state", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".product-inspector").TextContent, "Running", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Artifact-specific finality not recorded", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".media-label").TextContent.Contains("generation in progress", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(cut.Markup.Contains("Version 2", StringComparison.Ordinal));
         Assert.IsFalse(cut.Markup.Contains("Complete night", StringComparison.Ordinal));
         StringAssert.Contains(cut.Find(".product-inspector").TextContent, "Integration is not elapsed observation span", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RelatedSiblingOutputsAreNotMisrepresentedAsPredecessors()
+    {
+        using var context = new BunitContext();
+        var original = Detail();
+        var detail = original with { Product = original.Product with { ExecutionClass = "Unassociated" }, Predecessors = [new(Guid.NewGuid(), "older", Instant.AddMinutes(-1), "Available"), new(Guid.NewGuid(), "later", Instant.AddMinutes(1), "Available")] };
+        Configure(context, detail);
+        var cut = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, ArtifactId));
+        cut.WaitForElement(".product-versions");
+        StringAssert.Contains(cut.Find(".product-versions").TextContent, "Earlier committed output", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".product-versions").TextContent, "Later committed output", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Markup.Contains("Retained predecessors", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Markup.Contains("Unassociated / local processing", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Find(".product-inspector").TextContent, "ExecutorNot recorded", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -148,5 +166,15 @@ public sealed class ProductDetailTests
             Assert.IsEmpty(cut.FindAll("img,video,.product-inspector"));
             Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
         });
+    }
+}
+
+internal static class ProductDetailTestSupport
+{
+    internal static void Configure(BunitContext context)
+    {
+        var module = context.JSInterop.SetupModule("./Components/Pages/ProductDetail.razor.js");
+        module.Mode = JSRuntimeMode.Loose;
+        module.SetupModule("bind").Mode = JSRuntimeMode.Loose;
     }
 }

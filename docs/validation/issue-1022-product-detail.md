@@ -31,19 +31,26 @@ regeneration action is simulated. Unknown provenance stays explicitly unavailabl
   byte ranges and `nosniff`.
 - Failed, missing, quarantined and non-displayable bytes retain evidence and an
   explicit unavailable reason. They never substitute another capture or product.
-- The inspector distinguishes generation state from storage availability and
-  total integration from elapsed observation span. Generation history,
-  recipe/checksum/output identity, ordered sources and retained predecessors
-  reflect the existing immutable records. Unretained/truncated sources stay visible.
+- The inspector distinguishes current producing-step state from the committed
+  artifact and its storage availability, and total integration from elapsed
+  observation span. Current step attempts/times do not establish this artifact's
+  generation history or finality. Other retained outputs of the same step are
+  labeled earlier, later or same-time by commitment, without assuming a version,
+  predecessor or successor relationship. Ordered immutable sources and
+  unretained/truncated sources stay visible.
 - Current product contracts lack complete nightly window, geometry/time-axis,
   automation/run and executor-route metadata. The page states that absence; a
-  keogram is shown as actual pixels without invented axes/event markers. The #993
+  recipe name alone does not establish nightly product type or axes. The #993
   product contract can add qualified metadata for later adoption.
 - The generation API does not expose an authorized successor-generation action;
   Regenerate and exact generation-run navigation remain unavailable with reasons.
 - Reads are generation-, cancellation- and exact-artifact-fenced. Revocation clears
   protected media and blocks repeated redirect-triggered reloads. Fullscreen
-  callbacks are artifact-bound and cleaned up on navigation/disposal.
+  callbacks are artifact-bound. A returned JS controller owns listeners directly,
+  so cleanup works after the DOM element has been detached or failed. Native
+  browser click/keyboard activation requests fullscreen without a server round
+  trip; unsupported fullscreen has an explicit disabled reason.
+- The new inline opt-in applies only to artifact content, not replay downloads.
 
 ## Native same-artifact evidence
 
@@ -63,11 +70,17 @@ Host evidence: `/home/roys/.cache/hvo/1022/`:
 
 - `before-{1440,390,320}.png` / `before.json`: exact retained-artifact baseline
   using the previous private native host, matching the unchanged branch-point page.
-- `after-{1440,390,320}.png` / `after.json`: same artifact after the port;
-  decoded image is contained and document scroll width equals viewport width.
-- `interactions.json`: keyboard fullscreen on the actual 1440×900 viewport,
+- `after-{1440,390,320}.png` / `after.json`: initial implementation evidence,
+  superseded by the corrected-head capture set. Early pre-commit captures are not
+  exact-head acceptance evidence.
+- `correction-{1440,390,320}.png` / `correction.json`: corrected checked-out head,
+  with capture UTC, full head SHA and worktree-diff fingerprint in the index.
+  The decoded image is contained and document scroll width equals viewport width.
+- `correction-interactions.json`: keyboard fullscreen on the actual 1440×900 viewport,
   native-size source identity preserved, Escape focus return, and failed-image
-  removal with artifact evidence preserved; no browser page errors.
+  removal with artifact evidence preserved; no browser page errors. Also verifies
+  listener release after failed media and detached-viewer navigation, and the
+  explicit unsupported-browser fullscreen reason.
 
 No-login allowlisted review captures on the bounded evidence server:
 `http://192.168.2.45:5133/product-detail-{1440,390,320}.png`.
@@ -75,12 +88,14 @@ No-login allowlisted review captures on the bounded evidence server:
 ## Validation
 
 - CameraAgent Debug warning-clean build: zero warnings/errors.
-- Focused ProductDetail/ArchivePages tests: 22 passed, no skips.
-- Eight new Unit cases cover exact encoded/packed media selection, missing/error
-  handling, running-output truth, wrong requested identity, stale responses,
-  revocation and local return URL restrictions. Inventories/runbook are aligned.
+- Focused ProductDetail/ArchivePages tests after corrections: 23 passed, no skips.
+- Nine new Unit cases cover exact encoded/packed media selection, missing/error
+  handling, current-step versus immutable artifact state, sibling-output ordering,
+  unknown executor, wrong requested identity, stale responses, revocation and
+  local return URL restrictions. Inventories/runbook are aligned.
 - Existing artifact content Integration case is expanded to verify supported
-  inline bytes/checksum and rejection of inline for raw/unknown types.
+  inline bytes/checksum and rejection of inline for raw/unknown types. Replay
+  content retains attachment disposition even when `inline=true` is requested.
 - Native browser qualification checks exact artifact source, fullscreen/fit/100%,
   keyboard/focus, identity-preserving media failure and 1440/390/320 bounds.
 - Dedicated Manual `OwnerProductDetailPresentationAcceptanceAsync` exercises a real
@@ -88,6 +103,10 @@ No-login allowlisted review captures on the bounded evidence server:
 - Classifier-selected affected candidate gate and independent review results
   belong in the issue/PR ledger on their exact commits. No complete Manual suite,
   performance improvement or generated nightly/video acceptance is claimed here.
+  The initial Tier B local gate is focused/affected evidence; the classifier also
+  selects the combined protocol lane, whose full suites and component coverage
+  are required on the protected current-head CI run. Targeted artifact endpoint
+  tests are not presented as a full combined-lane local pass.
 
 ## Observability and performance
 

@@ -49,13 +49,14 @@ internal static class CameraAgentArtifactEndpoints
         CancellationToken cancellationToken)
     {
         var opened = await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
-        await WriteOpenedContentAsync(context, opened, cancellationToken).ConfigureAwait(false);
+        await WriteOpenedContentAsync(context, opened, cancellationToken, allowInline: true).ConfigureAwait(false);
     }
 
     internal static async Task WriteOpenedContentAsync(
         HttpContext context,
         CameraAgentArtifactContentResult opened,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowInline = false)
     {
         if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
         {
@@ -97,7 +98,7 @@ internal static class CameraAgentArtifactEndpoints
         context.Response.Headers.AcceptRanges = "bytes";
         // Inline display is opt-in and restricted to passive supported media. Unknown/raw/metadata
         // payloads retain the protected attachment behaviour even when a caller asks for inline.
-        var inline = string.Equals(context.Request.Query["inline"], "true", StringComparison.Ordinal) &&
+        var inline = allowInline && string.Equals(context.Request.Query["inline"], "true", StringComparison.Ordinal) &&
             content.MediaType is "image/jpeg" or "image/png" or "image/webp" or "video/mp4" or "video/webm";
         context.Response.Headers.ContentDisposition = $"{(inline ? "inline" : "attachment")}; filename=\"{content.FileName}\"";
         context.Response.Headers.XContentTypeOptions = "nosniff";

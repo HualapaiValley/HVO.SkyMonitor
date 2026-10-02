@@ -490,7 +490,7 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(text, "Unretained artifact", StringComparison.Ordinal);
             StringAssert.Contains(text, "Completed (Produced)", StringComparison.Ordinal);
             StringAssert.Contains(text, "850 ms", StringComparison.Ordinal);
-            StringAssert.Contains(text, "Retained predecessors", StringComparison.Ordinal);
+            StringAssert.Contains(text, "Other retained outputs of this step", StringComparison.Ordinal);
             Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000201/content",
                 cut.FindAll("a").Single(link => link.TextContent.Contains("Download content", StringComparison.Ordinal)).GetAttribute("href"));
         });
@@ -560,7 +560,7 @@ public sealed class ArchivePagesTests
     private static TestOperatorUiService Configure(BunitContext context)
     {
         RetainedPreviewImageTestSupport.Configure(context);
-        context.JSInterop.SetupModule("./Components/Pages/ProductDetail.razor.js").Mode = JSRuntimeMode.Loose;
+        ProductDetailTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

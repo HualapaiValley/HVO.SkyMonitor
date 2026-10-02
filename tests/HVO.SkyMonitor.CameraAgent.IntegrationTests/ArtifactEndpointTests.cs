@@ -131,6 +131,10 @@ public sealed class ArtifactEndpointTests
         using var exact = await owner.GetAsync(uri).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, exact.StatusCode);
         CollectionAssert.AreEqual(service.Content, await exact.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        service.MediaType = "image/png";
+        using var replayInline = await owner.GetAsync(new Uri($"{uri}?inline=true", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual("attachment", replayInline.Content.Headers.ContentDisposition?.DispositionType,
+            "New artifact-page inline mode must not silently change replay download behavior.");
 
         using var wrongExecution = await owner.GetAsync(new Uri(
             $"/api/v1/operations/processing-graphs/executions/{Guid.NewGuid():D}/outputs/{service.ArtifactId:D}/content",

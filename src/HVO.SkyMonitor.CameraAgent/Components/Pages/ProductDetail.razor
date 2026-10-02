@@ -25,7 +25,7 @@
         var detail = _detail;
         var product = detail.Product;
         <header class="product-detail-heading">
-            <div><p class="eyebrow">Archive / @ProductType / retained local evidence</p><h1>@ProductTitle</h1><p>@detail.ObservingDay.Date.ToString("yyyy-MM-dd") (@ZoneLabel) observing day / @GenerationLabel / stored @FormatTime(product.CommittedUtc)</p></div>
+            <div><p class="eyebrow">Archive / @ProductType / retained local evidence</p><h1>@ProductTitle</h1><p>@detail.ObservingDay.Date.ToString("yyyy-MM-dd") (@ZoneLabel) observing day / committed artifact / stored @FormatTime(product.CommittedUtc)</p></div>
             <div class="detail-heading-actions"><a class="btn btn-outline-light" href="@DayUrl">Observing day</a><button type="button" class="btn btn-outline-light" disabled aria-label="Regenerate unavailable: no authorized successor-generation action is exposed" title="No authorized successor-generation action is exposed">Regenerate unavailable</button></div>
         </header>
 
@@ -43,7 +43,7 @@
                     }
                     <figcaption class="media-label">@MediaCaption</figcaption>
                     <div class="media-controls" role="group" aria-label="Product viewing controls">
-                        <button type="button" class="icon-button" @ref="_fullscreenTrigger" @onclick="ToggleFullscreenAsync" aria-label="@(_fullscreen ? "Exit product fullscreen" : "Product fullscreen")" title="@(_fullscreen ? "Exit fullscreen" : "Fullscreen")"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 2H2v5m11-5h5v5M2 13v5h5m6 0h5v-5" /></svg></button>
+                        <button type="button" class="icon-button" @ref="_fullscreenTrigger" aria-label="@(_fullscreen ? "Exit product fullscreen" : "Product fullscreen")" title="@(_fullscreen ? "Exit fullscreen" : "Fullscreen")"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 2H2v5m11-5h5v5M2 13v5h5m6 0h5v-5" /></svg></button>
                         @if (!IsVideo)
                         {
                             <div class="hvo-segmented" role="group" aria-label="Product image size"><button type="button" class="hvo-segmented__option" aria-pressed="@(!_nativeSize).ToString().ToLowerInvariant()" @onclick="() => _nativeSize = false">Fit image</button><button type="button" class="hvo-segmented__option" aria-pressed="@_nativeSize.ToString().ToLowerInvariant()" @onclick="() => _nativeSize = true">100% @(!UsesOriginalImage ? "preview" : "image")</button></div>
@@ -63,43 +63,39 @@
                     <div><dt>Observation span</dt><dd>Not recorded</dd></div>
                     <div><dt>Total integration</dt><dd>@FormatIntegration(product.TotalIntegration)</dd></div>
                     <div><dt>Recipe</dt><dd>@product.Recipe.Name @product.Recipe.SemanticVersion</dd></div>
-                    <div><dt>Executor</dt><dd>@product.ExecutionClass / local processing</dd></div>
+                    <div><dt>Executor</dt><dd>@ExecutorLabel</dd></div>
                     <div><dt>Automation</dt><dd>Not recorded for this output</dd></div>
-                    <div><dt>Generation state</dt><dd>@GenerationLabel</dd></div>
+                    <div><dt>Current step state</dt><dd>@GenerationLabel</dd></div>
                     <div><dt>Storage availability</dt><dd>@product.Availability</dd></div>
                     <div class="full"><dt>Source window</dt><dd>Window boundaries not recorded; capture anchor @FormatTime(detail.CaptureExposureStartedUtc) (@ZoneLabel). Integration is not elapsed observation span.</dd></div>
                     <div class="full"><dt>Artifact ID</dt><dd><code>@product.ArtifactId</code></dd></div>
                 </dl>
                 <div class="evidence-actions"><a class="text-button" href="@($"/gallery/{product.CaptureId:D}")">Open capture #@product.CaptureSequence</a>
                     @if (product.Availability == "Available") { <a class="text-button" href="@ContentUrl">Download content</a> }
+                    <a class="text-button" href="@BackUrl">Return to products</a>
                     <span class="disabled-link" role="link" aria-disabled="true" tabindex="0" aria-label="Open generation run unavailable: exact execution or automation run identity was not retained">Open generation run unavailable</span>
                 </div>
             </aside>
         </section>
 
-        @if (IsKeogram)
-        {
-            <section class="keogram-axis-notice" role="note"><strong>Keogram axes</strong><p>The selected keogram is displayed from its actual bytes. North–zenith–south orientation, elapsed-time mapping and event-marker metadata are unavailable in this retained product contract; no axis or marker is invented.</p></section>
-        }
-
         <div class="day-detail-grid">
             <section class="product-detail-panel archive-panel" aria-label="Generation history">
-                <header><div><h2>Generation history</h2><p>Historical evidence is immutable. Retained predecessors are distinct artifacts.</p></div><span class="state-chip">@GenerationLabel</span></header>
+                <header><div><h2>Generation history</h2><p>Historical artifact bytes are immutable. The current producing-step record is not an artifact-specific generation history.</p></div><span class="state-chip">Current step: @GenerationLabel</span></header>
                 @if (detail.Node is { } node)
                 {
                     <dl class="product-provenance"><div><dt>Node</dt><dd>@node.NodeId</dd></div><div><dt>Status</dt><dd>@node.Status@(node.Outcome is null ? "" : $" ({node.Outcome})")</dd></div><div><dt>Attempt</dt><dd>@node.Attempt recorded</dd></div><div><dt>Started</dt><dd>@(node.StartedUtc is { } started ? FormatTime(started) : "Not recorded")</dd></div><div><dt>@(GenerationRunning ? "Last recorded completion" : "Completed")</dt><dd>@FormatTime(node.CompletedUtc)</dd></div><div><dt>Duration</dt><dd>@(node.DurationMilliseconds is { } duration ? $"{duration} ms" : "Not recorded")</dd></div></dl>
                 }
                 else { <p class="unavailable-copy">The producing node record is not retained.</p> }
-                <h3>Retained predecessors</h3>
-                @if (detail.Predecessors.Count == 0) { <p class="unavailable-copy">No retained predecessor records. No version or successor is assumed.</p> }
+                <h3>Other retained outputs of this step</h3>
+                @if (detail.Predecessors.Count == 0) { <p class="unavailable-copy">No related retained output records. No version, predecessor or successor relationship is assumed.</p> }
                 else
                 {
-                    <ol class="product-versions">@foreach (var predecessor in detail.Predecessors) { <li><span class="version-dot" aria-hidden="true"></span><span><strong><a href="@($"/archive/products/{predecessor.ArtifactId:D}?returnUrl={Uri.EscapeDataString(CurrentUrl)}")">Retained output</a></strong><small>@predecessor.Availability / <code>@predecessor.OutputIdentitySha256</code></small></span><time datetime="@predecessor.CommittedUtc.ToString("O")">@FormatTime(predecessor.CommittedUtc)</time></li> }</ol>
+                    <ol class="product-versions">@foreach (var predecessor in detail.Predecessors) { <li><span class="version-dot" aria-hidden="true"></span><span><strong><a href="@($"/archive/products/{predecessor.ArtifactId:D}?returnUrl={Uri.EscapeDataString(BackUrl)}")">@(predecessor.CommittedUtc < product.CommittedUtc ? "Earlier committed output" : predecessor.CommittedUtc > product.CommittedUtc ? "Later committed output" : "Same-time output")</a></strong><small>@predecessor.Availability / <code>@predecessor.OutputIdentitySha256</code></small></span><time datetime="@predecessor.CommittedUtc.ToString("O")">@FormatTime(predecessor.CommittedUtc)</time></li> }</ol>
                 }
             </section>
             <section class="product-detail-panel archive-panel" aria-label="Integrity and lineage">
                 <header><div><h2>Integrity &amp; lineage</h2><p>Exact retained source and recipe identities.</p></div><span class="quiet-label">Recorded identities</span></header>
-                <dl class="product-provenance"><div class="full"><dt>Retained artifact checksum SHA-256</dt><dd><code>@product.ChecksumSha256</code></dd></div><div><dt>Final-generation checksum</dt><dd>@(GenerationRunning ? "Pending completion / not recorded" : "Not separately recorded")</dd></div><div><dt>Media</dt><dd>@(product.MediaType ?? "Not recorded")</dd></div><div><dt>Length</dt><dd>@(product.ByteLength is { } bytes ? $"{bytes:N0} bytes" : "Not recorded")</dd></div><div><dt>Encoded size</dt><dd>@(product.EncodedWidth is { } width && product.EncodedHeight is { } height ? $"{width} × {height}" : "Not recorded")</dd></div><div><dt>Completeness</dt><dd>@(GenerationRunning ? "Generation in progress" : "Nightly-window completeness not recorded")</dd></div><div><dt>Rig</dt><dd>@(detail.RigId ?? "Not recorded")</dd></div><div class="full"><dt>Output identity</dt><dd><code>@product.OutputIdentitySha256</code></dd></div><div class="full"><dt>Recipe identity</dt><dd><code>@product.Recipe.IdentitySha256</code></dd></div><div class="full"><dt>Recipe implementation</dt><dd>@product.Recipe.ImplementationVersion</dd></div><div class="full"><dt>Algorithms</dt><dd>@(product.Algorithms.Count == 0 ? "None recorded" : string.Join(", ", product.Algorithms.Select(static algorithm => $"{algorithm.Name} {algorithm.Version}")))</dd></div>@if (product.ContentIdentitySha256 is { } content) { <div class="full"><dt>Content identity</dt><dd><code>@content</code></dd></div> }<div class="full"><dt>Availability reason</dt><dd>@(product.AvailabilityReason ?? "No reason recorded")</dd></div></dl>
+                <dl class="product-provenance"><div class="full"><dt>Retained artifact checksum SHA-256</dt><dd><code>@product.ChecksumSha256</code></dd></div><div><dt>Final-generation checksum</dt><dd>Artifact-specific finality not recorded</dd></div><div><dt>Media</dt><dd>@(product.MediaType ?? "Not recorded")</dd></div><div><dt>Length</dt><dd>@(product.ByteLength is { } bytes ? $"{bytes:N0} bytes" : "Not recorded")</dd></div><div><dt>Encoded size</dt><dd>@(product.EncodedWidth is { } width && product.EncodedHeight is { } height ? $"{width} × {height}" : "Not recorded")</dd></div><div><dt>Completeness</dt><dd>Artifact-specific window completeness not recorded</dd></div><div><dt>Rig</dt><dd>@(detail.RigId ?? "Not recorded")</dd></div><div class="full"><dt>Output identity</dt><dd><code>@product.OutputIdentitySha256</code></dd></div><div class="full"><dt>Recipe identity</dt><dd><code>@product.Recipe.IdentitySha256</code></dd></div><div class="full"><dt>Recipe implementation</dt><dd>@product.Recipe.ImplementationVersion</dd></div><div class="full"><dt>Algorithms</dt><dd>@(product.Algorithms.Count == 0 ? "None recorded" : string.Join(", ", product.Algorithms.Select(static algorithm => $"{algorithm.Name} {algorithm.Version}")))</dd></div>@if (product.ContentIdentitySha256 is { } content) { <div class="full"><dt>Content identity</dt><dd><code>@content</code></dd></div> }<div class="full"><dt>Availability reason</dt><dd>@(product.AvailabilityReason ?? "No reason recorded")</dd></div></dl>
             </section>
         </div>
         <section class="product-detail-panel archive-panel" aria-label="Source lineage"><header><div><h2>Ordered sources</h2><p>Source links resolve these immutable artifact identities; unavailable sources stay visible.</p></div><span class="quiet-label">@detail.Sources.Count shown / @product.SourceCount declared</span></header>

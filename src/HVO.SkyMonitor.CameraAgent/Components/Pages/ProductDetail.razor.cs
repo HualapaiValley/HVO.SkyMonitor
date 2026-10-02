@@ -25,6 +25,7 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     private ElementReference _viewer;
     private ElementReference _fullscreenTrigger;
     private IJSObjectReference? _module;
+    private IJSObjectReference? _viewerController;
     private DotNetObjectReference<ProductDetail>? _self;
     private Guid? _boundArtifact;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The managed semaphore remains valid for render callbacks already queued during asynchronous disposal.")]
@@ -48,14 +49,11 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
         }
     }
 
-    private string CurrentUrl => $"/archive/products/{ArtifactId:D}?returnUrl={Uri.EscapeDataString(BackUrl)}";
     private string? ContentUrl => _detail is null ? null : $"/api/v1/operations/artifacts/{_detail.Product.ArtifactId:D}/content";
-    private string ProductType => _detail?.Product is not { } product ? "Retained output" : product.IsMaterialization ? "Saved layer stack"
-        : product.Recipe.Name switch { "keogram" => "Keogram", "star-trail" => "Star trail", "time-lapse" => "Time-lapse", _ => "Retained output" };
+    private string ProductType => _detail?.Product.IsMaterialization == true ? "Saved layer stack" : "Retained output";
     private string ProductTitle => _detail is null ? "Product detail" : $"{OperationsPage.SplitWords(_detail.Product.Role.ToString())}{(_detail.Product.Variant is { } variant ? $" · {variant}" : "")}";
-    private bool IsKeogram => _detail?.Product.Recipe.Name == "keogram";
     private bool GenerationRunning => _detail?.Node?.Status is "Running" or "Pending" or "RetryableFailure";
-    private string GenerationLabel => _detail?.Node is not { } node ? "Generation state not retained" : node.Status;
+    private string GenerationLabel => _detail?.Node is not { } node ? "Step state not retained" : node.Status;
     private string ZoneLabel => _detail?.ObservingDay is { } day ? day.TimeZoneFallback ? "UTC fallback" : day.TimeZoneId : "UTC";
     private string DayUrl => _detail is null ? "/archive/calendar" : $"/archive/day/{_detail.ObservingDay.Date:yyyy-MM-dd}";
     private bool IsVideo => _detail?.Product.MediaType is "video/mp4" or "video/webm";
@@ -71,13 +69,13 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
                 ? $"/api/v1/operations/artifacts/{product.ArtifactId:D}/preview" : null;
         }
     }
-    private string MediaCaption => GenerationRunning ? "Exact retained working output; generation in progress"
-        : IsKeogram ? "Exact keogram pixels / axis metadata unavailable" : $"Exact artifact / {ProductType}";
+    private string MediaCaption => $"Exact committed artifact / {ProductType}";
+    private string ExecutorLabel => _detail?.Product.ExecutionClass is "Live" or "Replay" ? $"{_detail.Product.ExecutionClass} execution class; route not retained" : "Not recorded";
     private string MediaUnavailableReason => _mediaFailed ? "The selected artifact could not be loaded or decoded. Its evidence remains available."
         : _detail?.Product is { Availability: not "Available" } product ? product.AvailabilityReason ?? $"Selected content is {product.Availability}."
         : "This retained media type has no supported inline display. Download the original when available.";
     private string EvidenceDescription => _detail?.Product.IsMaterialization == true ? "A saved presentation tied to this capture's retained layered evidence."
-        : ProductType == "Retained output" ? "A retained processing artifact; it is not automatically a nightly derivative." : "A product identified by its recorded recipe. Unknown provenance stays explicitly unavailable.";
+        : "A retained processing artifact; it is not automatically a nightly derivative. Current step status is distinct from this artifact's immutable state.";
 
     private string FormatTime(DateTimeOffset instant)
     {
@@ -102,13 +100,8 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
         await _interopGate.WaitAsync();
         try
         {
-            if (_module is not null && _boundArtifact is not null)
-            {
-                try { await _module.InvokeVoidAsync("dispose", _viewer); }
-                catch (JSDisconnectedException) { }
-                catch (JSException) { }
-            }
-            _boundArtifact = null;
+            if (_disposed) return;
+            await ReleaseViewerAsync();
         }
         finally { _interopGate.Release(); }
         if (_disposed || generation != Volatile.Read(ref _generation)) return;
@@ -140,29 +133,34 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         var artifact = _detail?.Product.ArtifactId;
-        if (_disposed || MediaUrl is null || _mediaFailed || artifact == _boundArtifact) return;
+        if (_disposed) return;
         await _interopGate.WaitAsync();
         try
         {
+            if (_disposed) return;
+            if (MediaUrl is null || _mediaFailed)
+            {
+                await ReleaseViewerAsync();
+                return;
+            }
             if (_disposed || artifact != _detail?.Product.ArtifactId || artifact == _boundArtifact) return;
             _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/ProductDetail.razor.js");
             if (_disposed || artifact != _detail?.Product.ArtifactId) return;
             _self ??= DotNetObjectReference.Create(this);
-            await _module.InvokeVoidAsync("bind", _viewer, _fullscreenTrigger, artifact!.Value.ToString("D"), _self);
+            var controller = await _module.InvokeAsync<IJSObjectReference>("bind", _viewer, _fullscreenTrigger, artifact!.Value.ToString("D"), _self);
+            if (_disposed || artifact != _detail?.Product.ArtifactId)
+            {
+                await controller.InvokeVoidAsync("dispose");
+                await controller.DisposeAsync();
+                return;
+            }
+            _viewerController = controller;
             if (!_disposed && artifact == _detail?.Product.ArtifactId) _boundArtifact = artifact;
         }
         catch (JSDisconnectedException) { }
         catch (JSException) { }
         catch (TaskCanceledException) { }
         finally { _interopGate.Release(); }
-    }
-
-    private async Task ToggleFullscreenAsync()
-    {
-        if (_module is null || _mediaFailed || _boundArtifact != ArtifactId) return;
-        try { await _module.InvokeVoidAsync("toggle", _viewer); }
-        catch (JSDisconnectedException) { }
-        catch (JSException) { }
     }
 
     [JSInvokable]
@@ -176,8 +174,29 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     private static string FormatIntegration(TimeSpan value) => value.TotalSeconds >= 1
         ? FormattableString.Invariant($"{value.TotalSeconds:0.###} s") : FormattableString.Invariant($"{value.TotalMilliseconds:0.#} ms");
 
+    // Called while holding _interopGate, including after the rendered element has gone away.
+    private async ValueTask ReleaseViewerAsync()
+    {
+        var controller = _viewerController;
+        _viewerController = null;
+        _boundArtifact = null;
+        if (controller is null) return;
+        try { await controller.InvokeVoidAsync("dispose"); }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
+        catch (TaskCanceledException) { }
+        finally
+        {
+            try { await controller.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
+            catch (TaskCanceledException) { }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
         _disposed = true;
         Interlocked.Increment(ref _generation);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
@@ -185,10 +204,14 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
         await _interopGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_module is not null) { await _module.InvokeVoidAsync("dispose", _viewer); await _module.DisposeAsync(); }
+            await ReleaseViewerAsync().ConfigureAwait(false);
+            var module = _module;
+            _module = null;
+            if (module is not null) await module.DisposeAsync();
         }
         catch (JSDisconnectedException) { }
         catch (JSException) { }
-        finally { _self?.Dispose(); _interopGate.Release(); }
+        catch (TaskCanceledException) { }
+        finally { _self?.Dispose(); _self = null; _interopGate.Release(); }
     }
 }
