@@ -496,7 +496,7 @@ public sealed class ArchivePagesTests
         });
 
         var missing = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
-        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find("[role='alert']").TextContent, "was not found", StringComparison.Ordinal));
+        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find(".page-state--info").TextContent, "was not found", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -560,6 +560,7 @@ public sealed class ArchivePagesTests
     private static TestOperatorUiService Configure(BunitContext context)
     {
         RetainedPreviewImageTestSupport.Configure(context);
+        context.JSInterop.SetupModule("./Components/Pages/ProductDetail.razor.js").Mode = JSRuntimeMode.Loose;
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

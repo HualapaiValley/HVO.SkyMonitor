@@ -68,6 +68,9 @@ public sealed class ArtifactEndpointTests
         Assert.AreEqual("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
         StringAssert.Contains(response.Headers.CacheControl!.ToString(), "private", StringComparison.Ordinal);
         StringAssert.Contains(response.Content.Headers.ContentDisposition!.FileName!, service.ArtifactId.ToString("D"), StringComparison.Ordinal);
+        using var unsupportedInline = await client.GetAsync(new Uri($"{uri}?inline=true", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual("attachment", unsupportedInline.Content.Headers.ContentDisposition?.DispositionType,
+            "Opt-in inline must never expose raw/unknown payloads as active browser content.");
 
         using var conditionalRequest = new HttpRequestMessage(HttpMethod.Get, uri);
         conditionalRequest.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(service.ETag));
@@ -92,6 +95,12 @@ public sealed class ArtifactEndpointTests
         multipleRange.Headers.TryAddWithoutValidation("Range", "bytes=0-1,3-4");
         using var rejectedRange = await client.SendAsync(multipleRange).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.RequestedRangeNotSatisfiable, rejectedRange.StatusCode);
+
+        service.MediaType = "image/png";
+        using var supportedInline = await client.GetAsync(new Uri($"{uri}?inline=true", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual("inline", supportedInline.Content.Headers.ContentDisposition?.DispositionType);
+        CollectionAssert.AreEqual(service.Content, await supportedInline.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        Assert.AreEqual(service.ETag, supportedInline.Headers.ETag?.Tag, "Display must preserve exact-artifact checksum identity.");
     }
 
     [TestMethod]
@@ -260,6 +269,7 @@ public sealed class ArtifactEndpointTests
         internal byte[] Preview { get; } = [0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9];
 
         internal string ETag => $"\"{PayloadChecksum.ComputeSha256(Content)}\"";
+        internal string MediaType { get; set; } = "application/octet-stream";
 
         [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The test transfers the memory stream to the returned stream lease.")]
         public async ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
@@ -284,7 +294,7 @@ public sealed class ArtifactEndpointTests
                 ArtifactId,
                 Guid.Parse("20000000-0000-0000-0000-000000000001"),
                 FrameArtifactRole.Preview,
-                "application/octet-stream",
+                MediaType,
                 Content.LongLength,
                 PayloadChecksum.ComputeSha256(Content),
                 $"{ArtifactId:D}.bin",

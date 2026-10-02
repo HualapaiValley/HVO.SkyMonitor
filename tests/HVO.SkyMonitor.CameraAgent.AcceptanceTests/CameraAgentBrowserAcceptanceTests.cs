@@ -1060,6 +1060,69 @@ public sealed class CameraAgentBrowserAcceptanceTests
     }
 
     [TestMethod]
+    public async Task OwnerProductDetailPresentationAcceptanceAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, 24).ConfigureAwait(false);
+        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var link = page.Locator(".product-table tbody tr").Filter(new LocatorFilterOptions { HasText = "Preview" }).First.Locator("a").First;
+        await VisibleAsync(link).ConfigureAwait(false);
+        var path = await link.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(path);
+        var artifactId = Guid.Parse(new Uri(host.BaseAddress, path).Segments[^1]);
+        await page.GotoAsync(path).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".generated-media[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+        var image = page.Locator(".generated-media img");
+        await image.EvaluateAsync("image => image.decode()").ConfigureAwait(false);
+        var exactSource = await image.GetAttributeAsync("src").ConfigureAwait(false);
+        Assert.IsNotNull(exactSource);
+        StringAssert.Contains(exactSource, artifactId.ToString("D"), StringComparison.Ordinal);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await WaitForResponsiveShellLayoutAsync(page, width).ConfigureAwait(false);
+            Assert.IsFalse(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                $"Product detail overflowed at {width}px: " + await page.EvaluateAsync<string>("""
+                    () => [...document.querySelectorAll('*')].filter(element => element.getBoundingClientRect().right > innerWidth + 1)
+                        .slice(0,8).map(element => `${element.tagName}.${element.className}:${element.getBoundingClientRect().width}`).join('; ')
+                    """).ConfigureAwait(false));
+            Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+            Assert.AreEqual(exactSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
+        }
+        var trigger = page.GetByRole(AriaRole.Button, new() { Name = "Product fullscreen", Exact = true });
+        await trigger.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('.generated-media')").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "100%", Exact = false }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.generated-media')?.classList.contains('generated-media--native')").ConfigureAwait(false);
+        Assert.AreEqual(exactSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
+        await page.GetByRole(AriaRole.Button, new() { Name = "Fit image", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, trigger).ConfigureAwait(false);
+        await image.DispatchEventAsync("error").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Product preview unavailable", Exact = true })).ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator(".generated-media img").CountAsync().ConfigureAwait(false));
+        await VisibleAsync(page.GetByText(artifactId.ToString("D"), new() { Exact = true }).First).ConfigureAwait(false);
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task OwnerArchiveCalendarProductsAndCandidatesAcceptanceAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
@@ -1114,11 +1177,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await firstProduct.ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/products/", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture" })).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Sources", Level = 2 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Ordered sources", Level = 2 })).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/archive/products/detail").ConfigureAwait(false);
         var missingProduct = await context.NewPageAsync().ConfigureAwait(false);
         await missingProduct.GotoAsync($"/archive/products/{Guid.NewGuid():D}").ConfigureAwait(false);
-        await VisibleAsync(missingProduct.GetByRole(AriaRole.Alert)).ConfigureAwait(false);
+        await VisibleAsync(missingProduct.GetByText("Product unavailable", new() { Exact = true })).ConfigureAwait(false);
         await missingProduct.CloseAsync().ConfigureAwait(false);
 
         // Candidates: the list accepts the calendar range and never claims event authority.
