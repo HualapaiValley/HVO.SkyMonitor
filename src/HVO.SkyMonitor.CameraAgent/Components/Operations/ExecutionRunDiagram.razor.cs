@@ -11,8 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposable
 {
     private const int NodeWidth = 204;
-    private int NodeHeight { get; set; } = 100;
-    private int ColumnGap { get; set; } = 56;
+    private const int NodeHeight = 100;
+    private const int ColumnGap = 56;
     private const int RowGap = 32;
     private const int Margin = 28;
     private const int HeaderHeight = 64;
@@ -103,13 +103,6 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
             if (node.Outputs.Any(static output => output.Published))
                 planned.Add(new(node.NodeId, null, ranks[node.NodeId] + 1, publication, true));
         }
-        var maximumPorts = planned.GroupBy(static edge => edge.SourceId ?? "$raw").Select(static group => group.Count()).DefaultIfEmpty().Max()
-            + planned.GroupBy(static edge => edge.TargetId ?? "$publication").Select(static group => group.Count()).DefaultIfEmpty().Max();
-        NodeHeight = Math.Max(100, (int)((maximumPorts - 1) * PipelineEdgeRouter.SeparatedLaneSpacing + 24));
-        var turnCounts = planned.Where(static edge => edge.TargetColumn > edge.SourceColumn + 1)
-            .SelectMany(static edge => new[] { edge.SourceColumn, edge.TargetColumn - 1 })
-            .GroupBy(static gap => gap).Select(static group => group.Count());
-        ColumnGap = Math.Max(56, (int)((turnCounts.DefaultIfEmpty().Max() - 1) * PipelineEdgeRouter.SeparatedLaneSpacing + 32));
         var counts = ranks.Values.GroupBy(static rank => rank).ToDictionary(static group => group.Key, static group => group.Count());
         var rowCount = Math.Max(1, counts.Values.DefaultIfEmpty(1).Max());
         _sourceRow = rowCount / 2;
@@ -131,13 +124,10 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         var occupied = _layout.Select(static item => (item.Rank + 1, item.Row)).Append((0, _sourceRow)).Append((publication, _sourceRow));
         var router = new PipelineEdgeRouter(tracks, rows, RowGap, occupied);
         var positions = _layout.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
-        var connections = planned.Select(edge => new GraphConnection(edge.SourceColumn,
-            edge.SourceId is null ? _sourceRow : positions[edge.SourceId].Row,
-            edge.TargetColumn, edge.TargetId is null ? _sourceRow : positions[edge.TargetId].Row)).ToArray();
-        var routes = router.RouteSeparated(connections);
-        _edges = planned.Select((edge, index) => new GraphEdge(PipelineEdgeRouter.SeparatedPath(routes[index]), edge.Required,
-            (SelectedNodeId is not null && (edge.SourceId == SelectedNodeId || edge.TargetId == SelectedNodeId)),
-            routes[index][0], routes[index][^1])).ToList();
+        _edges = planned.Select(edge => new GraphEdge(PipelineEdgeRouter.Path(router.Route(edge.SourceColumn,
+                edge.SourceId is null ? _sourceRow : positions[edge.SourceId].Row,
+                edge.TargetColumn, edge.TargetId is null ? _sourceRow : positions[edge.TargetId].Row)), edge.Required,
+            SelectedNodeId is not null && (edge.SourceId == SelectedNodeId || edge.TargetId == SelectedNodeId))).ToList();
         _rowsEnd = (int)Math.Ceiling(router.Rows[^1].End);
         ApplyFit();
     }
@@ -255,7 +245,13 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         _reference?.Dispose();
     }
     private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int Rank, int Row, int X, int Y);
-    private sealed record GraphEdge(string Path, bool Required, bool Highlighted, GraphPoint Source, GraphPoint Target);
+    // A compound path is stroked once per visual class. Shared subpaths then stay the same
+    // thin stroke instead of gaining opacity from painting each logical dependency again.
+    private IEnumerable<PaintedEdges> EdgePaintGroups => _edges.GroupBy(EdgeClass)
+        .OrderBy(static group => group.Key.Contains("highlighted", StringComparison.Ordinal))
+        .Select(static group => new PaintedEdges(group.Key, string.Join(" ", group.Select(static edge => edge.Path).Distinct(StringComparer.Ordinal)), group.Count()));
+    private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
+    private sealed record PaintedEdges(string Class, string Path, int Count);
     private sealed record PlannedEdge(string? SourceId, string? TargetId, int SourceColumn, int TargetColumn, bool Required);
     private sealed record GraphBand(int X, int Width, string Label);
     private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);

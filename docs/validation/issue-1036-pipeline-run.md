@@ -51,16 +51,16 @@ observed. Operator requested thinner connectors because selected blue routes
 merged visually; all paths now use a 1-native-unit stroke, selection by color
 rather than added thickness, and matching thin legend samples.
 
-The operator then identified routes still stacked on top of one another. The
-shared router's opt-in whole-edge-set mode now reserves distinct horizontal
-channels, vertical turns and incoming/outgoing port slots. It never cycles
-through five lanes or shares a trunk by source. Rows and column gaps expand to
-provide 8 native units between overlapping extents (4 displayed pixels at 50%).
-Other graph consumers continue to use the router's existing mode. On the same
-capture, `separated-routes.json` records 48 edges, all computed 1px strokes,
-180 straight segments, and zero collinear overlap between different edges.
-Focused regression verifies card avoidance and lane/port/turn separation, plus
-rejection of insufficient reserved space rather than silently overlapping.
+The operator tried separated routes, then explicitly preferred the original
+single-input/single-output midpoint design and supplied a GitHub Actions graph
+as the connector reference. Final routing therefore retains compact cards,
+curved shared-router paths and one connection point on each side. Shared
+subpaths may coincide; logical dependencies of the same visual class are
+painted in one compound SVG stroke so repeated edges do not build up opacity
+or thickness. Highlighted paths retain the same 1-unit stroke. The intermediate
+separated-routing evidence is retained as rejected design history, not current
+acceptance evidence. Regression checks verify single midpoint fan-out and
+complete dependency accounting in compound strokes.
 
 ## Honest facts and missing capabilities
 

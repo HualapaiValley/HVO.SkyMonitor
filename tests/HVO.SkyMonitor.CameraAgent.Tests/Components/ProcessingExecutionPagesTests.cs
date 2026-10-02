@@ -344,7 +344,7 @@ public sealed class ProcessingExecutionPagesTests
         cut.FindAll(".run-diagram__node")[1].Click();
         Assert.AreEqual("preview", selected);
         cut.Render(parameters => parameters.Add(component => component.SelectedNodeId, "preview"));
-        Assert.HasCount(2, cut.FindAll(".run-diagram__edge--highlighted"));
+        Assert.AreEqual(2, cut.FindAll(".run-diagram__edge--highlighted").Sum(static path => int.Parse(path.GetAttribute("data-edge-count")!, System.Globalization.CultureInfo.InvariantCulture)));
         cut.Find("button[aria-label='Zoom in']").Click();
         Assert.AreEqual("60%", cut.Find(".run-diagram__zoom").TextContent);
         StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "transform:scale(0.6)", StringComparison.Ordinal);
@@ -545,6 +545,47 @@ public sealed class ProcessingExecutionPagesTests
         Assert.AreEqual(pending, selected);
         Assert.HasCount(4, cut.FindAll(".ownership-zone"));
         Assert.IsNotNull(cut.Find(".central.unavailable"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_CompoundStrokeKeepsLogicalDependenciesWithoutRepeatedPainting()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("source", true, "plan", "Completed", null, 1, Now, Now, [], [], []),
+            new("first", true, "plan", "Completed", null, 1, Now, Now, [], [], [])
+            { Dependencies = [new("source")] },
+            new("second", true, "plan", "Completed", null, 1, Now, Now, [], [], [])
+            { Dependencies = [new("source")] }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, nodes).Add(component => component.SelectedNodeId, "source"));
+        var path = cut.Find(".run-diagram__edge--highlighted");
+        Assert.AreEqual("2", path.GetAttribute("data-edge-count"));
+        Assert.AreEqual(2, path.GetAttribute("d")!.Count(static character => character == 'M'));
+        Assert.HasCount(1, cut.FindAll(".run-diagram__edge"), "Shared connector geometry is painted in one thin compound stroke.");
+        Assert.HasCount(3, cut.FindAll(".run-diagram__node"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_FanOutUsesOneCenteredOutputPointAndCompactCards()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("source", true, "plan", "Completed", null, 1, Now, Now, [], [], []),
+            new("first", true, "plan", "Completed", null, 1, Now, Now, [], [], []) { Dependencies = [new("source")] },
+            new("second", false, "plan", "Skipped", null, 0, null, null, [], [], []) { Dependencies = [new("source", Required: false)] }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters.Add(component => component.Nodes, nodes));
+        var paths = cut.FindAll(".run-diagram__edge").Select(static path => path.GetAttribute("d")!).ToArray();
+        var starts = paths.Select(static path => path.Split(' ', 3).Take(2).ToArray()).ToArray();
+        CollectionAssert.AreEqual(starts[0], starts[1], "Both dependencies leave the one source midpoint.");
+        Assert.IsEmpty(cut.FindAll(".edge-port"), "Per-dependency ports must not appear on a step.");
+        StringAssert.Contains(cut.Find(".graph-canvas").GetAttribute("style")!, "--node-height:100px", StringComparison.Ordinal);
     }
 
     internal static ProcessingGraphExecutionState Execution(Guid id, ProcessingGraphExecutionClass executionClass, ProcessingGraphExecutionStatus status) => new(
