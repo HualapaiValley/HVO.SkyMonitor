@@ -225,6 +225,7 @@ public sealed class StellarExposureRenderPlan
                 var x = index % projection.WidthPixels; var y = index / projection.WidthPixels;
                 var vignette = 1 - options.VignettingStrength * projection.NormalizedRadiusSquared(x + .5, y + .5);
                 var backgroundTransmission = 1d;
+                var diskTransmission = 1d;
                 if (projector is not null)
                 {
                     var direction = projector.Unproject(new(x + .5, y + .5))
@@ -232,6 +233,7 @@ public sealed class StellarExposureRenderPlan
                     var cloud = options.Cloud!;
                     var effect = cloud.Field.Integrate(direction, cloud.IntegrationStartUtc, cloud.IntegrationDuration);
                     backgroundTransmission = (float)effect.Transmission + (float)effect.Scatter;
+                    diskTransmission = (float)effect.Transmission;
                 }
                 var channelCount = options is Rgb24CompatibilityRenderOptions ? 3 : 1;
                 for (var channel = 0; channel < channelCount; channel++)
@@ -250,7 +252,8 @@ public sealed class StellarExposureRenderPlan
                         Rgb24CompatibilityRenderOptions => channel,
                         _ => -1
                     };
-                    var backgroundElectrons = options.BackgroundRate(x, y, skyChannel) * backgroundTransmission * options.ExposureSeconds * vignette;
+                    var backgroundElectrons = (options.BackgroundRate(x, y, skyChannel) * backgroundTransmission +
+                        options.DiskRate(x, y, skyChannel) * diskTransmission) * options.ExposureSeconds * vignette;
                     var darkElectrons = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
                     var channelWeight = maximumDisplayWeight > 0 ? displayWeights[channel] / maximumDisplayWeight : 0;
                     if (response is null && options.Gain == 0) channelWeight = 0;

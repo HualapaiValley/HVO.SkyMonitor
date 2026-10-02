@@ -152,3 +152,13 @@ The accepted POC artifacts remain pinned to their original renderer/assembly
 identities. Their clear all-sky and centered detail geometries do not exercise
 the two reported defect scenarios. Final correction gates and exact-range
 rereview are recorded separately in the PR ledger.
+
+The second correction review found that stellar admission omitted disk charge
+after the diffuse/resolved split. Admission now includes the same disk charge
+as rendering, attenuated by cloud transmission only, while diffuse background
+retains transmission plus scatter. Three layout regressions fail on the prior
+head and pass with the correction; they verify marginal-star rejection, the
+100,000-electron mono noise contribution, partial/opaque cloud attenuation, and
+predicted versus rendered clipping. The opt-in disk provenance advances to
+`solar-lunar-geometric-disk-bilinear-v3-stellar-charge`; omitted-disk identities
+remain unchanged.
