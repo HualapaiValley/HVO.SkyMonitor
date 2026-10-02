@@ -938,15 +938,42 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             new ViewportSize { Width = 1440, Height = 900 },
             new ViewportSize { Width = 390, Height = 844 },
-            new ViewportSize { Width = 844, Height = 390 }
+            new ViewportSize { Width = 844, Height = 390 },
+            new ViewportSize { Width = 320, Height = 844 }
         })
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
+            foreach (var view in new[] { "grid", "compact" })
+            {
+                await page.GotoAsync($"/gallery?pageSize=24&view={view}").ConfigureAwait(false);
+                await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+                var image = page.Locator(".capture-card .capture-image img").First;
+                await VisibleAsync(image).ConfigureAwait(false);
+                await image.ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+                await image.EvaluateAsync("""
+                    async image => {
+                        await image.decode();
+                        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    }
+                    """).ConfigureAwait(false);
+                Assert.AreEqual("contain", await image.EvaluateAsync<string>(
+                    "image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+                Assert.IsTrue(await image.EvaluateAsync<bool>("""
+                    image => {
+                        const bounds = image.getBoundingClientRect();
+                        const slot = image.closest('.capture-image').getBoundingClientRect();
+                        return image.naturalWidth > 0 && image.naturalHeight > 0 &&
+                            bounds.width > 0 && bounds.height > 0 &&
+                            bounds.left >= slot.left - 1 && bounds.right <= slot.right + 1 &&
+                            bounds.top >= slot.top - 1 && bounds.bottom <= slot.bottom + 1;
+                    }
+                    """).ConfigureAwait(false),
+                    $"The complete Archive image must fit in {view} view at {viewport.Width}x{viewport.Height}.");
+                Assert.IsFalse(await page.EvaluateAsync<bool>(
+                    "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                    $"archive {view} overflowed at {viewport.Width}x{viewport.Height}");
+            }
             await page.GotoAsync("/gallery?pageSize=24").ConfigureAwait(false);
-            await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
-            Assert.IsFalse(await page.EvaluateAsync<bool>(
-                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
-                $"archive overflowed at {viewport.Width}x{viewport.Height}");
             await AssertComputedContrastAsync(page, "/gallery?pageSize=24", viewport).ConfigureAwait(false);
         }
 

@@ -16,6 +16,17 @@ Authenticated native preview, genuine capture #42 (`252fcd46-45aa-8682-bafb-b5bb
 `~/.cache/hvo/1035/archive-follow-up-*`; after measurements and screenshots are
 indexed by `~/.cache/hvo/1117/archive-after.json` on home-dev-02.
 
+Recovery evidence after integrating target `2e241b00` is indexed by
+`~/.cache/hvo/1117/recovery-painted-browser.json` and
+`recovery-painted-compact-browser.json`, with corresponding
+`recovery-painted[-compact]-archive-{1440,390,320}.png` files in the same directory.
+These captures wait for image decode and paint before taking screenshots. Earlier
+`recovery-archive-*` immediate screenshots are excluded as visual proof: the 320 px
+one ran before asynchronous paint despite correct loaded-image measurements.
+The recovery grid report also records exact keyboard navigation and image-error
+handling at 390 px. Compact view contains the image at all three widths; at desktop
+its existing override supplies a 224×140.69 px image box with automatic aspect ratio.
+
 | Viewport | Before image width | After image box | Card height after | Horizontal overflow |
 | --- | ---: | --- | ---: | --- |
 | 1440×900 | 1936 px | 444.51×277.81 px | 514.03 px | None |
@@ -69,20 +80,45 @@ not new durable Archive captures or replacements for capture #42.
 | --- | ---: | ---: | ---: | --- |
 | Day at historical scene time | 1 s | +45.3396° | 0 | Current daylight/background admission rejects stellar signals |
 | Fixed night | 1 s | -56.6979° | 4 | All four have positive local raw contrast; centroid error ≤0.187 px |
-| Fixed night | 20 s | -56.6891° | 162 | All 162 have positive local raw contrast; brightest 15 centroid error ≤0.106 px |
+| Fixed night | 20 s | -56.6891° | 162 | All 162 catalog-entry locations have positive local raw contrast; brightest 15 entry locations have centroid error ≤0.106 px |
 
 Centroids are positive-background-subtracted pixel-edge centers inside radius 3 px;
 background is the median in the 6–9 px annulus. This bounded diagnostic verifies
 bright-star alignment, not general detector accuracy or #1103's measured-star work.
+The 15 brightest catalog entries contain 14 separate light spots: HYG 118360 and
+Capella project within approximately 0.03 px and share a sample. These are checks
+at authoritative renderer positions, not independent detections or associations.
 For the 20 s image, Vega peaks at raw code 600 against local background 66; Capella
 847 against 67; Rigel 509 against 66. Their display peaks are 255. The renderer's
 SNR threshold remains 5; the candidate/query/work limits stay bounded.
 
-Reproduce on this host with:
+Reproduce raw/display generation on this host with the retained real-module probe:
 
 ```bash
 dotnet run --project /home/roys/.cache/hvo/1117/pixel-probe/PixelProbe.csproj --configuration Debug
 ```
+
+That command produces `.json`, `.raw`, and `.mono8`; it does not calculate pixel
+diagnostics or encode PNGs. Recompute those steps from retained inputs with the
+committed standard-library-only diagnostic, writing into a separate output directory:
+
+```bash
+python3 docs/validation/issue-1117-pixels.py \
+  --evidence-dir /home/roys/.cache/hvo/1117 \
+  --historical-dir /home/roys/.cache/hvo/1035 \
+  --output-dir /home/roys/.cache/hvo/1117/recomputed
+```
+
+The diagnostic verifies recorded raw/display hashes and layouts, decodes each
+retained PNG and checks exact equality to the recorded Mono8 pixels, writes a
+reproducible grayscale PNG, and records all admitted catalog-entry samples (not
+only the brightest 15). It checks historical base and projected-scene checksums
+against capture #42's retained detail record before reproducing historical samples.
+Original PNG byte identity need not equal the new encoding; decoded pixels must.
+On 2026-10-02 the recomputed counts, peak/background values, and centroid maxima
+exactly reproduced the earlier numbers. Historical diagnostics use the retained
+`capture42-base.pixels`, `capture42-detail.json`, `capture42-layer-view.json`, and
+the detail record's matching `projected-scene-v1` artifact JSON.
 
 Retained evidence: `day-1s`, `night-1s`, and `night-20s` each have `.json`, `.raw`,
 `.mono8`, and `.png` files under `~/.cache/hvo/1117/`; `pixel-measurements.json`
@@ -95,7 +131,19 @@ instance was modified. No performance claim is made for this CSS-only change.
 
 - CameraAgent Debug build with `-warnaserror`: passed, zero warnings/errors.
 - Focused `GalleryPageTests|RetainedPreviewImageTests`: 25 passed, zero skipped.
-- Candidate classifier-selected gates and independent exact-range review are
-  recorded in the issue/PR ledger once complete.
-- Operator acceptance of Archive fit and the catalog-star preview remains required
-  before this follow-up can be completed.
+- Recovery head `b9fa7bd8`, integrated with target `2e241b00`: classifier selected
+  `mode=full complete=false cameraagent=true`, other component flags false.
+  Affected Debug/Release warning-clean builds, CameraAgent Unit (2,977 passed,
+  one platform-specific skip), CameraAgent Integration (221 passed, no skips),
+  project format and all four CI-control guards passed. PR #1121 retains exact
+  commands/results and independent review/correction evidence.
+- Existing Manual `OwnerArchivePresentationAcceptanceAsync` now checks actual
+  child-image computed containment and bounds in both grid/compact view at
+  1440×900, 390×844, 844×390, and 320×844, after decode/paint readiness.
+  Its focused Release run passed (one test, no skips); the first attempt caught
+  prerender-to-interactive DOM replacement in the test, corrected by waiting for
+  the existing interactive-shell readiness signal. The affected Acceptance
+  project's Unit/Integration selection passed all 34 tests, no skips.
+- Operator accepted the 1-second and 20-second catalog-star preview images on
+  2026-10-02 after reviewing the dedicated LAN evidence page at port 5133.
+  Archive fit acceptance remains required before this follow-up can be completed.
