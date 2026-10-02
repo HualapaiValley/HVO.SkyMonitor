@@ -241,23 +241,34 @@ public sealed class OpticalCalibrationSessionTests
     }
 
     [TestMethod]
-    public void DerivativeCameras_AtTheDistortionBoundaryReportNoDirectionInsteadOfThrowing()
+    public void Fit_AtTheDistortionDomainBoundaryIsRejectedWithoutPrecision()
     {
-        // A centred 3400 px perspective view with k1 = -0.02 at its minimum physical scale puts the aperture corner on
-        // the supported radius, and either principal-point step moves that corner outside it.
-        var nominal = new ProjectionContext(ProjectionModel.Perspective, 1700, 1700, 1000, 1000, 3400, 3400, ProjectionAperture.Rectangular, null,
+        // A centred perspective view with k1 = -0.02 whose corner sits just inside the supported radius. The truth sky
+        // is slightly wider than that domain allows at nominal k1, so acquisition pins every frame at the minimum
+        // physical scale: the corner then lies on the supported radius and either principal-point step leaves it.
+        var focal = 1000d * (Size / 2d) / 1700;
+        var nominal = new ProjectionContext(ProjectionModel.Perspective, Size / 2d, Size / 2d, focal, focal, Size, Size, ProjectionAperture.Rectangular, null,
             BoresightAltitudeDegrees: 90, BoresightAzimuthDegrees: 0, RollDegrees: 0, RadialDistortionK1: -.02);
         var minimum = AstrometricSolverCore.MinimumPhysicalScale(SolverOptics.From(nominal));
         var bounds = OpticalCalibrationSession.Bounds(nominal, WithDistortion);
-        var boundary = new OpticalCalibrationSession.Shared(Math.Log(minimum), 1700, 1700, -.02);
-        var scaled = Math.Exp(boundary.LogScale) * 1000;
+        var boundary = new OpticalCalibrationSession.Shared(Math.Log(minimum), Size / 2d, Size / 2d, -.02);
+        var scaled = Math.Exp(boundary.LogScale) * focal;
         _ = new AstrometricRayCamera(SolverOptics.From(nominal with { FocalLengthXPixels = scaled, FocalLengthYPixels = scaled }));
         Assert.IsNull(OpticalCalibrationSession.DerivativeCameras(nominal, boundary, bounds));
-
-        // Just inside the domain every fitted parameter keeps a supported direction.
         var inside = OpticalCalibrationSession.DerivativeCameras(nominal, boundary with { LogScale = Math.Log(minimum * 1.001) }, bounds);
         Assert.IsNotNull(inside);
         Assert.HasCount(4, inside);
+
+        // The joint fit reaches that point with real associations and reports it instead of throwing.
+        var truth = nominal with { FocalLengthXPixels = focal * .998, FocalLengthYPixels = focal * .998, RadialDistortionK1 = -.0199 };
+        var result = OpticalCalibrationSession.Fit(nominal, [Frame(truth, 0, FullFrame), Frame(truth, 1.5, FullFrame), Frame(truth, 3, FullFrame)],
+            [Frame(truth, 2.2, FullFrame)], Catalog, WithDistortion, Search);
+        Assert.IsTrue(result.Frames.Take(3).All(f => f.Status == "acquired"), string.Join(",", result.Frames.Select(f => f.Status)));
+        Assert.AreEqual(OpticalCalibrationStatus.Rejected, result.Status);
+        Assert.AreEqual("derivative-unsupported", result.ReasonCode, string.Join(",", result.Rejections));
+        Assert.Contains("derivative-unsupported", result.Rejections);
+        Assert.IsNull(result.CalibratedNative);
+        Assert.IsTrue(result.Parameters.All(p => p.StandardError is null));
     }
 
     private static FrameReadoutDescriptor Readout(int x, int y, int width, int height, int bin) =>

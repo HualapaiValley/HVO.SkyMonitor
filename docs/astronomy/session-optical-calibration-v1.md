@@ -161,7 +161,7 @@ Both keep the previously active revision and its optics unchanged.
   - incomplete catalog and invalid inputs
   - exhausted budget
   - an input identity bound to every fit and withheld frame input
-  - no derivative direction at the distortion-domain boundary, reported rather than thrown
+  - a session fit pinned to the distortion-domain boundary, rejected as `derivative-unsupported` without precision rather than thrown
 - `VirtualOpticalCalibrationReviewServiceTests` (6) cover:
   - accept, reject, retention and idempotency
   - stale reviews, including a stage or cancellation between review and accept
