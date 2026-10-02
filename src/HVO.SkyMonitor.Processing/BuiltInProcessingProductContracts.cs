@@ -212,10 +212,9 @@ internal static class BuiltInProcessingProductContracts
         var totalIntegration = TimeSpan.FromTicks(sources.Sum(static source => source.Integration.Ticks));
         if (string.Equals(request.RecipeName, Keogram, StringComparison.Ordinal))
         {
-            var options = ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(
-                identity.Descriptor.Options.GetProperty("parameters"));
-            var composition = new KeogramCompositionOptions(
-                options.SliceColumn, options.MaximumGapSeconds, options.GapColumnCount, options.MaximumColumnCount);
+            var geometry = NightlyProductRecipeSupport.ResolveKeogramGeometry(request, sources, out _)
+                ?? throw new InvalidOperationException("The keogram geometry contract is unavailable.");
+            var composition = NightlyProductRecipeSupport.CreateKeogramComposition(identity, geometry);
             var width = KeogramComposer.ComputeOutputWidth(
                 NightlyProductRecipeSupport.ToKeogramFrames(sources), composition);
             return new ProcessingProductContract(
@@ -223,7 +222,7 @@ internal static class BuiltInProcessingProductContracts
                 sourceIds,
                 "application/x-hvo-packed-image",
                 true,
-                ProcessingRecipeSupport.CreatePackedLayout(width, firstLayout.Height, firstLayout.PixelFormat),
+                ProcessingRecipeSupport.CreatePackedLayout(width, geometry.SampleCount, firstLayout.PixelFormat),
                 null,
                 ProcessingProductKind.PixelData,
                 null,

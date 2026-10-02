@@ -1,15 +1,83 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
 /// <summary>Bounded options for the nightly keogram recipe.</summary>
 public sealed record KeogramRecipeOptions(
-    int? SliceColumn = null,
     double MaximumGapSeconds = KeogramComposer.DefaultMaximumGapSeconds,
-    int GapColumnCount = 1,
+    int MaximumGapColumnCount = KeogramComposer.DefaultMaximumGapColumnCount,
     int MaximumColumnCount = KeogramComposer.DefaultMaximumColumnCount);
+
+/// <summary>
+/// The captured rig geometry a keogram samples: the readout-view projection of the source previews, the rig profile it
+/// was derived from, and the number of uniformly spaced north-zenith-south meridian rows.
+/// </summary>
+public sealed record KeogramGeometryV1(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] string RigProfileSha256,
+    [property: JsonRequired] ProjectionContext Projection,
+    [property: JsonRequired] int SampleCount)
+{
+    public const string CurrentSchemaVersion = "keogram-meridian-geometry-v1";
+    public const string AuxiliaryInputName = "keogram-geometry";
+
+    /// <summary>Creates geometry with roughly one meridian row per imaged source pixel.</summary>
+    public static KeogramGeometryV1 Create(ProjectionContext projection, string rigProfileSha256) =>
+        new(CurrentSchemaVersion, rigProfileSha256, projection, MeridianSamplePath.RecommendedSampleCount(projection));
+}
+
+/// <summary>Canonical serialization and auxiliary-input binding for <see cref="KeogramGeometryV1"/>.</summary>
+public static class KeogramGeometryJson
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private static readonly JsonSerializerOptions ParserOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
+    };
+
+    public static byte[] Serialize(KeogramGeometryV1 geometry)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        var element = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(geometry, SerializerOptions));
+        return Encoding.UTF8.GetBytes(element.GetRawText());
+    }
+
+    public static string ComputeIdentitySha256(KeogramGeometryV1 geometry) =>
+        ProcessingIdentity.ComputePayloadSha256(Serialize(geometry));
+
+    public static ProcessingAuxiliaryInput CreateAuxiliaryInput(KeogramGeometryV1 geometry)
+    {
+        var payload = Serialize(geometry);
+        return new ProcessingAuxiliaryInput(
+            KeogramGeometryV1.AuxiliaryInputName,
+            ProcessingAuxiliaryInputKind.CanonicalJson,
+            SchemaVersion: KeogramGeometryV1.CurrentSchemaVersion,
+            IdentitySha256: ProcessingIdentity.ComputePayloadSha256(payload),
+            Payload: payload);
+    }
+
+    public static KeogramGeometryV1? Parse(ReadOnlySpan<byte> utf8Json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<KeogramGeometryV1>(utf8Json, ParserOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}
 
 /// <summary>Bounded options for the nightly star trail recipe.</summary>
 public sealed record StarTrailRecipeOptions(int MaximumFrameCount = 512);
@@ -24,11 +92,10 @@ internal sealed class KeogramRecipe : IProcessingRecipe
     public JsonElement NormalizeOptions(JsonElement options)
     {
         var parsed = ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(options);
-        if (parsed.SliceColumn is < 0 ||
-            parsed.MaximumGapSeconds <= 0 || !double.IsFinite(parsed.MaximumGapSeconds) ||
+        if (parsed.MaximumGapSeconds <= 0 || !double.IsFinite(parsed.MaximumGapSeconds) ||
             parsed.MaximumGapSeconds > 86400 ||
-            parsed.GapColumnCount is < 1 or > KeogramComposer.MaximumGapColumnCount ||
-            parsed.MaximumColumnCount is < 1 or > 65536)
+            parsed.MaximumColumnCount is < 1 or > KeogramComposer.MaximumColumnLimit ||
+            parsed.MaximumGapColumnCount < 1 || parsed.MaximumGapColumnCount > parsed.MaximumColumnCount)
         {
             throw new ArgumentOutOfRangeException(nameof(options));
         }
@@ -50,10 +117,13 @@ internal sealed class KeogramRecipe : IProcessingRecipe
             return ValueTask.FromResult(failure!);
         }
 
-        var options = ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(
-            identity.Descriptor.Options.GetProperty("parameters"));
-        var composition = new KeogramCompositionOptions(
-            options.SliceColumn, options.MaximumGapSeconds, options.GapColumnCount, options.MaximumColumnCount);
+        var geometry = NightlyProductRecipeSupport.ResolveKeogramGeometry(request, sources, out failure);
+        if (geometry is null)
+        {
+            return ValueTask.FromResult(failure!);
+        }
+
+        var composition = NightlyProductRecipeSupport.CreateKeogramComposition(identity, geometry);
         KeogramResult result;
         try
         {
@@ -162,7 +232,8 @@ internal static class NightlyProductRecipeSupport
 
     internal static readonly IReadOnlyList<ProcessingAlgorithmIdentity> KeogramAlgorithms =
     [
-        new("keogram-slice", KeogramComposer.AlgorithmVersion),
+        new("meridian-path", MeridianSamplePath.AlgorithmVersion),
+        new("keogram-path", KeogramComposer.AlgorithmVersion),
         new("row-packing", "packed-copy-v1")
     ];
 
@@ -240,6 +311,90 @@ internal static class NightlyProductRecipeSupport
 
         failure = null;
         return true;
+    }
+
+    internal static KeogramGeometryV1? ResolveKeogramGeometry(
+        ProcessingExecutionRequest request,
+        IReadOnlyList<ProcessingArtifact> sources,
+        out ProcessingOutcome? failure)
+    {
+        var matches = (request.AuxiliaryInputs ?? []).Where(static input =>
+            string.Equals(input.Name, KeogramGeometryV1.AuxiliaryInputName, StringComparison.Ordinal)).ToArray();
+        if (matches.Length == 0)
+        {
+            failure = ProcessingOutcome.Skipped(
+                ProcessingReasonCodes.MissingKeogramGeometry, KeogramGeometryV1.AuxiliaryInputName);
+            return null;
+        }
+
+        var auxiliary = matches[0];
+        var geometry = matches.Length == 1 && auxiliary.Kind == ProcessingAuxiliaryInputKind.CanonicalJson &&
+            string.Equals(auxiliary.SchemaVersion, KeogramGeometryV1.CurrentSchemaVersion, StringComparison.Ordinal)
+                ? KeogramGeometryJson.Parse(auxiliary.Payload.Span)
+                : null;
+        if (geometry is null || !IsValid(geometry) ||
+            !string.Equals(
+                KeogramGeometryJson.ComputeIdentitySha256(geometry),
+                auxiliary.IdentitySha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            failure = ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidKeogramGeometry, KeogramGeometryV1.AuxiliaryInputName);
+            return null;
+        }
+
+        var layout = sources[0].Layout!;
+        if (geometry.Projection.WidthPixels != layout.Width || geometry.Projection.HeightPixels != layout.Height ||
+            sources.Any(source => !string.Equals(
+                source.Compatibility.Rig, geometry.RigProfileSha256, StringComparison.OrdinalIgnoreCase)))
+        {
+            failure = ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.KeogramGeometryMismatch, KeogramGeometryV1.AuxiliaryInputName);
+            return null;
+        }
+
+        failure = null;
+        return geometry;
+    }
+
+    internal static KeogramCompositionOptions CreateKeogramComposition(
+        ProcessingRecipeIdentity identity,
+        KeogramGeometryV1 geometry)
+    {
+        var options = ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(
+            identity.Descriptor.Options.GetProperty("parameters"));
+        var width = geometry.Projection.WidthPixels;
+        var height = geometry.Projection.HeightPixels;
+
+        // A projection that does not enforce sensor bounds can place a meridian direction off the readout; the sensor
+        // did not image it, so it is unmapped rather than an invalid geometry.
+        var path = MeridianSamplePath.Create(geometry.Projection, geometry.SampleCount)
+            .Select(sample => sample.Pixel is { } pixel &&
+                pixel.X >= 0 && pixel.X <= width && pixel.Y >= 0 && pixel.Y <= height
+                    ? sample.Pixel
+                    : null)
+            .ToArray();
+        return new KeogramCompositionOptions(
+            path, options.MaximumGapSeconds, options.MaximumGapColumnCount, options.MaximumColumnCount);
+    }
+
+    private static bool IsValid(KeogramGeometryV1 geometry)
+    {
+        if (!string.Equals(geometry.SchemaVersion, KeogramGeometryV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
+            geometry.RigProfileSha256 is not { Length: 64 } rig || !rig.All(Uri.IsHexDigit) ||
+            geometry.SampleCount is < MeridianSamplePath.MinimumSampleCount or > MeridianSamplePath.MaximumSampleCount)
+        {
+            return false;
+        }
+        try
+        {
+            geometry.Projection.Validate();
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     internal static KeogramFrame[] ToKeogramFrames(IReadOnlyList<ProcessingArtifact> sources) =>

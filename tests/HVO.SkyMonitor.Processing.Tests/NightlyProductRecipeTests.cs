@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
@@ -11,8 +12,19 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class NightlyProductRecipeTests
 {
+    private static readonly string RigProfileSha256 = new('B', 64);
+
     private static readonly ProcessingCompatibilityIdentity Compatibility = new(
-        "rig-v1", "north-up", "none-v1", "full-v1", "sensor-v1", "night-v1", "pipeline-v1");
+        RigProfileSha256, RigProfileSha256, "none-v1", "full-v1", "sensor-v1", "night-v1", "pipeline-v1");
+
+    // A zenith fisheye whose horizon sits just inside a 2x2 preview: north at the top edge, south at the bottom.
+    private static readonly KeogramGeometryV1 Geometry = new(
+        KeogramGeometryV1.CurrentSchemaVersion,
+        RigProfileSha256,
+        new ProjectionContext(
+            ProjectionModel.EquidistantFisheye, 1, 1, 0.99 * 2 / Math.PI, 0.99 * 2 / Math.PI, 2, 2,
+            ProjectionAperture.Circular, 1),
+        3);
 
     private static readonly DateTimeOffset Origin = DateTimeOffset.Parse(
         "2026-08-31T22:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
@@ -30,14 +42,14 @@ public sealed class NightlyProductRecipeTests
     }
 
     [TestMethod]
-    public async Task KeogramRecipeProducesTimeAxisWithPatternedGapsAndLineage()
+    public async Task KeogramRecipeSamplesMeridianWithProportionalGapsAndLineage()
     {
         var first = Preview(Guid.Parse("40000000-0000-0000-0000-000000000001"), [1, 2, 3, 4], Origin);
         var second = Preview(Guid.Parse("40000000-0000-0000-0000-000000000002"), [5, 6, 7, 8], Origin.AddMinutes(1));
-        var third = Preview(Guid.Parse("40000000-0000-0000-0000-000000000003"), [9, 10, 11, 12], Origin.AddMinutes(10));
+        var third = Preview(Guid.Parse("40000000-0000-0000-0000-000000000003"), [9, 10, 11, 12], Origin.AddMinutes(5));
         var request = KeogramRequest(
             [first, second, third],
-            new KeogramRecipeOptions(SliceColumn: 0, MaximumGapSeconds: 300, GapColumnCount: 1));
+            new KeogramRecipeOptions(MaximumGapSeconds: 90));
 
         var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
@@ -45,13 +57,21 @@ public sealed class NightlyProductRecipeTests
         var product = outcome.Products.Single();
         Assert.AreEqual(FrameArtifactRole.Preview, product.Role);
         Assert.AreEqual("application/x-hvo-packed-image", product.MediaType);
-        Assert.AreEqual(4, product.Layout!.Width);
-        Assert.AreEqual(2, product.Layout.Height);
-        Assert.AreEqual(4, product.Layout.StrideBytes);
+        Assert.AreEqual(6, product.Layout!.Width);
+        Assert.AreEqual(3, product.Layout.Height);
+        Assert.AreEqual(6, product.Layout.StrideBytes);
         Assert.AreEqual(CameraPixelFormat.Mono8, product.Layout.PixelFormat);
         Assert.AreEqual(TimeSpan.FromSeconds(3), product.TotalIntegration);
+
+        // Rows are the north horizon (top-edge mean), the zenith (centre mean), and the south horizon (bottom-edge
+        // mean); the 240 s interval at a 60 s cadence renders three patterned gap columns.
         CollectionAssert.AreEqual(
-            new byte[] { 1, 5, 0x20, 9, 3, 7, 0x60, 11 },
+            new byte[]
+            {
+                2, 6, 0x20, 0x60, 0x20, 10,
+                3, 7, 0x60, 0x20, 0x60, 11,
+                4, 8, 0x20, 0x60, 0x20, 12
+            },
             product.Payload.ToArray());
         CollectionAssert.AreEqual(
             new[] { first.ArtifactId, second.ArtifactId, third.ArtifactId },
@@ -59,7 +79,8 @@ public sealed class NightlyProductRecipeTests
         CollectionAssert.AreEqual(
             new[]
             {
-                new ProcessingAlgorithmIdentity("keogram-slice", KeogramComposer.AlgorithmVersion),
+                new ProcessingAlgorithmIdentity("meridian-path", MeridianSamplePath.AlgorithmVersion),
+                new ProcessingAlgorithmIdentity("keogram-path", KeogramComposer.AlgorithmVersion),
                 new ProcessingAlgorithmIdentity("row-packing", "packed-copy-v1")
             },
             product.Algorithms.ToArray());
@@ -71,10 +92,10 @@ public sealed class NightlyProductRecipeTests
     {
         var first = Preview(Guid.Parse("40000000-0000-0000-0000-000000000011"), [1, 2, 3, 4], Origin);
         var second = Preview(Guid.Parse("40000000-0000-0000-0000-000000000012"), [5, 6, 7, 8], Origin.AddMinutes(1));
-        var third = Preview(Guid.Parse("40000000-0000-0000-0000-000000000013"), [9, 10, 11, 12], Origin.AddMinutes(10));
+        var third = Preview(Guid.Parse("40000000-0000-0000-0000-000000000013"), [9, 10, 11, 12], Origin.AddMinutes(5));
         var request = KeogramRequest(
             [third, first, second],
-            new KeogramRecipeOptions(SliceColumn: 0, MaximumGapSeconds: 300, GapColumnCount: 1));
+            new KeogramRecipeOptions(MaximumGapSeconds: 90));
 
         var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
@@ -84,9 +105,74 @@ public sealed class NightlyProductRecipeTests
             new[] { first.ArtifactId, second.ArtifactId, third.ArtifactId },
             product.SourceArtifactIds.ToArray());
         CollectionAssert.AreEqual(
-            new byte[] { 1, 5, 0x20, 9, 3, 7, 0x60, 11 },
-            product.Payload.ToArray());
+            new byte[] { 2, 6, 10 },
+            new[] { product.Payload.Span[0], product.Payload.Span[1], product.Payload.Span[5] });
         ProcessingRecipeTests.AssertProductMatchesContract(request, product);
+    }
+
+    [TestMethod]
+    public async Task KeogramRecipeSkipsWithoutCapturedGeometry()
+    {
+        var first = Preview(Guid.Parse("40000000-0000-0000-0000-000000000071"), [1, 2, 3, 4], Origin);
+        var request = KeogramRequest([first], new KeogramRecipeOptions()) with { AuxiliaryInputs = null };
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Skipped, outcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.MissingKeogramGeometry, outcome.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task KeogramRecipeRejectsGeometryForAnotherRigOrReadout()
+    {
+        var first = Preview(Guid.Parse("40000000-0000-0000-0000-000000000081"), [1, 2, 3, 4], Origin);
+        var otherRig = Geometry with { RigProfileSha256 = new string('C', 64) };
+        var otherReadout = Geometry with { Projection = Geometry.Projection with { WidthPixels = 4, HeightPixels = 4 } };
+
+        foreach (var geometry in new[] { otherRig, otherReadout })
+        {
+            var request = KeogramRequest([first], new KeogramRecipeOptions()) with
+            {
+                AuxiliaryInputs = [KeogramGeometryJson.CreateAuxiliaryInput(geometry)]
+            };
+
+            var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.KeogramGeometryMismatch, outcome.ReasonCode);
+        }
+    }
+
+    [TestMethod]
+    public async Task KeogramRecipeRejectsMalformedGeometry()
+    {
+        var first = Preview(Guid.Parse("40000000-0000-0000-0000-000000000091"), [1, 2, 3, 4], Origin);
+        var invalid = Geometry with { SampleCount = 1 };
+        var request = KeogramRequest([first], new KeogramRecipeOptions()) with
+        {
+            AuxiliaryInputs = [KeogramGeometryJson.CreateAuxiliaryInput(invalid)]
+        };
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidKeogramGeometry, outcome.ReasonCode);
+    }
+
+    [TestMethod]
+    public void KeogramGeometryRoundTripsCanonicallyWithStableIdentity()
+    {
+        var payload = KeogramGeometryJson.Serialize(Geometry);
+        var parsed = KeogramGeometryJson.Parse(payload);
+
+        Assert.IsNotNull(parsed);
+        Assert.AreEqual(Geometry, parsed);
+        CollectionAssert.AreEqual(payload, KeogramGeometryJson.Serialize(parsed));
+        Assert.AreEqual(
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            KeogramGeometryJson.ComputeIdentitySha256(Geometry));
+        StringAssert.Contains(System.Text.Encoding.UTF8.GetString(payload), "\"EquidistantFisheye\"", StringComparison.Ordinal);
+        Assert.IsNull(KeogramGeometryJson.Parse("{\"SchemaVersion\":\"keogram-meridian-geometry-v1\"}"u8));
     }
 
     [TestMethod]
@@ -159,7 +245,7 @@ public sealed class NightlyProductRecipeTests
         var second = Preview(Guid.Parse("40000000-0000-0000-0000-000000000052"), [5, 6, 7, 8], Origin.AddMinutes(10));
         var request = KeogramRequest(
             [first, second],
-            new KeogramRecipeOptions(MaximumGapSeconds: 300, GapColumnCount: 1, MaximumColumnCount: 2));
+            new KeogramRecipeOptions(MaximumGapSeconds: 300, MaximumGapColumnCount: 1, MaximumColumnCount: 2));
 
         var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
@@ -193,7 +279,8 @@ public sealed class NightlyProductRecipeTests
             JsonSerializer.SerializeToElement(options),
             ProcessingInputSelector.RecipeResult(FrameArtifactRole.Preview, PreviewVariant, PreviewRecipe),
             inputs,
-            "keogram-v1");
+            "keogram-v1",
+            AuxiliaryInputs: [KeogramGeometryJson.CreateAuxiliaryInput(Geometry)]);
 
     private static ProcessingArtifact Preview(
         Guid artifactId,
