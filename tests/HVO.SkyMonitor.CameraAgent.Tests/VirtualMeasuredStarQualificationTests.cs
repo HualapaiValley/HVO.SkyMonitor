@@ -157,8 +157,12 @@ public sealed class VirtualMeasuredStarQualificationTests
             catalog.SelectionIdentitySha256,
             tolerances = new
             {
-                MaximumCentroidRmsPixels, MaximumCentroidRmsRegressionPixels, MaximumRecallRegression,
-                MaximumMeasurementMilliseconds, MaximumMeasurementTimeRatio, falseAssociations = 0
+                MaximumCentroidRmsPixels,
+                MaximumCentroidRmsRegressionPixels,
+                MaximumRecallRegression,
+                MaximumMeasurementMilliseconds,
+                MaximumMeasurementTimeRatio,
+                falseAssociations = 0
             },
             reports,
             failures

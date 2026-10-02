@@ -196,4 +196,48 @@ both the 4× and the 2,500 ms budgets. Its bounds are the same pixel and candida
 
 ### Held-out partition
 
-Recorded after the committed held-out run (Jan 15, May 15 and Sep 15, seeds 110201, 110205 and 110209).
+**Run identity.**
+- Revision: `927be360ee5b79b4d1aaead458ac2a7571af87f0`.
+- Partitions: Jan 15, May 15 and Sep 15 (seeds 110201, 110205 and 110209), all at 08:00Z.
+- Catalog: the HYG v4.2 database `B51D18B7…0B9E2`. Catalog identity `e29a02ef…5b60b`; selection identity
+  `ce81fa2e…74cb8`.
+- Report: `virtual-measured-stars.json`, SHA-256 `6aaa27ad725e4263248335d3cb23e68b16db7d5720c0189037a800ea6f8ba403`.
+
+**Result.** All 21 cases met every predeclared gate, with an empty failure list:
+- Every v2 mapping was accepted, and there were no false associations.
+- v2 measurement time was 71–1,943 ms, at most 2.24 × v1.
+- Missed eligible stars occurred only on CFA: Jan had 3 `crowded`, 1 `masked-aperture` and 1
+  `saturated-excessive`; May had 5 `crowded`; Sep had 1 `crowded`.
+
+| Case | Recall v1 → v2 | Centroid RMS px v1 → v2 | v2 p95 px | Measure ms v1 → v2 | Associations v1 → v2 |
+| --- | --- | --- | --- | --- | --- |
+| 01-mono-native | 0.957 → 1.000 | 0.134 → 0.073 | 0.132 | 279 → 625 | 469 → 489 |
+| 01-mono-roi | 0.972 → 1.000 | 0.131 → 0.072 | 0.135 | 120 → 262 | 461 → 472 |
+| 01-mono-bin2 | 0.832 → 1.000 | 0.177 → 0.051 | 0.095 | 43 → 87 | 162 → 192 |
+| 01-mono-roi-bin2 | 0.809 → 1.000 | 0.179 → 0.049 | 0.087 | 32 → 71 | 150 → 183 |
+| 01-mono-mirror | 0.961 → 1.000 | 0.128 → 0.070 | 0.133 | 169 → 319 | 470 → 489 |
+| 01-mono-roll | 0.971 → 1.000 | 0.134 → 0.079 | 0.161 | 168 → 322 | 476 → 490 |
+| 01-cfa-native | 0.985 → 0.993 | 0.082 → 0.089 | 0.163 | 1266 → 1934 | 676 → 680 |
+| 05-mono-native | 0.966 → 1.000 | 0.129 → 0.070 | 0.133 | 169 → 319 | 464 → 481 |
+| 05-mono-roi | 0.974 → 1.000 | 0.131 → 0.074 | 0.139 | 118 → 255 | 451 → 464 |
+| 05-mono-bin2 | 0.852 → 1.000 | 0.168 → 0.049 | 0.094 | 44 → 87 | 168 → 196 |
+| 05-mono-roi-bin2 | 0.828 → 1.000 | 0.180 → 0.052 | 0.093 | 32 → 71 | 154 → 186 |
+| 05-mono-mirror | 0.971 → 1.000 | 0.131 → 0.070 | 0.133 | 164 → 317 | 467 → 481 |
+| 05-mono-roll | 0.962 → 1.000 | 0.126 → 0.074 | 0.141 | 166 → 320 | 463 → 481 |
+| 05-cfa-native | 0.985 → 0.992 | 0.077 → 0.086 | 0.150 | 1249 → 1937 | 645 → 650 |
+| 09-mono-native | 0.985 → 1.000 | 0.129 → 0.070 | 0.131 | 163 → 320 | 461 → 468 |
+| 09-mono-roi | 0.976 → 1.000 | 0.126 → 0.074 | 0.133 | 118 → 258 | 443 → 453 |
+| 09-mono-bin2 | 0.828 → 1.000 | 0.190 → 0.051 | 0.090 | 42 → 85 | 154 → 183 |
+| 09-mono-roi-bin2 | 0.821 → 1.000 | 0.178 → 0.053 | 0.098 | 32 → 75 | 144 → 174 |
+| 09-mono-mirror | 0.974 → 1.000 | 0.130 → 0.070 | 0.127 | 190 → 316 | 456 → 468 |
+| 09-mono-roll | 0.981 → 1.000 | 0.134 → 0.078 | 0.137 | 166 → 317 | 459 → 468 |
+| 09-cfa-native | 0.991 → 0.998 | 0.082 → 0.092 | 0.163 | 1247 → 1943 | 657 → 662 |
+
+**Reading the result.**
+- **CFA centroid RMS.** On CFA, v2 is 0.004–0.010 px worse than v1 while recovering more stars. That is within
+  the declared 0.02 px allowance. The likely cause is the stars v2 additionally recovers; this has not been
+  separately attributed.
+- **First-case timing.** The 625 ms first case includes one-time JIT warm-up. Later mono-native cases take
+  about 320 ms.
+- **What the evidence covers.** Simulated pixels only: no physical sensor, lens or sky.
+- **Covariance.** The centroid covariance remains unvalidated. Coverage validation is #1105.

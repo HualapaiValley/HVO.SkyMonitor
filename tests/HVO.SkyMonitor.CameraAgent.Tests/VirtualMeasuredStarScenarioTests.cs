@@ -214,7 +214,9 @@ public sealed class VirtualMeasuredStarScenarioTests
         {
             Readout = native.Config.Rig.Readout! with
             {
-                SampleDepthBits = 16, StoredCodeTransform = FrameStoredCodeTransform.IdentityV1, WhiteLevel = 65535
+                SampleDepthBits = 16,
+                StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+                WhiteLevel = 65535
             }
         };
         return native with
