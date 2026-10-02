@@ -245,9 +245,13 @@ No setting was changed after tuning.
 
 ### Held-out partition
 
-**Run.** Revision `4b0305f38618bbd41944bf1d37c8775855791354`, Release, .NET 10.0.12, tiered compilation off, 12 processors. Single process, 1 m 52 s.
+**Run.** Revision `21f6015570086a6b679c1a31d9e5012ab97f0c69`, Release, .NET 10.0.12, tiered compilation off, 12 processors. Single process, 1 m 55 s.
 
-**Report.** `virtual-optical-calibration.json` (schema `virtual-optical-calibration-v1`), SHA-256 `fda036dffcbde37deb77ef064e94daab4b97b0e60ef56f290c4aae70e73d5b25`.
+This rerun follows the review corrections. Against the first run at `4b0305f3`, every fitted parameter,
+error, score, rejection and diagnostic is identical. Only timing noise and the result identities changed; the
+identities now include the input identity.
+
+**Report.** `virtual-optical-calibration.json` (schema `virtual-optical-calibration-v1`), SHA-256 `5332b1cf570409fc2f2090f350d653f65e33c18130dd8b10d558abaac97a879e`.
 
 All three cases were Accepted and every predeclared tolerance held. No setting was changed after the run.
 
@@ -294,8 +298,8 @@ The maximum pose error was 0.004° and the maximum focal error 4.8e-5.
 
 | Case | Kind | Wall time (limit) | Allocated (limit) | Peak working set (≤ 2 GiB) | Baseline solve |
 | --- | --- | --- | --- | --- | --- |
-| 01 | cold | 17.8 s (23.2 s) | 18.5 GiB (23.8 GiB) | 480 MiB | 2.4 s, 2.7 GiB |
-| 05 | session | 14.2 s (18.0 s) | 14.8 GiB (17.6 GiB) | 502 MiB | 1.8 s, 2.0 GiB |
-| 09 | session | 15.0 s (19.8 s) | 15.4 GiB (19.0 GiB) | 502 MiB | 2.0 s, 2.1 GiB |
+| 01 | cold | 19.0 s (25.4 s) | 18.5 GiB (23.8 GiB) | 477 MiB | 2.7 s, 2.7 GiB |
+| 05 | session | 14.5 s (18.0 s) | 14.8 GiB (17.6 GiB) | 477 MiB | 1.8 s, 2.0 GiB |
+| 09 | session | 14.9 s (19.7 s) | 15.4 GiB (19.1 GiB) | 477 MiB | 2.0 s, 2.1 GiB |
 
-Measuring each frame took 31–171 ms, with 653–719 candidates per frame.
+Measuring each frame took 33–189 ms, with 653–719 candidates per frame.
