@@ -2,7 +2,8 @@
 
 This deliberately isolated harness consumes actual VirtualSky output. It is not
 a production scheduler, calendar migration, storage contract or encoder adapter.
-The operator review checkpoint remains open until disposition is recorded.
+The operator accepted the revised visual checkpoint and starting-sunrise date
+label on 2026-10-02; code qualification and production adoption are separate.
 
 The rendering input for the first complete run is #1131 prototype
 `37338b3866248200b3aa0751c3457177766ca823`, based on target
