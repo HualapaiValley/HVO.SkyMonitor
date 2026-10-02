@@ -51,6 +51,21 @@ public sealed record KeogramResult(
     public int GapCount => Gaps.Count;
 }
 
+/// <summary>The output column and source time of one frame column inside a composed keogram segment.</summary>
+public readonly record struct KeogramSegmentColumn(int Column, DateTimeOffset TimestampUtc);
+
+/// <summary>
+/// One previously composed keogram and the column each of its source frames occupies. Segments are assembled into a
+/// longer keogram without resampling the source frames.
+/// </summary>
+public sealed record KeogramSegment(
+    int Width,
+    int Height,
+    int StrideBytes,
+    CameraPixelFormat PixelFormat,
+    ReadOnlyMemory<byte> PixelData,
+    IReadOnlyList<KeogramSegmentColumn> FrameColumns);
+
 /// <summary>Samples a sky path from each frame into a time-axis keogram with explicit, proportional gap columns.</summary>
 public static class KeogramComposer
 {
@@ -75,6 +90,7 @@ public static class KeogramComposer
         KeogramCompositionOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         cancellationToken.ThrowIfCancellationRequested();
         var plan = ComputeTimeAxis(frames, options);
         var height = options.SamplePath.Count;
@@ -153,27 +169,10 @@ public static class KeogramComposer
     public static KeogramTimeAxis ComputeTimeAxis(IReadOnlyList<KeogramFrame> frames, KeogramCompositionOptions options)
     {
         ArgumentNullException.ThrowIfNull(frames);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(options.SamplePath);
+        ValidateOptions(options);
         if (frames.Count == 0)
         {
             throw new ArgumentException("At least one source frame is required.", nameof(frames));
-        }
-        if (options.MaximumGapSeconds <= 0 || !double.IsFinite(options.MaximumGapSeconds))
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "The maximum gap must be a positive finite duration.");
-        }
-        if (options.MaximumColumnCount is < 1 or > MaximumColumnLimit)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "The maximum column count is out of range.");
-        }
-        if (options.MaximumGapColumnCount < 1 || options.MaximumGapColumnCount > options.MaximumColumnCount)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "The maximum gap column count is out of range.");
-        }
-        if (options.SamplePath.Count is < MinimumPathLength or > MaximumPathLength)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "The sample path length is out of range.");
         }
 
         var first = frames[0] ?? throw new ArgumentException("Source frames must not contain null entries.", nameof(frames));
@@ -206,25 +205,263 @@ public static class KeogramComposer
             timestamps[index] = frame.TimestampUtc;
         }
 
-        var cadence = ComputeCadenceSeconds(timestamps, options.MaximumGapSeconds);
+        return ComputeAxis(timestamps, options, nameof(frames));
+    }
+
+    /// <summary>Returns the output column of each frame on <paramref name="axis"/>, in frame order.</summary>
+    public static int[] ComputeFrameColumns(KeogramTimeAxis axis)
+    {
+        ArgumentNullException.ThrowIfNull(axis);
+        var columns = new int[axis.Width - axis.Gaps.Sum(static gap => gap.ColumnCount)];
+        var gapIndex = 0;
+        var outputColumn = 0;
+        for (var index = 0; index < columns.Length; index++)
+        {
+            if (gapIndex < axis.Gaps.Count && axis.Gaps[gapIndex].FirstColumn == outputColumn)
+            {
+                outputColumn += axis.Gaps[gapIndex].ColumnCount;
+                gapIndex++;
+            }
+            columns[index] = outputColumn;
+            outputColumn++;
+        }
+        return columns;
+    }
+
+    /// <summary>
+    /// Assembles composed segments into the keogram that composing every segment's source frames at once produces. Each
+    /// frame column is copied unchanged, and the time axis, cadence, and gap pattern are recomputed over all frames, so
+    /// the result is byte-identical to direct composition with the same options.
+    /// </summary>
+    public static KeogramResult Assemble(
+        IReadOnlyList<KeogramSegment> segments,
+        KeogramCompositionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        cancellationToken.ThrowIfCancellationRequested();
+        var plan = ComputeAssemblyTimeAxis(segments, options);
+        var height = options.SamplePath.Count;
+        var pixelFormat = segments[0].PixelFormat;
+        var frameCount = segments.Sum(static segment => segment.FrameColumns.Count);
+        var bytesPerPixel = ImageLayout.BytesPerPixel(pixelFormat);
+        var outputStride = checked(plan.Width * bytesPerPixel);
+        var output = new byte[checked(outputStride * height)];
+        var gapIndex = 0;
+        var outputColumn = 0;
+        foreach (var segment in segments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = segment.PixelData.Span;
+            foreach (var frameColumn in segment.FrameColumns)
+            {
+                if (gapIndex < plan.Gaps.Count && plan.Gaps[gapIndex].FirstColumn == outputColumn)
+                {
+                    for (var gap = 0; gap < plan.Gaps[gapIndex].ColumnCount; gap++)
+                    {
+                        WritePatternColumn(output, outputStride, height, bytesPerPixel, outputColumn);
+                        outputColumn++;
+                    }
+                    gapIndex++;
+                }
+
+                var sourceColumn = frameColumn.Column * bytesPerPixel;
+                var destinationColumn = outputColumn * bytesPerPixel;
+                for (var row = 0; row < height; row++)
+                {
+                    source.Slice(row * segment.StrideBytes + sourceColumn, bytesPerPixel)
+                        .CopyTo(output.AsSpan(row * outputStride + destinationColumn, bytesPerPixel));
+                }
+                outputColumn++;
+            }
+        }
+
+        return new KeogramResult(
+            plan.Width,
+            height,
+            outputStride,
+            pixelFormat,
+            output,
+            frameCount,
+            plan.Gaps,
+            plan.CadenceSeconds,
+            options.SamplePath.Count(static point => point is not null),
+            AlgorithmVersion);
+    }
+
+    /// <summary>Validates composed segments and returns the time axis their assembly occupies.</summary>
+    public static KeogramTimeAxis ComputeAssemblyTimeAxis(
+        IReadOnlyList<KeogramSegment> segments,
+        KeogramCompositionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        ValidateOptions(options);
+        if (segments.Count == 0)
+        {
+            throw new ArgumentException("At least one keogram segment is required.", nameof(segments));
+        }
+
+        var pixelFormat = segments[0]?.PixelFormat
+            ?? throw new ArgumentException("Keogram segments must not contain null entries.", nameof(segments));
+        var timestamps = new List<DateTimeOffset>();
+        foreach (var segment in segments)
+        {
+            ValidateSegment(segment, options.SamplePath.Count, pixelFormat, timestamps, nameof(segments));
+        }
+        return ComputeAxis(timestamps, options, nameof(segments));
+    }
+
+    /// <summary>
+    /// Returns the time axis of frames captured at <paramref name="timestamps"/> without their pixels. It is the axis
+    /// <see cref="ComputeTimeAxis(IReadOnlyList{KeogramFrame}, KeogramCompositionOptions)"/> computes for the same frames,
+    /// so a producer can declare a segment's frame columns from captured times alone.
+    /// </summary>
+    public static KeogramTimeAxis ComputeTimeAxis(
+        IReadOnlyList<DateTimeOffset> timestamps,
+        double maximumGapSeconds,
+        int maximumGapColumnCount,
+        int maximumColumnCount)
+    {
+        ArgumentNullException.ThrowIfNull(timestamps);
+        ValidateAxisBounds(maximumGapSeconds, maximumGapColumnCount, maximumColumnCount, nameof(maximumGapSeconds));
+        if (timestamps.Count == 0)
+        {
+            throw new ArgumentException("At least one frame timestamp is required.", nameof(timestamps));
+        }
+        for (var index = 0; index < timestamps.Count; index++)
+        {
+            if (timestamps[index].Offset != TimeSpan.Zero || (index > 0 && timestamps[index] < timestamps[index - 1]))
+            {
+                throw new ArgumentException("Frame timestamps must be UTC and non-decreasing.", nameof(timestamps));
+            }
+        }
+        return ComputeAxis(timestamps, maximumGapSeconds, maximumGapColumnCount, maximumColumnCount, nameof(timestamps));
+    }
+
+    private static void ValidateAxisBounds(
+        double maximumGapSeconds,
+        int maximumGapColumnCount,
+        int maximumColumnCount,
+        string parameterName)
+    {
+        if (maximumGapSeconds <= 0 || !double.IsFinite(maximumGapSeconds))
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "The maximum gap must be a positive finite duration.");
+        }
+        if (maximumColumnCount is < 1 or > MaximumColumnLimit)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "The maximum column count is out of range.");
+        }
+        if (maximumGapColumnCount < 1 || maximumGapColumnCount > maximumColumnCount)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "The maximum gap column count is out of range.");
+        }
+    }
+
+    private static void ValidateOptions(KeogramCompositionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.SamplePath);
+        ValidateAxisBounds(
+            options.MaximumGapSeconds, options.MaximumGapColumnCount, options.MaximumColumnCount, nameof(options));
+        if (options.SamplePath.Count is < MinimumPathLength or > MaximumPathLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "The sample path length is out of range.");
+        }
+    }
+
+    private static void ValidateSegment(
+        KeogramSegment segment,
+        int height,
+        CameraPixelFormat pixelFormat,
+        List<DateTimeOffset> timestamps,
+        string parameterName)
+    {
+        if (segment is null)
+        {
+            throw new ArgumentException("Keogram segments must not contain null entries.", parameterName);
+        }
+        if (segment.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16 or CameraPixelFormat.Rgb24) ||
+            segment.PixelFormat != pixelFormat || segment.Height != height)
+        {
+            throw new ArgumentException(
+                "All keogram segments must share the pixel format and the sample path height.", parameterName);
+        }
+
+        var layout = new ImageLayout(segment.Width, segment.Height, segment.PixelFormat, segment.StrideBytes);
+        try
+        {
+            layout.Validate();
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new ArgumentException("Keogram segment layout is invalid.", parameterName, exception);
+        }
+        if (segment.PixelData.Length < layout.RequiredByteLength)
+        {
+            throw new ArgumentException("Keogram segment buffer is shorter than its declared layout.", parameterName);
+        }
+        if (segment.FrameColumns is not { Count: > 0 })
+        {
+            throw new ArgumentException("Every keogram segment must declare at least one frame column.", parameterName);
+        }
+
+        var previousColumn = -1;
+        foreach (var frameColumn in segment.FrameColumns)
+        {
+            if (frameColumn.Column <= previousColumn || frameColumn.Column >= segment.Width)
+            {
+                throw new ArgumentException(
+                    "Keogram segment frame columns must be strictly increasing and inside the segment.", parameterName);
+            }
+            if (frameColumn.TimestampUtc.Offset != TimeSpan.Zero)
+            {
+                throw new ArgumentException("Keogram segment timestamps must be UTC.", parameterName);
+            }
+            if (timestamps.Count > 0 && frameColumn.TimestampUtc < timestamps[^1])
+            {
+                throw new ArgumentException(
+                    "Keogram segments and their frames must be in non-decreasing time order.", parameterName);
+            }
+            previousColumn = frameColumn.Column;
+            timestamps.Add(frameColumn.TimestampUtc);
+        }
+    }
+
+    private static KeogramTimeAxis ComputeAxis(
+        IReadOnlyList<DateTimeOffset> timestamps,
+        KeogramCompositionOptions options,
+        string parameterName) =>
+        ComputeAxis(
+            timestamps, options.MaximumGapSeconds, options.MaximumGapColumnCount, options.MaximumColumnCount,
+            parameterName);
+
+    private static KeogramTimeAxis ComputeAxis(
+        IReadOnlyList<DateTimeOffset> timestamps,
+        double maximumGapSeconds,
+        int maximumGapColumnCount,
+        int maximumColumnCount,
+        string parameterName)
+    {
+        var cadence = ComputeCadenceSeconds(timestamps, maximumGapSeconds);
         var gaps = new List<KeogramGap>();
         var width = 0;
-        for (var index = 0; index < timestamps.Length; index++)
+        for (var index = 0; index < timestamps.Count; index++)
         {
             if (index > 0)
             {
                 var seconds = (timestamps[index] - timestamps[index - 1]).TotalSeconds;
-                if (seconds > options.MaximumGapSeconds)
+                if (seconds > maximumGapSeconds)
                 {
-                    var columns = ComputeGapColumnCount(seconds, cadence, options.MaximumGapColumnCount);
+                    var columns = ComputeGapColumnCount(seconds, cadence, maximumGapColumnCount);
                     gaps.Add(new KeogramGap(timestamps[index - 1], timestamps[index], width, columns));
                     width = checked(width + columns);
                 }
             }
             width = checked(width + 1);
-            if (width > options.MaximumColumnCount)
+            if (width > maximumColumnCount)
             {
-                throw new ArgumentException("The keogram column count exceeds the configured bound.", nameof(frames));
+                throw new ArgumentException("The keogram column count exceeds the configured bound.", parameterName);
             }
         }
 

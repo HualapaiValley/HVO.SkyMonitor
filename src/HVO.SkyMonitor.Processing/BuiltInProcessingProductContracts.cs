@@ -14,7 +14,7 @@ internal static class BuiltInProcessingProductContracts
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
-        if (request.RecipeName is Keogram or StarTrail)
+        if (request.RecipeName is Keogram or StarTrail or KeogramAssembly)
         {
             return CreateNightlyProductContract(request, identity);
         }
@@ -86,7 +86,7 @@ internal static class BuiltInProcessingProductContracts
         {
             return false;
         }
-        if (request.RecipeName is Keogram or StarTrail &&
+        if (request.RecipeName is Keogram or StarTrail or KeogramAssembly &&
             (contract.ExactLayout is null || payload.Length != contract.ExactLayout.ByteLength))
         {
             return false;
@@ -201,6 +201,28 @@ internal static class BuiltInProcessingProductContracts
         ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity)
     {
+        if (string.Equals(request.RecipeName, KeogramAssembly, StringComparison.Ordinal))
+        {
+            var plan = NightlyProductRecipeSupport.ResolveKeogramAssembly(request, identity, out _)
+                ?? throw new InvalidOperationException("The keogram assembly source contract is unavailable.");
+            var axis = KeogramComposer.ComputeAssemblyTimeAxis(plan.Segments, plan.Composition);
+            return new ProcessingProductContract(
+                FrameArtifactRole.Preview,
+                plan.Sources.Select(static source => source.ArtifactId).ToArray(),
+                "application/x-hvo-packed-image",
+                true,
+                ProcessingRecipeSupport.CreatePackedLayout(
+                    axis.Width, plan.Geometry.SampleCount, plan.Sources[0].Layout!.PixelFormat),
+                null,
+                ProcessingProductKind.PixelData,
+                null,
+                false,
+                null,
+                NightlyProductRecipeSupport.KeogramAssemblyAlgorithms,
+                plan.TotalIntegration,
+                plan.Sources[0].Compatibility,
+                null);
+        }
         var sources = NightlyProductRecipeSupport.ResolveOrderedFrames(request, out _);
         if (sources.Count == 0 || !NightlyProductRecipeSupport.TryValidatePreviewSources(sources, out _))
         {

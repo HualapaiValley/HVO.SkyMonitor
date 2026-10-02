@@ -31,14 +31,17 @@ public sealed class NightlyProductRecipeTests
 
     private const string PreviewVariant = "preview";
     private static readonly string PreviewRecipe = new('A', 64);
+    private static readonly string SegmentRecipe = new('D', 64);
 
     [TestMethod]
     public void NightlyRecipeDefinitionsAreRegisteredAsWindows()
     {
         Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.Keogram, out var keogram));
         Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.StarTrail, out var starTrail));
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.KeogramAssembly, out var assembly));
         Assert.AreEqual(ProcessingOperationKind.Window, keogram!.OperationKind);
         Assert.AreEqual(ProcessingOperationKind.Window, starTrail!.OperationKind);
+        Assert.AreEqual(ProcessingOperationKind.Window, assembly!.OperationKind);
     }
 
     [TestMethod]
@@ -270,6 +273,170 @@ public sealed class NightlyProductRecipeTests
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, outcome.ReasonCode);
     }
+
+    [TestMethod]
+    public async Task KeogramAssemblyReproducesDirectNightKeogramFromSegments()
+    {
+        var frames = Enumerable.Range(0, 7)
+            .Select(index => Preview(
+                Guid.Parse($"40000000-0000-0000-0000-0000000001{index:D2}"),
+                [(byte)(index * 4), (byte)(index * 4 + 1), (byte)(index * 4 + 2), (byte)(index * 4 + 3)],
+                Origin.AddMinutes(index is < 3 ? index : index + 6)))
+            .ToArray();
+        var options = new KeogramRecipeOptions(MaximumGapSeconds: 90);
+        var direct = (await new ProcessingRecipeExecutor().ExecuteAsync(KeogramRequest(frames, options)).ConfigureAwait(false))
+            .Products.Single();
+
+        var segments = new List<ProcessingArtifact>();
+        var axes = new List<KeogramSegmentAxisV1>();
+        foreach (var chunk in new[] { frames[..2], frames[2..5], frames[5..] })
+        {
+            var (segment, axis) = await ComposeSegmentAsync(chunk, options).ConfigureAwait(false);
+            segments.Add(segment);
+            axes.Add(axis);
+        }
+        var request = AssemblyRequest(
+            [segments[2], segments[0], segments[1]],
+            options,
+            new KeogramSegmentAxesV1(KeogramSegmentAxesV1.CurrentSchemaVersion, axes));
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        Assert.AreEqual(direct.Layout, product.Layout);
+        CollectionAssert.AreEqual(direct.Payload.ToArray(), product.Payload.ToArray());
+        Assert.AreEqual(direct.TotalIntegration, product.TotalIntegration);
+        CollectionAssert.AreEqual(
+            segments.Select(static segment => segment.ArtifactId).ToArray(),
+            product.SourceArtifactIds.ToArray());
+        Assert.AreEqual(
+            new ProcessingAlgorithmIdentity("keogram-segment-assembly", "keogram-segment-assembly-v1"),
+            product.Algorithms[^1]);
+        ProcessingRecipeTests.AssertProductMatchesContract(request, product);
+    }
+
+    [TestMethod]
+    public async Task KeogramAssemblyRequiresBoundSegmentAxesAndMatchingGeometry()
+    {
+        var frames = new[]
+        {
+            Preview(Guid.Parse("40000000-0000-0000-0000-000000000201"), [1, 2, 3, 4], Origin),
+            Preview(Guid.Parse("40000000-0000-0000-0000-000000000202"), [5, 6, 7, 8], Origin.AddMinutes(1))
+        };
+        var options = new KeogramRecipeOptions();
+        var (segment, axis) = await ComposeSegmentAsync(frames, options).ConfigureAwait(false);
+        var axes = new KeogramSegmentAxesV1(KeogramSegmentAxesV1.CurrentSchemaVersion, [axis]);
+
+        var missing = AssemblyRequest([segment], options, axes) with
+        {
+            AuxiliaryInputs = [KeogramGeometryJson.CreateAuxiliaryInput(Geometry)]
+        };
+        var unbound = AssemblyRequest([segment], options, axes with { Segments = [axis with { ArtifactId = Guid.NewGuid() }] });
+        var forgedPayload = AssemblyRequest([segment], options, axes);
+        forgedPayload = forgedPayload with
+        {
+            AuxiliaryInputs =
+            [
+                forgedPayload.AuxiliaryInputs![0],
+                forgedPayload.AuxiliaryInputs[1] with
+                {
+                    Payload = KeogramSegmentAxesJson.Serialize(axes with
+                    {
+                        Segments = [axis with { Frames = [axis.Frames[0] with { Column = 1 }, axis.Frames[1]] }]
+                    })
+                }
+            ]
+        };
+        var otherRig = AssemblyRequest([segment], options, axes) with
+        {
+            AuxiliaryInputs =
+            [
+                KeogramGeometryJson.CreateAuxiliaryInput(Geometry with { RigProfileSha256 = new string('C', 64) }),
+                KeogramSegmentAxesJson.CreateAuxiliaryInput(axes)
+            ]
+        };
+        var collidingColumns = AssemblyRequest(
+            [segment],
+            options,
+            axes with { Segments = [axis with { Frames = [axis.Frames[0], axis.Frames[1] with { Column = 0 }] }] });
+
+        var executor = new ProcessingRecipeExecutor();
+        var outcomes = new[]
+        {
+            await executor.ExecuteAsync(missing).ConfigureAwait(false),
+            await executor.ExecuteAsync(unbound).ConfigureAwait(false),
+            await executor.ExecuteAsync(forgedPayload).ConfigureAwait(false),
+            await executor.ExecuteAsync(otherRig).ConfigureAwait(false),
+            await executor.ExecuteAsync(collidingColumns).ConfigureAwait(false)
+        };
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Skipped, outcomes[0].Status);
+        Assert.AreEqual(ProcessingReasonCodes.MissingKeogramSegmentAxes, outcomes[0].ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidKeogramSegmentAxes, outcomes[1].ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcomes[2].Status);
+        Assert.AreEqual(ProcessingReasonCodes.KeogramGeometryMismatch, outcomes[3].ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, outcomes[4].ReasonCode);
+    }
+
+    [TestMethod]
+    public void KeogramSegmentAxesRoundTripCanonically()
+    {
+        var axes = new KeogramSegmentAxesV1(
+            KeogramSegmentAxesV1.CurrentSchemaVersion,
+            [new KeogramSegmentAxisV1(Guid.Parse("40000000-0000-0000-0000-000000000301"), [new KeogramSegmentFrameV1(0, Origin)])]);
+
+        var payload = KeogramSegmentAxesJson.Serialize(axes);
+        var parsed = KeogramSegmentAxesJson.Parse(payload);
+
+        Assert.IsNotNull(parsed);
+        CollectionAssert.AreEqual(payload, KeogramSegmentAxesJson.Serialize(parsed));
+        Assert.AreEqual(
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            KeogramSegmentAxesJson.CreateAuxiliaryInput(axes).IdentitySha256);
+        Assert.IsNull(KeogramSegmentAxesJson.Parse("{\"SchemaVersion\":\"keogram-segment-axes-v1\",\"Segments\":[],\"Extra\":1}"u8));
+    }
+
+    private static async Task<(ProcessingArtifact Segment, KeogramSegmentAxisV1 Axis)> ComposeSegmentAsync(
+        ProcessingArtifact[] frames,
+        KeogramRecipeOptions options)
+    {
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(KeogramRequest(frames, options)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var product = outcome.Products.Single();
+        var segment = new ProcessingArtifact(
+            Guid.NewGuid(),
+            FrameArtifactRole.Preview,
+            "keogram-v1",
+            SegmentRecipe,
+            product.MediaType,
+            product.Layout,
+            product.Payload,
+            frames[^1].ObservationStartedUtc!.Value,
+            product.TotalIntegration,
+            product.Compatibility,
+            SourceArtifactIds: product.SourceArtifactIds,
+            ObservationStartedUtc: frames[0].ObservationStartedUtc,
+            ObservationEndedUtc: frames[^1].ObservationStartedUtc);
+        return (segment, KeogramSegmentAxesJson.CreateSegment(
+            segment.ArtifactId, [.. frames.Select(static frame => frame.ObservationStartedUtc!.Value)], options));
+    }
+
+    private static ProcessingExecutionRequest AssemblyRequest(
+        IReadOnlyList<ProcessingArtifact> segments,
+        KeogramRecipeOptions options,
+        KeogramSegmentAxesV1 axes) =>
+        new(
+            BuiltInProcessingRecipes.KeogramAssembly,
+            JsonSerializer.SerializeToElement(options),
+            ProcessingInputSelector.RecipeResult(FrameArtifactRole.Preview, "keogram-v1", SegmentRecipe),
+            segments,
+            "keogram-night-v1",
+            AuxiliaryInputs:
+            [
+                KeogramGeometryJson.CreateAuxiliaryInput(Geometry),
+                KeogramSegmentAxesJson.CreateAuxiliaryInput(axes)
+            ]);
 
     private static ProcessingExecutionRequest KeogramRequest(
         IReadOnlyList<ProcessingArtifact> inputs,

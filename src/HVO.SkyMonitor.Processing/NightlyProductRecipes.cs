@@ -34,22 +34,10 @@ public sealed record KeogramGeometryV1(
 /// <summary>Canonical serialization and auxiliary-input binding for <see cref="KeogramGeometryV1"/>.</summary>
 public static class KeogramGeometryJson
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        Converters = { new JsonStringEnumConverter() }
-    };
-
-    private static readonly JsonSerializerOptions ParserOptions = new(JsonSerializerDefaults.Web)
-    {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
-    };
-
     public static byte[] Serialize(KeogramGeometryV1 geometry)
     {
         ArgumentNullException.ThrowIfNull(geometry);
-        var element = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(geometry, SerializerOptions));
-        return Encoding.UTF8.GetBytes(element.GetRawText());
+        return NightlyProductJson.Serialize(geometry);
     }
 
     public static string ComputeIdentitySha256(KeogramGeometryV1 geometry) =>
@@ -66,11 +54,99 @@ public static class KeogramGeometryJson
             Payload: payload);
     }
 
-    public static KeogramGeometryV1? Parse(ReadOnlySpan<byte> utf8Json)
+    public static KeogramGeometryV1? Parse(ReadOnlySpan<byte> utf8Json) =>
+        NightlyProductJson.Parse<KeogramGeometryV1>(utf8Json);
+}
+
+/// <summary>The output column and captured exposure start of one source frame inside a keogram segment.</summary>
+public sealed record KeogramSegmentFrameV1(
+    [property: JsonRequired] int Column,
+    [property: JsonRequired] DateTimeOffset ObservationStartedUtc);
+
+/// <summary>The frame columns of one composed keogram segment, bound to the segment's artifact identity.</summary>
+public sealed record KeogramSegmentAxisV1(
+    [property: JsonRequired] Guid ArtifactId,
+    [property: JsonRequired] IReadOnlyList<KeogramSegmentFrameV1> Frames);
+
+/// <summary>
+/// The per-segment frame columns a keogram assembly re-lays onto one time axis. Without them a segment's patterned gap
+/// columns are indistinguishable from frame columns, so assembly could not reproduce direct composition.
+/// </summary>
+public sealed record KeogramSegmentAxesV1(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] IReadOnlyList<KeogramSegmentAxisV1> Segments)
+{
+    public const string CurrentSchemaVersion = "keogram-segment-axes-v1";
+    public const string AuxiliaryInputName = "keogram-segment-axes";
+}
+
+/// <summary>Canonical serialization and auxiliary-input binding for <see cref="KeogramSegmentAxesV1"/>.</summary>
+public static class KeogramSegmentAxesJson
+{
+    public static byte[] Serialize(KeogramSegmentAxesV1 axes)
+    {
+        ArgumentNullException.ThrowIfNull(axes);
+        return NightlyProductJson.Serialize(axes);
+    }
+
+    public static ProcessingAuxiliaryInput CreateAuxiliaryInput(KeogramSegmentAxesV1 axes)
+    {
+        var payload = Serialize(axes);
+        return new ProcessingAuxiliaryInput(
+            KeogramSegmentAxesV1.AuxiliaryInputName,
+            ProcessingAuxiliaryInputKind.CanonicalJson,
+            SchemaVersion: KeogramSegmentAxesV1.CurrentSchemaVersion,
+            IdentitySha256: ProcessingIdentity.ComputePayloadSha256(payload),
+            Payload: payload);
+    }
+
+    public static KeogramSegmentAxesV1? Parse(ReadOnlySpan<byte> utf8Json) =>
+        NightlyProductJson.Parse<KeogramSegmentAxesV1>(utf8Json);
+
+    /// <summary>
+    /// Creates the axis entry of a keogram segment the keogram recipe composed with <paramref name="options"/> from frames
+    /// captured at <paramref name="frameTimes"/>, in the recipe's source order.
+    /// </summary>
+    public static KeogramSegmentAxisV1 CreateSegment(
+        Guid artifactId,
+        IReadOnlyList<DateTimeOffset> frameTimes,
+        KeogramRecipeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(frameTimes);
+        ArgumentNullException.ThrowIfNull(options);
+        var columns = KeogramComposer.ComputeFrameColumns(KeogramComposer.ComputeTimeAxis(
+            frameTimes, options.MaximumGapSeconds, options.MaximumGapColumnCount, options.MaximumColumnCount));
+        return new KeogramSegmentAxisV1(
+            artifactId,
+            [.. columns.Select((column, index) => new KeogramSegmentFrameV1(column, frameTimes[index]))]);
+    }
+}
+
+internal static class NightlyProductJson
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private static readonly JsonSerializerOptions ParserOptions = new(JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
+    };
+
+    internal static byte[] Serialize<T>(T value)
+    {
+        var element = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(value, SerializerOptions));
+        return Encoding.UTF8.GetBytes(element.GetRawText());
+    }
+
+    internal static T? Parse<T>(ReadOnlySpan<byte> utf8Json)
+        where T : class
     {
         try
         {
-            return JsonSerializer.Deserialize<KeogramGeometryV1>(utf8Json, ParserOptions);
+            return JsonSerializer.Deserialize<T>(utf8Json, ParserOptions);
         }
         catch (JsonException)
         {
@@ -225,6 +301,66 @@ internal sealed class StarTrailRecipe : IProcessingRecipe
     }
 }
 
+/// <summary>
+/// Assembles composed keogram segments into one longer keogram by re-laying their frame columns on a time axis computed
+/// over every segment frame. The result is byte-identical to composing all segment sources at once, so a night longer
+/// than the per-execution source bound keeps its exact meridian samples and its proportional gaps.
+/// </summary>
+internal sealed class KeogramAssemblyRecipe : IProcessingRecipe
+{
+    public ProcessingRecipeDefinition Definition { get; } = new(
+        BuiltInProcessingRecipes.KeogramAssembly, "1.0.0", "keogram-assembly-recipe-v1",
+        ProcessingOperationKind.Window);
+
+    public JsonElement NormalizeOptions(JsonElement options) => new KeogramRecipe().NormalizeOptions(options);
+
+    public ValueTask<ProcessingOutcome> ExecuteAsync(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        var plan = NightlyProductRecipeSupport.ResolveKeogramAssembly(request, identity, out var failure);
+        if (plan is null)
+        {
+            return ValueTask.FromResult(failure!);
+        }
+
+        KeogramResult result;
+        try
+        {
+            result = KeogramComposer.Assemble(plan.Segments, plan.Composition, cancellationToken);
+        }
+        catch (ArgumentException)
+        {
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidLineage,
+                nameof(request.Inputs)));
+        }
+
+        var layout = ProcessingRecipeSupport.CreatePackedLayout(result.Width, result.Height, result.PixelFormat);
+        var product = ProcessingRecipeSupport.CreateProduct(
+            FrameArtifactRole.Preview,
+            request.OutputVariant,
+            "application/x-hvo-packed-image",
+            layout,
+            result.PixelData,
+            identity,
+            NightlyProductRecipeSupport.KeogramAssemblyAlgorithms,
+            plan.Sources,
+            plan.TotalIntegration,
+            plan.Sources[0].Compatibility);
+        return ValueTask.FromResult(ProcessingOutcome.Produced(product));
+    }
+}
+
+/// <summary>The validated inputs of one keogram assembly.</summary>
+internal sealed record KeogramAssemblyPlan(
+    IReadOnlyList<ProcessingArtifact> Sources,
+    IReadOnlyList<KeogramSegment> Segments,
+    KeogramCompositionOptions Composition,
+    KeogramGeometryV1 Geometry,
+    TimeSpan TotalIntegration);
+
 /// <summary>Shared deterministic source ordering and validation for the nightly product recipes and contracts.</summary>
 internal static class NightlyProductRecipeSupport
 {
@@ -241,6 +377,12 @@ internal static class NightlyProductRecipeSupport
     [
         new("star-trail-lighten", StarTrailComposer.AlgorithmVersion),
         new("row-packing", "packed-copy-v1")
+    ];
+
+    internal static readonly IReadOnlyList<ProcessingAlgorithmIdentity> KeogramAssemblyAlgorithms =
+    [
+        .. KeogramAlgorithms,
+        new("keogram-segment-assembly", "keogram-segment-assembly-v1")
     ];
 
     internal static List<ProcessingArtifact> ResolveOrderedFrames(
@@ -318,6 +460,135 @@ internal static class NightlyProductRecipeSupport
         IReadOnlyList<ProcessingArtifact> sources,
         out ProcessingOutcome? failure)
     {
+        var geometry = ParseKeogramGeometry(request, out failure);
+        if (geometry is null)
+        {
+            return null;
+        }
+
+        var layout = sources[0].Layout!;
+        if (geometry.Projection.WidthPixels != layout.Width || geometry.Projection.HeightPixels != layout.Height ||
+            !SharesRig(sources, geometry))
+        {
+            failure = ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.KeogramGeometryMismatch, KeogramGeometryV1.AuxiliaryInputName);
+            return null;
+        }
+        return geometry;
+    }
+
+    /// <summary>
+    /// Validates keogram segments, their geometry, and their frame axes. Segments are ordered like every nightly source,
+    /// share the geometry's rig and row count, and each declares exactly one axis entry.
+    /// </summary>
+    internal static KeogramAssemblyPlan? ResolveKeogramAssembly(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity,
+        out ProcessingOutcome? failure)
+    {
+        var sources = ResolveOrderedFrames(request, out failure);
+        if (sources.Count == 0)
+        {
+            return null;
+        }
+        if (!TryValidateSegmentSources(sources, out failure))
+        {
+            return null;
+        }
+
+        var geometry = ParseKeogramGeometry(request, out failure);
+        if (geometry is null)
+        {
+            return null;
+        }
+        if (sources.Any(source => source.Layout!.Height != geometry.SampleCount) || !SharesRig(sources, geometry))
+        {
+            failure = ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.KeogramGeometryMismatch, KeogramGeometryV1.AuxiliaryInputName);
+            return null;
+        }
+
+        var axes = (request.AuxiliaryInputs ?? []).Where(static input =>
+            string.Equals(input.Name, KeogramSegmentAxesV1.AuxiliaryInputName, StringComparison.Ordinal)).ToArray();
+        if (axes.Length == 0)
+        {
+            failure = ProcessingOutcome.Skipped(
+                ProcessingReasonCodes.MissingKeogramSegmentAxes, KeogramSegmentAxesV1.AuxiliaryInputName);
+            return null;
+        }
+        var parsed = axes.Length == 1 && axes[0].Kind == ProcessingAuxiliaryInputKind.CanonicalJson &&
+            string.Equals(axes[0].SchemaVersion, KeogramSegmentAxesV1.CurrentSchemaVersion, StringComparison.Ordinal)
+                ? KeogramSegmentAxesJson.Parse(axes[0].Payload.Span)
+                : null;
+        var bySegment = parsed is { Segments: { } entries } &&
+            string.Equals(parsed.SchemaVersion, KeogramSegmentAxesV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            string.Equals(
+                ProcessingIdentity.ComputePayloadSha256(KeogramSegmentAxesJson.Serialize(parsed)),
+                axes[0].IdentitySha256,
+                StringComparison.OrdinalIgnoreCase) &&
+            entries.All(static entry => entry is { Frames.Count: > 0 } &&
+                entry.Frames.All(static frame => frame is not null && frame.ObservationStartedUtc.Offset == TimeSpan.Zero)) &&
+            entries.Select(static entry => entry.ArtifactId).Distinct().Count() == entries.Count &&
+            entries.Count == sources.Count
+                ? entries.ToDictionary(static entry => entry.ArtifactId)
+                : null;
+        if (bySegment is null || sources.Any(source => !bySegment.ContainsKey(source.ArtifactId)))
+        {
+            failure = ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidKeogramSegmentAxes, KeogramSegmentAxesV1.AuxiliaryInputName);
+            return null;
+        }
+
+        var segments = sources.Select(source => new KeogramSegment(
+            source.Layout!.Width,
+            source.Layout.Height,
+            source.Layout.StrideBytes,
+            source.Layout.PixelFormat,
+            source.Payload,
+            [.. bySegment[source.ArtifactId].Frames.Select(static frame =>
+                new KeogramSegmentColumn(frame.Column, frame.ObservationStartedUtc))])).ToArray();
+        failure = null;
+        return new KeogramAssemblyPlan(
+            sources,
+            segments,
+            CreateKeogramComposition(identity, geometry),
+            geometry,
+            TimeSpan.FromTicks(sources.Sum(static source => source.Integration.Ticks)));
+    }
+
+    private static bool TryValidateSegmentSources(
+        List<ProcessingArtifact> sources,
+        out ProcessingOutcome? failure)
+    {
+        var first = sources[0].Layout;
+        foreach (var source in sources)
+        {
+            if (first is null || source.Role != FrameArtifactRole.Preview ||
+                !ProcessingRecipeSupport.TryValidateFrame(source, out var layout, out _) ||
+                layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24) ||
+                layout.StrideBytes != checked(layout.Width * ImageLayout.BytesPerPixel(layout.PixelFormat)))
+            {
+                failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidSelector, nameof(sources));
+                return false;
+            }
+            if (layout.Height != first.Height || layout.PixelFormat != first.PixelFormat)
+            {
+                failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.IncompatibleInput, nameof(sources));
+                return false;
+            }
+        }
+        failure = null;
+        return true;
+    }
+
+    private static bool SharesRig(IReadOnlyList<ProcessingArtifact> sources, KeogramGeometryV1 geometry) =>
+        sources.All(source => string.Equals(
+            source.Compatibility.Rig, geometry.RigProfileSha256, StringComparison.OrdinalIgnoreCase));
+
+    private static KeogramGeometryV1? ParseKeogramGeometry(
+        ProcessingExecutionRequest request,
+        out ProcessingOutcome? failure)
+    {
         var matches = (request.AuxiliaryInputs ?? []).Where(static input =>
             string.Equals(input.Name, KeogramGeometryV1.AuxiliaryInputName, StringComparison.Ordinal)).ToArray();
         if (matches.Length == 0)
@@ -340,16 +611,6 @@ internal static class NightlyProductRecipeSupport
         {
             failure = ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidKeogramGeometry, KeogramGeometryV1.AuxiliaryInputName);
-            return null;
-        }
-
-        var layout = sources[0].Layout!;
-        if (geometry.Projection.WidthPixels != layout.Width || geometry.Projection.HeightPixels != layout.Height ||
-            sources.Any(source => !string.Equals(
-                source.Compatibility.Rig, geometry.RigProfileSha256, StringComparison.OrdinalIgnoreCase)))
-        {
-            failure = ProcessingOutcome.TerminalFailure(
-                ProcessingReasonCodes.KeogramGeometryMismatch, KeogramGeometryV1.AuxiliaryInputName);
             return null;
         }
 

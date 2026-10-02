@@ -251,6 +251,8 @@ public static class ProcessingReasonCodes
     public const string MissingKeogramGeometry = "processing.missing-keogram-geometry";
     public const string InvalidKeogramGeometry = "processing.invalid-keogram-geometry";
     public const string KeogramGeometryMismatch = "processing.keogram-geometry-mismatch";
+    public const string MissingKeogramSegmentAxes = "processing.missing-keogram-segment-axes";
+    public const string InvalidKeogramSegmentAxes = "processing.invalid-keogram-segment-axes";
     public const string ExecutionFailed = "processing.execution-failed";
     public const string EnvironmentAssociationPending = "environment.association-pending";
     public const string MissingCalibrationProfile = "calibration.missing-profile";
