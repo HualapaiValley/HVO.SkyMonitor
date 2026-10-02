@@ -1414,6 +1414,7 @@ public sealed class ArtifactIngestTests
         // that this artifact is included in the next inventory batch.
         await db.CentralArtifacts.Where(item => item.Id == dependentId)
             .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
                 .SetProperty(item => item.ObjectVerificationToken, Guid.NewGuid())
                 .SetProperty(item => item.ObjectVerificationRequestedAtUtc, DateTimeOffset.UtcNow)
                 .SetProperty(item => item.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null))
