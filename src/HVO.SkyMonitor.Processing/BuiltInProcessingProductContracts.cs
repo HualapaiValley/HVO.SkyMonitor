@@ -14,6 +14,10 @@ internal static class BuiltInProcessingProductContracts
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
+        if (request.RecipeName is Keogram or StarTrail)
+        {
+            return CreateNightlyProductContract(request, identity);
+        }
         var primary = ProcessingRecipeSupport.ResolveSingle(request, out _);
         var role = request.RecipeName switch
         {
@@ -79,6 +83,11 @@ internal static class BuiltInProcessingProductContracts
             ProcessingIdentity.ComputePayloadSha256(payload),
             contract.ExpectedPayloadSha256,
             StringComparison.Ordinal))
+        {
+            return false;
+        }
+        if (request.RecipeName is Keogram or StarTrail &&
+            (contract.ExactLayout is null || payload.Length != contract.ExactLayout.ByteLength))
         {
             return false;
         }
@@ -186,6 +195,60 @@ internal static class BuiltInProcessingProductContracts
             }
         }
         return true;
+    }
+
+    private static ProcessingProductContract CreateNightlyProductContract(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity)
+    {
+        var sources = NightlyProductRecipeSupport.ResolveOrderedFrames(request, out _);
+        if (sources.Count == 0 || !NightlyProductRecipeSupport.TryValidatePreviewSources(sources, out _))
+        {
+            throw new InvalidOperationException("The nightly product source contract is unavailable.");
+        }
+        var first = sources[0];
+        var firstLayout = first.Layout!;
+        var sourceIds = sources.Select(static source => source.ArtifactId).ToArray();
+        var totalIntegration = TimeSpan.FromTicks(sources.Sum(static source => source.Integration.Ticks));
+        if (string.Equals(request.RecipeName, Keogram, StringComparison.Ordinal))
+        {
+            var options = ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(
+                identity.Descriptor.Options.GetProperty("parameters"));
+            var composition = new KeogramCompositionOptions(
+                options.SliceColumn, options.MaximumGapSeconds, options.GapColumnCount, options.MaximumColumnCount);
+            var width = KeogramComposer.ComputeOutputWidth(
+                NightlyProductRecipeSupport.ToKeogramFrames(sources), composition);
+            return new ProcessingProductContract(
+                FrameArtifactRole.Preview,
+                sourceIds,
+                "application/x-hvo-packed-image",
+                true,
+                ProcessingRecipeSupport.CreatePackedLayout(width, firstLayout.Height, firstLayout.PixelFormat),
+                null,
+                ProcessingProductKind.PixelData,
+                null,
+                false,
+                null,
+                NightlyProductRecipeSupport.KeogramAlgorithms,
+                totalIntegration,
+                first.Compatibility,
+                null);
+        }
+        return new ProcessingProductContract(
+            FrameArtifactRole.Preview,
+            sourceIds,
+            "application/x-hvo-packed-image",
+            true,
+            ProcessingRecipeSupport.CreatePackedLayout(firstLayout),
+            null,
+            ProcessingProductKind.PixelData,
+            null,
+            false,
+            null,
+            NightlyProductRecipeSupport.StarTrailAlgorithms,
+            totalIntegration,
+            first.Compatibility,
+            null);
     }
 
     private static ProductDetails CreateDetails(

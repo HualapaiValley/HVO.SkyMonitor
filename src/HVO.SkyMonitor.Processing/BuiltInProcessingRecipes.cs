@@ -18,6 +18,8 @@ public static class BuiltInProcessingRecipes
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
     public const string ReferenceCalibration = "reference-calibration";
     public const string ProjectedScene = "projected-scene";
+    public const string Keogram = "keogram";
+    public const string StarTrail = "star-trail";
 
     private static readonly Dictionary<string, ProcessingRecipeDefinition> Definitions = CreateAll()
         .Select(static recipe => recipe.Definition)
@@ -104,7 +106,9 @@ public static class BuiltInProcessingRecipes
         new CloudAssessmentRecipe(),
         new WeatherCloudOverlayRecipe(),
         new ReferenceCalibrationRecipe(),
-        new ProjectedSceneRecipe()
+        new ProjectedSceneRecipe(),
+        new KeogramRecipe(),
+        new StarTrailRecipe()
     ];
 }
 
