@@ -35,7 +35,7 @@ internal static class PipelineRunPresentation
 
     internal static string Name(CameraAgentProcessingNodeView node)
     {
-        // Only frozen product contracts supply semantic names; custom nodes keep their own identity.
+        // A frozen recipe or recorded variant supplies the semantic name; a stage with neither keeps its node identity.
         var recipes = node.OutputContracts.Select(static contract => contract.Recipe?.Name).ToArray();
         if (recipes.Contains(BuiltInProcessingRecipes.CloudAssessment, StringComparer.Ordinal)) return "Cloud assessment";
         if (recipes.Contains("projected-scene", StringComparer.Ordinal)) return "Scene projection";

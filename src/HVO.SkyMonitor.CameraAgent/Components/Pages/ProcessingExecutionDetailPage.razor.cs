@@ -111,7 +111,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 facts.Add(new(completed, PipelineRunPresentation.StatusLabel(attempt.Status), PipelineRunPresentation.StatusClass(attempt.Status),
                     attempt.Reason ?? attempt.Outcome ?? "Attempt completion recorded; no detailed outcome retained."));
         }
-        if (node.CompletedUtc is { } end) facts.Add(new(end, "Completed", PipelineRunPresentation.StatusClass(node.Status), $"Recorded node state: {node.Status}."));
+        if (node.CompletedUtc is { } end) facts.Add(new(end, PipelineRunPresentation.StatusLabel(node.Status), PipelineRunPresentation.StatusClass(node.Status), $"Recorded node state: {node.Status}."));
         if (node.Reason is { } reason) facts.Add(new(node.CompletedUtc, "Reason", "warning", reason));
         if (facts.Count == 0) facts.Add(new(null, "Unavailable", "pending", "No start, attempt or completion facts recorded."));
         return facts.OrderBy(static fact => fact.Time).ToArray();
@@ -140,7 +140,9 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _moduleImport = import;
         try
         {
-            var module = await import.ConfigureAwait(false);
+            // Stay on the renderer thread so the disposal check and the field assignment keep the
+            // same ordering as the rest of the component lifecycle.
+            var module = await import;
             if (_disposed) await module.DisposeAsync();
             else _module = module;
         }

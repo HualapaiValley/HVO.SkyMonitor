@@ -637,8 +637,11 @@ public sealed class ProcessingExecutionPagesTests
         });
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
         cut.WaitForElement(".event-log");
-        StringAssert.Contains(cut.Find(".event-log").TextContent, "Failed", StringComparison.Ordinal);
-        StringAssert.DoesNotMatch(cut.Find(".event-log").TextContent, new System.Text.RegularExpressions.Regex(@"\bCompleted\b"));
+        // Read the recorded end fact's own level label; the surrounding message text also names the
+        // state, so asserting on the whole log text would pass without the label fix.
+        var levels = cut.FindAll(".event-log .event-level").Select(static level => level.TextContent.Trim()).ToArray();
+        CollectionAssert.Contains(levels, "Failed");
+        CollectionAssert.DoesNotContain(levels, "Completed");
     }
 
     [TestMethod]
@@ -663,6 +666,25 @@ public sealed class ProcessingExecutionPagesTests
         Assert.IsTrue(labels[1].Contains("combined-preview", StringComparison.Ordinal));
         Assert.AreNotEqual(labels[0], labels[1], "Stages that share a role must not share an accessible name.");
         StringAssert.Contains(cut.Find(".run-diagram [id^='execution-graph-description-']").TextContent, "no dependencies", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void RunDiagram_HighlightedDependenciesPaintAfterMutedOnes()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("source", true, "plan", "Completed", null, 1, Now, Now, [], [], []),
+            new("first", true, "plan", "Completed", null, 1, Now, Now, [], [], []) { Dependencies = [new("source")] },
+            new("second", true, "plan", "Completed", null, 1, Now, Now, [], [], []) { Dependencies = [new("source")] }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, nodes).Add(component => component.SelectedNodeId, "first"));
+        var classes = cut.FindAll(".run-diagram__edge").Select(static path => path.GetAttribute("class")!).ToArray();
+        var lastMuted = Array.FindLastIndex(classes, static value => value.Contains("muted", StringComparison.Ordinal));
+        var firstHighlighted = Array.FindIndex(classes, static value => value.Contains("highlighted", StringComparison.Ordinal));
+        Assert.IsTrue(firstHighlighted > lastMuted, "A selected path must paint after every muted sibling so it stays visible.");
     }
 
     [TestMethod]

@@ -59,8 +59,10 @@ as the connector reference. Final routing therefore retains compact cards,
 curved shared-router paths and one connection point on each side. Shared
 subpaths may coincide; every dependency keeps its own path and arrowhead, and
 the de-emphasised style uses an opaque dimmer stroke rather than a translucent
-one so coincident paths cannot stack into a heavier line. Highlighted paths
-retain the same 1-unit stroke. The intermediate separated-routing evidence is
+one, so coincident paths do not compound into a visibly darker line; anti-aliased
+edges can still overlap marginally. Highlighted paths are painted last so a
+muted sibling cannot cover a selected path, and retain the same 1-unit stroke.
+The intermediate separated-routing evidence is
 retained as rejected design history, not current acceptance evidence.
 Regression checks verify single midpoint fan-out, per-dependency arrowheads and
 distinct accessible names.
