@@ -28,14 +28,57 @@ public sealed class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16)]
     [DataRow(CameraPixelFormat.Rgb24)]
     [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task SolarDisks_AddSensorLightAndRecordActualGeometry(CameraPixelFormat format)
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var means = new List<double>();
+        foreach (var enabled in new[] { false, true })
+        {
+            var module = CreateModule(noon);
+            await using var moduleDisposal = module.ConfigureAwait(false);
+            await module.InitializeAsync(CreateConfig(format, 64, 64) with
+            {
+                Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    renderSolarSystemDisks = enabled,
+                    illuminationMode = "ControlledNight",
+                    asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
+                    backgroundElectronsPerSecond = 0,
+                    bias = 0,
+                    readNoiseStandardDeviation = 0
+                }))
+            }, CancellationToken.None).ConfigureAwait(false);
+            var frame = (await module.CaptureAsync(new(noon, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new(TimeSpan.FromMilliseconds(1), 1, null, null)), CancellationToken.None).ConfigureAwait(false)).Frame!;
+            means.Add(double.Parse(frame.Metadata.Extra!["renderMean"], System.Globalization.CultureInfo.InvariantCulture));
+            Assert.AreEqual(enabled, frame.Metadata.Extra.ContainsKey("solarDiskAppearance"));
+            if (enabled)
+            {
+                var disks = JsonSerializer.Deserialize<SolarDiskAppearance[]>(frame.Metadata.Extra["solarDiskAppearance"])!;
+                Assert.AreEqual(2, disks.Length);
+                Assert.AreEqual(frame.Metadata.Scene!.VirtualExposure!.CelestialMidpointUtc, disks[0].Utc);
+                Assert.IsTrue(disks[0].Direction.AltitudeDegrees > 0);
+                StringAssert.Contains(frame.Metadata.Extra["renderAlgorithm"], SolarDiskRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
+            }
+        }
+        Assert.IsTrue(means[1] > means[0] + .1);
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
     public async Task SolarIllumination_IntegratesAndClipsThroughEachSensorLayout(CameraPixelFormat format)
     {
         var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
         var module = CreateModule(noon);
         var options = JsonSerializer.SerializeToElement(new
         {
-            illuminationMode = "SolarDriven", asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
-            bias = 0, readNoiseStandardDeviation = 0, shotNoiseEnabled = false
+            illuminationMode = "SolarDriven",
+            asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
+            bias = 0,
+            readNoiseStandardDeviation = 0,
+            shotNoiseEnabled = false
         });
         await module.InitializeAsync(CreateConfig(format, 64, 64) with
         {
@@ -51,7 +94,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(format, shortFrame.Layout!.PixelFormat);
         Assert.IsTrue(shortFrame.Layout.Validate().IsValid);
         Assert.AreEqual("SolarDriven", shortFrame.Metadata.Extra!["skyIlluminationMode"]);
-        StringAssert.Contains(shortFrame.Metadata.Extra["renderAlgorithm"], SolarSkyIllumination.AlgorithmVersion);
+        StringAssert.Contains(shortFrame.Metadata.Extra["renderAlgorithm"], SolarSkyIllumination.AlgorithmVersion, StringComparison.Ordinal);
         var shortMean = double.Parse(shortFrame.Metadata.Extra["renderMean"], System.Globalization.CultureInfo.InvariantCulture);
         var longMean = double.Parse(longFrame.Metadata.Extra!["renderMean"], System.Globalization.CultureInfo.InvariantCulture);
         Assert.IsTrue(shortMean > 0 && longMean > shortMean * 3, $"Short {shortMean}, long {longMean}");
@@ -79,7 +122,10 @@ public sealed class VirtualSkyCameraModuleTests
             {
                 Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
                 {
-                    illuminationMode = mode, backgroundElectronsPerSecond = 7, seed = 42, shotNoiseEnabled = true
+                    illuminationMode = mode,
+                    backgroundElectronsPerSecond = 7,
+                    seed = 42,
+                    shotNoiseEnabled = true
                 }))
             }, CancellationToken.None).ConfigureAwait(false);
             var frame = (await module.CaptureAsync(new(noon, TimeSpan.FromSeconds(1), CaptureMode.Still),
@@ -109,7 +155,7 @@ public sealed class VirtualSkyCameraModuleTests
     [TestMethod]
     public async Task FractionalExposure_PreservesTicksWhenSecondsCannotRoundTrip()
     {
-        var exposure = Enumerable.Range(10000, 10000).Select(TimeSpan.FromTicks)
+        var exposure = Enumerable.Range(10000, 10000).Select(static ticks => TimeSpan.FromTicks(ticks))
             .First(value => TimeSpan.FromSeconds(value.TotalSeconds) != value);
         var module = CreateModule(FixtureUtc);
         await module.InitializeAsync(CreateConfig(width: 64, height: 64), CancellationToken.None).ConfigureAwait(false);
@@ -118,6 +164,36 @@ public sealed class VirtualSkyCameraModuleTests
         var provenance = frame.Metadata.Scene!.VirtualExposure!;
         Assert.AreEqual(exposure, provenance.CelestialEndUtc - provenance.CelestialStartUtc);
         Assert.AreEqual(exposure, frame.Metadata.Exposure);
+    }
+
+    [TestMethod]
+    public async Task ControlledNight_RetainsDaytimeSunAndAdvancingStars()
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var config = CreateConfig(width: 64, height: 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                illuminationMode = "ControlledNight",
+                bias = 0,
+                readNoiseStandardDeviation = 0
+            }))
+        };
+        var module = CreateModule(noon);
+        var repeated = CreateModule(noon);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        await repeated.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(noon, TimeSpan.FromSeconds(1), CaptureMode.Still);
+        var first = (await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var same = (await repeated.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var later = (await module.CaptureAsync(request with { RequestedStartUtc = noon.AddHours(1) },
+            CancellationToken.None).ConfigureAwait(false)).Frame!;
+        CollectionAssert.AreEqual(first.PixelData.ToArray(), same.PixelData.ToArray());
+        Assert.AreEqual(first.Metadata.Scene!.SceneId, same.Metadata.Scene!.SceneId);
+        Assert.AreEqual(noon.AddHours(1), later.Metadata.Scene!.VirtualExposure!.CelestialStartUtc);
+        Assert.IsTrue(double.Parse(first.Metadata.Extra!["stellarSolarAltitudeDegrees"], System.Globalization.CultureInfo.InvariantCulture) > 0);
+        Assert.AreEqual(first.Metadata.Extra["stellarBackgroundElectronsPerSecond"], later.Metadata.Extra!["stellarBackgroundElectronsPerSecond"]);
+        Assert.AreNotEqual(first.Metadata.Scene.Objects!.Single().PixelX, later.Metadata.Scene.Objects!.Single().PixelX);
     }
 
     [TestMethod]
@@ -1069,9 +1145,17 @@ public sealed class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    public async Task CaptureAsyncWithAsi174Mono8CenteredRoiBin4ProducesTruthfulReadout()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CaptureAsyncWithAsi174Mono8CenteredRoiBin4ProducesTruthfulReadout(bool solarDriven)
     {
         var config = CreateAsi174Mono8ReadoutConfig(fullFrame: false);
+        if (solarDriven)
+        {
+            var options = config.ModuleOptions!.Value.Deserialize<Dictionary<string, JsonElement>>()!;
+            options["illuminationMode"] = JsonSerializer.SerializeToElement("SolarDriven");
+            config = config with { Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(options)) };
+        }
         var module = CreateModule(FixtureUtc);
         var repeatedModule = CreateModule(FixtureUtc);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);

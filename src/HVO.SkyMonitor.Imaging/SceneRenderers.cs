@@ -15,6 +15,8 @@ public record LinearSceneRenderOptions
     public double BackgroundElectronsPerSecond { get; init; }
     /// <summary>Optional incident sky color/gradient; null preserves scalar-background fixtures.</summary>
     public SolarSkyIllumination? SkyIllumination { get; init; }
+    /// <summary>Optional resolved Sun/Moon light, integrated through the same sensor path.</summary>
+    public SolarDiskRenderPlan? SolarDisks { get; init; }
     public double PsfSigmaPixels { get; init; } = 1;
     public double PsfRadiusPixels { get; init; } = 4;
     public double VignettingStrength { get; init; }
@@ -32,15 +34,19 @@ public record LinearSceneRenderOptions
 
     internal double BackgroundRate(int x, int y, int channel)
     {
-        if (SkyIllumination is null) return BackgroundElectronsPerSecond;
+        if (SkyIllumination is null && SolarDisks is null) return BackgroundElectronsPerSecond;
         var response = this is BayerRggb16RenderOptions bayer
             ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1;
-        return BackgroundElectronsPerSecond * SkyIllumination.Multiplier(x, y, channel) * response;
+        var sky = SkyIllumination is null ? BackgroundElectronsPerSecond :
+            BackgroundElectronsPerSecond * (SkyIllumination.IsUniformNight ? 1 : SkyIllumination.Multiplier(x, y, channel)) * response;
+        return sky + (SolarDisks?.ElectronRate(x, y) ?? 0) * response;
     }
 
-    internal double MaximumBackgroundRate => BackgroundElectronsPerSecond * (SkyIllumination is null ? 1 :
-        SolarSkyIllumination.MaximumMultiplier * (this is BayerRggb16RenderOptions bayer
-            ? Math.Max(bayer.ChannelResponse.Red, Math.Max(bayer.ChannelResponse.Green, bayer.ChannelResponse.Blue)) : 1));
+    private double MaximumChannelResponse => this is BayerRggb16RenderOptions bayer
+        ? Math.Max(bayer.ChannelResponse.Red, Math.Max(bayer.ChannelResponse.Green, bayer.ChannelResponse.Blue)) : 1;
+    internal double MaximumBackgroundRate => MaximumSkyRate + (SolarDisks?.MaximumElectronRate ?? 0) * MaximumChannelResponse;
+    private double MaximumSkyRate => BackgroundElectronsPerSecond *
+        (SkyIllumination is null ? 1 : SolarSkyIllumination.MaximumMultiplier * MaximumChannelResponse);
 
     /// <summary>Validates finite, non-negative sensor parameters and bounded optical settings.</summary>
     public virtual void Validate()
@@ -75,7 +81,7 @@ public record LinearSceneRenderOptions
 
         Cloud?.Validate();
         Transient?.Validate();
-        if (SkyIllumination is not null && (!double.IsFinite(MaximumBackgroundRate) || MaximumBackgroundRate > 1e12 ||
+        if ((SkyIllumination is not null || SolarDisks is not null) && (!double.IsFinite(MaximumBackgroundRate) || MaximumSkyRate > 1e12 ||
             !double.IsFinite(MaximumBackgroundRate * ExposureSeconds * Gain)))
             throw new ArgumentOutOfRangeException(nameof(BackgroundElectronsPerSecond));
         if (Transient is not null && MagnitudeZeroElectronsPerSecond > 1_000_000_000_000)
@@ -463,6 +469,7 @@ public static class Mono16SceneRenderer
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (options.StellarExposure is not null && item.Kind == CelestialObjectKind.Star) continue;
+            if (options.SolarDisks is { } disks && disks.Disks.Any(disk => item.Id == $"solar-system:{disk.Body}")) continue;
             var flux = RelativeFlux(item.Magnitude) * options.MagnitudeZeroElectronsPerSecond * objectScale(item);
             if (!double.IsFinite(item.Pixel.X) || !double.IsFinite(item.Pixel.Y) || !double.IsFinite(flux) || flux < 0)
             {
@@ -852,6 +859,8 @@ public static class Mono16SceneRenderer
         }
         if (options.SkyIllumination is { } sky && sky.Projection != projection)
             throw new ArgumentException("Sky illumination must bind the rendered projection.", nameof(options));
+        if (options.SolarDisks is { } disks && disks.Projection != projection)
+            throw new ArgumentException("Solar disks must bind the rendered projection.", nameof(options));
     }
 
     internal static bool InsideAperture(int x, int y, ProjectionContext projection)
@@ -860,6 +869,7 @@ public static class Mono16SceneRenderer
     internal static string AppendScenarioVersions(string algorithmVersion, LinearSceneRenderOptions options)
     {
         if (options.SkyIllumination is not null) algorithmVersion += "+" + SolarSkyIllumination.AlgorithmVersion;
+        if (options.SolarDisks is not null) algorithmVersion += "+" + SolarDiskRenderPlan.AlgorithmVersion;
         if (options.StellarExposure is not null) algorithmVersion += "+" + StellarExposureRenderPlan.AlgorithmVersion;
         if (options.Cloud is not null)
         {
