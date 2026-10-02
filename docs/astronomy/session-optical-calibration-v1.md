@@ -95,6 +95,7 @@ each.
 | Fitting / verification RMS | ≤ 0.4 / 0.5 readout px | `fitting-residual`, `verification-residual` |
 | Parameter at its declared bound | none | `parameter-bound:<name>` |
 | Correlation-matrix condition number of the marginal shared-optics covariance | ≤ 1000 | `ill-conditioned` |
+| A fitted parameter with no supported finite-difference direction (the fit sits on the distortion-domain boundary) | none | `derivative-unsupported`; no precision is reported |
 | Marginal standard error: focal scale, principal point, k1 | ≤ 0.002, 1.5 px, 0.002 | `underconstrained:<name>` |
 | Signed radial bias per supported radius bin | not both > 0.2 px and > 3σ | `radial-bias:<bin>` |
 | Convergence | within 40 iterations | `not-converged` |
@@ -149,7 +150,7 @@ Both keep the previously active revision and its optics unchanged.
   - zero-coefficient serialization identity
   - readout-view mapping
   - blind-search scales kept inside the supported domain for distorted perspective optics
-- `OpticalCalibrationSessionTests` (11) cover:
+- `OpticalCalibrationSessionTests` (12) cover:
   - recovery within tolerance, with pose kept per frame and out of the session optics
   - ROI/bin views derived from one native calibration
   - determinism and option identity
@@ -160,6 +161,7 @@ Both keep the previously active revision and its optics unchanged.
   - incomplete catalog and invalid inputs
   - exhausted budget
   - an input identity bound to every fit and withheld frame input
+  - no derivative direction at the distortion-domain boundary, reported rather than thrown
 - `VirtualOpticalCalibrationReviewServiceTests` (6) cover:
   - accept, reject, retention and idempotency
   - stale reviews, including a stage or cancellation between review and accept

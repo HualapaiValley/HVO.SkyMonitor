@@ -39,7 +39,7 @@ public static class OpticalCalibrationSession
     }
 
     /// <summary>Shared session optics in the native sensor frame.</summary>
-    private readonly record struct Shared(double LogScale, double Cx, double Cy, double K1)
+    internal readonly record struct Shared(double LogScale, double Cx, double Cy, double K1)
     {
         public double this[int index] => index switch { 0 => LogScale, 1 => Cx, 2 => Cy, _ => K1 };
         public Shared With(int index, double value) => index switch
@@ -254,9 +254,9 @@ public static class OpticalCalibrationSession
         return 360 - gap;
     }
 
-    private sealed record ParameterBounds(double[] Min, double[] Max, bool[] Fitted);
+    internal sealed record ParameterBounds(double[] Min, double[] Max, bool[] Fitted);
 
-    private static ParameterBounds Bounds(ProjectionContext nominal, OpticalCalibrationOptions o)
+    internal static ParameterBounds Bounds(ProjectionContext nominal, OpticalCalibrationOptions o)
     {
         var p = o.MaximumPrincipalPointOffsetPixels;
         var k = o.FitRadialDistortion ? o.MaximumAbsoluteRadialDistortionK1 : 0;
@@ -301,22 +301,35 @@ public static class OpticalCalibrationSession
     private static readonly double[] SharedSteps = [1e-6, 1e-3, 1e-3, 1e-6];
     private const double RotationStep = 1e-6;
 
-    /// <summary>Accumulates Huber-weighted normal equations for shared optics followed by three rotation terms per frame.</summary>
-    private static (double[] Normal, double[] Gradient, double Cost, int Rows) Normal(ProjectionContext nominal, IReadOnlyList<FrameWork> works,
-        List<Association>[] associations, Shared shared, ParameterBounds bounds, bool robust)
+    /// <summary>
+    /// One finite-difference camera per fitted shared parameter: forward where the step stays inside its bound and the
+    /// supported domain, otherwise backward. Null when neither direction is supported, as at a distortion-domain boundary
+    /// that both principal-point perturbations leave; the caller reports that instead of differentiating.
+    /// </summary>
+    internal static (AstrometricRayCamera Camera, double Step)[]? DerivativeCameras(ProjectionContext nominal, Shared shared, ParameterBounds bounds)
     {
         var sharedIndex = Enumerable.Range(0, 4).Where(i => bounds.Fitted[i]).ToArray();
-        var n = sharedIndex.Length + 3 * works.Count;
-        var normal = new double[n * n]; var gradient = new double[n]; var cost = 0d; var rows = 0;
-        var camera = Camera(nominal, shared)!;
         var shifted = new (AstrometricRayCamera Camera, double Step)[sharedIndex.Length];
         for (var j = 0; j < sharedIndex.Length; j++)
         {
             var index = sharedIndex[j]; var step = SharedSteps[index];
-            // Use a backward difference where the forward step leaves the supported domain or the bound.
             var forward = shared[index] + step <= bounds.Max[index] ? Camera(nominal, shared.With(index, shared[index] + step)) : null;
-            shifted[j] = forward is not null ? (forward, step) : (Camera(nominal, shared.With(index, shared[index] - step))!, -step);
+            if (forward is not null) shifted[j] = (forward, step);
+            else if (Camera(nominal, shared.With(index, shared[index] - step)) is { } backward) shifted[j] = (backward, -step);
+            else return null;
         }
+        return shifted;
+    }
+
+    /// <summary>Accumulates Huber-weighted normal equations for shared optics followed by three rotation terms per frame; null when a fitted parameter has no supported derivative direction.</summary>
+    private static (double[] Normal, double[] Gradient, double Cost, int Rows)? Normal(ProjectionContext nominal, IReadOnlyList<FrameWork> works,
+        List<Association>[] associations, Shared shared, ParameterBounds bounds, bool robust)
+    {
+        if (DerivativeCameras(nominal, shared, bounds) is not { } shifted) return null;
+        var sharedIndex = Enumerable.Range(0, 4).Where(i => bounds.Fitted[i]).ToArray();
+        var n = sharedIndex.Length + 3 * works.Count;
+        var normal = new double[n * n]; var gradient = new double[n]; var cost = 0d; var rows = 0;
+        var camera = Camera(nominal, shared)!;
         var derivative = new double[2 * n];
         for (var f = 0; f < works.Count; f++)
         {
@@ -387,7 +400,8 @@ public static class OpticalCalibrationSession
             var camera = Camera(nominal, shared)!;
             var associations = works.Select(w => Associate(camera, w, w.Rotation, w.Training, w.Grid, radius)).ToArray();
             if (associations.Any(a => a.Count < options.MinimumFrameFittingStars)) return new(shared, iteration, false, "insufficient-associations");
-            var (normal, gradient, cost0, _) = Normal(nominal, works, associations, shared, bounds, robust: true);
+            if (Normal(nominal, works, associations, shared, bounds, robust: true) is not { } system) return new(shared, iteration, false, "derivative-unsupported");
+            var (normal, gradient, cost0, _) = system;
             var n = gradient.Length; var accepted = false; var decrease = 0d;
             for (var attempt = 0; attempt < 10 && !accepted; attempt++)
             {
@@ -521,9 +535,11 @@ public static class OpticalCalibrationSession
 
         // Conditioning from the unweighted final normal equations: marginal (Schur-complement) covariance of the
         // shared optics after every per-frame pose is eliminated.
-        if (allFit.Count > 0)
+        var final = allFit.Count > 0 ? Normal(nominal, works, associations, shared, bounds, robust: false) : null;
+        if (allFit.Count > 0 && final is null) result.Rejections.Add("derivative-unsupported");
+        if (final is { } solved)
         {
-            var (normal, _, cost, rows) = Normal(nominal, works, associations, shared, bounds, robust: false);
+            var (normal, _, cost, rows) = solved;
             var n = (int)Math.Round(Math.Sqrt(normal.Length));
             var sharedIndex = Enumerable.Range(0, 4).Where(i => bounds.Fitted[i]).ToArray();
             var sigma2 = cost / Math.Max(1, rows - n);

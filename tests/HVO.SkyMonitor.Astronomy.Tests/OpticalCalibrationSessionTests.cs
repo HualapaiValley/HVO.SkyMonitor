@@ -240,6 +240,26 @@ public sealed class OpticalCalibrationSessionTests
         Assert.IsNull(result.CalibratedNative);
     }
 
+    [TestMethod]
+    public void DerivativeCameras_AtTheDistortionBoundaryReportNoDirectionInsteadOfThrowing()
+    {
+        // A centred 3400 px perspective view with k1 = -0.02 at its minimum physical scale puts the aperture corner on
+        // the supported radius, and either principal-point step moves that corner outside it.
+        var nominal = new ProjectionContext(ProjectionModel.Perspective, 1700, 1700, 1000, 1000, 3400, 3400, ProjectionAperture.Rectangular, null,
+            BoresightAltitudeDegrees: 90, BoresightAzimuthDegrees: 0, RollDegrees: 0, RadialDistortionK1: -.02);
+        var minimum = AstrometricSolverCore.MinimumPhysicalScale(SolverOptics.From(nominal));
+        var bounds = OpticalCalibrationSession.Bounds(nominal, WithDistortion);
+        var boundary = new OpticalCalibrationSession.Shared(Math.Log(minimum), 1700, 1700, -.02);
+        var scaled = Math.Exp(boundary.LogScale) * 1000;
+        _ = new AstrometricRayCamera(SolverOptics.From(nominal with { FocalLengthXPixels = scaled, FocalLengthYPixels = scaled }));
+        Assert.IsNull(OpticalCalibrationSession.DerivativeCameras(nominal, boundary, bounds));
+
+        // Just inside the domain every fitted parameter keeps a supported direction.
+        var inside = OpticalCalibrationSession.DerivativeCameras(nominal, boundary with { LogScale = Math.Log(minimum * 1.001) }, bounds);
+        Assert.IsNotNull(inside);
+        Assert.HasCount(4, inside);
+    }
+
     private static FrameReadoutDescriptor Readout(int x, int y, int width, int height, int bin) =>
         new(Size, Size, x, y, width, height, bin, bin, bin == 1 ? FrameBinningAlgorithm.IdentityV1 : FrameBinningAlgorithm.DigitalSumV1, null, null);
 
