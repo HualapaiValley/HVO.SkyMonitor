@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Imaging;
 /// <summary>Bounded uniform disk/illuminated-hemisphere raster in incident electron-rate space.</summary>
 public sealed class SolarDiskRenderPlan
 {
-    public const string AlgorithmVersion = "solar-lunar-geometric-disk-bilinear-v2-projection-bound";
+    public const string AlgorithmVersion = "solar-lunar-geometric-disk-bilinear-v3-stellar-charge";
     private readonly Dictionary<int, double> _rates = [];
 
     public SolarDiskRenderPlan(ProjectionContext projection, IReadOnlyList<SolarDiskAppearance> disks,
