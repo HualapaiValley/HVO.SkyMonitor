@@ -26,6 +26,7 @@ public sealed class SolarSkyIllumination
 
     public ProjectionContext Projection { get; }
     public AltAzPoint Sun { get; }
+    internal bool IsUniformNight => _strength == 0;
 
     /// <summary>RGB channel multiplier, or luminance for channel -1. No exposure, gain or display stretch.</summary>
     public double Multiplier(int x, int y, int channel)

@@ -200,6 +200,7 @@ public sealed class VirtualSkyCameraModule(
             observatory.LatitudeDegrees, observatory.LongitudeDegrees, 0, -18);
         var sunDirection = SolarAltitudeClassifier.DirectionAt(SolarBackgroundEphemeris, sceneUtc,
             observatory.LatitudeDegrees, observatory.LongitudeDegrees);
+        var diskSite = new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees, observatory.ElevationMeters);
         initialRenderOptions = initialRenderOptions with
         {
             BackgroundElectronsPerSecond = StellarSkyBackgroundModel.Resolve(
@@ -207,7 +208,10 @@ public sealed class VirtualSkyCameraModule(
                 _options.IlluminationMode == VirtualSkyIlluminationMode.ControlledNight ? -90 : solarBackground.AltitudeDegrees,
                 _options.BackgroundElectronsPerSecond),
             SkyIllumination = _options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
-                !_options.BackgroundElectronsPerSecond.HasValue ? new SolarSkyIllumination(renderProjection, sunDirection) : null
+                !_options.BackgroundElectronsPerSecond.HasValue ? new SolarSkyIllumination(renderProjection, sunDirection) : null,
+            SolarDisks = _options.RenderSolarSystemDisks ? new SolarDiskRenderPlan(renderProjection,
+                [SolarDiskEphemeris.Get(SolarSystemBody.Sun, sceneUtc, diskSite), SolarDiskEphemeris.Get(SolarSystemBody.Moon, sceneUtc, diskSite)],
+                _options.MagnitudeZeroElectronsPerSecond, cancellationToken) : null
         };
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
@@ -460,6 +464,12 @@ public sealed class VirtualSkyCameraModule(
             ["compatibilityLabel"] = render.CompatibilityLabel,
             ["includeConstellationEndpointStars"] = sceneRequest.IncludeConstellationEndpointStars.ToString()
         };
+        if (initialRenderOptions.SolarDisks is { } diskPlan)
+        {
+            extra["solarDiskEphemeris"] = SolarDiskEphemeris.AlgorithmVersion;
+            extra["solarDiskAlgorithm"] = SolarDiskRenderPlan.AlgorithmVersion;
+            extra["solarDiskAppearance"] = JsonSerializer.Serialize(diskPlan.Disks);
+        }
         if (cloudProvenance is not null)
         {
             extra["cloudScenarioId"] = cloudProvenance.ScenarioId;
@@ -1146,7 +1156,10 @@ public sealed class VirtualSkyCameraModule(
             StellarRenderModel = StellarExposureRenderPlan.AlgorithmVersion,
             StellarSkyModel = options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
                 !options.BackgroundElectronsPerSecond.HasValue
-                ? SolarSkyIllumination.AlgorithmVersion : StellarSkyBackgroundModel.AlgorithmVersion,
+                ? SolarSkyIllumination.AlgorithmVersion + (options.RenderSolarSystemDisks
+                    ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : "")
+                : StellarSkyBackgroundModel.AlgorithmVersion + (options.RenderSolarSystemDisks
+                    ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : ""),
             SolarBackgroundEphemerisModel = SolarBackgroundEphemeris.ModelVersion,
             Setpoint = setpoint,
             Options = options,
@@ -1233,6 +1246,9 @@ public sealed class VirtualSkyCameraModuleOptions
     /// <summary>Omitted default preserves existing serialized scene identities and scalar rendering.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public VirtualSkyIlluminationMode IlluminationMode { get; init; }
+    /// <summary>Opt-in resolved Sun/Moon disks with topocentric size/position and lunar phase.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RenderSolarSystemDisks { get; init; }
     public int Seed { get; init; } = 2025;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? FixedSceneUtc { get; init; }

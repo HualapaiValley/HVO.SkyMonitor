@@ -398,6 +398,31 @@ channel multiplier. Long exposures sample illumination at the recorded celestial
 midpoint; the approximation does not integrate changing solar radiance through
 a twilight crossing.
 
+Optional `renderSolarSystemDisks: true` adds the resolved Sun and Moon before
+sensor integration. The shared `SolarDiskEphemeris` uses topocentric geometric
+position and distance, NASA mean radii (Sun 695,700 km; Moon 1,737.4 km), and the
+pinned Astronomy Engine lunar illuminated fraction. The bright limb points
+toward the actual Sun. It is a uniform bright hemisphere, not a lunar texture
+or photometric surface model; phase fraction is geocentric while disk position,
+size and limb orientation are topocentric. Atmospheric refraction, extinction,
+earthshine, eclipses, lunar occultation of background sources and optical
+bloom/flare are not modeled. Disks use bounded deterministic surface quadrature
+and bilinear sensor deposition, without the stellar Gaussian PSF. Both disks
+are sampled at the exposure's recorded celestial midpoint; sequence motion is
+truthful, but long-exposure disk trails are not integrated. Sun/Moon entries in
+`solarSystemBodies` are not rendered a second time as point sources.
+
+The opt-in disk identities and complete angular/phase geometry are recorded in
+frame metadata and the scene identity. At 640 pixels across a 180-degree field,
+the half-degree bodies are only a few pixels wide. A separately labeled narrow
+field capture can demonstrate lunar phase; enlarging a body within the all-sky
+frame would falsify scale. The POC rig uses the supported upward-looking camera
+orientation (`horizontalFlip: true`): North up, East left, West right.
+
+Source constants: [NASA Sun fact sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html)
+and [NASA Moon fact sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/moonfact.html).
+Ephemeris semantics: [Astronomy Engine C# contracts](https://github.com/cosinekitty/astronomy/blob/v2.1.19/source/csharp/README.md).
+
 Qualification displays must use the frame's actual stored-code black/white
 levels and a declared fixed transfer function. Raw means, percentiles and
 clipping fractions are measured inside the optical aperture, separately from

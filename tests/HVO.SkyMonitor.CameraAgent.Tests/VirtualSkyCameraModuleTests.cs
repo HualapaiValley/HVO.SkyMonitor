@@ -28,6 +28,46 @@ public sealed class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16)]
     [DataRow(CameraPixelFormat.Rgb24)]
     [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task SolarDisks_AddSensorLightAndRecordActualGeometry(CameraPixelFormat format)
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var means = new List<double>();
+        foreach (var enabled in new[] { false, true })
+        {
+            var module = CreateModule(noon);
+            await using var moduleDisposal = module.ConfigureAwait(false);
+            await module.InitializeAsync(CreateConfig(format, 64, 64) with
+            {
+                Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    renderSolarSystemDisks = enabled,
+                    illuminationMode = "ControlledNight",
+                    asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
+                    backgroundElectronsPerSecond = 0,
+                    bias = 0,
+                    readNoiseStandardDeviation = 0
+                }))
+            }, CancellationToken.None).ConfigureAwait(false);
+            var frame = (await module.CaptureAsync(new(noon, TimeSpan.FromSeconds(1), CaptureMode.Still,
+                new(TimeSpan.FromMilliseconds(1), 1, null, null)), CancellationToken.None).ConfigureAwait(false)).Frame!;
+            means.Add(double.Parse(frame.Metadata.Extra!["renderMean"], System.Globalization.CultureInfo.InvariantCulture));
+            Assert.AreEqual(enabled, frame.Metadata.Extra.ContainsKey("solarDiskAppearance"));
+            if (enabled)
+            {
+                var disks = JsonSerializer.Deserialize<SolarDiskAppearance[]>(frame.Metadata.Extra["solarDiskAppearance"])!;
+                Assert.AreEqual(2, disks.Length);
+                Assert.AreEqual(frame.Metadata.Scene!.VirtualExposure!.CelestialMidpointUtc, disks[0].Utc);
+                Assert.IsTrue(disks[0].Direction.AltitudeDegrees > 0);
+                StringAssert.Contains(frame.Metadata.Extra["renderAlgorithm"], SolarDiskRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
+            }
+        }
+        Assert.IsTrue(means[1] > means[0] + .1);
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
     public async Task SolarIllumination_IntegratesAndClipsThroughEachSensorLayout(CameraPixelFormat format)
     {
         var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
