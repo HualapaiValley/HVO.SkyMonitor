@@ -82,13 +82,20 @@ acceptance. The heuristic quality score and PSF width are never used as a probab
 | `assessment-not-accepted` | No accepted measured mapping |
 | `focal-scale-at-search-bound` | Accepted focal scale sits on its search bound; widen the search or recalibrate |
 | `centroid-covariance-missing` | A fitting star has no centroid covariance; use a covariance-producing measurer |
+| `held-out-covariance-missing` | A verification star has no centroid covariance, so the held-out test cannot run |
 | `insufficient-fitting-stars` | Fewer than `MinimumFittingStars` (12) fitting stars |
+| `insufficient-held-out-stars` | Fewer than `MinimumHeldOutStars` (4) verification stars; solve with a larger verification subset |
 | `derivative-unsupported` | A star or the focal scale leaves the projection domain under perturbation |
 | `rank-deficient` | Stars do not constrain every pose parameter; widen the field |
 | `not-converged` | Refit did not converge within `MaximumIterations` |
 | `ill-conditioned` | Scaled condition number above the limit |
 | `model-invalid-residual-excess` | Fitting χ² above its α quantile; declare a systematic budget or correct the model |
 | `model-invalid-held-out-prediction` | Held-out χ² above its α quantile; the model does not predict unseen stars |
+| `held-out-derivative-unsupported` | A verification star leaves the projection domain at the refitted pose |
+| `held-out-prediction-singular` | The held-out prediction covariance is not positive definite |
+
+Both model-validity tests are required. A frame whose held-out test cannot run is withheld, never published as
+validated by the residual test alone.
 
 The shared-calibration component can be withheld on its own as `shared-calibration-covariance-not-supplied` or
 `calibration-derivative-unsupported`. The total then carries the same reason.
@@ -98,6 +105,9 @@ The shared-calibration component can be withheld on its own as `shared-calibrati
 `AstrometricFrameUncertainty.IdentitySha256` binds all of the following:
 
 - the assessment, calibration, catalog, catalog selection and solver-settings identities
+- the supplied readout declaration (`ReadoutIdentitySha256`, null when none is supplied), including the binning
+  operation and CFA origin that leave the projection unchanged. It must be internally consistent and produce the frame
+  calibration's image size.
 - a measurement-input identity over the ordered detections and covariances
 - the options identity
 - the shared-calibration identity
@@ -112,6 +122,7 @@ The estimator rejects incompatible reuse rather than propagating it:
 - solver, coordinate, refraction or pixel conventions other than the ones it models
 - associations that do not match the assessment's association identity
 - a shared calibration whose readout view is not exactly the frame's calibration
+- a readout declaration that is inconsistent or does not produce the frame calibration's image size
 
 ## Clock policy
 
@@ -126,9 +137,9 @@ pixel-to-equatorial mapping fitted at the stated time. No residual fit can separ
 
 ## Evidence
 
-**Unit** (Astronomy 22 + 5 + 1, CameraAgent 3)
+**Unit** (Astronomy 23 + 7 + 1, CameraAgent 3)
 
-- `AstrometricUncertaintyCoverageTests` (22) checks Monte Carlo coverage of the core against predeclared tolerances.
+- `AstrometricUncertaintyCoverageTests` (23) checks Monte Carlo coverage of the core against predeclared tolerances.
   - **Tolerances.** Coverage fractions at 0.6827/0.95/0.99 must lie within 3.5 binomial σ. The thresholds are the
     ellipsoid χ²₄ values 4.7198/9.4877/13.2767 and the per-parameter intervals 1/1.96/2.576 σ.
   - **Ideal model** (400 trials).
@@ -136,6 +147,8 @@ pixel-to-equatorial mapping fitted at the stated time. No residual fit can separ
     rectilinear (perspective) lens. Each family's truth and fit use its own projection.
   - **Lens-family limit.** An orthographic lens whose circle equals its focal length is withheld as
     `derivative-unsupported` rather than throwing.
+  - **Held-out test unavailable.** A verification star with no rectilinear image, or too few verification stars, fails
+    the core instead of passing it unchecked.
   - **Declared systematic floor.** It is propagated and covers.
   - **Mismatched models** with a declared budget of the same size, 200 trials each. The 99% false-acceptance rate
     stays within 1% + 3.5σ:
@@ -148,7 +161,7 @@ pixel-to-equatorial mapping fitted at the stated time. No residual fit can separ
   - **Shared calibration** (400 paired trials). The total covers on both frames. The observed cross-frame correlation
     of every pose-parameter pair matches `S_a P S_bᵀ` within 3.5 Fisher-z σ, with a predicted correlation above 0.5.
   - Determinism, rotation-vector inversion and quantile reference values.
-- `AstrometricUncertaintyEstimatorTests` (5) cover:
+- `AstrometricUncertaintyEstimatorTests` (7) cover:
   - separate components bound to every identity
   - the shared-calibration total and cross-covariance
   - incompatible-reuse rejection
@@ -156,6 +169,8 @@ pixel-to-equatorial mapping fitted at the stated time. No residual fit can separ
   - an optimistic covariance (10× too small) withheld as `model-invalid-residual-excess`, then accepted with a declared
     floor of the actual size
   - clock facts that bound the horizontal pose only
+  - a held-out test that cannot run (missing verification covariance, too few verification stars) withholding
+  - readout declarations bound into the identity even when the geometry is unchanged, and inconsistent ones rejected
 - `OpticalCalibrationSessionTests` (+1) checks that the published shared covariance reproduces the reported standard
   errors and is absent on a rejected result.
 - `AstrometricClockFactsMapperTests` (3) cover synchronized bounds, states that carry no bound, and the rule that an

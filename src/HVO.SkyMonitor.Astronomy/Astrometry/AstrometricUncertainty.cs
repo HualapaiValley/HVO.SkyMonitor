@@ -147,7 +147,7 @@ public sealed record AstrometricModelValidity(double? ChiSquare, int DegreesOfFr
 /// systematic and shared-calibration covariances and is withheld unless all three are available.
 /// </summary>
 public sealed record AstrometricFrameUncertainty(string SchemaVersion, string IdentitySha256,
-    string AssessmentIdentitySha256, string CalibrationIdentitySha256, string CatalogIdentitySha256, string CatalogSelectionIdentitySha256,
+    string AssessmentIdentitySha256, string CalibrationIdentitySha256, string? ReadoutIdentitySha256, string CatalogIdentitySha256, string CatalogSelectionIdentitySha256,
     string SolverSettingsIdentitySha256, string MeasurementInputIdentitySha256, string OptionsIdentitySha256,
     AstrometricConventionIdentity Conventions, AstrometricClockFacts Clock, string Status, string ReasonCode, string Reason,
     AstrometricConditionalEstimate? Estimate, AstrometricCentroidUncertainty Centroid, AstrometricPoseCovarianceComponent ConditionalFit,
@@ -219,6 +219,8 @@ public static class AstrometricUncertaintyEstimator
             AstrometricConventionIdentity.TopocentricHorizontal, assessment.RefractionModel, assessment.PixelCoordinateConvention,
             AstrometricConventionIdentity.RotationVectorLogScale);
 
+        var readoutIdentity = ReadoutIdentity(readout, calibration.Projection);
+
         // Shared calibration must be the exact calibration this frame was solved under.
         CalibrationInput? calibrationInput = null;
         if (sharedCalibration is not null)
@@ -237,7 +239,7 @@ public static class AstrometricUncertaintyEstimator
             AstrometricPoseCovarianceComponent total, AstrometricModelValidity validity)
         {
             var value = new AstrometricFrameUncertainty(AstrometricFrameUncertainty.CurrentSchemaVersion, string.Empty, assessment.IdentitySha256,
-                calibration.IdentitySha256, catalog.IdentitySha256, catalog.SelectionIdentitySha256, solverOptions.IdentitySha256, measurementIdentity,
+                calibration.IdentitySha256, readoutIdentity, catalog.IdentitySha256, catalog.SelectionIdentitySha256, solverOptions.IdentitySha256, measurementIdentity,
                 options.IdentitySha256, conventions, clock, status, code, reason, estimate, centroid, conditional, systematic, shared, total, clockComponent, validity);
             return value with { IdentitySha256 = AstrometricIdentity.Hash(value) };
         }
@@ -264,12 +266,18 @@ public static class AstrometricUncertaintyEstimator
             return new(ray, detection.Pixel, covarianceByIndex.TryGetValue(a.DetectionIndex, out var c) ? new(c.Xx, c.Xy, c.Yy) : null);
         }
         var fitting = associations.Where(a => !a.Verification).Select(Observe).ToArray();
-        var held = associations.Where(a => a.Verification).Select(Observe).Where(o => o.Covariance is not null).ToArray();
+        var held = associations.Where(a => a.Verification).Select(Observe).ToArray();
         var centroid = Centroid(fitting, held);
         if (fitting.Any(o => o.Covariance is null))
             return Withhold("centroid-covariance-missing", "A fitting star has no measured centroid covariance; measure with a covariance-producing detector.", centroid);
+        // Model validity rests on the held-out prediction test as well as the residual test, so a frame that cannot run it
+        // publishes nothing rather than an uncertainty only half checked.
+        if (held.Any(o => o.Covariance is null))
+            return Withhold("held-out-covariance-missing", "A verification star has no measured centroid covariance, so the held-out prediction test cannot run; measure with a covariance-producing detector.", centroid);
         if (fitting.Length < options.MinimumFittingStars)
             return Withhold("insufficient-fitting-stars", $"At least {options.MinimumFittingStars} fitting stars with covariance are required.", centroid);
+        if (held.Length < options.MinimumHeldOutStars)
+            return Withhold("insufficient-held-out-stars", $"At least {options.MinimumHeldOutStars} verification stars are required for the held-out prediction test; solve with a larger verification subset.", centroid);
 
         cancellationToken.ThrowIfCancellationRequested();
         var core = Solve(SolverOptics.From(calibration.Projection), AstrometricRotation.FromPose(new(assessment.Parameters.BoresightAltitudeDegrees,
@@ -462,8 +470,12 @@ public static class AstrometricUncertaintyEstimator
 
         // Held-out prediction, never used in the fit. Residuals share the pose estimate and the nuisances, so their covariance
         // D + Z Omega Z^T (Z = [J_v, L_v - J_v G], Omega = diag(A^-1, P)) is not block diagonal; Woodbury keeps it 4 + q wide.
-        double? heldChi = null; double? heldLimit = null; var heldDegrees = 0;
-        if (held.Count >= options.MinimumHeldOutStars && Linearize(optics, rotation, scale, held) is { } prediction)
+        double? heldChi = null; double? heldLimit = null; var heldDegrees = 0; Failure? heldUnavailable = null;
+        if (held.Count < options.MinimumHeldOutStars)
+            heldUnavailable = new("insufficient-held-out-stars", $"At least {options.MinimumHeldOutStars} verification stars are required for the held-out prediction test; solve with a larger verification subset.");
+        else if (Linearize(optics, rotation, scale, held) is not { } prediction)
+            heldUnavailable = new("held-out-derivative-unsupported", "A verification star leaves the supported projection domain at the refitted pose, so the held-out prediction test cannot run.");
+        else
         {
             var m = 4 + q; var y = new double[m]; var gram = new double[m * m]; var direct = 0d;
             double Z(int row, int c)
@@ -496,13 +508,15 @@ public static class AstrometricUncertaintyEstimator
                 heldChi = Math.Max(0, direct - drop); heldDegrees = 2 * held.Count;
                 heldLimit = ChiSquareQuantile(heldDegrees, 1 - options.ModelValidityAlpha);
             }
+            else heldUnavailable = new("held-out-prediction-singular", "The held-out prediction covariance is not positive definite, so the held-out prediction test cannot run.");
         }
         var heldFailed = heldChi > heldLimit;
         var validity = new AstrometricModelValidity(chi, degrees, chiLimit, heldChi, heldDegrees, heldLimit, condition,
             condition > options.MaximumConditionNumber ? "ill-conditioned" : chi > chiLimit || heldFailed ? "model-invalid" :
-            heldChi is null ? "consistent-held-out-unavailable" : "consistent");
+            heldUnavailable is not null ? "held-out-unavailable" : "consistent");
         if (condition > options.MaximumConditionNumber)
             return Fail("ill-conditioned", $"The scaled normal matrix condition number exceeds {options.MaximumConditionNumber:g}; pose parameters are nearly degenerate.", validity);
+        if (chi <= chiLimit && heldUnavailable is { } unavailable) return Fail(unavailable.Code, unavailable.Reason, validity);
         Failure? modelFailure = chi > chiLimit
             ? new("model-invalid-residual-excess", $"Fitting residuals exceed the declared centroid, systematic and calibration covariance (chi-square {chi:F1} > {chiLimit:F1} for {degrees} degrees of freedom); declare a systematic budget or correct the optical model.")
             : heldFailed ? new("model-invalid-held-out-prediction", $"Held-out stars disagree with the predicted interval (chi-square {heldChi:F1} > {heldLimit:F1} for {heldDegrees} degrees of freedom); the model does not predict unseen stars.")
@@ -662,6 +676,26 @@ public static class AstrometricUncertaintyEstimator
     }
 
     private static double Axis(EnuVector v, int i) => i switch { 0 => v.East, 1 => v.North, _ => v.Up };
+
+    /// <summary>
+    /// Binds the supplied readout declaration, including binning operation and CFA origin that leave the projection unchanged, after
+    /// checking it is internally consistent and produces the frame calibration's image size.
+    /// </summary>
+    private static string? ReadoutIdentity(FrameReadoutDescriptor? readout, ProjectionContext projection)
+    {
+        if (readout is null) return null;
+        var binned = readout.BinX != 1 || readout.BinY != 1;
+        if (readout.NativeWidth < 1 || readout.NativeHeight < 1 || readout.RoiX < 0 || readout.RoiY < 0 || readout.RoiWidth < 1 || readout.RoiHeight < 1 ||
+            readout.BinX < 1 || readout.BinY < 1 || !Enum.IsDefined(readout.BinningAlgorithm) ||
+            (long)readout.RoiX + readout.RoiWidth > readout.NativeWidth || (long)readout.RoiY + readout.RoiHeight > readout.NativeHeight ||
+            readout.RoiWidth % readout.BinX != 0 || readout.RoiHeight % readout.BinY != 0 || binned == (readout.BinningAlgorithm == FrameBinningAlgorithm.IdentityV1) ||
+            readout.CfaOriginX.HasValue != readout.CfaOriginY.HasValue || readout.CfaOriginX is < 0 or > 1 || readout.CfaOriginY is < 0 or > 1 ||
+            readout.CfaOriginX is { } cfaX && (binned || (readout.RoiX - cfaX) % 2 != 0 || (readout.RoiY - readout.CfaOriginY!.Value) % 2 != 0))
+            throw new ArgumentException("The readout declaration is not internally consistent.", nameof(readout));
+        if (readout.RoiWidth / readout.BinX != projection.WidthPixels || readout.RoiHeight / readout.BinY != projection.HeightPixels)
+            throw new ArgumentException("The readout declaration does not produce the frame calibration's image size.", nameof(readout));
+        return AstrometricIdentity.Hash(new { schema = "astrometric-uncertainty-readout-v1", readout });
+    }
 
     private static AstrometricCentroidUncertainty Centroid(Observation[] fitting, Observation[] held)
     {

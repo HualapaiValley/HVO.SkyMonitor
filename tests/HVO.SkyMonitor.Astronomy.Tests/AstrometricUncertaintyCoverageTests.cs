@@ -74,6 +74,24 @@ public sealed class AstrometricUncertaintyCoverageTests
     }
 
     [TestMethod]
+    public void HeldOutPredictionThatCannotRun_FailsRatherThanPassingUnchecked()
+    {
+        var lens = new ProjectionContext(ProjectionModel.Perspective, 256, 256, 256, 256, 512, 512, ProjectionAperture.Rectangular, null, 90, 0, 0, true);
+        var scene = CreateScene(AstrometricTestFixture.Utc, 72, 243, 17, 1113, .05, .3, lens);
+        Observation Exact(Star s) => new(s.Ray, Truth(lens).Pixel(s.Ray, scene.Rotation)!.Value, s.Covariance);
+        Observation[] fitting = [.. scene.Fitting.Select(Exact)], held = [.. scene.Held.Select(Exact)];
+        Assert.IsNull(AstrometricUncertaintyEstimator.Solve(SolverOptics.From(lens), scene.Rotation, 1, fitting, held, null, new()).Failure);
+
+        // A verification star at the nadir has no rectilinear image, so the prediction test cannot be linearized there.
+        Observation[] behind = [.. held[..^1], held[^1] with { Ray = new(0, 0, -1) }];
+        var unsupported = AstrometricUncertaintyEstimator.Solve(SolverOptics.From(lens), scene.Rotation, 1, fitting, behind, null, new());
+        Assert.AreEqual("held-out-derivative-unsupported", unsupported.Failure?.Code); Assert.IsNull(unsupported.Conditional);
+        Assert.AreEqual("held-out-unavailable", unsupported.Validity.Status);
+        var insufficient = AstrometricUncertaintyEstimator.Solve(SolverOptics.From(lens), scene.Rotation, 1, fitting, held[..3], null, new());
+        Assert.AreEqual("insufficient-held-out-stars", insufficient.Failure?.Code); Assert.IsNull(insufficient.Conditional);
+    }
+
+    [TestMethod]
     public void DeclaredSystematicFloor_IsPropagatedAndSumsWithCentroidComponent()
     {
         var scene = CreateScene(AstrometricTestFixture.Utc.AddHours(2), 72, 243, 17, 1106, .03, .12);

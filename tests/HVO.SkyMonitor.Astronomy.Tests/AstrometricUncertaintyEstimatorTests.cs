@@ -113,6 +113,43 @@ public sealed class AstrometricUncertaintyEstimatorTests
     }
 
     [TestMethod]
+    public void HeldOutPredictionThatCannotRun_WithholdsInsteadOfPublishing()
+    {
+        var f = Accepted.Value;
+        var verification = f.Result.Associations.Where(a => a.Verification).Select(a => a.DetectionIndex).ToHashSet();
+        Assert.IsGreaterThanOrEqualTo(4, verification.Count);
+        var missing = Estimate(f, [.. Covariances(f, Sigma).Where(c => !verification.Contains(c.DetectionIndex))]);
+        Assert.AreEqual("held-out-covariance-missing", missing.ReasonCode); Assert.IsFalse(missing.IsAvailable); Assert.IsNull(missing.ConditionalFit.Covariance);
+        var insufficient = Estimate(f, Covariances(f, Sigma), options: new(MinimumHeldOutStars: verification.Count + 1));
+        Assert.AreEqual("insufficient-held-out-stars", insufficient.ReasonCode); Assert.IsFalse(insufficient.IsAvailable);
+        Assert.IsTrue(Estimate(f, Covariances(f, Sigma), options: new(MinimumHeldOutStars: verification.Count)).IsAvailable);
+    }
+
+    [TestMethod]
+    public void ReadoutDeclaration_IsValidatedAndBoundEvenWhenItLeavesTheProjectionUnchanged()
+    {
+        var f = Accepted.Value; var covariances = Covariances(f, Sigma);
+        FrameReadoutDescriptor Binned(FrameBinningAlgorithm algorithm) => new(1024, 1024, 0, 0, 1024, 1024, 2, 2, algorithm, null, null);
+        var estimates = new[]
+        {
+            Estimate(f, covariances), Estimate(f, covariances, readout: FullFrame), Estimate(f, covariances, readout: FullFrame with { CfaOriginX = 0, CfaOriginY = 0 }),
+            Estimate(f, covariances, readout: Binned(FrameBinningAlgorithm.ChargeSumV1)), Estimate(f, covariances, readout: Binned(FrameBinningAlgorithm.DigitalSumV1))
+        };
+        Assert.IsNull(estimates[0].ReadoutIdentitySha256);
+        Assert.IsTrue(estimates.All(u => u.IsAvailable));
+        Assert.IsTrue(estimates.All(u => u.ConditionalFit.Covariance!.SequenceEqual(estimates[0].ConditionalFit.Covariance!)), "Geometry, and so the propagation, is unchanged.");
+        Assert.AreEqual(4, estimates.Skip(1).Select(u => u.ReadoutIdentitySha256).Distinct().Count());
+        Assert.AreEqual(5, estimates.Select(u => u.IdentitySha256).Distinct().Count());
+
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: FullFrame with { BinningAlgorithm = FrameBinningAlgorithm.ChargeSumV1 }));
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: Binned(FrameBinningAlgorithm.IdentityV1)));
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: FullFrame with { CfaOriginX = 0 }));
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: FullFrame with { CfaOriginX = 1, CfaOriginY = 0 }));
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: Binned(FrameBinningAlgorithm.ChargeSumV1) with { CfaOriginX = 0, CfaOriginY = 0 }));
+        Assert.Throws<ArgumentException>(() => Estimate(f, covariances, readout: new(1024, 1024, 0, 0, 1024, 1024, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)));
+    }
+
+    [TestMethod]
     public void ClockFacts_BoundHorizontalPoseOnlyAndNeverEnterTheTotal()
     {
         var f = Accepted.Value; var covariances = Covariances(f, Sigma); var shared = Shared(f.Calibration.Projection);
