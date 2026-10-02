@@ -253,7 +253,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     PixelFormat = w0.PixelFormat.ToString(),
                     w0.ByteLength,
                     Recipe = BuiltInProcessingRecipes.ImageQuality,
-                    Dependency = "worker-facing MinIO",
+                    Dependency = "worker-facing filesystem IObjectStore",
                     Measurement = p4
                 },
                 P5 = new
@@ -757,6 +757,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             observed = exception;
         }
         Assert.IsNotNull(observed, $"The {boundary} publication fault was not observed.");
+        if (publicationFault is not null)
+        {
+            Assert.IsTrue(publicationFault.Injected, $"The {boundary} object-store boundary was not reached.");
+        }
 
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1973,6 +1977,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         private int _canonicalReads;
         private int _injected;
         private int _stagingCleanupSuppressed;
+        public bool Injected => Volatile.Read(ref _injected) == 1;
         public bool StagingCleanupSuppressed => Volatile.Read(ref _stagingCleanupSuppressed) == 1;
         public string? StagingObjectKey { get; private set; }
 
