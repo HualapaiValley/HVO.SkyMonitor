@@ -26,6 +26,9 @@ statistically validated uncertainty.
 #1104 adds session optical calibration with a radial k1 term and virtual-profile
 review/activation; see
 [session optical calibration](../astronomy/session-optical-calibration-v1.md).
+#1105 adds per-frame astrometric uncertainty with separate conditional, systematic
+and shared-calibration components; see
+[astrometric uncertainty](../astronomy/astrometric-uncertainty-v1.md).
 
 The standalone #1084/#1085/#1087 experiments are prior evidence, not production
 renderer implementations. #1102 records the remaining #1087 crop/bin
