@@ -232,4 +232,57 @@ No setting was changed after tuning.
 
 ### Held-out partition
 
-Recorded after the held-out run on the committed revision.
+**Run.** Revision `4b0305f38618bbd41944bf1d37c8775855791354`, Release, .NET 10.0.12, tiered compilation off, 12 processors. Single process, 1 m 52 s.
+
+**Report.** `virtual-optical-calibration.json` (schema `virtual-optical-calibration-v1`), SHA-256 `fda036dffcbde37deb77ef064e94daab4b97b0e60ef56f290c4aae70e73d5b25`.
+
+All three cases were Accepted and every predeclared tolerance held. No setting was changed after the run.
+
+**Truth.**
+
+| Case | Date | Seed | Focal | Principal offset | k1 | Pose |
+| --- | --- | --- | --- | --- | --- | --- |
+| 01 | Jan 15 | 110401 | ×1.008 | (+4.5, −3.5) px | −0.008 | 78/205/−21 |
+| 05 | May 15 | 110405 | ×0.992 | (−6, +2.5) px | +0.006 | 85/40/33 |
+| 09 | Sep 15 | 110409 | ×1.004 | (+3, +5) px | 0 | 80/300/5 |
+
+**Accuracy against the reference equations.**
+
+| Case | Focal (≤ 0.001) | Principal point (≤ 1 px) | k1 (≤ 0.0015) | Intrinsic map (≤ 0.5 px) |
+| --- | --- | --- | --- | --- |
+| 01 | 1.3e-5 | 0.004 px | 1.3e-6 | 0.010 px |
+| 05 | 2.6e-9 | 0.005 px | 3.2e-6 | 0.009 px |
+| 09 | 3.0e-5 | 0.008 px | 1.8e-5 | 0.014 px |
+
+**Fit diagnostics.**
+- Every case: sky rotation 60.2°, four fitted frames, 5/5 radial bins and 8/8 azimuth bins occupied, converged.
+- Fitting RMS was 0.107–0.130 px and verification RMS 0.076–0.083 px.
+- The marginal condition number was 25.8–34.6.
+- No parameter hit a bound.
+
+**Validation through the calibrated readout views.** The fitter's own validations were Accepted with verification RMS 0.049–0.087 px (limit 0.5 px).
+
+**Withheld frames, scored independently.** Precision was 1 with no missing mappings throughout.
+
+| Case | Native | ROI | ROI+bin2 |
+| --- | --- | --- | --- |
+| 01 | 0.007 px (p95 0.010) | 0.003 px (p95 0.006) | 0.007 px (p95 0.010) |
+| 05 | 0.009 px (p95 0.016) | 0.009 px (p95 0.011) | 0.010 px (p95 0.012) |
+| 09 | 0.006 px (p95 0.010) | 0.009 px (p95 0.013) | 0.013 px (p95 0.019) |
+
+The maximum pose error was 0.004° and the maximum focal error 4.8e-5.
+
+**Omitted-distortion control.**
+- Case 01 (k1 −0.008): Rejected with `fitting-residual`, `verification-residual` and `radial-bias` in bins 0–3.
+- Case 05 (k1 +0.006): Rejected with `fitting-residual`, `verification-residual` and `radial-bias` in bins 0–4.
+- Case 09 (k1 = 0): Accepted, as declared.
+
+**Cost.** Each limit is derived from that case's own single-frame cold-solve baseline.
+
+| Case | Kind | Wall time (limit) | Allocated (limit) | Peak working set (≤ 2 GiB) | Baseline solve |
+| --- | --- | --- | --- | --- | --- |
+| 01 | cold | 17.8 s (23.2 s) | 18.5 GiB (23.8 GiB) | 480 MiB | 2.4 s, 2.7 GiB |
+| 05 | session | 14.2 s (18.0 s) | 14.8 GiB (17.6 GiB) | 502 MiB | 1.8 s, 2.0 GiB |
+| 09 | session | 15.0 s (19.8 s) | 15.4 GiB (19.0 GiB) | 502 MiB | 2.0 s, 2.1 GiB |
+
+Measuring each frame took 31–171 ms, with 653–719 candidates per frame.
