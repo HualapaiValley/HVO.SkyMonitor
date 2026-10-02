@@ -100,13 +100,37 @@ component publishes pass. The standalone recovery fixture's time-dependent
 invalid values were corrected without changing production behavior or weakening
 its assertions.
 
-No PR has been pushed or opened, no independent convergence review has been
-claimed, and no merge/finalization lock has been acquired. The owner requested
-an explicit scope decision about repairing inherited host-wide coverage gaps.
-The accepted visual checkpoint is retained independently of this qualification
-blocker. Logs `baseline-status.log`, `baseline-coverage-logichost.log` and
+The operator explicitly authorized repair of these inherited coverage gaps on
+2026-10-02. The accepted visual checkpoint remains independent of code
+qualification. Logs `baseline-status.log`, `baseline-coverage-logichost.log` and
 `baseline-coverage-combined.log` preserve the target reproduction.
 
 The target's `development-v1.yml` workflow runs Preflight and Build/Unit;
 `ci.yml` targets main/release and manual dispatch. Those distinct evidence sets
 must not be represented as equivalent classifier-selected protected coverage.
+
+## Authorized coverage repair
+
+Seventeen new cases run in each host test assembly. They exercise the actual
+LogicHost reconstruction/recipe adapter: Mono8/Mono16/RGB/CFA previews and
+annotations, frozen output contracts, malformed result rejection, invalid
+capture descriptors and control evidence, named calibration reference binding,
+corrupt/missing/incompatible references, bounded rolling windows and ordered
+lineage, and projected-scene metadata consumed by deterministic toggleable
+presentation products. The combined assembly additionally checks edge/central
+byte, identity and lineage equality for preview/annotation recipes and matching
+invalid-option failures. Production behavior and coverage floors are unchanged.
+
+Canonical lane reports after repair (`repair2-*` logs):
+
+| Component | Line | Branch | Result |
+| --- | ---: | ---: | --- |
+| LogicHost | 71.2747% | 47.7701% | pass |
+| Combined-host | 34.1558% | 19.6476% | pass |
+
+Both complete affected Unit suites passed (LogicHost 573 discovered, including
+one pre-existing provider-inapplicable skip; combined 25 passed). These
+test-only additions use the previously passing Integration reports for the
+same production revision; no cross-lane report borrowing or denominator
+exclusions were introduced. Global discovery is now 5296 Unit cases. Independent
+review and exact-head protected CI remain separate requirements.
