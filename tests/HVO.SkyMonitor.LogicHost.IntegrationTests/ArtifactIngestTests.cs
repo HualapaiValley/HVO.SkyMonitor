@@ -1409,6 +1409,15 @@ public sealed class ArtifactIngestTests
                 .SetProperty(item => item.ReconstructionState, CentralReconstructionState.Quarantined)
                 .SetProperty(item => item.StateReasonCode, "lineage.source-identity-mismatch"))
             .ConfigureAwait(false);
+        // Explicitly queue this dependent for verification. A single inventory cycle
+        // visits only 25 artifacts, so shared-fixture GUID ordering cannot guarantee
+        // that this artifact is included in the next inventory batch.
+        await db.CentralArtifacts.Where(item => item.Id == dependentId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.ObjectVerificationToken, Guid.NewGuid())
+                .SetProperty(item => item.ObjectVerificationRequestedAtUtc, DateTimeOffset.UtcNow)
+                .SetProperty(item => item.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
         using var telemetry = new CentralIngestTelemetry();
         var reconciler = new CentralArtifactReconciliationService(
             AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -1425,6 +1434,10 @@ public sealed class ArtifactIngestTests
             .ConfigureAwait(false);
         reconciledDependent.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
         reconciledDependent.StateReasonCode.Should().Be("lineage.source-unavailable");
+        reconciledDependent.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        reconciledDependent.ObjectVerificationToken.Should().BeNull();
+        (await db.CentralArtifactSources.SingleAsync(item => item.CentralArtifactId == dependentId)
+            .ConfigureAwait(false)).ResolvedCentralArtifactId.Should().BeNull();
     }
 
     [TestMethod]
