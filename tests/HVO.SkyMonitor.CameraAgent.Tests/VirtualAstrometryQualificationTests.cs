@@ -68,7 +68,7 @@ public sealed class VirtualAstrometryQualificationTests
                             failures.Add($"{caseId}: solve exceeded declared cold/warm time budget");
                         var sceneUtc = captured.Frame!.Metadata.Scene!.SceneUtc!.Value;
                         var score = solved.Assessment.HasMeasuredMapping ? VirtualAstrometryReference.Score(view.Config.Rig,
-                            sceneUtc, nominal, catalog, measured, solved, failures, caseId) : null;
+                            sceneUtc, nominal, catalog, [.. measured.Detections.Select(d => new AstrometricDetection(d.Index, d.Pixel, d.Flux))], solved, failures, caseId) : null;
                         if (!solved.Assessment.HasMeasuredMapping) failures.Add($"{caseId}: {solved.Assessment.Reason}");
                         else
                         {

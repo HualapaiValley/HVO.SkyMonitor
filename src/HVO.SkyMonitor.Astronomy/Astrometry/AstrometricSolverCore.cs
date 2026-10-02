@@ -6,6 +6,8 @@ internal sealed record CoreSolverOptions(double MinimumScale = .90, double Maxim
     double ScaleStep = .01, int DetectionTriangleStars = 28, int SampledTriangles = 192,
     int MaximumHypotheses = 200000, int MaximumCandidates = 32, double MaximumCatalogMagnitude = 7);
 internal sealed record CoreAssociation(string CatalogId, int DetectionIndex, double ResidualPixels, bool Verification);
+/// <summary>A refined acquisition hypothesis before verification and quality gates.</summary>
+internal sealed record CoreCandidate(AstrometricRotation Rotation, double Scale, CoreAssociation[] Matches, double RmsPixels);
 internal sealed record CoreQuality(double Score0To100, string Status, bool IsCalibratedProbability,
     int FittingStars, int VerificationStars, int ExpectedFittingStars, double FittingRmsPixels,
     double VerificationRmsPixels, double WidthCoverage, double HeightCoverage, string[] Reasons)
@@ -70,6 +72,21 @@ internal static class AstrometricSolverCore
     private sealed record Candidate(AstrometricRotation Rotation, double Scale, List<Pair> Matches);
     public static CoreResult Solve(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
         SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options = null, AstrometricWorkControl? control = null)
+        => Run(detections, catalog, configuration, site, utc, options, control, null);
+
+    /// <summary>
+    /// Runs the identical bounded blind search and per-candidate refinement, then returns every distinct refined
+    /// hypothesis without verification or quality gates. Callers own all acceptance decisions; a non-accepted
+    /// result with status <c>acquired</c> carries the search metrics.
+    /// </summary>
+    internal static CoreResult Acquire(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
+        SolverOptics configuration, CoreSite site, DateTimeOffset utc, List<CoreCandidate> candidates, CoreSolverOptions? options = null,
+        AstrometricWorkControl? control = null)
+        => Run(detections, catalog, configuration, site, utc, options, control, candidates);
+
+    private static CoreResult Run(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
+        SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options, AstrometricWorkControl? control,
+        List<CoreCandidate>? acquisition)
     {
         control?.Check();
         var watch = Stopwatch.StartNew(); var o = options ?? new(); configuration.Context();
@@ -141,6 +158,14 @@ internal static class AstrometricSolverCore
         }
         refined = refined.OrderByDescending(c => c.Matches.Count).ThenBy(c => AstrometricMath.Rms(c.Matches.Select(m => m.Distance))).ToList();
         if (refined.Count == 0) return Reject("No catalog pattern met the acquisition gate");
+        if (acquisition is not null)
+        {
+            acquisition.AddRange(refined.Select(c => new CoreCandidate(c.Rotation, c.Scale,
+                [.. c.Matches.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, false))],
+                AstrometricMath.Rms(c.Matches.Select(m => m.Distance)))));
+            return new(false, "acquired", "Refined acquisition candidates returned without verification or quality gates", null, null, null, [],
+                indexed.Count, triangleCount, imageCount, hypotheses, refined.Count, exhausted, watch.Elapsed.TotalMilliseconds, domain);
+        }
         var evaluated = refined.Select(c => { control?.Check(); return Evaluate(c, stars, training, verification, detections, configuration); }).ToArray();
         var accepted = evaluated.Where(c => c.Quality.Status == "accepted").ToArray();
         if (accepted.Length > 1) return Reject("Ambiguous: multiple independently verified orientations", evaluated[0].Quality with { Status = "rejected", Score0To100 = 0, Reasons = ["Multiple distinct verified solutions"] }, refined.Count);
@@ -182,13 +207,15 @@ internal static class AstrometricSolverCore
         var associations = evaluation.Candidate.Matches.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, false)).Concat(evaluation.Held.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, true))).ToArray();
         return new(true, "accepted", "Warm local fit and withheld-star gates passed; proposed next configuration", solution, candidate.Scale, evaluation.Quality, associations, 0, 0, 0, 0, 1, false, watch.Elapsed.TotalMilliseconds, domain);
     }
-    private static double MinimumPhysicalScale(SolverOptics config) => config.Model switch
-    {
-        ProjectionModel.EquidistantFisheye => config.CircleRadius!.Value / (Math.PI * config.FocalX),
-        ProjectionModel.EquisolidFisheye => config.CircleRadius!.Value / (2 * config.FocalX),
-        ProjectionModel.OrthographicFisheye => config.CircleRadius!.Value / config.FocalX,
-        _ => 0
-    };
+    private static double MinimumPhysicalScale(SolverOptics config) => config.RadialDistortionK1 != 0 && config.Model != ProjectionModel.Perspective
+        ? config.CircleRadius!.Value / (RadialDistortion.MaximumDistortedRadius(config.Model, config.RadialDistortionK1) * config.FocalX)
+        : config.Model switch
+        {
+            ProjectionModel.EquidistantFisheye => config.CircleRadius!.Value / (Math.PI * config.FocalX),
+            ProjectionModel.EquisolidFisheye => config.CircleRadius!.Value / (2 * config.FocalX),
+            ProjectionModel.OrthographicFisheye => config.CircleRadius!.Value / config.FocalX,
+            _ => 0
+        };
     private static (Candidate Candidate, List<Pair> Held, CoreQuality Quality) Evaluate(Candidate c, List<Star> stars, List<Star> training,
         List<Star> verification, IReadOnlyList<CoreDetection> detections, SolverOptics configuration)
     {
@@ -306,7 +333,7 @@ internal static class AstrometricSolverCore
         }
         return b;
     }
-    private sealed class CoreDetectionGrid
+    internal sealed class CoreDetectionGrid
     {
         private readonly Dictionary<(int, int), List<CoreDetection>> cells = [];
         public CoreDetectionGrid(IEnumerable<CoreDetection> detections)

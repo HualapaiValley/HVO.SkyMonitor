@@ -92,7 +92,8 @@ internal static class VirtualAstrometryReference
         var basis = Pose(rig);
         var qx = Vector.Dot(enu, basis.Right); var qy = Vector.Dot(enu, basis.Up); var qz = Vector.Dot(enu, basis.Forward);
         var theta = Math.Acos(Math.Clamp(qz, -1, 1)); var length = Math.Sqrt(qx * qx + qy * qy);
-        var distance = NativeFocal(rig) * theta;
+        // Equidistant normalized radius theta, scaled by the one-coefficient radial term 1 + k1 theta^2.
+        var distance = NativeFocal(rig) * theta * (1 + rig.Optics.RadialDistortionK1 * theta * theta);
         if (distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
         var x = rig.Optics.PrincipalPointX!.Value + (length < 1e-12 ? 0 : distance * qx / length);
         var y = rig.Optics.PrincipalPointY!.Value - (length < 1e-12 ? 0 : distance * qy / length);
@@ -102,6 +103,7 @@ internal static class VirtualAstrometryReference
     }
     internal static Vector? Unproject(CameraRigConfig rig, PixelPoint pixel)
     {
+        if (rig.Optics.RadialDistortionK1 != 0) throw new NotSupportedException("The reference inverse covers undistorted optics only.");
         var readout = rig.Readout!;
         if (pixel.X < 0 || pixel.Y < 0 || pixel.X >= readout.Roi.Width / readout.BinX || pixel.Y >= readout.Roi.Height / readout.BinY) return null;
         var dx = pixel.X * readout.BinX + readout.Roi.X - rig.Optics.PrincipalPointX!.Value;
@@ -125,7 +127,7 @@ internal static class VirtualAstrometryReference
     }
 
     internal static object Score(CameraRigConfig truth, DateTimeOffset sceneUtc, AstrometricCalibration nominal,
-        AstrometricCatalogData catalog, HVO.SkyMonitor.Imaging.StellarDetectionResult measurements,
+        AstrometricCatalogData catalog, IReadOnlyList<AstrometricDetection> measurements,
         AstrometricSolveResult solved, List<string> failures, string caseId)
     {
         var mapping = new AstrometricMapping(nominal, solved.Assessment);
@@ -134,7 +136,7 @@ internal static class VirtualAstrometryReference
             .Where(item => item.Pixel is not null).Select(item => (item.Star, Pixel: item.Pixel!.Value)).ToArray();
         var associationRows = solved.Associations.Select(association =>
         {
-            var measured = measurements.Detections.Single(d => d.Index == association.DetectionIndex);
+            var measured = measurements.Single(d => d.Index == association.DetectionIndex);
             var nearest = expected.MinBy(item => Distance(measured.Pixel, item.Pixel));
             var actual = expected.Single(item => item.Star.Id == association.CatalogId);
             return new

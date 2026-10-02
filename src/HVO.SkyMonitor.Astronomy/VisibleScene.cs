@@ -474,10 +474,15 @@ public sealed class VisibleSceneBuilder
                 projection.WidthPixels - projection.PrincipalPointX) / projection.FocalLengthXPixels;
             var vertical = Math.Max(projection.PrincipalPointY,
                 projection.HeightPixels - projection.PrincipalPointY) / projection.FocalLengthYPixels;
-            return Math.Atan(Math.Sqrt(horizontal * horizontal + vertical * vertical)) * 180d / Math.PI;
+            var corner = Math.Sqrt(horizontal * horizontal + vertical * vertical);
+            if (projection.RadialDistortionK1 != 0)
+                corner = RadialDistortion.Undistort(corner, projection.Model, projection.RadialDistortionK1);
+            return Math.Atan(corner) * 180d / Math.PI;
         }
 
-        var radius = projection.ImageCircleRadiusPixels!.Value;
+        var radius = projection.RadialDistortionK1 == 0
+            ? projection.ImageCircleRadiusPixels!.Value
+            : RadialDistortion.IdealEdgeRadius(projection) * projection.FocalLengthXPixels;
         var focal = projection.FocalLengthXPixels;
         var angle = projection.Model switch
         {
@@ -683,7 +688,7 @@ public sealed class VisibleSceneBuilder
             pixel = new PixelPoint(
                 context.PrincipalPointX + context.FocalLengthXPixels * camera.East / camera.Up,
                 context.PrincipalPointY - context.FocalLengthYPixels * camera.North / camera.Up);
-            return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+            return ApplyDistortion(context, ref pixel);
         }
 
         var theta = Math.Acos(Math.Clamp(camera.Up, -1d, 1d));
@@ -717,7 +722,20 @@ public sealed class VisibleSceneBuilder
         pixel = new PixelPoint(
             context.PrincipalPointX + radius * camera.East / planarLength,
             context.PrincipalPointY - radius * camera.North / planarLength);
-        return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+        return ApplyDistortion(context, ref pixel);
+    }
+
+    private static bool ApplyDistortion(ProjectionContext context, ref PixelPoint pixel)
+    {
+        if (!double.IsFinite(pixel.X) || !double.IsFinite(pixel.Y)) return false;
+        if (context.RadialDistortionK1 == 0) return true;
+        if (RadialDistortion.DistortPixel(context, pixel) is not { } distorted)
+        {
+            pixel = default;
+            return false;
+        }
+        pixel = distorted;
+        return true;
     }
 
     internal static void AddClippedChord(

@@ -10,14 +10,14 @@ internal sealed record CoreDetection(int Index, double X, double Y, double Flux,
 }
 internal sealed record SolverOptics(ProjectionModel Model, int Width, int Height,
     double PrincipalX, double PrincipalY, double FocalX, double FocalY, double? CircleRadius,
-    double BoresightAltitude, double BoresightAzimuth, double Roll, bool HorizontalFlip)
+    double BoresightAltitude, double BoresightAzimuth, double Roll, bool HorizontalFlip, double RadialDistortionK1 = 0)
 {
     internal static SolverOptics From(ProjectionContext p) => new(p.Model, p.WidthPixels, p.HeightPixels,
         p.PrincipalPointX, p.PrincipalPointY, p.FocalLengthXPixels, p.FocalLengthYPixels, p.ImageCircleRadiusPixels,
-        p.BoresightAltitudeDegrees, p.BoresightAzimuthDegrees, p.RollDegrees, p.HorizontalFlip);
+        p.BoresightAltitudeDegrees, p.BoresightAzimuthDegrees, p.RollDegrees, p.HorizontalFlip, p.RadialDistortionK1);
     internal ProjectionContext Context() => new(Model, PrincipalX, PrincipalY, FocalX, FocalY, Width, Height,
         Model == ProjectionModel.Perspective ? ProjectionAperture.Rectangular : ProjectionAperture.Circular,
-        CircleRadius, BoresightAltitude, BoresightAzimuth, Roll, HorizontalFlip);
+        CircleRadius, BoresightAltitude, BoresightAzimuth, Roll, HorizontalFlip, RadialDistortionK1: RadialDistortionK1);
     internal IImageProjector Projector() { var context = Context(); context.Validate(); return ProjectorFactory.Create(context); }
 }
 internal static class AstrometricMath
