@@ -367,6 +367,49 @@ bodies; constellation lines can still use all resolved endpoints.
 
 ### Exposure-aware stellar visibility and motion
 
+### Selectable sky illumination (#1131 prototype)
+
+`module.options.illuminationMode` is the single configuration source:
+
+- Omitted or `LegacyScalarSolar`: preserve the existing uniform scalar solar
+  background, default option serialization, and scene identities.
+- `SolarDriven`: use `solar-clear-sky-rgb-approximation-v1` with the existing
+  Bortle night rate and continuous logarithmic solar-altitude multiplier. The
+  shared Astronomy projector supplies pixel directions. A bounded blue sky and
+  warm, Sun-facing horizon approximate clear daylight and twilight. Below -18
+  degrees the color multiplier is neutral. This is not atmospheric radiative
+  transfer, calibrated solar photometry, a resolved Sun, or a weather model.
+- `ControlledNight`: use the Bortle night rate at the actual celestial time.
+  Stars keep moving and actual Sun altitude/azimuth remain recorded. This mode
+  does not turn an operational daytime capture into astronomical night.
+
+An explicit `backgroundElectronsPerSecond` overrides every mode with the same
+uniform electron rate, preserving deterministic fixtures. The requested mode,
+effective override, actual solar direction and rendering algorithm are separate
+provenance fields. Non-default modes enter the scene identity; no historical
+frame or profile is rewritten. Existing producer defaults are unchanged.
+
+The spatial/color field enters before exposure, vignetting, noise, electron/ADU
+conversion and saturation. Native CFA channel response is applied to the new
+field before photosite sampling; RGB24 retains its declared compatibility
+response. Stellar admission evaluates the same local channel background as the
+renderer. Mono native ROI/binning uses the native ROI projection before digital
+readout. Work is bounded by the existing active-pixel and stellar budgets with
+constant extra retained storage; the approximation uses at most a fourfold
+channel multiplier. Long exposures sample illumination at the recorded celestial
+midpoint; the approximation does not integrate changing solar radiance through
+a twilight crossing.
+
+Qualification displays must use the frame's actual stored-code black/white
+levels and a declared fixed transfer function. Raw means, percentiles and
+clipping fractions are measured inside the optical aperture, separately from
+display pixels. Auto-stretched previews are not absolute-brightness evidence.
+This prototype is available for the explicitly authorized #1134 preparation
+route; production qualification still requires the complete candidate and PR
+gates and the recorded sample disposition.
+
+### Exposure-aware stellar visibility and motion (continued)
+
 The normal VirtualSky path uses `camera-aware-stellar-exposure-v1`. A frame now
 has two explicit logical intervals: the scenario clock for clouds/transients
 and the celestial clock for star geometry. `VirtualExposureProvenance` records
