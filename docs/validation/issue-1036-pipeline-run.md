@@ -88,7 +88,10 @@ than being treated as historical receipt evidence.
 Primary and optional reads are generation-fenced. Authorization denial clears
 protected page facts and stops further enrichment. Exact execution/capture
 identity is checked before accepting a result. Disposal cancels reads and
-disconnects graph observation/fullscreen callbacks.
+disconnects graph observation/fullscreen callbacks. The page itself no longer
+imports a JavaScript module: inspector tab focus uses native Blazor element
+focus, so an arrow key cannot change the selected tab without moving focus while
+an interop import is still in flight.
 
 ## Validation
 

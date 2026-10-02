@@ -9,7 +9,6 @@ using System.Globalization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.Options;
-using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -32,10 +31,9 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private long _generation;
     private CameraAgentGalleryCapture? _capture;
     private TransientStageEvent? _selectedTransient;
-    private ElementReference _panel;
-    private IJSObjectReference? _module;
-    private Task<IJSObjectReference>? _moduleImport;
-    private bool _disposed;
+    private ElementReference _stageTab;
+    private ElementReference _artifactsTab;
+    private ElementReference _attemptsTab;
 
     [Parameter] public Guid ExecutionId { get; set; }
 
@@ -48,7 +46,6 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
 
     [Inject] internal IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
-    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
 
     private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
     private string LogicHostState => HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled
@@ -123,34 +120,17 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         if (next < 0) return;
         _tab = new[] { "stage", "artifacts", "attempts" }[next];
         await InvokeAsync(StateHasChanged);
-        if (_module is not null)
-        {
-            try { await _module.InvokeVoidAsync("focusTab", _panel, $"run-tab-{_tab}"); }
-            catch (JSDisconnectedException) { }
-            catch (JSException) { }
-        }
+        // Focus the newly selected tab directly. A lazily imported interop module made this depend
+        // on import timing, which let an arrow key change the selection without moving focus.
+        await TabReference(_tab).FocusAsync();
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    private ElementReference TabReference(string tab) => tab switch
     {
-        // One in-flight import is shared by every render; overlapping renders must not each
-        // start a new module handle that is then overwritten without being disposed.
-        if (_module is not null || _moduleImport is not null || _disposed || _view is null) return;
-        var import = JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/ProcessingExecutionDetailPage.razor.js").AsTask();
-        _moduleImport = import;
-        try
-        {
-            // Stay on the renderer thread so the disposal check and the field assignment keep the
-            // same ordering as the rest of the component lifecycle.
-            var module = await import;
-            if (_disposed) await module.DisposeAsync();
-            else _module = module;
-        }
-        catch (JSDisconnectedException) { }
-        catch (JSException) { }
-        catch (TaskCanceledException) { }
-        finally { _moduleImport = null; }
-    }
+        "artifacts" => _artifactsTab,
+        "attempts" => _attemptsTab,
+        _ => _stageTab
+    };
 
     protected override async Task OnParametersSetAsync() => await RefreshAsync().ConfigureAwait(false);
 
@@ -301,18 +281,12 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
 
     public async ValueTask DisposeAsync()
     {
-        _disposed = true;
         Interlocked.Increment(ref _generation);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
         if (cancellation is not null)
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
             cancellation.Dispose();
-        }
-        if (_module is not null)
-        {
-            try { await _module.DisposeAsync().ConfigureAwait(false); }
-            catch (JSDisconnectedException) { }
         }
     }
 

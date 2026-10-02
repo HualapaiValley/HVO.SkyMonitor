@@ -64,11 +64,11 @@
                 </section>
                 <section id="run-inspector" class="run-inspector detail-card" aria-label="Selected stage">
                     <nav class="run-inspector__tabs detail-tabs" role="tablist" aria-label="Stage details">
-                        <button id="run-tab-stage" type="button" role="tab" aria-selected="@((_tab == "stage").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "stage" ? 0 : -1)" @onclick="SelectStageTab" @onkeydown="args => TabKeyAsync(args, 0)">Stage summary</button>
-                        <button id="run-tab-artifacts" type="button" role="tab" aria-selected="@((_tab == "artifacts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "artifacts" ? 0 : -1)" @onclick="SelectArtifactsTab" @onkeydown="args => TabKeyAsync(args, 1)">Artifacts <span>@_view.Nodes.Sum(static node => node.Outputs.Count)</span></button>
-                        <button id="run-tab-attempts" type="button" role="tab" aria-selected="@((_tab == "attempts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "attempts" ? 0 : -1)" @onclick="SelectAttemptsTab" @onkeydown="args => TabKeyAsync(args, 2)">Attempts</button>
+                        <button id="run-tab-stage" @ref="_stageTab" type="button" role="tab" aria-selected="@((_tab == "stage").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "stage" ? 0 : -1)" @onclick="SelectStageTab" @onkeydown="args => TabKeyAsync(args, 0)">Stage summary</button>
+                        <button id="run-tab-artifacts" @ref="_artifactsTab" type="button" role="tab" aria-selected="@((_tab == "artifacts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "artifacts" ? 0 : -1)" @onclick="SelectArtifactsTab" @onkeydown="args => TabKeyAsync(args, 1)">Artifacts <span>@_view.Nodes.Sum(static node => node.Outputs.Count)</span></button>
+                        <button id="run-tab-attempts" @ref="_attemptsTab" type="button" role="tab" aria-selected="@((_tab == "attempts").ToString().ToLowerInvariant())" aria-controls="run-panel" tabindex="@(_tab == "attempts" ? 0 : -1)" @onclick="SelectAttemptsTab" @onkeydown="args => TabKeyAsync(args, 2)">Attempts</button>
                     </nav>
-                    <div id="run-panel" class="tab-panel" role="tabpanel" aria-labelledby="@($"run-tab-{_tab}")" @ref="_panel">
+                    <div id="run-panel" class="tab-panel" role="tabpanel" aria-labelledby="@($"run-tab-{_tab}")">
                     @if (_selectedTransient is { } transient)
                     {
                         <header class="detail-heading"><div><p class="eyebrow">Independent transient lane / recorded milestone</p><h2>@ExecutionRunDiagram.TransientName(transient.StageKey)</h2><p>@transient.State / @(transient.CandidateId is { } candidateId ? $"Candidate {candidateId:D}" : "Capture-scoped milestone")</p></div><span class="state-chip pending">@transient.State</span></header>

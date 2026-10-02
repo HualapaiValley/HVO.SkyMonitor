@@ -34,7 +34,6 @@ public sealed class ProcessingExecutionPagesTests
     private static void ConfigureDiagram(BunitContext context)
     {
         context.JSInterop.SetupModule("./Components/Operations/ExecutionRunDiagram.razor.js").Mode = JSRuntimeMode.Loose;
-        context.JSInterop.SetupModule("./Components/Pages/ProcessingExecutionDetailPage.razor.js").Mode = JSRuntimeMode.Loose;
     }
 
     private sealed class RecordedTransientUiService : ICameraAgentTransientUiService
