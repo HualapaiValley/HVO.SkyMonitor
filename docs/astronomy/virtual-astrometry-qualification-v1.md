@@ -7,8 +7,8 @@ and evidence. It is the single place that states what the virtual milestone supp
 
 **Verdict.** All nine completion criteria of #1098 are **met for the declared virtual envelope** below. All 16
 predeclared processes, covering 8 harnesses and 9 per-process exposure workloads, passed at one revision. Every
-budget and tolerance held, and every catalog, selection, configuration and payload identity reproduced its earlier
-recorded value. No margin is under 10 %. The closest are the measured-star time ratio (3.53 against 4×, 11.7 %)
+budget and tolerance held. The magnitude-5 catalog and selection identities, the HYG database hash, and the #522
+configuration and payload hashes all reproduced their earlier recorded values. No margin is under 10 %. The closest are the measured-star time ratio (3.53 against 4×, 11.7 %)
 and the 0.99 ellipsoid coverage on `mono-roi-bin2` (11.0 % of its binomial bound). This is a virtual qualification
 only. It makes no claim about physical accuracy, and the hardware evidence it does not provide is listed for #1107.
 
@@ -29,14 +29,20 @@ only. It makes no claim about physical accuracy, and the hardware evidence it do
   SHA-256 `B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2`. Complete magnitude ≤ 5 selection:
   1,637 entries, catalog identity `e29a02ef…25b60b`, selection identity `ce81fa2e…274cb8`.
 - **Manifest.** [`issue-1106-qualification-manifest.json`](../validation/issue-1106-qualification-manifest.json)
-  (SHA-256 `b56fa6d0…19db76a`) was committed in `e73d0a7d` before any measurement. It pins the harness set, the
+  was first committed in `e73d0a7d` (SHA-256 `4025bb0d…bcfe09`) before any measurement. `9061c8f7` amended only
+  its attachment rule, again before the measured run, giving the measured SHA-256 `b56fa6d0…19db76a`. It pins the harness set, the
   exact number of tests each run must execute, and the report each must attach. Seeds, times, profiles, partitions
   and tolerances are those compiled into the harnesses, and the evidence index records the git blob id of each
   harness source.
 - **Runner.** [`issue-1106-qualification.sh`](../validation/issue-1106-qualification.sh) refuses an uncommitted
   tree, builds Release with `-warnaserror`, runs each manifest entry in its own `dotnet test` process, and fails a
   run unless the TRX shows exactly the expected tests executed and passed with none failed. A filter that selects
-  nothing is a failure, never a skip.
+  nothing is a failure, never a skip. The committed runner also refuses untracked files and any existing output
+  directory, resolves a relative output path before it changes directory, treats any failure to copy, hash or
+  index evidence as fatal, and validates the final index against the manifest. Those safeguards were added after
+  the measured run, in response to review, and change no test or measurement. The pack below was produced by the
+  `9061c8f7` runner. None of the conditions they guard against occurred: the tree was clean with no untracked
+  files, the output path was absolute and new, and the retained index passes the same manifest check.
 
 ```bash
 HVO_ASTROMETRY_CATALOG_ROOT=<installed hyg-v42-production root> \
@@ -74,7 +80,12 @@ recorded by the issue that delivered the harness. Times are wall-clock milliseco
 
 ### Identities
 
-The catalog database hash, catalog identity and selection identity are the same in every report. All nine #522
+The four held-out astrometry reports (V1 pixels, measured stars, optical calibration and uncertainty) carry the
+same catalog identity `e29a02ef…` and magnitude-5 selection identity `ce81fa2e…`, and the catalog report's
+magnitude-5 selection has that same selection identity. Its magnitude 5.5 and 7 selections have identities of their
+own. Every report that reads HYG records the same database SHA-256, including the configured-resolution resources
+and the nine #522 workloads. Those workloads render to magnitude 6.5 and carry no astrometric selection identity.
+The two synthetic shared-solver reports read no catalog. All nine #522
 stellar configuration hashes and all 270 per-sample source payload hashes are identical to the #522 after-archive
 ([`issue-522-stellar-resources.json`](../validation/issue-522-stellar-resources.json)). The V1 pixel run produced 90
 distinct assessment identities over 90 distinct payloads and 21 configuration hashes. All 60 warm rows link to
@@ -173,7 +184,7 @@ a 4× limit (#1103: 3.58); v2 allocated at most 51.8 bytes per sample. Peak work
 
 Every recovery error, fit diagnostic, withheld score and omitted-distortion outcome is identical to the
 [#1104 report](session-optical-calibration-v1.md):
-- Focal error at most 3.0e-5, principal point within 0.008 px, k1 within 1.8e-5, intrinsic map within 0.014 px.
+- Focal error at most 3.0e-5, principal point within 0.0083 px, k1 within 1.85e-5, intrinsic map within 0.0144 px.
 - Withheld RMS at most 0.013 px with precision 1.
 - Omitted k1 rejected on both distorted cases and accepted on the undistorted one.
 
@@ -205,7 +216,8 @@ Six timing figures rose by more than 25 % against their earlier records:
 - asi676-long p95
 - uncertainty estimator ratio
 
-Each is under 1 s in absolute terms, each budgeted figure keeps at least 76 % of its budget, and none carries an
+Each timing increase is under 1 s in absolute terms (the largest are the V1 blind maximum, +880 ms, and asi676-long
+p95, +630 ms). The estimator ratio is dimensionless: it rose from 0.060 to 0.091 against a 0.5 limit. Each budgeted figure keeps at least 76 % of its budget, and none carries an
 allocation change. Two have explanations above: #522 changed the capture path, and single-sample outliers drive the
 tail-statistic rises. No accuracy figure in V2–V6 changed, so no regression is recorded. These budgets assume
 sequential runs on an idle host.
@@ -222,7 +234,7 @@ outside the envelope, whether or not a unit test exercises it.
 | Readouts | Mono native, ROI (240, 96, 1440, 1024), 2×2 digital average, ROI+2×2, mirror and roll. CFA native, plus derived phases GRBG/GBRG/BGGR for scientific reconstruction only. Every view is derived from one native-sensor calibration. | Bayer crop or bin and charge binning (rejected explicitly); separate per-readout calibrations |
 | Catalog | HYG 4.2 snapshot `hyg-v4.2-p3-s2-r1`, complete selection to magnitude 5 (1,637 entries), fixed J2000 positions, geometric altitude | Incomplete selections (magnitude 5.5 and 7) are labelled incomplete and never presented as complete; proper motion and refraction |
 | Exposure and solving | Exposure-integrated rendering (#522) for every declared workload. Solving, calibration and uncertainty at 1 s exposures and gain 150 across three held-out seasons. | Solving accuracy on long trailed exposures; daytime solving |
-| Measurement and uncertainty | `linear-stellar-local-v2`. Systematic floors 0.04 px mono, 0.03 px 2×2, 0.06 px CFA, valid for the VirtualSky renderer and these profiles. | Any other measurer, PSF or sensor response |
+| Measurement and uncertainty | `linear-stellar-local-v2`. Systematic floors 0.042 px mono unbinned, 0.028 px mono 2×2, 0.063 px CFA, valid for the VirtualSky renderer and these profiles. | Any other measurer, PSF or sensor response |
 | Calibration authority | Virtual-profile review, accept, reject and retention | Activating or writing back any physical rig profile |
 | Resources | Configured resolution, sequential processes, ≤ 2 GiB peak per process; budgets as tabulated above | Concurrent heavy workloads on the same host |
 
@@ -240,10 +252,10 @@ issue state. "Met" means met for the declared virtual envelope.
 | # | Criterion | Delivered code | Evidence | Verdict |
 | --- | --- | --- | --- | --- |
 | 1 | Existing-scope reconciliation | #1100 ([plan](../planning/virtual-astrometry-qualification.md)) | Acceptance map, dependency order and retained hardware gates; ticked on the epic at #1108 | Met |
-| 2 | Honest HYG selection and resource limits | #1101 `IAstrometricCatalogSource` with complete-or-incomplete selection; #522 explicit candidate bounds that refuse rather than truncate | Every report carries the same HYG database, catalog and selection identities. Complete selection holds only at magnitude 5 (1,637); 5.5 and 7 are reported incomplete. Bounded p95 is at most 3.5 ms against 20 ms, with byte-identical allocation. The #522 configuration and payload hashes match its archive, and its candidate-bound refusals are Unit-tested. | Met |
+| 2 | Honest HYG selection and resource limits | #1101 `IAstrometricCatalogSource` with complete-or-incomplete selection; #522 explicit candidate bounds that refuse rather than truncate | Every HYG-reading report carries the same database hash, and the four held-out astrometry reports and the catalog report's magnitude-5 selection share one selection identity. Complete selection holds only at magnitude 5 (1,637); 5.5 and 7 are reported incomplete. Bounded p95 is at most 3.5 ms against 20 ms, with byte-identical allocation. The #522 configuration and payload hashes match its archive, and its candidate-bound refusals are Unit-tested. | Met |
 | 3 | Final pixels: blind, warm, mapping, crop/bin/CFA, no truth leakage | #1102 harness over production `VirtualSkyCameraModule`; #1087 crop/bin disposition on #1102 | 90/90 production-path rows were accepted, 30 blind and 60 warm, with 0 warm hypotheses. Pose, focal, withheld and scale errors each keep at least 76 % of their tolerance, and the cross-frame grid keeps 67 %. The harness covers mono ROI, bin, mirror and roll and the CFA phases, and rejects unsupported Bayer crop/bin. Scoring truth enters only after solving (`VirtualAstrometryReference`). Configured-resolution resources fit within budget. | Met |
 | 4 | Production exposure behavior | #522 integrated renderer, visibility model and exposure-swept masks | All 9 #522 workloads (mono, CFA and ASI676; short, long and day) passed, at most 2.2 s p95 against 10/40 s budgets and ≤ 1.45 GiB peak. The configuration and 270 payload hashes are identical to #522. Every V1/V4–V6 frame is exposure-integrated, with a midpoint `sceneUtc`. | Met |
-| 5 | Reusable virtual optical calibration | #1104 `OpticalCalibrationSession` and `VirtualOpticalCalibrationReviewService` | All 3 held-out cases are identical to #1104. Focal ≤ 3e-5, principal point ≤ 0.008 px, k1 ≤ 1.8e-5. Withheld frames scored ≤ 0.013 px, omitted-k1 was rejected where it should be, and cost stayed within limits. Review, accept, reject and retention are covered by Unit tests. | Met |
+| 5 | Reusable virtual optical calibration | #1104 `OpticalCalibrationSession` and `VirtualOpticalCalibrationReviewService` | All 3 held-out cases are identical to #1104. Focal ≤ 3.0e-5, principal point ≤ 0.0083 px, k1 ≤ 1.85e-5. Withheld frames scored ≤ 0.013 px, omitted-k1 was rejected where it should be, and cost stayed within limits. Review, accept, reject and retention are covered by Unit tests. | Met |
 | 6 | Diagnostics and validated uncertainty | #1103 `linear-stellar-local-v2` and residual diagnostics; #1105 `AstrometricFrameUncertainty` | 21 measured-star cases plus window pressure are identical to #1103, with the ratio at 3.53 against 4×. All 420 uncertainty frames have coverage within 3.5σ for every profile; the narrowest is 11.0 % margin. Session chains reach at most 10.18 against 18.47. Unsupported cases withhold with reason codes (Unit-tested). | Met |
 | 7 | Reproducible compatible identities | Identities in #1101–#1105 contracts | Every #1101–#1105 identity reproduced its recorded value or was asserted reproducible within the run. V1 produced 90/90 distinct assessment identities, and 420/420 frames had distinct uncertainty identities. Incompatible reuse rejection and explicit time/epoch semantics are Unit-tested in each contract. | Met |
 | 8 | Full-resolution resources, gates and review | Every implementation PR; this rerun | Every resource budget held at configured resolution, and no margin is under 10 %. Every implementation PR has a classifier-recorded gate, an independent CLEAN exact-range review and green protected CI (Delivery lifecycle table). This report's own PR completes the row. | Met |
@@ -317,9 +329,9 @@ following evidence:
 
 | Virtual result | Why it does not transfer | Hardware evidence #1107 needs |
 | --- | --- | --- |
-| Principal point, focal scale and k1 recovered to 0.008 px, 3e-5 and 2e-5 | Truth was the emulator's own equidistant model, perturbed by at most ±0.8 % focal, 6.5 px centre and \|k1\| 0.008 | Raw exposures from the actual camera and lens across the usable radius and azimuth at several sky times, scored against trusted external astrometry; declare tolerances first |
+| Principal point, focal scale and k1 recovered to within 0.0083 px, 3.0e-5 and 1.85e-5 | Truth was the emulator's own equidistant model, perturbed by at most ±0.8 % focal, 6.5 px centre and \|k1\| 0.008 | Raw exposures from the actual camera and lens across the usable radius and azimuth at several sky times, scored against trusted external astrometry; declare tolerances first |
 | Only k1 is fitted; higher radial terms, tangential and decentring terms are not modelled | The emulator renders none of them, so they are unidentifiable virtually | Residual maps from real frames showing whether k1 suffices, and the evidence for any added term |
-| Uncertainty systematic floor of 0.04 px mono, 0.03 px 2×2, 0.06 px CFA | Tuned on emulator PSF, noise and v2 measurer | A floor tuned and validated on real tuning and held-out frames with independent coverage tests |
+| Uncertainty systematic floor of 0.042 px mono unbinned, 0.028 px mono 2×2, 0.063 px CFA | Tuned on emulator PSF, noise and v2 measurer | A floor tuned and validated on real tuning and held-out frames with independent coverage tests |
 | Stable optics within a session | The emulator lens never drifts | Repeat calibrations over temperature and time to measure stability |
 | Linear RAW16 with declared black/white level and Gaussian PSF | Real sensors add non-linearity, hot pixels, amp glow and an irregular PSF | Sensor response and saturation characterization; re-qualified detection thresholds |
 | Virtual-profile accept/reject with prior retention | `VirtualOpticalCalibrationReviewService` refuses physical rigs | Operator review, explicit real-rig activation, rejected-candidate retention and rollback on actual rig profiles; no automatic write-back |
