@@ -281,7 +281,8 @@ under-coverage. The budget was posted on #1105 before any held-out run.
   declaration. Report SHA-256 `294f10ea949ab976a4079064040f744838a2d76f1a70be4f1a61492af1aec4b5`.
   - Every frame's error, covariance, distances and χ² values are identical to `e280ac72`. Every frame had a runnable
     held-out test, so none is newly withheld.
-  - Only the nine session-chain identities changed, because those frames supply a readout that is now bound.
+  - Every uncertainty identity changed, profile and session frames alike: each result now hashes the new
+    `ReadoutIdentitySha256` field, and both harness paths supply a readout. Only identities changed; the numbers did not.
   - The estimator maximum was 48.0 ms, the maximum ratio 0.060 and the maximum allocation 1.52 MB, all within limits.
 
 ## Limits
