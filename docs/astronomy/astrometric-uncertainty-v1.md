@@ -277,6 +277,12 @@ under-coverage. The budget was posted on #1105 before any held-out run.
   - The candidate (estimator) has a median of 2.5 ms and a maximum of 44.7 ms. Its maximum ratio to its own frame is
     0.047, against a limit of 0.5. Allocation has a median of 0.68 MB and a maximum of 1.42 MB, against a 32 MiB limit.
   - Peak working set for the run was 1.44 GB, dominated by rendering.
+- **Rerun at `f14bfc72`** after review R0, which made an unrunnable held-out test withhold and bound the readout
+  declaration. Report SHA-256 `294f10ea949ab976a4079064040f744838a2d76f1a70be4f1a61492af1aec4b5`.
+  - Every frame's error, covariance, distances and χ² values are identical to `e280ac72`. Every frame had a runnable
+    held-out test, so none is newly withheld.
+  - Only the nine session-chain identities changed, because those frames supply a readout that is now bound.
+  - The estimator maximum was 48.0 ms, the maximum ratio 0.060 and the maximum allocation 1.52 MB, all within limits.
 
 ## Limits
 
