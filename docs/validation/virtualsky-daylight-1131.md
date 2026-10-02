@@ -75,3 +75,38 @@ artifacts are retained under `/home/roys/.cache/hvo/1134-2a2d0ca8`, with runtime
 secrets outside the allowlisted public tree. Source-map reports from different
 renderer revisions were not merged for final coverage: affected reports were
 recollected against one source revision before enforcing unchanged floors.
+
+## Qualification blocker reproduced on the target
+
+On 2026-10-02 the untouched target
+`cb5d7e3f63c69e85f0f079ef63c687fbb7e5f818` was built in a separate detached
+worktree with the same SDK/settings. Both relevant Unit suites and both
+Integration suites passed. The same component coverage commands failed there:
+
+| Component / metric | Untouched target | Candidate `5685ee09` | Required minimum |
+| --- | ---: | ---: | ---: |
+| LogicHost line | 69.0897% | 68.9351% | 71.2600% |
+| LogicHost branch | 45.1492% | 44.8984% | 47.7500% |
+| Combined-host branch | 17.5276% | 17.5188% | 18.2000% |
+
+These are inherited shortfalls, with additional denominator growth from this
+candidate; neither result is a passing coverage gate. The checked-in floors
+remain unchanged. Shared, CameraAgent and delivery component coverage pass.
+Shared `VisibleScene.cs` now has 97.96% line / 90.27% branch coverage and
+`SceneRenderers.cs` 97.60% / 89.07%, after adding projection conservatism and
+actual sensor-path tests. All selected candidate Unit/Integration slots,
+Debug/Release builds, format, audits/guards, architecture/migration checks and
+component publishes pass. The standalone recovery fixture's time-dependent
+invalid values were corrected without changing production behavior or weakening
+its assertions.
+
+No PR has been pushed or opened, no independent convergence review has been
+claimed, and no merge/finalization lock has been acquired. The owner requested
+an explicit scope decision about repairing inherited host-wide coverage gaps.
+The accepted visual checkpoint is retained independently of this qualification
+blocker. Logs `baseline-status.log`, `baseline-coverage-logichost.log` and
+`baseline-coverage-combined.log` preserve the target reproduction.
+
+The target's `development-v1.yml` workflow runs Preflight and Build/Unit;
+`ci.yml` targets main/release and manual dispatch. Those distinct evidence sets
+must not be represented as equivalent classifier-selected protected coverage.
