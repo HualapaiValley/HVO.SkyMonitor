@@ -13,6 +13,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Fleet.Contracts\HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Replay\HVO.SkyMonitor.CameraAgent.Replay.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Storage.FileSystem\HVO.SkyMonitor.Storage.FileSystem.csproj" />
     <PackageReference Include="HVO.Core" />
   </ItemGroup>
 

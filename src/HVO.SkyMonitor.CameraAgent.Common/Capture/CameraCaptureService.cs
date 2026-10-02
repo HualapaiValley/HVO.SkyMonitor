@@ -36,7 +36,8 @@ public sealed class CameraCaptureService(
     IProjectedSceneStagingStore? projectedSceneStaging = null,
     ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
     CaptureProjectedSceneStager? projectedSceneStager = null,
-    SqliteNamedRigProfileStore? namedRigProfiles = null) : BackgroundService
+    SqliteNamedRigProfileStore? namedRigProfiles = null,
+    CameraModuleOwnership? moduleOwnership = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -58,7 +59,10 @@ public sealed class CameraCaptureService(
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton lifecycle coordinator.")]
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle = projectedSceneLifecycle;
     private readonly CaptureProjectedSceneStager? _projectedSceneStager = projectedSceneStager;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton ownership registry.")]
+    private readonly CameraModuleOwnership? _moduleOwnership = moduleOwnership;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ModuleLeaseDrainTimeout = TimeSpan.FromSeconds(30);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -156,6 +160,7 @@ public sealed class CameraCaptureService(
                 namedRigProfiles?.ReportActiveRuntimeFailure(null);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
+                _moduleOwnership?.Publish(module, config);
 
                 var hostContext = new CaptureHostContext(
                      config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
@@ -244,6 +249,12 @@ public sealed class CameraCaptureService(
             {
                 if (module is not null)
                 {
+                    // Side-path leases (focus previews) are cancelled and drained before the module is closed.
+                    if (_moduleOwnership is not null &&
+                        !await _moduleOwnership.RevokeAsync(ModuleLeaseDrainTimeout).ConfigureAwait(false))
+                    {
+                        _logger.CameraModuleLeaseDrainTimedOut(module.DisplayName, ModuleLeaseDrainTimeout);
+                    }
                     try
                     {
                         await module.DisposeAsync().ConfigureAwait(false);

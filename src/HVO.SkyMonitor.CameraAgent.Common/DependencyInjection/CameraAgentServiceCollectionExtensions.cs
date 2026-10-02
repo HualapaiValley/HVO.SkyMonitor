@@ -128,12 +128,14 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
-        services.AddSingleton<IManualFocusExclusiveAcquisition>(provider =>
-            new CaptureAdmissionManualFocusExclusiveAcquisition(
-                provider.GetRequiredService<CaptureAdmissionCoordinator>()));
-        services.AddSingleton<IManualFocusPreviewFrameSource>(
-            new UnavailableManualFocusPreviewFrameSource(ManualFocusReasonCodes.NoLivePreviewSource));
-        services.AddSingleton<ManualFocusSessionCoordinator>();
+        services.AddSingleton<CameraModuleOwnership>();
+        services.AddSingleton<IManualFocusPreviewSource, CameraModuleManualFocusPreviewSource>();
+        services.AddSingleton<IManualFocusSessionStore, ManualFocusSessionStore>();
+        services.AddSingleton(provider => new ManualFocusSessionCoordinator(
+            provider.GetRequiredService<IManualFocusPreviewSource>(),
+            provider.GetRequiredService<TimeProvider>(),
+            store: provider.GetRequiredService<IManualFocusSessionStore>(),
+            logger: provider.GetRequiredService<ILogger<ManualFocusSessionCoordinator>>()));
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -393,6 +395,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ProcessingReplayWorker>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ProcessingReplayWorker>());
         services.AddHostedService<CameraCaptureService>();
+        // Registered after the capture owner so host shutdown stops a focus session before the module is revoked.
+        services.AddHostedService(provider => provider.GetRequiredService<ManualFocusSessionCoordinator>());
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();

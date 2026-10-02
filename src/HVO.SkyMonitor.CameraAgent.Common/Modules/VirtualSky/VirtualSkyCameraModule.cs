@@ -21,13 +21,15 @@ public sealed class VirtualSkyCameraModule(
     IProjectedSceneStagingStore? stagingStore = null) :
     ICameraModule,
     ICameraSetpointController,
-    ICameraModuleConfigurationPreflight
+    ICameraModuleConfigurationPreflight,
+    ICameraFocusPreviewCapture
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static readonly AstronomyEnginePlanetEphemeris SolarBackgroundEphemeris = new();
+    private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
     private VirtualCloudField? _cloudField;
@@ -38,6 +40,7 @@ public sealed class VirtualSkyCameraModule(
     private PreparedVirtualCalibration? _preparedVirtualCalibration;
     private long _captureSequence;
     private long _fixedSequenceElapsedTicks;
+    private long _focusPreviewSequence;
     private bool _stageProjectedScene;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
@@ -136,11 +139,67 @@ public sealed class VirtualSkyCameraModule(
         return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
+    public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        => CaptureCoreAsync(request, null, cancellationToken);
+
+    private VirtualSimulatedFocusOptions SimulatedFocusOptions => _options.SimulatedFocus ?? DefaultSimulatedFocus;
+
+    /// <summary>The declared simulated focus model, or <see langword="null"/> when it is disabled.</summary>
+    public CameraSimulatedFocusModel? SimulatedFocus => _config is not null && SimulatedFocusOptions.Enabled
+        ? SimulatedFocusOptions.Describe(_options.PsfSigmaPixels)
+        : null;
+
+    public CameraFocusPreviewFidelity FocusPreviewFidelity => SimulatedFocusOptions.Enabled
+        ? new(
+            "virtual-simulated-defocus",
+            false,
+            string.Create(CultureInfo.InvariantCulture,
+                $"Virtual camera: star images are rendered with the declared Gaussian defocus model {VirtualSimulatedFocusOptions.ModelId} (sigma {_options.PsfSigmaPixels:0.###} px at the declared best position {SimulatedFocusOptions.BestPosition:0.###}, plus {SimulatedFocusOptions.DefocusSigmaPixelsPerStep:0.####} px per simulated step, capped at {SimulatedFocusOptions.MaximumSigmaPixels:0.###} px). Positions are simulated units, not a lens or motor, so this session exercises manual focusing and measurement but does not qualify physical focus."))
+        : new(
+            "virtual-fixed-psf",
+            false,
+            string.Create(CultureInfo.InvariantCulture,
+                $"Virtual camera: stars are rendered with a fixed PSF (sigma {_options.PsfSigmaPixels:0.###} px, expected FWHM about {_options.PsfSigmaPixels * 2.3548:0.##} px). Turning a focus ring cannot change it, so this session exercises the measurement path but does not qualify physical focus."));
+
+    /// <summary>
+    /// Renders one preview at the requested setpoint and simulated focus position without advancing the capture
+    /// sequence or fixed-sequence timeline, without retaining the scene in the projected-scene store, and without
+    /// staging any artifact. Ordinary captures never use the simulated focus model.
+    /// </summary>
+    public Task<CaptureResult> CaptureFocusPreviewAsync(
+        CameraFocusPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Capture);
+        if (request.SimulatedFocusPosition is { } position)
+        {
+            var model = SimulatedFocus ?? throw new InvalidOperationException(
+                "VirtualSky simulated focus is disabled; a focus position cannot be applied.");
+            if (!model.Contains(position))
+            {
+                throw new ArgumentOutOfRangeException(nameof(request), "The simulated focus position is outside the declared range.");
+            }
+        }
+        return CaptureCoreAsync(request.Capture, request, cancellationToken);
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort stage cleanup must preserve the original capture failure or cancellation.")]
-    public async Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+    private async Task<CaptureResult> CaptureCoreAsync(
+        CaptureRequest request,
+        CameraFocusPreviewRequest? preview,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+        var focusModel = preview is not null && SimulatedFocusOptions.Enabled ? SimulatedFocusOptions : null;
+        var focusPosition = focusModel is null ? (double?)null : preview!.SimulatedFocusPosition ?? focusModel.DefaultPosition;
+        var psfSigmaPixels = focusModel is null
+            ? _options.PsfSigmaPixels
+            : focusModel.SigmaPixels(_options.PsfSigmaPixels, focusPosition!.Value);
+        var psfRadiusPixels = focusModel is null
+            ? _options.PsfRadiusPixels
+            : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var start = timeProvider.GetTimestamp();
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
         if (request.Mode != CaptureMode.Still)
@@ -170,9 +229,13 @@ public sealed class VirtualSkyCameraModule(
         {
             lock (_fixedSequenceLock)
             {
-                fixedSequence = _captureSequence++;
                 timelineUtc = fixedSequenceStartUtc.AddTicks(_fixedSequenceElapsedTicks);
-                _fixedSequenceElapsedTicks = checked(_fixedSequenceElapsedTicks + request.TargetInterval.Ticks);
+                // A focus preview observes the current timeline position; only real captures advance it.
+                if (preview is null)
+                {
+                    fixedSequence = _captureSequence++;
+                    _fixedSequenceElapsedTicks = checked(_fixedSequenceElapsedTicks + request.TargetInterval.Ticks);
+                }
             }
         }
         var virtualExposure = VirtualExposureProvenance.Create(request.RequestedStartUtc, timelineUtc,
@@ -196,6 +259,14 @@ public sealed class VirtualSkyCameraModule(
             CameraPixelFormat.Rgb24 => CreateRgbOptions(setpoint, cloud, transient),
             _ => throw new UnreachableException()
         };
+        if (focusModel is not null)
+        {
+            initialRenderOptions = initialRenderOptions with
+            {
+                PsfSigmaPixels = psfSigmaPixels,
+                PsfRadiusPixels = psfRadiusPixels
+            };
+        }
         var solarBackground = SolarAltitudeClassifier.Classify(SolarBackgroundEphemeris, sceneUtc,
             observatory.LatitudeDegrees, observatory.LongitudeDegrees, 0, -18);
         initialRenderOptions = initialRenderOptions with
@@ -232,8 +303,8 @@ public sealed class VirtualSkyCameraModule(
             virtualExposure.CelestialStartUtc, setpoint.Exposure,
             new StellarExposureGeometryOptions(_options.MaximumResults, _options.MaximumStellarSamples,
                 Math.Min(_options.MaximumStellarStepPixels,
-                    TemporalPointSpreadRaster.MaximumTemporalStepPixels(_options.PsfSigmaPixels, _options.PsfRadiusPixels)),
-                _options.PsfRadiusPixels,
+                    TemporalPointSpreadRaster.MaximumTemporalStepPixels(psfSigmaPixels, psfRadiusPixels)),
+                psfRadiusPixels,
                 _cloudField?.Definition.TemporalSampleCount ?? 1), cancellationToken).ConfigureAwait(false);
         var projectionMilliseconds = Stopwatch.GetElapsedTime(projectionStarted).TotalMilliseconds;
         var projectionProcessCpuMilliseconds = (ReadProcessCpu() - projectionCpuStarted).TotalMilliseconds;
@@ -285,12 +356,23 @@ public sealed class VirtualSkyCameraModule(
         var stellarNoiseIdentity = sceneId;
         sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
-        var stageKey = _stageProjectedScene && stagingStore is not null
+        if (preview is not null)
+        {
+            // A preview never shares an identity with a capture of the same instant, and binds the focus model.
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId,
+                "\nfocus-preview\n",
+                focusModel?.ParametersSha256(_options.PsfSigmaPixels) ?? "fixed-psf", "\n",
+                focusPosition?.ToString("R", CultureInfo.InvariantCulture) ?? "none"))));
+        }
+        var stageKey = preview is null && _stageProjectedScene && stagingStore is not null
             ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
             : null;
-        var captureSequence = fixedSequence ?? (_cloudField is null && _transientScenario is null
-            ? Interlocked.Increment(ref _captureSequence) - 1
-            : CreateDeterministicCaptureSequence(stellarNoiseIdentity));
+        // Previews draw noise from their own negative sequence so the capture sequence is never consumed.
+        var captureSequence = preview is not null
+            ? -Interlocked.Increment(ref _focusPreviewSequence)
+            : fixedSequence ?? (_cloudField is null && _transientScenario is null
+                ? Interlocked.Increment(ref _captureSequence) - 1
+                : CreateDeterministicCaptureSequence(stellarNoiseIdentity));
         var finalRenderOptions = initialRenderOptions with
         {
             StellarExposure = stellarPlan,
@@ -359,7 +441,10 @@ public sealed class VirtualSkyCameraModule(
                 Statistics = affected.Statistics
             };
         }
-        sceneStore.Put(sceneId, scene);
+        if (preview is null)
+        {
+            sceneStore.Put(sceneId, scene);
+        }
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
             _options.TransientScenario, timelineUtc, setpoint.Exposure);
@@ -448,6 +533,23 @@ public sealed class VirtualSkyCameraModule(
             ["compatibilityLabel"] = render.CompatibilityLabel,
             ["includeConstellationEndpointStars"] = sceneRequest.IncludeConstellationEndpointStars.ToString()
         };
+        if (preview is not null)
+        {
+            extra["focusPreview"] = "true";
+            extra["focusPreviewFidelity"] = focusModel is null ? "virtual-fixed-psf" : "virtual-simulated-defocus";
+            extra["psfSigmaPixels"] = psfSigmaPixels.ToString("R", CultureInfo.InvariantCulture);
+            extra["psfRadiusPixels"] = psfRadiusPixels.ToString("R", CultureInfo.InvariantCulture);
+        }
+        if (focusModel is not null)
+        {
+            extra["simulatedFocusModel"] = VirtualSimulatedFocusOptions.ModelId;
+            extra["simulatedFocusUnits"] = VirtualSimulatedFocusOptions.Units;
+            extra["simulatedFocusPosition"] = focusPosition!.Value.ToString("R", CultureInfo.InvariantCulture);
+            extra["simulatedFocusBestPosition"] = focusModel.BestPosition.ToString("R", CultureInfo.InvariantCulture);
+            extra["simulatedFocusSigmaPixelsPerStep"] = focusModel.DefocusSigmaPixelsPerStep.ToString("R", CultureInfo.InvariantCulture);
+            extra["simulatedFocusMaximumSigmaPixels"] = focusModel.MaximumSigmaPixels.ToString("R", CultureInfo.InvariantCulture);
+            extra["simulatedFocusParametersSha256"] = focusModel.ParametersSha256(_options.PsfSigmaPixels);
+        }
         if (cloudProvenance is not null)
         {
             extra["cloudScenarioId"] = cloudProvenance.ScenarioId;
@@ -1253,8 +1355,13 @@ public sealed class VirtualSkyCameraModuleOptions
     public bool IncludeConstellationEndpointStars { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
+    /// <summary>Manual-focus preview model; unset uses the declared defaults and never affects ordinary captures.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualSimulatedFocusOptions? SimulatedFocus { get; init; }
+
     internal void Validate()
     {
+        SimulatedFocus?.Validate(PsfSigmaPixels);
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();
         if (!double.IsFinite(MaximumMagnitude) || MaximumResults is < 1 or > 100000 || BortleClass is < 1 or > 9 ||

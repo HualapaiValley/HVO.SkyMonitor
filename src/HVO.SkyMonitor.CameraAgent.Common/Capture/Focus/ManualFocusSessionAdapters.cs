@@ -1,37 +1,102 @@
+using HVO.SkyMonitor.AgentCore;
+
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 
 /// <summary>
-/// Holds exclusive camera acquisition through the existing capture owner for the duration of one action. The capture
-/// admission gate is closed and drained before the action runs and reopened only when it was Running, so normal
-/// capture can never interleave with a preview and a failed preview cannot be admitted as a normal capture.
+/// Takes focus previews from the module that <see cref="CameraCaptureService"/> owns, never from a second instance. Each
+/// preview holds a <see cref="CameraModuleLease"/> and runs inside the capture admission boundary: the admission gate is
+/// closed and in-flight captures drained before the preview, and the gate is reopened only when it was Running, so a
+/// preview can never interleave with a normal capture, is never admitted as one, and leaves a paused agent paused.
+/// Preview settings are request-scoped; the module contract requires its control state to be unchanged afterwards.
 /// </summary>
-public sealed class CaptureAdmissionManualFocusExclusiveAcquisition(CaptureAdmissionCoordinator admissionCoordinator)
-    : IManualFocusExclusiveAcquisition
+public sealed class CameraModuleManualFocusPreviewSource(
+    CameraModuleOwnership ownership,
+    CaptureAdmissionCoordinator admission,
+    TimeProvider timeProvider) : IManualFocusPreviewSource
 {
-    private readonly CaptureAdmissionCoordinator _admissionCoordinator = admissionCoordinator;
+    private readonly CameraModuleOwnership _ownership = ownership;
+    private readonly CaptureAdmissionCoordinator _admission = admission;
+    private readonly TimeProvider _timeProvider = timeProvider;
 
-    public Task<T> ExecuteExclusiveAsync<T>(
-        Func<CancellationToken, Task<T>> action,
+    public ManualFocusSessionAvailability GetAvailability()
+    {
+        if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
+        {
+            return ManualFocusSessionAvailability.Unavailable(ManualFocusReasonCodes.AdmissionFailClosed);
+        }
+        var module = _ownership.Snapshot;
+        if (!module.Published)
+        {
+            return ManualFocusSessionAvailability.Unavailable(ManualFocusReasonCodes.NoModule);
+        }
+        if (module.FocusPreview is not { } fidelity)
+        {
+            return ManualFocusSessionAvailability.Unavailable(
+                ManualFocusReasonCodes.ModuleWithoutPreview(module.ModuleType ?? "unknown"));
+        }
+        return new(true, fidelity.Limitation, module.ModuleType, fidelity, module.SimulatedFocus);
+    }
+
+    public async Task<ManualFocusPreview> AcquireAsync(
+        ManualFocusPreviewSettings settings,
+        double? simulatedFocusPosition,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(action);
-        return _admissionCoordinator.ExecuteCaptureBoundaryAsync(action, cancellationToken);
+        ArgumentNullException.ThrowIfNull(settings);
+        if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
+        {
+            throw AdmissionUnavailable();
+        }
+        if (!_ownership.TryAcquire(out var lease))
+        {
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
+                ManualFocusReasonCodes.NoModule);
+        }
+        using (lease)
+        {
+            if (lease.Module is not ICameraFocusPreviewCapture preview)
+            {
+                throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
+                    ManualFocusReasonCodes.ModuleWithoutPreview(lease.Module.ModuleType));
+            }
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Revoked);
+            var requestedUtc = _timeProvider.GetUtcNow();
+            CaptureResult result;
+            try
+            {
+                result = await _admission.ExecuteCaptureBoundaryAsync(token =>
+                {
+                    if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
+                    {
+                        throw AdmissionUnavailable();
+                    }
+                    var request = new CaptureRequest(
+                        _timeProvider.GetUtcNow(),
+                        settings.Exposure,
+                        CaptureMode.Still,
+                        new CaptureSetpoint(settings.Exposure, settings.Gain, null, null));
+                    return preview.CaptureFocusPreviewAsync(
+                        new CameraFocusPreviewRequest(request, simulatedFocusPosition), token);
+                }, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                lease.Revoked.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
+                    ManualFocusReasonCodes.CameraWithdrawnMessage);
+            }
+            catch (CaptureAdmissionUnavailableException)
+            {
+                throw AdmissionUnavailable();
+            }
+            var frame = result.Frame ?? throw new InvalidDataException("The camera module returned no preview frame.");
+            // Samples outside the calibrated image circle are not sky; measurement treats them as masked, as metering does.
+            var imageCircle = lease.Config is { } config ? CameraModuleRunner.ResolveMeteringImageCircle(config, frame) : null;
+            return new ManualFocusPreview(frame, lease.Module.ModuleType, lease.Generation,
+                preview.FocusPreviewFidelity, preview.SimulatedFocus, requestedUtc, _timeProvider.GetUtcNow(), imageCircle);
+        }
     }
-}
 
-/// <summary>
-/// The production default: no live preview frame source exists on this CameraAgent, so a session is unavailable with
-/// an explicit reason. It never fabricates a preview.
-/// </summary>
-public sealed class UnavailableManualFocusPreviewFrameSource(string reason) : IManualFocusPreviewFrameSource
-{
-    private readonly string _reason = reason;
-
-    public ManualFocusSessionAvailability GetAvailability() => ManualFocusSessionAvailability.Unavailable(_reason);
-
-    public ValueTask<ManualFocusPreviewFrame> AcquireAsync(
-        ManualFocusPreviewSettings settings,
-        ManualFocusRegion? region,
-        CancellationToken cancellationToken)
-        => throw new ManualFocusSessionUnavailableException(_reason);
+    private static ManualFocusSessionUnavailableException AdmissionUnavailable()
+        => new(ManualFocusReasonCodes.AdmissionUnavailable, ManualFocusReasonCodes.AdmissionFailClosed);
 }

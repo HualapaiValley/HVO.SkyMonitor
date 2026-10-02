@@ -1,148 +1,222 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 
-/// <summary>Lifecycle of one manual focus session. Every state is explicit; there is no implicit success.</summary>
+/// <summary>Lifecycle of one manual focus session. Every terminal state carries an explicit end reason.</summary>
 public enum ManualFocusSessionState
 {
     Idle,
-    Active,
-    Completed,
-    Cancelled,
+
+    /// <summary>The preview loop is taking back-to-back exposures until the operator stops it.</summary>
+    Running,
+
+    /// <summary>The operator stopped the loop.</summary>
+    Stopped,
+
+    /// <summary>The labelled safety timeout or the owner-observation timeout ended the loop.</summary>
     TimedOut,
+
+    /// <summary>The camera became unavailable or repeated acquisitions failed.</summary>
     Faulted
 }
 
-/// <summary>What happens to the in-memory samples when a session ends.</summary>
-public enum ManualFocusSessionDisposition
+/// <summary>Where an ended session's bounded history lives. Nothing is durable until it is saved.</summary>
+public enum ManualFocusRetentionState
 {
-    /// <summary>Keep the measured samples on the completed session snapshot.</summary>
-    Retained,
+    /// <summary>The history exists only in CameraAgent memory and is lost on restart or when a new session starts.</summary>
+    InMemoryOnly,
 
-    /// <summary>Drop the samples; nothing is retained.</summary>
+    /// <summary>The history was written as an immutable, checksummed session record.</summary>
+    Saved,
+
+    /// <summary>The operator discarded the history; nothing was retained.</summary>
     Discarded
+}
+
+/// <summary>How the current target was chosen.</summary>
+public enum ManualFocusTargetSource
+{
+    /// <summary>The brightest isolated unsaturated star near the frame centre.</summary>
+    Automatic,
+
+    /// <summary>The star nearest a pixel the operator picked on the preview or from the projected catalog list.</summary>
+    Operator
 }
 
 /// <summary>A bounded, temporary preview exposure and gain. It is never written to the active rig profile.</summary>
 public sealed record ManualFocusPreviewSettings(TimeSpan Exposure, double Gain);
 
-/// <summary>A rectangular region of interest in frame pixel-edge coordinates.</summary>
-public sealed record ManualFocusRegion(int X, int Y, int Width, int Height);
-
-/// <summary>Declared bounds for a manual focus session. They are validated before a session starts.</summary>
+/// <summary>Declared bounds for a manual focus session, validated before a session starts or changes.</summary>
 public sealed record ManualFocusSessionLimits(
     TimeSpan MinimumExposure,
     TimeSpan MaximumExposure,
     double MaximumGain,
-    int MaximumSamples,
-    TimeSpan MinimumSessionTimeout,
-    TimeSpan MaximumSessionTimeout)
+    int HistoryCapacity,
+    TimeSpan MinimumSafetyTimeout,
+    TimeSpan MaximumSafetyTimeout,
+    TimeSpan DefaultSafetyTimeout,
+    TimeSpan SampleDeadlineGrace,
+    TimeSpan ObserverTimeout,
+    int MaximumConsecutiveFailures,
+    TimeSpan StopWaitTimeout)
 {
     public static ManualFocusSessionLimits Default { get; } = new(
         TimeSpan.FromMilliseconds(1),
         TimeSpan.FromSeconds(60),
         1000,
-        32,
-        TimeSpan.FromSeconds(5),
-        TimeSpan.FromMinutes(30));
+        100,
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(60),
+        TimeSpan.FromMinutes(15),
+        TimeSpan.FromSeconds(30),
+        TimeSpan.FromSeconds(30),
+        3,
+        TimeSpan.FromSeconds(15));
 }
 
-/// <summary>One authorized request to begin a manual focus session.</summary>
+/// <summary>One authorized request to begin a continuous manual focus loop.</summary>
+/// <param name="Settings">Temporary preview exposure and gain.</param>
+/// <param name="SimulatedFocusPosition">Starting simulated focus position, when the camera declares a simulated model.</param>
+/// <param name="Target">Optional source-frame pixel to search near; the centroid is always measured from pixels.</param>
+/// <param name="SafetyTimeout">Labelled hard limit after which the loop stops even if nobody presses Stop.</param>
 public sealed record ManualFocusSessionRequest(
     ManualFocusPreviewSettings Settings,
-    ManualFocusRegion? Region,
-    TimeSpan SessionTimeout,
-    int MinimumAcceptedSources = 3);
+    double? SimulatedFocusPosition = null,
+    PixelPoint? Target = null,
+    TimeSpan? SafetyTimeout = null);
 
-/// <summary>Whether the manual focus session capability can run on this CameraAgent, and why not when it cannot.</summary>
-public sealed record ManualFocusSessionAvailability(bool Available, string Reason)
+/// <summary>A change applied from the next exposure on. Null members are unchanged.</summary>
+public sealed record ManualFocusAdjustment(
+    ManualFocusPreviewSettings? Settings = null,
+    double? SimulatedFocusPosition = null,
+    PixelPoint? Target = null,
+    bool ResetToAutomaticTarget = false);
+
+/// <summary>Whether a manual focus session can run on this CameraAgent, and why not when it cannot.</summary>
+public sealed record ManualFocusSessionAvailability(
+    bool Available,
+    string Reason,
+    string? ModuleType = null,
+    CameraFocusPreviewFidelity? Fidelity = null,
+    CameraSimulatedFocusModel? SimulatedFocus = null)
 {
     public static ManualFocusSessionAvailability Unavailable(string reason) => new(false, reason);
 }
 
-/// <summary>One bounded preview frame returned by a preview frame source. It is measured in memory and discarded.</summary>
-[SuppressMessage("Performance", "CA1819:Properties should not return arrays",
-    Justification = "The frame is a short-lived, owned transfer buffer that is consumed by span-based analysis and never retained.")]
-public sealed record ManualFocusPreviewFrame(
-    string FrameId,
-    int Width,
-    int Height,
-    double[] Pixels,
-    bool[] ValidMask,
-    bool[] SaturatedMask,
-    string? AgentId = null,
-    string? RigId = null);
+/// <summary>One preview acquired through the capture owner's module. It is measured and dropped, never admitted.</summary>
+public sealed record ManualFocusPreview(
+    CameraFrame Frame,
+    string ModuleType,
+    long ModuleGeneration,
+    CameraFocusPreviewFidelity Fidelity,
+    CameraSimulatedFocusModel? SimulatedFocus,
+    DateTimeOffset RequestedUtc,
+    DateTimeOffset CompletedUtc,
+    MeteringImageCircle? ImageCircle = null);
 
-/// <summary>
-/// Source of bounded temporary preview frames. A real implementation exists only where the configured camera can
-/// produce a preview without corrupting normal acquisition; otherwise availability is false with a reason.
-/// </summary>
-public interface IManualFocusPreviewFrameSource
+/// <summary>Source of bounded temporary preview frames through the configured camera owner.</summary>
+public interface IManualFocusPreviewSource
 {
     ManualFocusSessionAvailability GetAvailability();
 
-    ValueTask<ManualFocusPreviewFrame> AcquireAsync(
+    /// <exception cref="ManualFocusSessionUnavailableException">No module can produce a preview now.</exception>
+    Task<ManualFocusPreview> AcquireAsync(
         ManualFocusPreviewSettings settings,
-        ManualFocusRegion? region,
+        double? simulatedFocusPosition,
         CancellationToken cancellationToken);
 }
 
-/// <summary>Runs an action while holding exclusive camera acquisition, so normal capture cannot interleave.</summary>
-public interface IManualFocusExclusiveAcquisition
-{
-    Task<T> ExecuteExclusiveAsync<T>(
-        Func<CancellationToken, Task<T>> action,
-        CancellationToken cancellationToken);
-}
+/// <summary>A star the projected catalog places inside the preview, offered as a target hint. Never a measurement.</summary>
+public sealed record ManualFocusCatalogStar(string Id, string? Name, double Magnitude, PixelPoint Pixel);
 
-/// <summary>Provenance carried with every measured sample so a value can be reproduced and compared honestly.</summary>
+/// <summary>Provenance carried with every sample so a value can be reproduced and compared honestly.</summary>
 public sealed record ManualFocusSampleProvenance(
-    string FrameId,
-    string? AgentId,
-    string? RigId,
+    DateTimeOffset FrameTimestampUtc,
     int FrameWidth,
     int FrameHeight,
-    ManualFocusRegion? Region,
+    CameraPixelFormat PixelFormat,
+    string FrameSha256,
+    string? SceneId,
+    string ModuleType,
+    long ModuleGeneration,
+    string FidelityKind,
+    bool QualifiesPhysicalFocus,
+    string? SimulatedFocusModelId,
+    string? SimulatedFocusParametersSha256,
+    int WindowX,
+    int WindowY,
+    int WindowWidth,
+    int WindowHeight,
+    string SamplerAlgorithmVersion,
     string MetricDefinition,
     string MetricUnits,
     string MetricAlgorithmVersion,
     string MetricSettingsIdentitySha256,
     string PreviewSettingsIdentitySha256);
 
-/// <summary>One image-derived sample with its measurement and provenance. No sample exists without a measurement.</summary>
+/// <summary>One image-derived sample. Invalid measurements are samples too; they never carry a width.</summary>
 public sealed record ManualFocusSample(
-    int Index,
+    long Sequence,
     DateTimeOffset MeasuredUtc,
-    FocusSharpnessMeasurement Measurement,
+    ManualFocusPreviewSettings Settings,
+    double? SimulatedFocusPosition,
+    ManualFocusTargetSource TargetSource,
+    FocusStarMeasurement Measurement,
     ManualFocusSampleProvenance Provenance);
 
-/// <summary>Immutable session view. Samples are empty unless the session completed and was retained.</summary>
+/// <summary>The latest display images. Display stretches only; measurements always use the linear samples.</summary>
+[SuppressMessage("Performance", "CA1819:Properties should not return arrays",
+    Justification = "Immutable encoded image bytes handed to the UI; the coordinator never mutates them after publication.")]
+public sealed record ManualFocusPreviewImages(
+    long Sequence,
+    byte[] OverviewJpeg,
+    int OverviewWidth,
+    int OverviewHeight,
+    int OverviewBinFactor,
+    int FrameWidth,
+    int FrameHeight,
+    byte[]? StarJpeg,
+    int StarWindowX,
+    int StarWindowY,
+    int StarWindowWidth,
+    int StarWindowHeight,
+    IReadOnlyList<ManualFocusCatalogStar> CatalogStars);
+
+/// <summary>Immutable session view.</summary>
 public sealed record ManualFocusSessionSnapshot(
     string SessionId,
     ManualFocusSessionState State,
+    string? OwnerId,
     DateTimeOffset StartedUtc,
     DateTimeOffset? EndedUtc,
-    DateTimeOffset DeadlineUtc,
+    DateTimeOffset SafetyDeadlineUtc,
     ManualFocusPreviewSettings Settings,
-    ManualFocusRegion? Region,
-    int MinimumAcceptedSources,
-    IReadOnlyList<ManualFocusSample> Samples,
-    string? FailureReason,
-    string? EndReason)
+    double? SimulatedFocusPosition,
+    PixelPoint? Target,
+    ManualFocusTargetSource TargetSource,
+    long TotalSamples,
+    int HistoryCapacity,
+    IReadOnlyList<ManualFocusSample> History,
+    ManualFocusSample? Best,
+    string? LastFailure,
+    string? EndReason,
+    string? ModuleType,
+    CameraFocusPreviewFidelity? Fidelity,
+    CameraSimulatedFocusModel? SimulatedFocus,
+    ManualFocusRetentionState Retention,
+    string? SavedRecordId)
 {
     public static ManualFocusSessionSnapshot Idle { get; } = new(
-        string.Empty,
-        ManualFocusSessionState.Idle,
-        default,
-        null,
-        default,
-        new(TimeSpan.Zero, 0),
-        null,
-        3,
-        [],
-        null,
-        null);
+        string.Empty, ManualFocusSessionState.Idle, null, default, null, default, new(TimeSpan.Zero, 0), null, null,
+        ManualFocusTargetSource.Automatic, 0, 0, [], null, null, null, null, null, null,
+        ManualFocusRetentionState.InMemoryOnly, null);
+
+    public ManualFocusSample? Latest => History.Count == 0 ? null : History[^1];
+
+    public bool IsRunning => State == ManualFocusSessionState.Running;
 }
 
 public sealed class ManualFocusSessionValidationException : InvalidOperationException
@@ -181,6 +255,14 @@ public sealed class ManualFocusSessionUnavailableException : InvalidOperationExc
     {
     }
 
+    public ManualFocusSessionUnavailableException(string reasonCode, string message) : base(message)
+    {
+        ReasonCode = reasonCode;
+    }
+
+    /// <summary>Stable <see cref="ManualFocusReasonCodes"/> value recorded as a session end reason.</summary>
+    public string ReasonCode { get; } = ManualFocusReasonCodes.CameraWithdrawn;
+
     public ManualFocusSessionUnavailableException(string message) : base(message)
     {
     }
@@ -205,21 +287,33 @@ public sealed class ManualFocusSessionStateException : InvalidOperationException
     }
 }
 
-/// <summary>Stable reason codes for session termination and unavailable capability reporting.</summary>
+/// <summary>
+/// Stable reason codes for session termination, and operator texts for unavailable capability reporting. A session's
+/// <see cref="ManualFocusSessionSnapshot.EndReason"/> is always one of the codes; the detail is in
+/// <see cref="ManualFocusSessionSnapshot.LastFailure"/>.
+/// </summary>
 public static class ManualFocusReasonCodes
 {
-    public const string Retained = "retained";
-    public const string Discarded = "discarded";
-    public const string Cancelled = "cancelled";
-    public const string TimedOut = "timed-out";
-    public const string MeasurementFailed = "measurement-failed";
-    public const string CameraBusy = "camera-busy";
+    public const string StoppedByOperator = "stopped-by-operator";
+    public const string SafetyTimeout = "safety-timeout";
+    public const string ObserverLost = "owner-not-observing";
+    public const string HostStopping = "host-stopping";
+    public const string CameraWithdrawn = "camera-withdrawn";
+    public const string AdmissionUnavailable = "capture-admission-unavailable";
+    public const string RepeatedFailures = "repeated-acquisition-failures";
+    public const string SampleDeadlineExceeded = "sample-deadline-exceeded";
+    public const string PreviewUnmeasurable = "preview-unmeasurable";
+    public const string LoopFailed = "loop-failed";
 
-    /// <summary>Durable session retention/export is deliberately not implemented in this slice.</summary>
-    public const string RetentionUnavailable =
-        "Durable manual focus session retention and evidence export are not implemented; sessions are in memory only.";
+    public const string NoModule =
+        "The camera module is not running, so no focus preview can be taken. Wait for capture to start, then try again.";
 
-    /// <summary>No live preview frame source can produce an honest focus preview on this CameraAgent.</summary>
-    public const string NoLivePreviewSource =
-        "No live focus preview frame source is registered on this CameraAgent, and the virtual camera does not model optical defocus, so a session cannot qualify real focus.";
+    public const string AdmissionFailClosed =
+        "Capture admission is unavailable after a durable publication failure; focus previews are refused until verified restart recovery.";
+
+    public const string CameraWithdrawnMessage =
+        "The camera module was withdrawn by its owner (configuration change, restart, or shutdown).";
+
+    public static string ModuleWithoutPreview(string moduleType)
+        => $"The configured camera module '{moduleType}' does not provide bounded focus previews, so a manual focus session cannot start.";
 }
