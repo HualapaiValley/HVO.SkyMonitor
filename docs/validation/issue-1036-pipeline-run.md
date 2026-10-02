@@ -3,10 +3,12 @@
 ## Scope and source
 
 Tier B CameraAgent UI/read-projection work, deep independent review for
-authorization and stale-navigation interactions. Initial review base and merge-base
-are `24f0ecfd041da866806a578a0512f0f9fed7269d` on `development/v1`; the original
-branch point was `639a724a567d27049cdb5779c04bfb0d00539105` and target integration
-happened before the initial review. Design authority is the committed
+authorization and stale-navigation interactions. The initial review base and
+merge-base were `24f0ecfd041da866806a578a0512f0f9fed7269d` on `development/v1`;
+the original branch point was `639a724a567d27049cdb5779c04bfb0d00539105`. The
+target then advanced to `38495750d9e0651256002c6bc075c188d40b30c9` (PR #1127,
+another owner) and was merged before the base-sync review, which is the final
+merge-base. Design authority is the committed
 `docs/prototypes/pipeline-operations/index.html`, `app.js`, and `styles.css`.
 The issue's `p-graph.png` is not present in the repository; the actual prototype
 page is used as the reference.
@@ -96,21 +98,21 @@ an interop import is still in flight.
 ## Validation
 
 - Debug CameraAgent warning-clean build: zero warnings/errors.
-- Focused execution/router/service/gallery tests: 75 passed before the two
-  separated-routing regressions; final affected totals are recorded in the ledger.
+- Focused execution/router/service/gallery tests: 82 passed on the converged
+  head; the ledger records the full affected candidate gate.
 - Dedicated Manual `OwnerPipelineRunPresentationAcceptanceAsync`: one passed,
   no skips in Release. It starts a genuine VirtualSky fixture run, then checks
   1440/390/320 overflow, native keyboard node/tab behavior, measured fullscreen,
   zoom/fit and focus return. Fixture catalog is explicitly distinct from the
   production-catalog native capture used for visual acceptance.
 - Earlier attempts through the full Archive Manual chain exposed prerender/
-  interactive cursor timing and an inspector module import race. Failures and
-  logs are preserved; they are not counted as passes. Inspector import now
-  retries after execution data exists, and the dedicated run test waits for the
-  graph's actual interop readiness.
+  interactive cursor timing, and the correction2 browser gate exposed a tab-focus
+  race while the page still imported a JavaScript module. Failures and logs are
+  preserved; they are not counted as passes. The page module was removed and tab
+  focus is native, so the dedicated run test no longer depends on import timing.
 - Candidate gates are selected by `scripts/ci:classify` and recorded with exact
-  head/commands in the issue/PR ledger. Six new Unit methods and one Manual
-  method are aligned with owning test inventories and the runbook totals.
+  head/commands in the issue/PR ledger. The change adds eleven Unit cases and one
+  Manual method, aligned with owning test inventories and the runbook totals.
 
 ## Runtime and acceptance
 
