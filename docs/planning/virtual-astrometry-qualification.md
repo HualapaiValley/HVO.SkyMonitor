@@ -21,6 +21,8 @@ Reuse those contracts and their tests; see
 Their presence does not qualify the complete configured VirtualSky pixel path,
 exposure-integrated production rendering, reusable optical calibration or
 statistically validated uncertainty.
+#1103 adds the v2 star measurer and residual diagnostics; see
+[measured-star diagnostics](../astronomy/measured-star-diagnostics-v1.md).
 
 The standalone #1084/#1085/#1087 experiments are prior evidence, not production
 renderer implementations. #1102 records the remaining #1087 crop/bin

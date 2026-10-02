@@ -106,7 +106,23 @@ internal static class VirtualAstrometryFixture
         MinimumMinorSigma: .2, MaximumMajorSigma: layout.PixelFormat == CameraPixelFormat.BayerRggb16 ? 2.3 : 1.8,
         MaximumVarianceRatio: 2.5, IsolationRadiusPixels: 12d / (layout.Readout?.BinX ?? 1));
 
+    /// <summary>Candidate v2 settings: CFA luminance spreads one photosite, saturated or noisy, over its 3x3 reconstruction support.</summary>
+    internal static StellarMeasurementOptions MeasurementOptions(FrameLayoutDescriptor layout) => new(
+        MinimumPeakAboveBackground: layout.PixelFormat == CameraPixelFormat.BayerRggb16 ? 32 : 8,
+        SaturationDilationPixels: layout.PixelFormat == CameraPixelFormat.BayerRggb16 ? 1 : 0,
+        // The mono 16-sample (4x4) saturated-core budget, dilated by the one-pixel CFA support to 6x6.
+        MaximumSaturatedSamples: layout.PixelFormat == CameraPixelFormat.BayerRggb16 ? 36 : 16,
+        NoiseEstimator: layout.PixelFormat == CameraPixelFormat.BayerRggb16
+            ? StellarNoiseEstimator.ClippedSpread : StellarNoiseEstimator.AdjacentDifferences);
+
     internal static (double[] Samples, bool[] Valid) Decode(VirtualAstrometryPixels input)
+    {
+        var (samples, saturated) = DecodeLinear(input);
+        return (samples, [.. saturated.Select(static value => !value)]);
+    }
+
+    /// <summary>Decodes declared linear samples and the stored white-level saturation mask without discarding saturated photosites.</summary>
+    internal static (double[] Samples, bool[] Saturated) DecodeLinear(VirtualAstrometryPixels input)
     {
         var layout = input.Layout;
         var validation = layout.Validate();
@@ -128,7 +144,7 @@ internal static class VirtualAstrometryFixture
             };
         }
         var samples = new double[checked(layout.Width * layout.Height)];
-        var valid = new bool[samples.Length];
+        var saturated = new bool[samples.Length];
         for (var y = 0; y < layout.Height; y++)
             for (var x = 0; x < layout.Width; x++)
             {
@@ -136,9 +152,9 @@ internal static class VirtualAstrometryFixture
                 var value = layout.ByteOrder == FrameByteOrder.LittleEndian
                     ? BinaryPrimitives.ReadUInt16LittleEndian(bytes) : BinaryPrimitives.ReadUInt16BigEndian(bytes);
                 samples[y * layout.Width + x] = value;
-                valid[y * layout.Width + x] = value < white;
+                saturated[y * layout.Width + x] = value >= white;
             }
-        return (samples, valid);
+        return (samples, saturated);
     }
 
     internal static StellarDetectionResult Measure(VirtualAstrometryPixels input, AstrometricCalibration nominal)
@@ -167,6 +183,59 @@ internal static class VirtualAstrometryFixture
         }
         return StellarDetector.Detect(samples, valid, input.Layout.Width, input.Layout.Height, DetectionOptions(input.Layout));
     }
+
+    /// <summary>Candidate measurement: local background, saturation, trail and reason-coded exclusions on final pixels only.</summary>
+    internal static StellarMeasurementResult MeasureV2(VirtualAstrometryPixels input, AstrometricCalibration nominal)
+    {
+        var (samples, saturated) = DecodeLinear(input);
+        var aperture = nominal.Projection;
+        if (aperture.WidthPixels != input.Layout.Width || aperture.HeightPixels != input.Layout.Height)
+            throw new ArgumentException("Nominal aperture must describe the measured pixel view.", nameof(nominal));
+        var valid = new bool[samples.Length];
+        for (var y = 0; y < input.Layout.Height; y++)
+            for (var x = 0; x < input.Layout.Width; x++)
+                valid[y * input.Layout.Width + x] = aperture.ContainsSample(x + .5, y + .5);
+        var options = MeasurementOptions(input.Layout);
+        if (input.Layout.PixelFormat == CameraPixelFormat.BayerRggb16)
+        {
+            var luminance = LinearBayerReconstruction.Reconstruct(samples, valid, input.Layout.Width, input.Layout.Height, Pattern(input.Layout)).ToLuminance();
+            return StellarSourceMeasurer.Measure(luminance.Pixels.Span, luminance.ValidMask.Span, saturated,
+                input.Layout.Width, input.Layout.Height, options);
+        }
+        return StellarSourceMeasurer.Measure(samples, valid, saturated, input.Layout.Width, input.Layout.Height, options);
+    }
+
+    internal static AstrometricFrameContext FrameContextV2(VirtualAstrometryPixels input) => FrameContext(input) with
+    {
+        DetectionAlgorithmVersion = StellarSourceMeasurer.AlgorithmVersion,
+        DetectionSettingsIdentitySha256 = StellarSourceMeasurer.SettingsIdentity(MeasurementOptions(input.Layout))
+    };
+
+    internal static AstrometricSolveResult SolveV2(VirtualAstrometryPixels input, AstrometricCalibration nominal,
+        AstrometricCatalogData catalog, StellarMeasurementResult measured, AstrometricFrameAssessment? prior = null)
+    {
+        var detections = Detections(measured);
+        return prior is null ? AstrometricSolver.Solve(FrameContextV2(input), nominal, catalog, detections, SolverOptions)
+            : AstrometricSolver.Refine(FrameContextV2(input), nominal, catalog, detections, prior, SolverOptions);
+    }
+
+    internal static AstrometricDetection[] Detections(StellarMeasurementResult measured) =>
+        [.. measured.Detections.Select(d => new AstrometricDetection(d.Index, d.Pixel, d.Flux))];
+
+    internal static AstrometricResidualDiagnostics Diagnose(AstrometricCalibration nominal, AstrometricCatalogData catalog,
+        StellarMeasurementResult measured, AstrometricSolveResult solved) => AstrometricResidualAnalyzer.Analyze(nominal, catalog, SolverOptions, solved,
+        Detections(measured), [.. measured.Exclusions.Select(e => new AstrometricMeasurementExclusion(e.Peak, e.ReasonCode))],
+        [.. measured.Detections.Where(d => d.CentroidCovariance is not null).Select(d => new AstrometricPixelCovariance(d.Index,
+            d.CentroidCovariance!.Value.XX, d.CentroidCovariance.Value.XY, d.CentroidCovariance.Value.YY))]);
+
+    private static BayerPattern Pattern(FrameLayoutDescriptor layout) => (layout.Readout?.CfaOriginX ?? 0, layout.Readout?.CfaOriginY ?? 0) switch
+    {
+        (0, 0) => BayerPattern.Rggb,
+        (1, 0) => BayerPattern.Grbg,
+        (0, 1) => BayerPattern.Gbrg,
+        (1, 1) => BayerPattern.Bggr,
+        _ => throw new ArgumentException("Invalid declared CFA origin.", nameof(layout))
+    };
 
     internal static AstrometricFrameContext FrameContext(VirtualAstrometryPixels input)
     {
