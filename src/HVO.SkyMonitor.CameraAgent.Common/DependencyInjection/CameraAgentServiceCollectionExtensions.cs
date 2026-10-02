@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
@@ -127,6 +128,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
+        services.AddSingleton<IManualFocusExclusiveAcquisition>(provider =>
+            new CaptureAdmissionManualFocusExclusiveAcquisition(
+                provider.GetRequiredService<CaptureAdmissionCoordinator>()));
+        services.AddSingleton<IManualFocusPreviewFrameSource>(
+            new UnavailableManualFocusPreviewFrameSource(ManualFocusReasonCodes.NoLivePreviewSource));
+        services.AddSingleton<ManualFocusSessionCoordinator>();
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
