@@ -21,7 +21,8 @@ public readonly record struct StellarCentroidCovariance(double XX, double XY, do
 /// Flux is the positive background-subtracted sum in a 9-by-9 aperture. Peak is the original sample value.
 /// PSF sigmas are aperture second moments, not fitted Gaussian widths or centroid uncertainties.
 /// Background and noise are global upper-median and scaled upper-median absolute deviation estimates.
-/// This moment-based detector does not estimate centroid covariance; it is explicitly unavailable.
+/// The v1 moment-based detector does not estimate centroid covariance; it is explicitly unavailable.
+/// <see cref="StellarSourceMeasurer"/> populates the optional measurement properties below; v1 leaves them unset.
 /// </remarks>
 public sealed record StellarDetection(
     int Index,
@@ -33,7 +34,35 @@ public sealed record StellarDetection(
     double Background,
     double NoiseSigma)
 {
-    public StellarCentroidCovariance? CentroidCovariance { get; }
+    /// <summary>Propagated centroid covariance, or null when unavailable. It is not validated coverage evidence.</summary>
+    public StellarCentroidCovariance? CentroidCovariance { get; init; }
+
+    /// <summary>States how <see cref="CentroidCovariance"/> was obtained, or null for the v1 detector.</summary>
+    public string? CentroidCovarianceStatus { get; init; }
+
+    /// <summary>Background-subtracted flux divided by its propagated noise, or null for the v1 detector.</summary>
+    public double? SignalToNoise { get; init; }
+
+    public StellarSourceConditions Conditions { get; init; }
+
+    /// <summary>Samples in the source footprint that were at or within the declared dilation of saturation.</summary>
+    public int SaturatedSampleCount { get; init; }
+
+    /// <summary>Equivalent uniform trail length from the moment excess of the major over the minor axis.</summary>
+    public double? TrailLengthPixels { get; init; }
+
+    /// <summary>Major-axis angle in degrees, measured from +X toward +Y in image coordinates, within [-90, 90).</summary>
+    public double? TrailAngleDegrees { get; init; }
+}
+
+/// <summary>Measurement conditions retained with an accepted source. They never certify catalog identity.</summary>
+[Flags]
+public enum StellarSourceConditions
+{
+    None = 0,
+    Saturated = 1,
+    Trailed = 2,
+    CovarianceUnavailable = 4
 }
 
 /// <summary>Owned, immutable source measurements, ordered by decreasing flux with stable scan-order ties.</summary>
