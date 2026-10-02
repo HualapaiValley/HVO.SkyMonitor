@@ -40,7 +40,8 @@ public sealed class SolarSkyIlluminationTests
         Assert.Throws<ArgumentOutOfRangeException>(() => sky.Multiplier(32, 32, 3));
         Assert.Throws<ArgumentOutOfRangeException>(() => new Mono16SceneRenderOptions
         {
-            SkyIllumination = sky, BackgroundElectronsPerSecond = 1e12
+            SkyIllumination = sky,
+            BackgroundElectronsPerSecond = 1e12
         }.Validate());
     }
 }
