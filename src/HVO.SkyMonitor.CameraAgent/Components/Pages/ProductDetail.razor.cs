@@ -148,13 +148,12 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
             if (_disposed || artifact != _detail?.Product.ArtifactId) return;
             _self ??= DotNetObjectReference.Create(this);
             var controller = await _module.InvokeAsync<IJSObjectReference>("bind", _viewer, _fullscreenTrigger, artifact!.Value.ToString("D"), _self);
+            _viewerController = controller;
             if (_disposed || artifact != _detail?.Product.ArtifactId)
             {
-                await controller.InvokeVoidAsync("dispose");
-                await controller.DisposeAsync();
+                await ReleaseViewerAsync();
                 return;
             }
-            _viewerController = controller;
             if (!_disposed && artifact == _detail?.Product.ArtifactId) _boundArtifact = artifact;
         }
         catch (JSDisconnectedException) { }
