@@ -324,7 +324,9 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                     ["EpochUtc"] = "2026-01-15T08:00:00Z",
                     ["NumericValue"] = source.Numeric,
                     ["BooleanValue"] = source.Boolean,
-                    ["NoiseAmplitude"] = 0.25,
+                    // Recovery requires every source to publish; clock-dependent noise can
+                    // make zero precipitation or low cloud cover invalid.
+                    ["NoiseAmplitude"] = 0,
                     ["Uncertainty"] = source.Boolean is null ? 0.1 : null,
                     ["Quality"] = "Good",
                     ["Mode"] = "Normal",

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Imaging.Tests;
 
@@ -29,6 +30,43 @@ public sealed class SolarSkyIlluminationTests
         }
         var noon = new SolarSkyIllumination(Projection, new(60, 180));
         Assert.IsTrue(noon.Multiplier(32, 32, 2) > noon.Multiplier(32, 32, 0));
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task IncidentSkyAndDiskRespondToSensorExposureAndValidateProjection(CameraPixelFormat format)
+    {
+        var scene = await SceneTestFactory.CreateEmptyAsync(64, 64, 31).ConfigureAwait(false);
+        var projection = scene.Request.Projection;
+        var layout = new ImageLayout(64, 64, format, 64 * ImageLayout.BytesPerPixel(format));
+        var sky = new SolarSkyIllumination(projection, new(60, 180));
+        var disk = new SolarDiskAppearance(SolarSystemBody.Sun, scene.Request.Utc,
+            new(90, 0), .25, 0, 1, 0, 149600000);
+        var disks = new SolarDiskRenderPlan(projection, [disk], 1000);
+        SceneRenderResult Render(double exposure, SolarSkyIllumination? illumination, SolarDiskRenderPlan? bodies)
+            => format switch
+            {
+                CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(scene, layout, new()
+                { ExposureSeconds = exposure, BackgroundElectronsPerSecond = 20, SkyIllumination = illumination, SolarDisks = bodies }),
+                CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, new()
+                { ExposureSeconds = exposure, BackgroundElectronsPerSecond = 20, SkyIllumination = illumination, SolarDisks = bodies }),
+                _ => BayerRggb16Renderer.Render(scene, layout, new()
+                { ChannelResponse = new(1, 1, 1), ExposureSeconds = exposure, BackgroundElectronsPerSecond = 20, SkyIllumination = illumination, SolarDisks = bodies })
+            };
+        var normal = Render(.1, sky, disks);
+        var excessive = Render(10000, sky, disks);
+        Assert.AreEqual(0, normal.Statistics.ClippedHigh);
+        Assert.IsTrue(excessive.Statistics.ClippedHigh > 0);
+        Assert.IsTrue(excessive.Statistics.Mean > normal.Statistics.Mean);
+        Assert.IsTrue(Render(.1, null, disks).Statistics.Mean > Render(.1, null, null).Statistics.Mean);
+        CollectionAssert.AreEqual(Render(.1, null, null).Pixels.ToArray(),
+            Render(.1, new SolarSkyIllumination(projection, new(-30, 0)), null).Pixels.ToArray());
+        Assert.Throws<ArgumentException>(() => Render(.1,
+            new SolarSkyIllumination(projection with { HorizontalFlip = true }, new(60, 180)), disks));
+        Assert.Throws<ArgumentException>(() => Render(.1, sky,
+            new SolarDiskRenderPlan(projection with { HorizontalFlip = true }, [disk], 1000)));
     }
 
     [TestMethod]
