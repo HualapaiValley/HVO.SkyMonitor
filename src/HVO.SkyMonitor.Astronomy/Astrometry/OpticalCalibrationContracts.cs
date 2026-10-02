@@ -101,6 +101,21 @@ public sealed record OpticalCalibrationDiagnostics(double SkyRotationDegrees, in
     int OccupiedAzimuthBins, double? ConditionNumber, int Iterations, bool Converged,
     IReadOnlyList<OpticalCalibrationResidualBin> ResidualBins);
 
+/// <summary>
+/// Full marginal covariance of the fitted session optics after every per-frame pose is eliminated (Schur complement),
+/// row-major over <see cref="Parameters"/>. The scale is estimated from the unweighted fitting residuals, so it is an
+/// engineering estimate of the shared calibration error, not a validated probability; consumers propagate it into
+/// frame uncertainty so frames sharing this calibration stay correlated.
+/// </summary>
+public sealed record OpticalCalibrationCovariance(string Basis, IReadOnlyList<string> Parameters, IReadOnlyList<double> Values)
+{
+    public const string ResidualScaledMarginal = "residual-scaled-marginal-gauss-newton-v1";
+    public const string LogFocalScale = "log-focal-scale";
+    public const string PrincipalPointX = "principal-point-x";
+    public const string PrincipalPointY = "principal-point-y";
+    public const string RadialK1 = "radial-k1";
+}
+
 /// <summary>Nondeterministic resource evidence, kept out of the result identity.</summary>
 public sealed record OpticalCalibrationMetrics(double ElapsedMilliseconds, double AcquisitionMilliseconds,
     double FitMilliseconds, double ValidationMilliseconds);
@@ -118,7 +133,8 @@ public sealed class OpticalCalibrationResult
         IEnumerable<OpticalCalibrationParameter> parameters, IEnumerable<OpticalCalibrationFrameResult> frames,
         IEnumerable<OpticalCalibrationValidation> validations, OpticalCalibrationDiagnostics diagnostics,
         string inputIdentitySha256, string catalogIdentitySha256, string catalogSelectionIdentitySha256,
-        string optionsIdentitySha256, string solverSettingsIdentitySha256, OpticalCalibrationMetrics metrics)
+        string optionsIdentitySha256, string solverSettingsIdentitySha256, OpticalCalibrationMetrics metrics,
+        OpticalCalibrationCovariance? sharedCovariance = null)
     {
         Status = status; ReasonCode = reasonCode; Reason = reason;
         Rejections = Array.AsReadOnly(rejections.ToArray());
@@ -131,7 +147,8 @@ public sealed class OpticalCalibrationResult
         CatalogIdentitySha256 = catalogIdentitySha256; CatalogSelectionIdentitySha256 = catalogSelectionIdentitySha256;
         OptionsIdentitySha256 = optionsIdentitySha256; SolverSettingsIdentitySha256 = solverSettingsIdentitySha256;
         Metrics = metrics;
-        IdentitySha256 = AstrometricIdentity.Hash(new
+        SharedCovariance = sharedCovariance;
+        var core = new
         {
             schema = CurrentSchemaVersion,
             fitter = OpticalCalibrationOptions.FitterVersion,
@@ -151,7 +168,9 @@ public sealed class OpticalCalibrationResult
             CatalogSelectionIdentitySha256,
             OptionsIdentitySha256,
             SolverSettingsIdentitySha256
-        });
+        };
+        // A result without covariance keeps the identity it had before covariance was published.
+        IdentitySha256 = SharedCovariance is null ? AstrometricIdentity.Hash(core) : AstrometricIdentity.Hash(new { core, SharedCovariance });
     }
 
     public OpticalCalibrationStatus Status { get; }
@@ -164,6 +183,9 @@ public sealed class OpticalCalibrationResult
     public ReadOnlyCollection<OpticalCalibrationFrameResult> Frames { get; }
     public ReadOnlyCollection<OpticalCalibrationValidation> Validations { get; }
     public OpticalCalibrationDiagnostics Diagnostics { get; }
+
+    /// <summary>Shared-optics covariance; present only on an accepted result.</summary>
+    public OpticalCalibrationCovariance? SharedCovariance { get; }
 
     /// <summary>
     /// Identity of every offered fit and withheld frame, in order: complete frame context, readout declaration and
