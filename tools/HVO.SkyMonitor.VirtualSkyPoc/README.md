@@ -119,7 +119,9 @@ texture, refraction, occultation, eclipse, flare or bloom is claimed.
 
 `details` produces four additional 1.5-degree perspective-field sensor captures:
 the Sun, the observing-period crescent, and separately dated later lunar phases.
-They are separate VirtualSky captures, not enlarged disks pasted into all-sky
+The October 19 detail is 63% illuminated (waxing gibbous); the accepted run
+retains its earlier `moon-additional-quarter` filename, while subsequent runs
+use the corrected gibbous label. They are separate VirtualSky captures, not enlarged disks pasted into all-sky
 sources. Exposure targets 1,500 electrons per illuminated projected disk pixel
 and is capped at 1 second to respect the existing stellar temporal budget.
 Failed longer-exposure/over-budget attempts remain excluded evidence.

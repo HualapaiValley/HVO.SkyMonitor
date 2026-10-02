@@ -338,7 +338,7 @@ internal static class Program
         {
             ("sun-noon", SolarSystemBody.Sun, LocalDateStart.AddHours(12)),
             ("moon-period-crescent", SolarSystemBody.Moon, LocalDateStart.AddHours(15)),
-            ("moon-additional-quarter", SolarSystemBody.Moon, LocalDateStart.AddDays(7).AddHours(18)),
+            ("moon-additional-gibbous", SolarSystemBody.Moon, LocalDateStart.AddDays(7).AddHours(18)),
             ("moon-additional-full", SolarSystemBody.Moon, LocalDateStart.AddDays(14).AddHours(1))
         };
         var evidence = new List<object>();
