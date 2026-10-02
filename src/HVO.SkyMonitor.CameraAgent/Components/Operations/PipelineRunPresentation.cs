@@ -46,8 +46,18 @@ internal static class PipelineRunPresentation
         if (recipes.Contains("presentation-materialization", StringComparer.Ordinal)) return "Materialize image";
         if (recipes.Contains("presentation-metadata-facts", StringComparer.Ordinal)) return "Environment facts";
         if (recipes.Contains("presentation-layer-payload", StringComparer.Ordinal)) return "Presentation layers";
-        if (node.OutputContracts.Any(static contract => contract.Role == FrameArtifactRole.Preview)) return "Display preview";
-        return node.NodeId;
+        // Several stages legitimately produce a preview. A recorded variant distinguishes them where a
+        // generic role name would collapse two cards into the same label; the node identity is the floor.
+        var variant = node.OutputContracts.Select(static contract => contract.Variant)
+            .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+        return variant is null ? node.NodeId : Prettify(variant);
+    }
+
+    internal static string Prettify(string value)
+    {
+        var words = value.Replace('_', '-').Split('-', StringSplitOptions.RemoveEmptyEntries);
+        var text = string.Join(' ', words);
+        return text.Length == 0 ? value : char.ToUpperInvariant(text[0]) + text[1..];
     }
 
     internal static string Type(CameraAgentProcessingNodeView node) =>

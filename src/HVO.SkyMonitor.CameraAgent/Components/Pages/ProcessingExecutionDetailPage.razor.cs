@@ -34,6 +34,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private TransientStageEvent? _selectedTransient;
     private ElementReference _panel;
     private IJSObjectReference? _module;
+    private Task<IJSObjectReference>? _moduleImport;
     private bool _disposed;
 
     [Parameter] public Guid ExecutionId { get; set; }
@@ -95,6 +96,10 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         ? $"{(bytes / 1_048_576d).ToString("0.##", CultureInfo.InvariantCulture)} MiB"
         : $"{bytes.ToString("N0", CultureInfo.InvariantCulture)} B";
 
+    /// <summary>The recorded retention state of one artifact, distinct from its content availability.</summary>
+    private string RetentionLabel(Guid artifactId) =>
+        _capture?.Detail?.ArtifactStates.FirstOrDefault(state => state.ArtifactId == artifactId)?.RetentionState ?? "Not recorded";
+
     private static StageFact[] StageFacts(CameraAgentProcessingNodeView node)
     {
         var facts = new List<StageFact>();
@@ -128,16 +133,21 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_module is not null || _disposed || _view is null) return;
+        // One in-flight import is shared by every render; overlapping renders must not each
+        // start a new module handle that is then overwritten without being disposed.
+        if (_module is not null || _moduleImport is not null || _disposed || _view is null) return;
+        var import = JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/ProcessingExecutionDetailPage.razor.js").AsTask();
+        _moduleImport = import;
         try
         {
-            var module = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/ProcessingExecutionDetailPage.razor.js");
+            var module = await import.ConfigureAwait(false);
             if (_disposed) await module.DisposeAsync();
             else _module = module;
         }
         catch (JSDisconnectedException) { }
         catch (JSException) { }
         catch (TaskCanceledException) { }
+        finally { _moduleImport = null; }
     }
 
     protected override async Task OnParametersSetAsync() => await RefreshAsync().ConfigureAwait(false);

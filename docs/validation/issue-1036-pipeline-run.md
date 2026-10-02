@@ -3,8 +3,10 @@
 ## Scope and source
 
 Tier B CameraAgent UI/read-projection work, deep independent review for
-authorization and stale-navigation interactions. Base is `639a724a567d27049cdb5779c04bfb0d00539105`
-on `development/v1`. Design authority is the committed
+authorization and stale-navigation interactions. Initial review base and merge-base
+are `24f0ecfd041da866806a578a0512f0f9fed7269d` on `development/v1`; the original
+branch point was `639a724a567d27049cdb5779c04bfb0d00539105` and target integration
+happened before the initial review. Design authority is the committed
 `docs/prototypes/pipeline-operations/index.html`, `app.js`, and `styles.css`.
 The issue's `p-graph.png` is not present in the repository; the actual prototype
 page is used as the reference.
@@ -55,12 +57,13 @@ The operator tried separated routes, then explicitly preferred the original
 single-input/single-output midpoint design and supplied a GitHub Actions graph
 as the connector reference. Final routing therefore retains compact cards,
 curved shared-router paths and one connection point on each side. Shared
-subpaths may coincide; logical dependencies of the same visual class are
-painted in one compound SVG stroke so repeated edges do not build up opacity
-or thickness. Highlighted paths retain the same 1-unit stroke. The intermediate
-separated-routing evidence is retained as rejected design history, not current
-acceptance evidence. Regression checks verify single midpoint fan-out and
-complete dependency accounting in compound strokes.
+subpaths may coincide; every dependency keeps its own path and arrowhead, and
+the de-emphasised style uses an opaque dimmer stroke rather than a translucent
+one so coincident paths cannot stack into a heavier line. Highlighted paths
+retain the same 1-unit stroke. The intermediate separated-routing evidence is
+retained as rejected design history, not current acceptance evidence.
+Regression checks verify single midpoint fan-out, per-dependency arrowheads and
+distinct accessible names.
 
 ## Honest facts and missing capabilities
 

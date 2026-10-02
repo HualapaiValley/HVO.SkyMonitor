@@ -1,6 +1,7 @@
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -344,7 +346,7 @@ public sealed class ProcessingExecutionPagesTests
         cut.FindAll(".run-diagram__node")[1].Click();
         Assert.AreEqual("preview", selected);
         cut.Render(parameters => parameters.Add(component => component.SelectedNodeId, "preview"));
-        Assert.AreEqual(2, cut.FindAll(".run-diagram__edge--highlighted").Sum(static path => int.Parse(path.GetAttribute("data-edge-count")!, System.Globalization.CultureInfo.InvariantCulture)));
+        Assert.HasCount(2, cut.FindAll(".run-diagram__edge--highlighted"));
         cut.Find("button[aria-label='Zoom in']").Click();
         Assert.AreEqual("60%", cut.Find(".run-diagram__zoom").TextContent);
         StringAssert.Contains(cut.Find(".run-diagram").GetAttribute("style")!, "transform:scale(0.6)", StringComparison.Ordinal);
@@ -548,7 +550,7 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
-    public void RunDiagram_CompoundStrokeKeepsLogicalDependenciesWithoutRepeatedPainting()
+    public void RunDiagram_PaintsEveryDependencyWithItsOwnArrowhead()
     {
         using var context = new BunitContext();
         ConfigureDiagram(context);
@@ -562,11 +564,105 @@ public sealed class ProcessingExecutionPagesTests
         };
         var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
             .Add(component => component.Nodes, nodes).Add(component => component.SelectedNodeId, "source"));
-        var path = cut.Find(".run-diagram__edge--highlighted");
-        Assert.AreEqual("2", path.GetAttribute("data-edge-count"));
-        Assert.AreEqual(2, path.GetAttribute("d")!.Count(static character => character == 'M'));
-        Assert.HasCount(1, cut.FindAll(".run-diagram__edge"), "Shared connector geometry is painted in one thin compound stroke.");
+        var paths = cut.FindAll(".run-diagram__edge--highlighted");
+        Assert.HasCount(2, paths, "Each recorded dependency keeps its own path.");
+        foreach (var path in paths)
+            Assert.IsNotNull(path.GetAttribute("marker-end"), "Every dependency path carries its own arrowhead.");
         Assert.HasCount(3, cut.FindAll(".run-diagram__node"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_RecordedLowercaseAcknowledgementIsNotShownAsPending()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        var candidate = Guid.NewGuid();
+        var events = new TransientStageEvent[]
+        {
+            new("relay-pending", candidate, "HandoffPending", "transient_candidates", Now),
+            // SqliteTransientCandidateJournal writes this state in lowercase when it records the acknowledgement.
+            new("central-acknowledged", candidate, "acknowledged", "transient_candidates", Now.AddSeconds(1))
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, [])
+            .Add(component => component.TransientEnabled, true)
+            .Add(component => component.TransientEvents, events));
+        var nodes = cut.FindAll(".run-diagram__transient-node");
+        Assert.IsFalse(nodes[1].ClassList.Contains("run-diagram__transient-node--attention"));
+        StringAssert.Contains(nodes[1].InnerHtml, "status-icon success", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void DetailPage_ShowsRecordedRetentionSeparatelyFromAvailability()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        var capture = OperatorUiTestData.Capture(CaptureId);
+        var artifactId = Guid.NewGuid();
+        capture = capture with
+        {
+            Detail = capture.Detail! with
+            {
+                ArtifactStates = [new CameraAgentGalleryArtifactState(artifactId, "Held", "Available", [])]
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentGalleryCapture>.Success(capture))
+        });
+        var output = new ProcessingGraphExecutionOutputState(0, "identity", artifactId, FrameArtifactRole.Preview, "display", "Missing", "bytes missing", false);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)), "shared", "local",
+                [new("preview", true, "plan", "Completed", null, 1, Now, Now, [], [], [output])])
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement("#run-tab-artifacts");
+        cut.Find("#run-tab-artifacts").Click();
+        var row = cut.Find(".artifact-table-wrap tbody tr");
+        StringAssert.Contains(row.TextContent, "Held", StringComparison.Ordinal);
+        StringAssert.Contains(row.TextContent, "Missing", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void DetailPage_StageEventsUseTheRecordedEndState()
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var failed = new CameraAgentProcessingNodeView("custom-node", true, "plan", "Failed", "recorded failure", 1, Now, Now.AddSeconds(1), [], [], []);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Failed)), "shared", "local", [failed])
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement(".event-log");
+        StringAssert.Contains(cut.Find(".event-log").TextContent, "Failed", StringComparison.Ordinal);
+        StringAssert.DoesNotMatch(cut.Find(".event-log").TextContent, new System.Text.RegularExpressions.Regex(@"\bCompleted\b"));
+    }
+
+    [TestMethod]
+    public void RunDiagram_DescriptionNamesNoDependenciesAndAccessibleNameCarriesNodeId()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        var nodes = new CameraAgentProcessingNodeView[]
+        {
+            new("calibrated-preview", true, "plan", "Completed", null, 1, Now, Now, [], [], [])
+            {
+                OutputContracts = [new ProcessingGraphProductContract(FrameArtifactRole.Preview, "calibrated-preview", ProcessingProductKind.PixelData)]
+            },
+            new("combined-preview", true, "plan", "Completed", null, 1, Now, Now, [], [], [])
+            {
+                OutputContracts = [new ProcessingGraphProductContract(FrameArtifactRole.Preview, "combined-preview", ProcessingProductKind.PixelData)]
+            }
+        };
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters.Add(component => component.Nodes, nodes));
+        var labels = cut.FindAll(".run-diagram__node").Select(static node => node.GetAttribute("aria-label")!).ToArray();
+        Assert.IsTrue(labels[0].Contains("calibrated-preview", StringComparison.Ordinal));
+        Assert.IsTrue(labels[1].Contains("combined-preview", StringComparison.Ordinal));
+        Assert.AreNotEqual(labels[0], labels[1], "Stages that share a role must not share an accessible name.");
+        StringAssert.Contains(cut.Find(".run-diagram [id^='execution-graph-description-']").TextContent, "no dependencies", StringComparison.Ordinal);
     }
 
     [TestMethod]

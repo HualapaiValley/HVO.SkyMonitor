@@ -67,7 +67,7 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         node.Outputs.Any(output => output.Role == contract.Role && output.Variant == contract.Variant)));
 
     private string GraphDescription => string.Join(" ", Nodes.Select(node =>
-        $"{node.NodeId}: {node.Status}; depends on {string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId))}.")) +
+        $"{node.NodeId}: {node.Status}; {(node.Dependencies.Count == 0 ? "no dependencies" : "depends on " + string.Join(", ", node.Dependencies.Select(static dependency => dependency.ProducerId)))}.")) +
         (TransientEnabled ? TransientUnavailable ? " Transient evidence unavailable." : TransientEvents.Count == 0
             ? " No transient stage events recorded." : " Transient milestones: " + string.Join(" ", TransientLanes.Select(lane =>
                 $"{LaneLabel(lane.CandidateId)}: {string.Join(", ", lane.Events.Select(stage => $"{TransientName(stage.StageKey)} {stage.State}"))}."))
@@ -218,7 +218,14 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
     internal static string StageKey(TransientStageEvent stage) => $"{stage.CandidateId}:{stage.StageKey}:{stage.RecordedUtc.ToString("O", CultureInfo.InvariantCulture)}";
     private static int StageRank(string key) => key switch { "frame-staged" => 0, "causal-scan" => 1, "candidate-allocated" => 2, "candidate-persisted" => 3, "event-finalized" or "relay-pending" => 4, "central-acknowledged" => 5, _ => 6 };
     internal static string TransientName(string key) => key switch { "frame-staged" => "Durable frame window", "causal-scan" => "Causal candidate scan", "candidate-allocated" => "Candidate allocated", "candidate-persisted" => "Persist candidate", "event-finalized" => "Retain event evidence", "relay-pending" => "Relay queued", "central-acknowledged" => "Acknowledged", _ => key };
-    private static bool StageSucceeded(TransientStageEvent stage) => stage.State is "succeeded" or "CandidatePersisted" or "Finalized" or "Acknowledged";
+    // Milestone states are free-form strings written by several producers, and the central
+    // acknowledgement writer records the lowercase "acknowledged". Match the recorded vocabulary
+    // case-insensitively so a genuinely recorded success is never shown as pending.
+    private static readonly HashSet<string> SucceededMilestoneStates = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "succeeded", "CandidatePersisted", "Finalized", "Acknowledged"
+    };
+    private static bool StageSucceeded(TransientStageEvent stage) => SucceededMilestoneStates.Contains(stage.State);
     private static string TransientStatus(TransientStageEvent stage) => StageSucceeded(stage) ? "success"
         : stage.State is "not-succeeded" or "quarantined" ? "warning" : "pending";
     private static bool IsRecordedPredecessor(TransientStageEvent previous, TransientStageEvent current) => ((previous.StageKey, current.StageKey) switch
@@ -245,13 +252,7 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         _reference?.Dispose();
     }
     private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int Rank, int Row, int X, int Y);
-    // A compound path is stroked once per visual class. Shared subpaths then stay the same
-    // thin stroke instead of gaining opacity from painting each logical dependency again.
-    private IEnumerable<PaintedEdges> EdgePaintGroups => _edges.GroupBy(EdgeClass)
-        .OrderBy(static group => group.Key.Contains("highlighted", StringComparison.Ordinal))
-        .Select(static group => new PaintedEdges(group.Key, string.Join(" ", group.Select(static edge => edge.Path).Distinct(StringComparer.Ordinal)), group.Count()));
     private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
-    private sealed record PaintedEdges(string Class, string Path, int Count);
     private sealed record PlannedEdge(string? SourceId, string? TargetId, int SourceColumn, int TargetColumn, bool Required);
     private sealed record GraphBand(int X, int Width, string Label);
     private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);

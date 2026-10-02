@@ -11,7 +11,7 @@
                 <button type="button" class="icon-button" @onclick="ZoomOut" aria-label="Zoom out">−</button>
                 <output class="run-diagram__zoom" aria-label="Graph zoom mode">@ZoomPercent%</output>
                 <button type="button" class="icon-button" @onclick="ZoomIn" aria-label="Zoom in">+</button>
-                <button type="button" class="icon-button" @ref="_fullscreenButton" @onclick="ToggleFullscreenAsync" aria-label="@(_fullscreen ? "Exit graph fullscreen" : "Graph fullscreen")" aria-pressed="@_fullscreen.ToString().ToLowerInvariant()"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 2H2v5m11-5h5v5M2 13v5h5m6 0h5v-5" /></svg></button>
+                <button type="button" class="icon-button" @ref="_fullscreenButton" @onclick="ToggleFullscreenAsync" title="@(_fullscreen ? "Exit fullscreen" : "Fullscreen")" aria-label="@(_fullscreen ? "Exit graph fullscreen" : "Graph fullscreen")" aria-pressed="@_fullscreen.ToString().ToLowerInvariant()"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14M10 3l-2.5 2.5M10 3l2.5 2.5M10 17l-2.5-2.5M10 17l2.5-2.5M3 10l2.5-2.5M3 10l2.5 2.5M17 10l-2.5-2.5M17 10l-2.5 2.5" /></svg></button>
             </div>
         </div>
     </header>
@@ -26,9 +26,9 @@
                 <div class="transient-track-band" style="top:@(TransientTop)px"><span><strong>Fireball / transient track</strong><small>Independent durable lane / recorded milestones</small></span></div>
                 <svg class="graph-edges" viewBox="0 0 @Width @Height" aria-hidden="true">
                     <defs><marker id="@ArrowId" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" /></marker></defs>
-                    @foreach (var edge in EdgePaintGroups)
+                    @foreach (var edge in _edges)
                     {
-                        <path class="@edge.Class" d="@edge.Path" data-edge-count="@edge.Count" marker-end="url(#@ArrowId)" />
+                        <path class="@EdgeClass(edge)" d="@edge.Path" marker-end="url(#@ArrowId)" />
                     }
                     @foreach (var edge in TransientEdges)
                     {
@@ -39,7 +39,7 @@
                 @foreach (var item in _layout)
                 {
                     var node = item.Node;
-                    <button type="button" class="@NodeClass(node)" style="left:@(item.X)px;top:@(item.Y)px" data-node-id="@node.NodeId" data-status="@PipelineRunPresentation.StatusClass(node.Status)" aria-pressed="@((SelectedNodeId == node.NodeId).ToString().ToLowerInvariant())" aria-label="@($"{PipelineRunPresentation.Name(node)}: {PipelineRunPresentation.StatusLabel(node.Status)}, {(node.Required ? "required" : "optional")}, {node.Outputs.Count} outputs. Activate for details.")" @onclick="() => NodeSelected.InvokeAsync(node.NodeId)">
+                    <button type="button" class="@NodeClass(node)" style="left:@(item.X)px;top:@(item.Y)px" data-node-id="@node.NodeId" data-status="@PipelineRunPresentation.StatusClass(node.Status)" aria-pressed="@((SelectedNodeId == node.NodeId).ToString().ToLowerInvariant())" aria-label="@($"{PipelineRunPresentation.Name(node)} ({node.NodeId}): {PipelineRunPresentation.StatusLabel(node.Status)}, {(node.Required ? "required" : "optional")}, {node.Outputs.Count} outputs. Activate for details.")" @onclick="() => NodeSelected.InvokeAsync(node.NodeId)">
                         <span class="node-heading"><span class="status-icon @PipelineRunPresentation.StatusClass(node.Status)" aria-hidden="true"></span><span class="node-title"><strong title="@node.NodeId">@PipelineRunPresentation.Name(node)</strong><small title="@PipelineRunPresentation.Type(node)">@PipelineRunPresentation.Type(node)</small></span><span class="node-duration">@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(node))</span></span>
                         <span class="node-footer"><span>@node.Outputs.Count @(node.Outputs.Count == 1 ? "artifact" : "artifacts")</span><span class="requirement @(!node.Required ? "optional" : "")">@(node.Required ? "Required" : "Optional")</span></span>
                     </button>
