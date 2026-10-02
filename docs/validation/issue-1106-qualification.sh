@@ -25,6 +25,7 @@ cd "$repo" || exit 2
 # Untracked, non-ignored files can enter an SDK-style build, so they are refused too.
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo "commit or remove all changes and untracked files before measuring" >&2; exit 2; }
 revision=$(git rev-parse HEAD)
+manifest_sha=$(sha256sum "$manifest" | cut -d' ' -f1) || { echo "could not hash $manifest" >&2; exit 2; }
 mkdir -p "$(dirname "$out")" && mkdir "$out" || { echo "output directory must not exist: $out" >&2; exit 2; }
 mkdir "$out/runs" "$out/reports" || exit 2
 out=$(cd "$out" && pwd -P) || exit 2
@@ -44,8 +45,14 @@ for ((i = 0; i < count; i++)); do
     id=$(jq -r .id <<<"$run"); project=$(jq -r .project <<<"$run"); filter=$(jq -r .filter <<<"$run")
     expected=$(jq -r .expectedPassed <<<"$run"); variable=$(jq -r '.perProcess.variable // empty' <<<"$run")
     class=${filter#*~}; class=${class%%.*}
-    sources=$(git ls-files tests | grep -E "/(${class}|VirtualAstrometryFixture|VirtualAstrometryReference|VirtualAstrometryPixels)\.cs$" |
-        while read -r file; do jq -n --arg path "$file" --arg blob "$(git rev-parse "HEAD:$file")" '{path: $path, blob: $blob}'; done | jq -s .) || fatal "could not record harness sources for $id"
+    files=$(git ls-files tests | grep -E "/(${class}|VirtualAstrometryFixture|VirtualAstrometryReference|VirtualAstrometryPixels)\.cs$") ||
+        fatal "no harness sources found for $id"
+    sources='[]'
+    while read -r file; do
+        blob=$(git rev-parse "HEAD:$file") || fatal "could not resolve $file"
+        sources=$(jq --arg path "$file" --arg blob "$blob" '. + [{path: $path, blob: $blob}]' <<<"$sources") ||
+            fatal "could not record harness sources for $id"
+    done <<<"$files"
     mapfile -t values < <(if [[ -n "$variable" ]]; then jq -r '.perProcess.values[]' <<<"$run"; else echo ""; fi)
     for value in "${values[@]}"; do
         name=$id${value:+-$value}; dir="$out/runs/$name"; mkdir -p "$dir"
@@ -60,7 +67,8 @@ for ((i = 0; i < count; i++)); do
             dotnet test "$project" --no-build --no-restore --configuration Release --filter "$filter" \
             --results-directory "$dir" --logger "trx;LogFileName=run.trx" >"$dir/test.log" 2>&1
         rc=$?; finished=$(utc); elapsed=$((SECONDS - seconds))
-        trx=$(find "$dir" -name run.trx -print -quit)
+        trx=$(find "$dir" -name run.trx -print -quit); trx_sha=
+        [[ -z "$trx" ]] || trx_sha=$(sha256sum "$trx" | cut -d' ' -f1) || fatal "could not hash $trx"
         counters=$( [[ -n "$trx" ]] && grep -o '<Counters [^>]*>' "$trx" | head -1 )
         attr() { sed -n "s/.* $1=\"\\([0-9]*\\)\".*/\\1/p" <<<"$counters"; }
         total=$(attr total); executed=$(attr executed); passed=$(attr passed); failures=$(attr failed)
@@ -86,7 +94,7 @@ for ((i = 0; i < count; i++)); do
         results=$(jq --arg id "$id" --arg name "$name" --arg value "$value" --arg status "$status" --arg started "$started" --arg finished "$finished" \
             --argjson elapsed "$elapsed" --argjson rc "$rc" --arg total "${total:-}" --arg executed "${executed:-}" --arg passed "${passed:-}" \
             --arg failures "${failures:-}" --argjson expected "$expected" --argjson reports "$reports" --argjson sources "$sources" \
-            --arg trx "$( [[ -n "$trx" ]] && sha256sum "$trx" | cut -d' ' -f1 )" \
+            --arg trx "$trx_sha" \
             '. + [{id: $id, name: $name, workload: (if $value == "" then null else $value end), status: $status, startedUtc: $started,
                 finishedUtc: $finished, elapsedSeconds: $elapsed, exitCode: $rc, expectedPassed: $expected,
                 trx: {sha256: $trx, total: $total, executed: $executed, passed: $passed, failed: $failures},
@@ -94,16 +102,21 @@ for ((i = 0; i < count; i++)); do
     done
 done
 
-jq -n --arg revision "$revision" --arg manifest "$(sha256sum "$manifest" | cut -d' ' -f1)" --argjson host "$host" \
+jq -n --arg revision "$revision" --arg manifest "$manifest_sha" --argjson host "$host" \
     --argjson runs "$results" --arg status "$([[ $failed -eq 0 ]] && echo passed || echo failed)" \
     '{schema: "virtual-astrometry-final-qualification-index-v1", issue: 1106, revision: $revision, manifestSha256: $manifest,
       status: $status, host: $host, runs: $runs}' >"$out/index.json" || fatal "could not write $out/index.json"
-# The index must name every manifest process, and a passed index must hash every declared report.
-jq -e --slurpfile m "$manifest" --arg revision "$revision" '
+# The index must name the measured revision and manifest hash and every manifest process, record each run's
+# harness source blobs, and, when passed, carry a well-formed TRX hash for every run and a hash for every report.
+jq -e --slurpfile m "$manifest" --arg revision "$revision" --arg manifest "$manifest_sha" '
+    def sha256: type == "string" and test("^[0-9a-f]{64}$");
     ([$m[0].runs[] | (.perProcess.values // [null]) | length] | add) as $processes
     | ([$m[0].runs[] | ((.perProcess.values // [null]) | length) * (.reports | length)] | add) as $reports
-    | .revision == $revision and (.runs | length) == $processes
-      and (.status != "passed" or ([.runs[].reports[] | select(.sha256 != null)] | length) == $reports)' \
+    | .revision == $revision and .manifestSha256 == $manifest and ($manifest | sha256) and (.runs | length) == $processes
+      and all(.runs[]; (.harnessSources | length) > 0 and all(.harnessSources[]; .blob | test("^[0-9a-f]{40}$")))
+      and (.status != "passed"
+           or (all(.runs[]; .trx.sha256 | sha256)
+               and ([.runs[].reports[] | select(.sha256 | sha256)] | length) == $reports))' \
     "$out/index.json" >/dev/null || fatal "index $out/index.json does not cover the manifest"
 echo "index $out/index.json status=$(jq -r .status "$out/index.json")"
 exit $failed

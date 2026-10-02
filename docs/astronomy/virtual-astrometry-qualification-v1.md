@@ -39,7 +39,8 @@ only. It makes no claim about physical accuracy, and the hardware evidence it do
   run unless the TRX shows exactly the expected tests executed and passed with none failed. A filter that selects
   nothing is a failure, never a skip. The committed runner also refuses untracked files and any existing output
   directory, resolves a relative output path before it changes directory, treats any failure to copy, hash or
-  index evidence as fatal, and validates the final index against the manifest. Those safeguards were added after
+  index evidence as fatal, and validates the final index against the manifest: revision, manifest hash, every
+  process, each run's harness blob ids, and well-formed TRX and report hashes. Those safeguards were added after
   the measured run, in response to review, and change no test or measurement. The pack below was produced by the
   `9061c8f7` runner. None of the conditions they guard against occurred: the tree was clean with no untracked
   files, the output path was absolute and new, and the retained index passes the same manifest check.
@@ -184,7 +185,7 @@ a 4× limit (#1103: 3.58); v2 allocated at most 51.8 bytes per sample. Peak work
 
 Every recovery error, fit diagnostic, withheld score and omitted-distortion outcome is identical to the
 [#1104 report](session-optical-calibration-v1.md):
-- Focal error at most 3.0e-5, principal point within 0.0083 px, k1 within 1.85e-5, intrinsic map within 0.0144 px.
+- Focal error at most 3.0e-5, principal point within 0.0083 px, k1 within 1.85e-5, intrinsic map within 0.0145 px.
 - Withheld RMS at most 0.013 px with precision 1.
 - Omitted k1 rejected on both distorted cases and accepted on the undistorted one.
 
