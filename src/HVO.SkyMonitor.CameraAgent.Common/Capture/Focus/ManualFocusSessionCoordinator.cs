@@ -348,11 +348,18 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         var failures = 0;
         var endState = ManualFocusSessionState.Stopped;
         string? endReason = null;
+        long? previousStart = null;
         try
         {
             while (true)
             {
                 token.ThrowIfCancellationRequested();
+                if (previousStart is { } started &&
+                    _limits.MinimumSamplePeriod - _timeProvider.GetElapsedTime(started) is { Ticks: > 0 } remaining)
+                {
+                    await Task.Delay(remaining, _timeProvider, token).ConfigureAwait(false);
+                }
+                previousStart = _timeProvider.GetTimestamp();
                 ManualFocusPreviewSettings settings;
                 double? position;
                 PixelPoint? target, hint;

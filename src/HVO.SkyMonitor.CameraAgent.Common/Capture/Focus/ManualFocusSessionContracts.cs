@@ -49,7 +49,11 @@ public enum ManualFocusTargetSource
 /// <summary>A bounded, temporary preview exposure and gain. It is never written to the active rig profile.</summary>
 public sealed record ManualFocusPreviewSettings(TimeSpan Exposure, double Gain);
 
-/// <summary>Declared bounds for a manual focus session, validated before a session starts or changes.</summary>
+/// <summary>
+/// Declared bounds for a manual focus session, validated before a session starts or changes.
+/// <see cref="MinimumSamplePeriod"/> paces a camera that returns sooner than an operator can act on a sample, such as
+/// VirtualSky, which renders without waiting out its exposure.
+/// </summary>
 public sealed record ManualFocusSessionLimits(
     TimeSpan MinimumExposure,
     TimeSpan MaximumExposure,
@@ -61,7 +65,8 @@ public sealed record ManualFocusSessionLimits(
     TimeSpan SampleDeadlineGrace,
     TimeSpan ObserverTimeout,
     int MaximumConsecutiveFailures,
-    TimeSpan StopWaitTimeout)
+    TimeSpan StopWaitTimeout,
+    TimeSpan MinimumSamplePeriod)
 {
     public static ManualFocusSessionLimits Default { get; } = new(
         TimeSpan.FromMilliseconds(1),
@@ -74,7 +79,8 @@ public sealed record ManualFocusSessionLimits(
         TimeSpan.FromSeconds(30),
         TimeSpan.FromSeconds(30),
         3,
-        TimeSpan.FromSeconds(15));
+        TimeSpan.FromSeconds(15),
+        TimeSpan.FromMilliseconds(500));
 }
 
 /// <summary>One authorized request to begin a continuous manual focus loop.</summary>

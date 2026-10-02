@@ -21,13 +21,15 @@ public sealed class ManualFocusSessionCoordinatorTests
     private static ManualFocusSessionLimits Limits(
         int historyCapacity = 100,
         TimeSpan? observerTimeout = null,
-        TimeSpan? sampleDeadlineGrace = null)
+        TimeSpan? sampleDeadlineGrace = null,
+        TimeSpan? minimumSamplePeriod = null)
         => ManualFocusSessionLimits.Default with
         {
             HistoryCapacity = historyCapacity,
             MinimumSafetyTimeout = TimeSpan.FromMilliseconds(50),
             ObserverTimeout = observerTimeout ?? TimeSpan.FromMinutes(5),
-            SampleDeadlineGrace = sampleDeadlineGrace ?? TimeSpan.FromSeconds(30)
+            SampleDeadlineGrace = sampleDeadlineGrace ?? TimeSpan.FromSeconds(30),
+            MinimumSamplePeriod = minimumSamplePeriod ?? TimeSpan.Zero
         };
 
     [TestMethod]
@@ -140,6 +142,37 @@ public sealed class ManualFocusSessionCoordinatorTests
             new[] { snapshot.TotalSamples - 2, snapshot.TotalSamples - 1, snapshot.TotalSamples },
             snapshot.History.Select(static sample => sample.Sequence).ToArray());
         Assert.IsNotNull(snapshot.Best);
+    }
+
+    [TestMethod]
+    public async Task MinimumSamplePeriod_PacesAnInstantCameraAndStopInterruptsTheWait()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var fixtureScope = fixture.ConfigureAwait(false);
+        await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System,
+            Limits(minimumSamplePeriod: TimeSpan.FromMilliseconds(400)));
+        var sinceStart = System.Diagnostics.Stopwatch.StartNew();
+        var session = await coordinator.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
+
+        await FocusWait.UntilAsync(coordinator, static s => s.TotalSamples >= 3, "three samples").ConfigureAwait(false);
+        var toThirdSample = sinceStart.Elapsed;
+        await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        using var slow = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System,
+            Limits(minimumSamplePeriod: TimeSpan.FromMinutes(10)));
+        var waiting = await slow.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
+        await FocusWait.UntilAsync(slow, static s => s.TotalSamples >= 1, "the first sample").ConfigureAwait(false);
+        var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopped = await slow.StopAsync(waiting.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        stopWatch.Stop();
+
+        // The third exposure cannot begin before two periods have passed since the first; unpaced VirtualSky takes ~0.15 s.
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800), toThirdSample);
+        Assert.AreEqual(ManualFocusReasonCodes.StoppedByOperator, stopped.EndReason);
+        Assert.AreEqual(1, stopped.TotalSamples, "No exposure is taken while the loop waits out its period.");
+        Assert.IsLessThan(TimeSpan.FromSeconds(5), stopWatch.Elapsed, "Stop must not wait out the sample period.");
+        Assert.IsTrue(await fixture.Ownership.RevokeAsync(TimeSpan.Zero).ConfigureAwait(false),
+            "No module lease outlives a session stopped during its wait.");
     }
 
     [TestMethod]

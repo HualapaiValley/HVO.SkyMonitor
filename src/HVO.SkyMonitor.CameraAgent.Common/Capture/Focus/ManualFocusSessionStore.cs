@@ -46,7 +46,10 @@ public sealed record ManualFocusSessionRecordSummary(
     double? BestHalfFluxDiameterPixels,
     string? ModuleType,
     string? FidelityKind,
-    bool QualifiesPhysicalFocus);
+    bool QualifiesPhysicalFocus,
+    ManualFocusPreviewSettings? BestSettings = null,
+    ManualFocusTargetSource? BestTargetSource = null,
+    double? BestSimulatedFocusPosition = null);
 
 /// <summary>A verified record and its exact stored bytes, for authorized export.</summary>
 public sealed record ManualFocusSessionRecordContent(ManualFocusSessionRecordSummary Summary, ManualFocusSessionRecord Record, ReadOnlyMemory<byte> Utf8Json);
@@ -231,7 +234,8 @@ public sealed class ManualFocusSessionStore : IManualFocusSessionStore, IDisposa
         var session = record.Session;
         return new(record.RecordId, true, sha256, bytes, record.SavedUtc, record.SavedBy, session.State,
             session.TotalSamples, session.Best?.Measurement.HalfFluxDiameterPixels, session.ModuleType,
-            session.Fidelity?.Kind, session.Fidelity?.QualifiesPhysicalFocus ?? false);
+            session.Fidelity?.Kind, session.Fidelity?.QualifiesPhysicalFocus ?? false, session.Best?.Settings,
+            session.Best?.TargetSource, session.Best?.SimulatedFocusPosition);
     }
 
     private void Prune(PhysicalRoot root, string directory)

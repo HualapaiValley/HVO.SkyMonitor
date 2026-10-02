@@ -1,7 +1,8 @@
 /* Focus layout, ported from the prototype .focus-* and .ops-step rules in
-   docs/prototypes/pipeline-operations/operations-pages.css. The viewer has no image because this CameraAgent
-   takes no focus previews; the reticle and target label keep the prototype's slot. The shared Operations
-   vocabulary (.ops-*, .button, .state-chip) lives in OperationsLayout.razor.css. */
+   docs/prototypes/pipeline-operations/operations-pages.css. The viewer shows the measured star crop with the reticle on
+   the measured centroid, or the whole preview frame for picking a target; both images keep their exact aspect so a
+   percentage position is a source-pixel position. The shared Operations vocabulary (.ops-*, .button, .state-chip)
+   lives in OperationsLayout.razor.css. */
 
 .focus-boundary { margin-bottom: .8rem; padding: .7rem .8rem; border: 1px solid rgba(210, 153, 34, .38); border-left: 3px solid var(--amber); border-radius: .45rem; color: var(--muted-strong); background: var(--amber-soft); font-size: .62rem; line-height: 1.45; }
 .focus-boundary strong { color: #f1c96f; }
@@ -33,6 +34,35 @@
 .focus-controls :disabled { color: var(--muted); cursor: not-allowed; }
 .focus-history-empty td { color: var(--muted); text-align: center; }
 
+.focus-fidelity, .focus-message { margin-bottom: .8rem; }
+.focus-star { display: grid; place-items: center; padding: 1rem; }
+.focus-star-frame { position: relative; height: min(26rem, 100%); max-width: 100%; }
+.focus-star-frame img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.focus-star-frame .focus-reticle { width: 34%; height: auto; aspect-ratio: 1; box-shadow: none; }
+.focus-star .focus-target-label { top: auto; bottom: .75rem; }
+.focus-field { flex: none; min-height: 0; cursor: crosshair; }
+.focus-field img { display: block; width: 100%; height: auto; }
+.focus-field .focus-target-label { top: auto; bottom: .6rem; }
+.focus-field-marker { position: absolute; width: 1.6rem; height: 1.6rem; border: 2px solid var(--blue); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+.focus-catalog-star { position: absolute; width: 1.1rem; height: 1.1rem; padding: 0; border: 1px solid rgba(241, 201, 111, .85); border-radius: 50%; background: transparent; transform: translate(-50%, -50%); cursor: pointer; }
+.focus-catalog-star:hover, .focus-catalog-star:focus-visible { border-width: 2px; outline: none; box-shadow: 0 0 0 3px rgba(241, 201, 111, .3); }
+.focus-catalog-star:disabled { cursor: not-allowed; opacity: .55; }
+.focus-viewer-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.focus-trend .line { fill: none; stroke: var(--blue); stroke-width: 2; }
+.focus-trend circle { fill: #07101a; stroke: var(--blue); stroke-width: 1.5; }
+.focus-trend circle.best { stroke: var(--green); }
+.focus-sample-detail, .focus-best { margin: .35rem 0 0; color: var(--muted-strong); font-size: .58rem; line-height: 1.4; }
+.focus-sample-detail.invalid { color: #f1c96f; }
+.focus-help { margin: 0; color: var(--muted); font-size: .55rem; line-height: 1.4; }
+.focus-simulated { display: grid; gap: .4rem; min-width: 0; margin: 0; padding: .6rem; border: 1px dashed var(--border); border-radius: .4rem; }
+.focus-simulated legend { padding: 0 .3rem; color: var(--muted-strong); font-size: .58rem; }
+.focus-simulated legend small { display: block; color: var(--muted); font-size: .52rem; }
+.focus-simulated-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; gap: .3rem; }
+.focus-simulated-row input { width: 100%; min-width: 0; min-height: 2rem; padding: .3rem .4rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text); background: var(--surface); font: inherit; font-size: .64rem; }
+.focus-record { padding: 0; border: 0; color: var(--blue); background: none; font: inherit; text-align: left; cursor: pointer; }
+.focus-record:disabled { color: var(--muted); cursor: not-allowed; }
+.ops-table-wrap .ops-table tr.selected td { background: rgba(88, 166, 255, .08); }
+
 .ops-step-list { counter-reset: focus-step; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
 .ops-step { position: relative; min-height: 7rem; padding: .7rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); }
 .ops-step::before { counter-increment: focus-step; content: counter(focus-step, decimal-leading-zero); display: block; margin-bottom: .65rem; color: var(--blue); font: 750 .55rem ui-monospace, monospace; }
@@ -51,10 +81,17 @@
 
 @media (max-width: 480px) {
     .focus-image { min-height: 22rem; }
+    .focus-field { min-height: 0; }
+    .focus-star-frame { height: min(18rem, 100%); }
     .ops-step-list { grid-template-columns: 1fr; }
     .focus-controls { grid-template-columns: 1fr; }
+    /* The position takes its own row so the four nudge buttons share a 320px phone without clipping. */
+    .focus-simulated-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .focus-simulated-row input { grid-column: 1 / -1; grid-row: 1; }
+    .focus-simulated-row .button { min-width: 0; }
     /* Five column headings fit a 320px phone without scrolling the empty table. The wrapper and both table
        classes outrank the shared .operations-layout ::deep .ops-table rules. */
     .ops-table-wrap .ops-table.focus-history-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
     .ops-table-wrap .ops-table.focus-history-table td { padding-inline: .3rem; }
+    .ops-table-wrap .ops-table.focus-samples-table th, .ops-table-wrap .ops-table.focus-samples-table td { padding-inline: .3rem; font-size: .55rem; }
 }
