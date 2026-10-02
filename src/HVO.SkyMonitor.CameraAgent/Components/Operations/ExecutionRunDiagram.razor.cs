@@ -11,8 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposable
 {
     private const int NodeWidth = 204;
-    private const int NodeHeight = 100;
-    private const int ColumnGap = 56;
+    private int NodeHeight { get; set; } = 100;
+    private int ColumnGap { get; set; } = 56;
     private const int RowGap = 32;
     private const int Margin = 28;
     private const int HeaderHeight = 64;
@@ -21,7 +21,7 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
     private List<PlacedNode> _layout = [];
     private List<GraphEdge> _edges = [];
     private List<GraphBand> _bands = [];
-    private int _rowsEnd = HeaderHeight + NodeHeight;
+    private int _rowsEnd = HeaderHeight + 100;
     private int _sourceRow;
     private double _zoom = 0.5;
     private bool _fit = true;
@@ -88,6 +88,28 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
             return ranks[id] = rank;
         }
         foreach (var node in Nodes) Rank(node.NodeId);
+        var rankCount = ranks.Values.Select(static rank => rank + 1).DefaultIfEmpty().Max();
+        var publication = rankCount + 1;
+        var planned = new List<PlannedEdge>();
+        foreach (var node in Nodes)
+        {
+            foreach (var dependency in node.Dependencies)
+            {
+                if (dependency.ProducerId == "$raw")
+                    planned.Add(new(null, node.NodeId, 0, ranks[node.NodeId] + 1, dependency.Required));
+                else if (ranks.TryGetValue(dependency.ProducerId, out var sourceRank) && sourceRank < ranks[node.NodeId])
+                    planned.Add(new(dependency.ProducerId, node.NodeId, sourceRank + 1, ranks[node.NodeId] + 1, dependency.Required));
+            }
+            if (node.Outputs.Any(static output => output.Published))
+                planned.Add(new(node.NodeId, null, ranks[node.NodeId] + 1, publication, true));
+        }
+        var maximumPorts = planned.GroupBy(static edge => edge.SourceId ?? "$raw").Select(static group => group.Count()).DefaultIfEmpty().Max()
+            + planned.GroupBy(static edge => edge.TargetId ?? "$publication").Select(static group => group.Count()).DefaultIfEmpty().Max();
+        NodeHeight = Math.Max(100, (int)((maximumPorts - 1) * PipelineEdgeRouter.SeparatedLaneSpacing + 24));
+        var turnCounts = planned.Where(static edge => edge.TargetColumn > edge.SourceColumn + 1)
+            .SelectMany(static edge => new[] { edge.SourceColumn, edge.TargetColumn - 1 })
+            .GroupBy(static gap => gap).Select(static group => group.Count());
+        ColumnGap = Math.Max(56, (int)((turnCounts.DefaultIfEmpty().Max() - 1) * PipelineEdgeRouter.SeparatedLaneSpacing + 32));
         var counts = ranks.Values.GroupBy(static rank => rank).ToDictionary(static group => group.Key, static group => group.Count());
         var rowCount = Math.Max(1, counts.Values.DefaultIfEmpty(1).Max());
         _sourceRow = rowCount / 2;
@@ -102,29 +124,20 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         }
         _bands = [new(0, EdgeX, "Camera and acquisition"), new(EdgeX, PublicationX - EdgeX, "Edge processing"),
             new(PublicationX, LogicHostX - PublicationX, "Durable publication"), new(LogicHostX, NodeWidth + Margin, "LogicHost")];
-        var rankCount = _layout.Select(static item => item.Rank + 1).DefaultIfEmpty().Max();
-        var publication = rankCount + 1;
         var tracks = new List<GraphTrack> { new(Margin, NodeWidth) };
         tracks.AddRange(Enumerable.Range(0, rankCount).Select(rank => new GraphTrack(EdgeX + rank * (NodeWidth + ColumnGap), NodeWidth)));
         tracks.Add(new(PublicationX, NodeWidth));
-        var rows = Enumerable.Range(0, rowCount).Select(static row => new GraphTrack(HeaderHeight + row * (NodeHeight + RowGap), NodeHeight)).ToArray();
+        var rows = Enumerable.Range(0, rowCount).Select(row => new GraphTrack(HeaderHeight + row * (NodeHeight + RowGap), NodeHeight)).ToArray();
         var occupied = _layout.Select(static item => (item.Rank + 1, item.Row)).Append((0, _sourceRow)).Append((publication, _sourceRow));
         var router = new PipelineEdgeRouter(tracks, rows, RowGap, occupied);
         var positions = _layout.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
-        _edges = [];
-        foreach (var target in _layout)
-        {
-            foreach (var dependency in target.Node.Dependencies)
-            {
-                var highlighted = target.Node.NodeId == SelectedNodeId;
-                if (dependency.ProducerId == "$raw")
-                    _edges.Add(new(PipelineEdgeRouter.Path(router.Route(0, _sourceRow, target.Rank + 1, target.Row)), dependency.Required, highlighted));
-                else if (positions.TryGetValue(dependency.ProducerId, out var source) && source.Rank < target.Rank)
-                    _edges.Add(new(PipelineEdgeRouter.Path(router.Route(source.Rank + 1, source.Row, target.Rank + 1, target.Row)), dependency.Required, highlighted || source.Node.NodeId == SelectedNodeId));
-            }
-        }
-        foreach (var source in _layout.Where(static item => item.Node.Outputs.Any(static output => output.Published)))
-            _edges.Add(new(PipelineEdgeRouter.Path(router.Route(source.Rank + 1, source.Row, publication, _sourceRow)), true, source.Node.NodeId == SelectedNodeId));
+        var connections = planned.Select(edge => new GraphConnection(edge.SourceColumn,
+            edge.SourceId is null ? _sourceRow : positions[edge.SourceId].Row,
+            edge.TargetColumn, edge.TargetId is null ? _sourceRow : positions[edge.TargetId].Row)).ToArray();
+        var routes = router.RouteSeparated(connections);
+        _edges = planned.Select((edge, index) => new GraphEdge(PipelineEdgeRouter.SeparatedPath(routes[index]), edge.Required,
+            (SelectedNodeId is not null && (edge.SourceId == SelectedNodeId || edge.TargetId == SelectedNodeId)),
+            routes[index][0], routes[index][^1])).ToList();
         _rowsEnd = (int)Math.Ceiling(router.Rows[^1].End);
         ApplyFit();
     }
@@ -242,7 +255,8 @@ public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposabl
         _reference?.Dispose();
     }
     private sealed record PlacedNode(CameraAgentProcessingNodeView Node, int Rank, int Row, int X, int Y);
-    private sealed record GraphEdge(string Path, bool Required, bool Highlighted);
+    private sealed record GraphEdge(string Path, bool Required, bool Highlighted, GraphPoint Source, GraphPoint Target);
+    private sealed record PlannedEdge(string? SourceId, string? TargetId, int SourceColumn, int TargetColumn, bool Required);
     private sealed record GraphBand(int X, int Width, string Label);
     private sealed record TransientLane(Guid? CandidateId, int Y, IReadOnlyList<TransientStageEvent> Events);
 }

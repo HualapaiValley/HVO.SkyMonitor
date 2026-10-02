@@ -31,10 +31,12 @@
 .graph-edges .run-diagram__edge--highlighted { stroke:var(--blue); stroke-width:1; opacity:1; }
 .graph-edges .run-diagram__transient-edge { fill:none; stroke:#a78bd8; stroke-width:1; }
 .graph-edges marker path { fill:#7b90ad; stroke:none; }
-.graph-node { box-sizing:border-box; position:absolute; z-index:2; display:grid; width:204px; height:100px; grid-template-rows:1fr auto; padding:.85rem .85rem .65rem; border:1px solid #35455a; border-radius:.5rem; color:var(--text); background:linear-gradient(145deg,#121d2b,#0d1520); box-shadow:0 10px 24px rgba(0,0,0,.25); cursor:pointer; text-align:left; }
+.graph-edges .edge-port { fill:#0a1019; stroke:#53657c; stroke-width:1; }
+.graph-node { box-sizing:border-box; position:absolute; z-index:2; display:grid; width:204px; height:var(--node-height,100px); grid-template-rows:1fr auto; padding:.85rem .85rem .65rem; border:1px solid #35455a; border-radius:.5rem; color:var(--text); background:linear-gradient(145deg,#121d2b,#0d1520); box-shadow:0 10px 24px rgba(0,0,0,.25); cursor:pointer; text-align:left; }
 .graph-node::before,.graph-node::after { position:absolute; top:calc(50% - 4px); width:8px; height:8px; border:2px solid #53657c; border-radius:50%; background:#0a1019; content:""; }
 .graph-node::before { left:-6px; }
 .graph-node::after { right:-6px; }
+.run-diagram__node::before,.run-diagram__node::after,.boundary-node::before,.boundary-node::after { display:none; }
 .graph-node:hover { border-color:#5b708d; }
 .graph-node.selected { border-color:var(--blue); box-shadow:0 0 0 2px rgba(88,166,255,.2),0 14px 30px rgba(0,0,0,.32); }
 .graph-node.selected::before,.graph-node.selected::after { border-color:var(--blue); }

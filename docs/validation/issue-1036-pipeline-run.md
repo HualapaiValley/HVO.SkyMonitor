@@ -51,6 +51,17 @@ observed. Operator requested thinner connectors because selected blue routes
 merged visually; all paths now use a 1-native-unit stroke, selection by color
 rather than added thickness, and matching thin legend samples.
 
+The operator then identified routes still stacked on top of one another. The
+shared router's opt-in whole-edge-set mode now reserves distinct horizontal
+channels, vertical turns and incoming/outgoing port slots. It never cycles
+through five lanes or shares a trunk by source. Rows and column gaps expand to
+provide 8 native units between overlapping extents (4 displayed pixels at 50%).
+Other graph consumers continue to use the router's existing mode. On the same
+capture, `separated-routes.json` records 48 edges, all computed 1px strokes,
+180 straight segments, and zero collinear overlap between different edges.
+Focused regression verifies card avoidance and lane/port/turn separation, plus
+rejection of insufficient reserved space rather than silently overlapping.
+
 ## Honest facts and missing capabilities
 
 The run shows captured graph revision, recorded trigger/acceptance time, actual
@@ -77,7 +88,8 @@ disconnects graph observation/fullscreen callbacks.
 ## Validation
 
 - Debug CameraAgent warning-clean build: zero warnings/errors.
-- Focused execution/router/service/gallery tests: 75 passed, no skips.
+- Focused execution/router/service/gallery tests: 75 passed before the two
+  separated-routing regressions; final affected totals are recorded in the ledger.
 - Dedicated Manual `OwnerPipelineRunPresentationAcceptanceAsync`: one passed,
   no skips in Release. It starts a genuine VirtualSky fixture run, then checks
   1440/390/320 overflow, native keyboard node/tab behavior, measured fullscreen,
@@ -89,7 +101,7 @@ disconnects graph observation/fullscreen callbacks.
   retries after execution data exists, and the dedicated run test waits for the
   graph's actual interop readiness.
 - Candidate gates are selected by `scripts/ci:classify` and recorded with exact
-  head/commands in the issue/PR ledger. Four new Unit methods and one Manual
+  head/commands in the issue/PR ledger. Six new Unit methods and one Manual
   method are aligned with owning test inventories and the runbook totals.
 
 ## Runtime and acceptance

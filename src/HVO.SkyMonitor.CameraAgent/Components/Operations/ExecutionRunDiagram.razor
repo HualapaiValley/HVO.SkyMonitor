@@ -17,7 +17,7 @@
     </header>
     <div class="run-diagram__scroll graph-viewport" @ref="_viewport" tabindex="0" aria-label="Scrollable pipeline dependency graph">
         <div class="graph-scale" style="@ScaleSizeStyle">
-            <div class="graph-canvas run-diagram" style="@GraphSizeStyle" role="group" aria-labelledby="@TitleId @DescriptionId">
+            <div class="graph-canvas run-diagram" style="@($"{GraphSizeStyle}--node-height:{NodeHeight}px;")" role="group" aria-labelledby="@TitleId @DescriptionId">
                 <span id="@TitleId" class="visually-hidden">Execution dependency graph</span><span id="@DescriptionId" class="visually-hidden">@GraphDescription</span>
                 @foreach (var band in _bands)
                 {
@@ -29,6 +29,7 @@
                     @foreach (var edge in _edges)
                     {
                         <path class="@EdgeClass(edge)" d="@edge.Path" marker-end="url(#@ArrowId)" />
+                        <circle class="edge-port" cx="@edge.Source.X" cy="@edge.Source.Y" r="3" /><circle class="edge-port" cx="@edge.Target.X" cy="@edge.Target.Y" r="3" />
                     }
                     @foreach (var edge in TransientEdges)
                     {
