@@ -65,6 +65,8 @@ internal static class ManualFocusPreviewMeasurement
                 FocusStarReasonCodes.Saturated => (FocusStarStatus.Saturated, FocusStarReasonCodes.Saturated),
                 FocusStarReasonCodes.BackgroundUnavailable =>
                     (FocusStarStatus.BackgroundUnavailable, FocusStarReasonCodes.BackgroundUnavailable),
+                FocusStarReasonCodes.CrowdedAutomaticTarget =>
+                    (FocusStarStatus.NoStar, FocusStarReasonCodes.CrowdedAutomaticTarget),
                 _ => (FocusStarStatus.NoStar,
                     hint is null ? FocusStarReasonCodes.NoCandidate : FocusStarReasonCodes.NoCandidateNearSelection)
             };

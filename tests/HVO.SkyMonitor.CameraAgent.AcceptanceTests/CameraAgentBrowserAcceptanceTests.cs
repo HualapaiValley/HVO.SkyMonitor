@@ -144,7 +144,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
         await page.Locator("#focus-exposure").FillAsync("soon").ConfigureAwait(false);
         await page.Locator("#focus-sample").ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".focus-message[role='alert']")).ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#focus-settings-error[role='alert']")).ConfigureAwait(false);
         await page.ScreenshotAsync(new() { Path = Path.Combine(output, "focus-error-1440.png"), FullPage = true })
             .ConfigureAwait(false);
         await page.Locator("#focus-exposure").FillAsync("1s").ConfigureAwait(false);

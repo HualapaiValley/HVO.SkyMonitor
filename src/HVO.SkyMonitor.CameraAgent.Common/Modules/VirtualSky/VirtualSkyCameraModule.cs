@@ -555,6 +555,9 @@ public sealed class VirtualSkyCameraModule(
             extra["focusPreviewFidelity"] = focusModel is null ? "virtual-fixed-psf" : "virtual-simulated-defocus";
             extra["psfSigmaPixels"] = psfSigmaPixels.ToString("R", CultureInfo.InvariantCulture);
             extra["psfRadiusPixels"] = psfRadiusPixels.ToString("R", CultureInfo.InvariantCulture);
+            extra["psfBaseSigmaPixels"] = _options.PsfSigmaPixels.ToString("R", CultureInfo.InvariantCulture);
+            extra["psfBaseRadiusPixels"] = _options.PsfRadiusPixels.ToString("R", CultureInfo.InvariantCulture);
+            extra["simulatedFocusEnabled"] = SimulatedFocusOptions.Enabled.ToString();
         }
         if (focusModel is not null)
         {

@@ -25,6 +25,38 @@ public sealed class CameraAgentFocusUiServiceTests
         [CameraAgentAuthorizationPolicyNames.OperationsReadV1, CameraAgentAuthorizationPolicyNames.OperationsMutateV1];
 
     [TestMethod]
+    public async Task StatusDuringContinuousPublication_PairsTheLatestMeasurementAndItsImages()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var fixtureScope = fixture.ConfigureAwait(false);
+        await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        using var store = new ManualFocusSessionStore(fixture.Root);
+        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System,
+            ManualFocusSessionLimits.Default with { MinimumSamplePeriod = TimeSpan.Zero }, store);
+        var service = Service(coordinator, store, User("alice"), Operator);
+        var started = await service.StartAsync(Request, CancellationToken.None).ConfigureAwait(false);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var reads = 0;
+        long observed = 0;
+        while (observed < 8)
+        {
+            var result = await service.GetStatusAsync(deadline.Token).ConfigureAwait(false);
+            var status = result.Value!;
+            if (status.Session.Latest is { } latest)
+            {
+                Assert.IsNotNull(status.Images);
+                Assert.AreEqual(latest.Sequence, status.Images.Sequence,
+                    "The same publication must provide metrics, centroid and crop even when another frame arrives.");
+                observed = latest.Sequence;
+                reads++;
+            }
+            await Task.Delay(2, deadline.Token).ConfigureAwait(false);
+        }
+        await service.StopAsync(started.Value!.SessionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsGreaterThan(8, reads, "The reader sampled between successive camera publications.");
+    }
+
+    [TestMethod]
     public async Task OwnerIdentity_SpansCircuitsWhileOtherOperatorsAreRefused()
     {
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);

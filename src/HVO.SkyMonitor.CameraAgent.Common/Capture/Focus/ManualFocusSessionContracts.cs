@@ -107,7 +107,8 @@ public sealed record ManualFocusSessionAvailability(
     string Reason,
     string? ModuleType = null,
     CameraFocusPreviewFidelity? Fidelity = null,
-    CameraSimulatedFocusModel? SimulatedFocus = null)
+    CameraSimulatedFocusModel? SimulatedFocus = null,
+    long? ModuleGeneration = null)
 {
     public static ManualFocusSessionAvailability Unavailable(string reason) => new(false, reason);
 }
@@ -133,6 +134,19 @@ public interface IManualFocusPreviewSource
         ManualFocusPreviewSettings settings,
         double? simulatedFocusPosition,
         CancellationToken cancellationToken);
+
+    /// <summary>Acquires from the session's pinned module generation. Owner adapters check before starting an exposure.</summary>
+    async Task<ManualFocusPreview> AcquireAsync(ManualFocusPreviewSettings settings,
+        double? simulatedFocusPosition, long? expectedGeneration, CancellationToken cancellationToken)
+    {
+        var preview = await AcquireAsync(settings, simulatedFocusPosition, cancellationToken).ConfigureAwait(false);
+        if (expectedGeneration is { } expected && preview.ModuleGeneration != expected)
+        {
+            throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
+                ManualFocusReasonCodes.CameraWithdrawnMessage);
+        }
+        return preview;
+    }
 }
 
 /// <summary>A star the projected catalog places inside the preview, offered as a target hint. Never a measurement.</summary>
@@ -164,7 +178,9 @@ public sealed record ManualFocusSampleProvenance(
     string PreviewSettingsIdentitySha256,
     DateTimeOffset? CaptureRequestedUtc = null,
     DateTimeOffset? CaptureCompletedUtc = null,
-    ManualFocusSceneProvenance? Scene = null);
+    ManualFocusSceneProvenance? Scene = null,
+    FrameLayoutDescriptor? SensorLayout = null,
+    ManualFocusPsfProvenance? PointSpreadFunction = null);
 
 /// <summary>One image-derived sample. Invalid measurements are samples too; they never carry a width.</summary>
 public sealed record ManualFocusSample(
@@ -174,7 +190,12 @@ public sealed record ManualFocusSample(
     double? SimulatedFocusPosition,
     ManualFocusTargetSource TargetSource,
     FocusStarMeasurement Measurement,
-    ManualFocusSampleProvenance Provenance);
+    ManualFocusSampleProvenance Provenance,
+    string? ComparisonGroupId = null);
+
+/// <summary>A single publication of the session and the display images belonging to its latest sample.</summary>
+public sealed record ManualFocusPresentation(
+    ManualFocusSessionSnapshot Session, ManualFocusPreviewImages? Images);
 
 /// <summary>The latest display images. Display stretches only; measurements always use the linear samples.</summary>
 [SuppressMessage("Performance", "CA1819:Properties should not return arrays",

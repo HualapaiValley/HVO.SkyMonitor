@@ -34,13 +34,17 @@ public sealed class CameraModuleManualFocusPreviewSource(
             return ManualFocusSessionAvailability.Unavailable(
                 ManualFocusReasonCodes.ModuleWithoutPreview(module.ModuleType ?? "unknown"));
         }
-        return new(true, fidelity.Limitation, module.ModuleType, fidelity, module.SimulatedFocus);
+        return new(true, fidelity.Limitation, module.ModuleType, fidelity, module.SimulatedFocus, module.Generation);
     }
 
-    public async Task<ManualFocusPreview> AcquireAsync(
+    public Task<ManualFocusPreview> AcquireAsync(
         ManualFocusPreviewSettings settings,
         double? simulatedFocusPosition,
         CancellationToken cancellationToken)
+        => AcquireAsync(settings, simulatedFocusPosition, null, cancellationToken);
+
+    public async Task<ManualFocusPreview> AcquireAsync(ManualFocusPreviewSettings settings,
+        double? simulatedFocusPosition, long? expectedGeneration, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settings);
         if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
@@ -54,6 +58,11 @@ public sealed class CameraModuleManualFocusPreviewSource(
         }
         using (lease)
         {
+            if (expectedGeneration is { } expected && lease.Generation != expected)
+            {
+                throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,
+                    ManualFocusReasonCodes.CameraWithdrawnMessage);
+            }
             if (lease.Module is not ICameraFocusPreviewCapture preview)
             {
                 throw new ManualFocusSessionUnavailableException(ManualFocusReasonCodes.CameraWithdrawn,

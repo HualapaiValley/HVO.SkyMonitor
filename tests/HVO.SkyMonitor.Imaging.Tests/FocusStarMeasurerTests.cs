@@ -421,6 +421,21 @@ public sealed class FocusStarMeasurerTests
     }
 
     [TestMethod]
+    public void SelectTarget_OnlyCrowdedUnsaturatedStarsNeverBecomeAnAutomaticTarget()
+    {
+        const int width = 300, height = 300;
+        var pixels = Field(width, height, 100);
+        AddIntegratedGaussian(pixels, width, 147.5, 150.5, 1.5, 100000);
+        AddIntegratedGaussian(pixels, width, 153.5, 150.5, 1.5, 100000);
+
+        var automatic = FocusStarMeasurer.SelectTarget(pixels, Valid(pixels.Length), [], width, height);
+
+        Assert.IsFalse(automatic.Selected, "A combined crowded profile cannot qualify the automatic focus comparison.");
+        Assert.IsNull(automatic.Position);
+        Assert.AreEqual(FocusStarReasonCodes.CrowdedAutomaticTarget, automatic.ReasonCode);
+    }
+
+    [TestMethod]
     public void SelectTarget_OnlyAClippedStar_IsReturnedSoMeasurementReportsSaturation()
     {
         const int width = 300, height = 300;

@@ -62,7 +62,7 @@ public sealed class CameraCaptureService(
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton ownership registry.")]
     private readonly CameraModuleOwnership? _moduleOwnership = moduleOwnership;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ModuleLeaseDrainTimeout = TimeSpan.FromSeconds(30);
+    internal TimeSpan ModuleLeaseDrainTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -254,6 +254,7 @@ public sealed class CameraCaptureService(
                         !await _moduleOwnership.RevokeAsync(ModuleLeaseDrainTimeout).ConfigureAwait(false))
                     {
                         _logger.CameraModuleLeaseDrainTimedOut(module.DisplayName, ModuleLeaseDrainTimeout);
+                        await _moduleOwnership.WaitForRevokedLeasesAsync().ConfigureAwait(false);
                     }
                     try
                     {

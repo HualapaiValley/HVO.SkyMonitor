@@ -278,7 +278,9 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             double X(int index) => valid.Length == 1 ? 120 : 6 + index * 228d / (valid.Length - 1);
             double Y(double value) => range <= 0 ? 45 : 10 + (max - value) / range * 70;
             var line = string.Join(' ', values.Select((value, index) =>
-                $"{(index == 0 ? 'M' : 'L')}{X(index).ToString("F1", Culture)} {Y(value).ToString("F1", Culture)}"));
+                $"{(index == 0 || valid[index].ComparisonGroupId is null ||
+                    valid[index].ComparisonGroupId != valid[index - 1].ComparisonGroupId ||
+                    valid[index].Sequence != valid[index - 1].Sequence + 1 ? 'M' : 'L')}{X(index).ToString("F1", Culture)} {Y(value).ToString("F1", Culture)}"));
             var bestIndex = Session.Best is { } best ? Array.FindIndex(valid, sample => sample.Sequence == best.Sequence) : -1;
             var points = new List<TrendPoint>();
             if (bestIndex >= 0)
@@ -298,9 +300,21 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             var name = _metric == MetricFwhm ? "FWHM" : "Half-flux diameter";
             return count == 0
                 ? $"{name} trend: no valid samples yet."
-                : $"{name} trend over the last {count} valid samples; lower is sharper.";
+                : $"{name} trend over the last {count} valid samples; lower is sharper within the same comparison group. " +
+                    "Changed or unknown conditions are not connected.";
         }
     }
+
+    private bool HasChangedComparisonConditions => Session.History.Select(sample => sample.ComparisonGroupId)
+        .Append(Session.Best?.ComparisonGroupId).Where(static group => group is not null).Distinct().Skip(1).Any();
+
+    private string BestLabel => HasChangedComparisonConditions ? "Session minimum (conditions differ)" : "Best valid";
+
+    private string? ComparisonNote => Session.History.Any(static sample => sample.ComparisonGroupId is null)
+        ? "Some comparison conditions are unknown. Those samples are not connected in the trend."
+        : HasChangedComparisonConditions
+            ? "Settings or target changed. Trend lines connect samples only within the same conditions; the session minimum across groups does not prove a focus improvement."
+            : null;
 
     protected override async Task OnInitializedAsync()
     {
@@ -417,28 +431,41 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
 
     private async Task ApplyStatusAsync(FocusUiStatus status, CancellationToken cancellationToken)
     {
+        if (status.Images?.Sequence != status.Session.Latest?.Sequence)
+        {
+            status = status with { Images = null };
+        }
         var previous = _status;
         _status = status;
-        if (status.Images is { } images && images.Sequence != _imageSequence)
-        {
-            _imageSequence = images.Sequence;
-            _overviewUrl = DataUrl(images.OverviewJpeg);
-            _starUrl = images.StarJpeg is { } star ? DataUrl(star) : null;
-            _bindPicker = _viewer == FocusViewer.Field;
-        }
-        else if (status.Images is null)
+        if (previous?.Session.SessionId != status.Session.SessionId)
         {
             _imageSequence = -1;
-            _overviewUrl = null;
-            _starUrl = null;
-            _viewer = FocusViewer.Star;
         }
+        SetDisplayImages(status.Images);
         SyncForm(status, previous);
         var savedKey = status.Session.SavedRecordId;
         if (savedKey is not null && !string.Equals(savedKey, _savedListKey, StringComparison.Ordinal))
         {
             _savedListKey = savedKey;
             await LoadSavedAsync(cancellationToken);
+        }
+    }
+
+    private void SetDisplayImages(ManualFocusPreviewImages? latestImages)
+    {
+        if (latestImages is { } images && images.Sequence != _imageSequence)
+        {
+            _imageSequence = images.Sequence;
+            _overviewUrl = DataUrl(images.OverviewJpeg);
+            _starUrl = images.StarJpeg is { } star ? DataUrl(star) : null;
+            _bindPicker = _viewer == FocusViewer.Field;
+        }
+        else if (latestImages is null)
+        {
+            _imageSequence = -1;
+            _overviewUrl = null;
+            _starUrl = null;
+            _viewer = FocusViewer.Star;
         }
     }
 
@@ -629,7 +656,12 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
                 return;
             }
             // The coordinator accepts a command only from the session owner, so a successful result is this operator's.
-            _status = _status! with { Session = result.Value!, IsOwner = true };
+            // Commands can return a newer sample than the last status read. Until the next atomic read, clear an older
+            // image rather than pairing that crop with the command's newer measurement or a newly started session.
+            var images = result.Value!.SessionId == _status!.Session.SessionId &&
+                result.Value.Latest?.Sequence == _status.Images?.Sequence ? _status.Images : null;
+            _status = _status with { Session = result.Value, Images = images, IsOwner = true };
+            SetDisplayImages(images);
             if (clearDirty)
             {
                 _dirty = false;
@@ -829,7 +861,9 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
         return measurement.Status switch
         {
             FocusStarStatus.Valid =>
-                $"Sample #{sample.Sequence}: HFD {Value(measurement.HalfFluxDiameterPixels)} px, FWHM {Value(measurement.FwhmPixels)} px, SNR {measurement.SignalToNoise?.ToString("F0", Culture) ?? "—"}.",
+                $"Sample #{sample.Sequence}: HFD {Value(measurement.HalfFluxDiameterPixels)} px, FWHM {Value(measurement.FwhmPixels)} px, SNR {(measurement.SignalToNoiseUnbounded ? "unbounded (zero measured noise)" : measurement.SignalToNoise?.ToString("F0", Culture) ?? "—")}.",
+            FocusStarStatus.NoStar when measurement.ReasonCode == FocusStarReasonCodes.CrowdedAutomaticTarget =>
+                $"Sample #{sample.Sequence}: automatic selection found only crowded stars. Pick a more isolated field or select a target explicitly; no width was measured.",
             FocusStarStatus.NoStar =>
                 $"Sample #{sample.Sequence}: no star is bright enough in the target region. Increase exposure or gain, or pick another star.",
             FocusStarStatus.Saturated when measurement.Centroid is null =>

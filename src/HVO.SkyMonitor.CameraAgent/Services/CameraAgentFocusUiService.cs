@@ -71,10 +71,11 @@ internal sealed class CameraAgentFocusUiService(
         var canControl = await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .ConfigureAwait(false) is not null;
         var owner = CameraAgentCredentialAccess.GetOwnerId(principal);
-        var session = coordinator.Snapshot;
+        var presentation = coordinator.Presentation;
+        var session = presentation.Session;
         return OperatorUiResult<FocusUiStatus>.Success(new FocusUiStatus(
             session,
-            coordinator.LatestImages,
+            presentation.Images,
             coordinator.Availability,
             coordinator.Limits,
             coordinator.RetentionAvailable,

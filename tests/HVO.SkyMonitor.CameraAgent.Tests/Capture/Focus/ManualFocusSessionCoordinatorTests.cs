@@ -122,6 +122,11 @@ public sealed class ManualFocusSessionCoordinatorTests
                 sample.Provenance.PreviewSettingsIdentitySha256, "Each sample records the settings it was taken with.");
         }
         Assert.AreEqual(brighter, final.History.First(static x => x.SimulatedFocusPosition == 1000).Settings);
+        Assert.AreEqual(final.History.First(static sample => sample.SimulatedFocusPosition == 200).ComparisonGroupId,
+            final.History.First(static sample => sample.SimulatedFocusPosition == 560).ComparisonGroupId,
+            "Changing focus position is the comparison; it does not change the target or exposure conditions.");
+        Assert.AreNotEqual(final.Best.ComparisonGroupId, final.Latest!.ComparisonGroupId,
+            "The global minimum remains available, but changed exposure and gain make the groups incomparable.");
     }
 
     [TestMethod]
@@ -238,6 +243,8 @@ public sealed class ManualFocusSessionCoordinatorTests
             sample.Measurement.ReasonCode == FocusStarReasonCodes.NoCandidateNearSelection).Measurement.Status);
         Assert.AreEqual(new PixelPoint(150, 150), empty.Target, "An empty pick is kept so the operator sees why.");
         Assert.AreEqual(FocusStarStatus.Valid, restored.Latest!.Measurement.Status);
+        Assert.AreNotEqual(picked.Latest.ComparisonGroupId, empty.Latest!.ComparisonGroupId);
+        Assert.AreNotEqual(picked.Latest.ComparisonGroupId, restored.Latest.ComparisonGroupId);
     }
 
     [TestMethod]
@@ -486,6 +493,69 @@ public sealed class ManualFocusSessionCoordinatorTests
         Assert.IsFalse(coordinator.Availability.Available);
         Assert.AreEqual(ManualFocusReasonCodes.NoModule, coordinator.Availability.Reason);
         Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ReplacementBetweenSamples_EndsThePinnedSessionBeforeTheNewModuleExposes()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var fixtureScope = fixture.ConfigureAwait(false);
+        await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
+        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System,
+            Limits(minimumSamplePeriod: TimeSpan.FromSeconds(2)));
+        var session = await coordinator.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
+        var first = await FocusWait.UntilAsync(coordinator, static s => s.TotalSamples == 1, "first pinned sample")
+            .ConfigureAwait(false);
+        Assert.IsTrue(await fixture.Ownership.RevokeAsync(TimeSpan.Zero).ConfigureAwait(false));
+        var replacement = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var refused = await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(() =>
+            fixture.Source.AcquireAsync(Gain20, 560, first.Latest!.Provenance.ModuleGeneration, CancellationToken.None))
+            .ConfigureAwait(false);
+        var ended = await FocusWait.EndedAsync(coordinator).ConfigureAwait(false);
+
+        Assert.AreEqual(ManualFocusReasonCodes.CameraWithdrawn, refused.ReasonCode);
+        Assert.AreEqual(ManualFocusSessionState.Faulted, ended.State);
+        Assert.AreEqual(ManualFocusReasonCodes.CameraWithdrawn, ended.EndReason);
+        Assert.AreEqual(session.SessionId, ended.SessionId);
+        Assert.AreEqual(1, ended.TotalSamples);
+        Assert.AreEqual(0, replacement.Previews, "Neither direct pinned acquisition nor the old session may expose the replacement.");
+        Assert.AreEqual(1, ended.Best!.Provenance.ModuleGeneration);
+    }
+
+    [TestMethod]
+    public async Task AdjustmentDuringExposure_KeepsTheOldComparisonGroupOnTheInFlightSample()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var fixtureScope = fixture.ConfigureAwait(false);
+        var module = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        module.BeforePreview = async (number, token) =>
+        {
+            if (number == 2)
+            {
+                secondStarted.TrySetResult();
+                await release.Task.WaitAsync(token).ConfigureAwait(false);
+            }
+        };
+        using var store = new ManualFocusSessionStore(fixture.Root);
+        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System, Limits(), store);
+        var session = await coordinator.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var changed = new ManualFocusPreviewSettings(TimeSpan.FromSeconds(2), 10);
+        coordinator.Adjust(session.SessionId, "alice", new(Settings: changed, Target: FocusTestModules.ZenithStar));
+        release.TrySetResult();
+        var third = await FocusWait.UntilAsync(coordinator, static s => s.TotalSamples >= 3, "new comparison group")
+            .ConfigureAwait(false);
+        var ended = await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(third.History[0].ComparisonGroupId, third.History[1].ComparisonGroupId);
+        Assert.AreEqual(Gain20, third.History[1].Settings);
+        Assert.AreEqual(changed, third.History[2].Settings);
+        Assert.AreNotEqual(third.History[1].ComparisonGroupId, third.History[2].ComparisonGroupId);
+        var saved = await coordinator.SaveAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
+        var record = await store.ReadAsync(saved.SavedRecordId!, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(ended.History.Select(static sample => sample.ComparisonGroupId).ToArray(),
+            record!.Record.Session.History.Select(static sample => sample.ComparisonGroupId).ToArray());
     }
 
     [TestMethod]

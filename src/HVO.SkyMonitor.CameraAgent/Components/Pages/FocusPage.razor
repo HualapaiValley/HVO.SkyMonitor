@@ -131,7 +131,11 @@
             </svg>
             @if (Session.Best is { } best)
             {
-                <p id="focus-best" class="focus-best">Best valid: <strong>@Value(best.Measurement.HalfFluxDiameterPixels) px HFD</strong> / @Value(best.Measurement.FwhmPixels) px FWHM / sample @best.Sequence@(best.SimulatedFocusPosition is { } at ? $" / position {at.ToString("0.#", Culture)}" : null)</p>
+                <p id="focus-best" class="focus-best">@BestLabel: <strong>@Value(best.Measurement.HalfFluxDiameterPixels) px HFD</strong> / @Value(best.Measurement.FwhmPixels) px FWHM / sample @best.Sequence@(best.SimulatedFocusPosition is { } at ? $" / position {at.ToString("0.#", Culture)}" : null)</p>
+            }
+            @if (ComparisonNote is { } comparisonNote)
+            {
+                <p id="focus-comparison-note" class="muted">@comparisonNote</p>
             }
         </div>
         <div class="focus-controls">

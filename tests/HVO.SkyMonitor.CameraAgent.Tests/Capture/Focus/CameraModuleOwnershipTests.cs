@@ -74,10 +74,15 @@ public sealed class CameraModuleOwnershipTests
         Assert.IsTrue(ownership.TryAcquire(out var stuck));
 
         var drained = await ownership.RevokeAsync(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+        var finishingDrain = ownership.WaitForRevokedLeasesAsync();
+        Assert.IsFalse(finishingDrain.IsCompleted, "The timed-out publication remains occupied.");
+        Assert.ThrowsExactly<InvalidOperationException>(() => ownership.Publish(new CaptureOnlyModule()));
         stuck.Dispose();
+        await finishingDrain.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
         Assert.IsFalse(drained);
         Assert.IsFalse(ownership.Snapshot.Published);
+        Assert.AreEqual(2, ownership.Publish(new CaptureOnlyModule()), "Replacement starts only after the old lease drains.");
     }
 
     [TestMethod]

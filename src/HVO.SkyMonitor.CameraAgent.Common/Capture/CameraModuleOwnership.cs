@@ -25,6 +25,7 @@ public sealed class CameraModuleOwnership : IDisposable
 {
     private readonly object _sync = new();
     private Publication? _current;
+    private Publication? _retiring;
     private long _generation;
     private bool _disposed;
 
@@ -71,7 +72,7 @@ public sealed class CameraModuleOwnership : IDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_current is not null)
+            if (_current is not null || _retiring is not null)
             {
                 throw new InvalidOperationException("A camera module is already published; revoke it first.");
             }
@@ -90,19 +91,28 @@ public sealed class CameraModuleOwnership : IDisposable
         Publication? publication;
         lock (_sync)
         {
-            publication = _current;
+            publication = _current ?? _retiring;
             _current = null;
             if (publication is null)
             {
                 return true;
             }
             publication.Revoked = true;
+            _retiring = publication;
+            publication.CancellationUsers++;
             if (publication.Leases == 0)
             {
                 publication.Drained.TrySetResult();
             }
         }
-        await publication.Revocation.CancelAsync().ConfigureAwait(false);
+        try
+        {
+            await publication.Revocation.CancelAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            FinishCancellation(publication);
+        }
         try
         {
             await publication.Drained.Task.WaitAsync(drainTimeout).ConfigureAwait(false);
@@ -111,8 +121,39 @@ public sealed class CameraModuleOwnership : IDisposable
         {
             return false;
         }
-        publication.Revocation.Dispose();
+        CompleteRevocation(publication);
         return true;
+    }
+
+    /// <summary>
+    /// After a bounded drain times out, the owner remains unavailable until the occupied module is released.
+    /// This wait has no cancellation shortcut: shutdown or retry must never dispose a module still used by a lease.
+    /// </summary>
+    internal async Task WaitForRevokedLeasesAsync()
+    {
+        Publication? publication;
+        lock (_sync)
+        {
+            publication = _retiring;
+        }
+        if (publication is not null)
+        {
+            await publication.Drained.Task.ConfigureAwait(false);
+            CompleteRevocation(publication);
+        }
+    }
+
+    private void CompleteRevocation(Publication publication)
+    {
+        lock (_sync)
+        {
+            if (ReferenceEquals(_retiring, publication))
+            {
+                _retiring = null;
+                publication.Completed = true;
+                DisposeRevocationIfUnused(publication);
+            }
+        }
     }
 
     internal void Release(Publication publication)
@@ -123,12 +164,22 @@ public sealed class CameraModuleOwnership : IDisposable
             if (publication.Revoked && publication.Leases == 0)
             {
                 publication.Drained.TrySetResult();
+                if (_disposed)
+                {
+                    publication.Completed = true;
+                    if (ReferenceEquals(_retiring, publication))
+                    {
+                        _retiring = null;
+                    }
+                    DisposeRevocationIfUnused(publication);
+                }
             }
         }
     }
 
     public void Dispose()
     {
+        Publication? publication;
         lock (_sync)
         {
             if (_disposed)
@@ -136,12 +187,49 @@ public sealed class CameraModuleOwnership : IDisposable
                 return;
             }
             _disposed = true;
-            if (_current is { } publication)
+            publication = _current ?? _retiring;
+            _current = null;
+            if (publication is not null)
             {
                 publication.Revoked = true;
-                publication.Revocation.Cancel();
-                _current = null;
+                _retiring = publication;
+                publication.CancellationUsers++;
+                if (publication.Leases == 0)
+                {
+                    publication.Drained.TrySetResult();
+                    publication.Completed = true;
+                    _retiring = null;
+                }
             }
+        }
+        if (publication is not null)
+        {
+            try
+            {
+                publication.Revocation.Cancel();
+            }
+            finally
+            {
+                FinishCancellation(publication);
+            }
+        }
+    }
+
+    private void FinishCancellation(Publication publication)
+    {
+        lock (_sync)
+        {
+            publication.CancellationUsers--;
+            DisposeRevocationIfUnused(publication);
+        }
+    }
+
+    // Cancellation callbacks run outside _sync. CTS disposal waits for both lease drain and every cancellation caller.
+    private static void DisposeRevocationIfUnused(Publication publication)
+    {
+        if (publication.Completed && publication.CancellationUsers == 0)
+        {
+            publication.Revocation.Dispose();
         }
     }
 
@@ -154,6 +242,8 @@ public sealed class CameraModuleOwnership : IDisposable
         public TaskCompletionSource Drained { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Leases { get; set; }
         public bool Revoked { get; set; }
+        public bool Completed { get; set; }
+        public int CancellationUsers { get; set; }
     }
 }
 

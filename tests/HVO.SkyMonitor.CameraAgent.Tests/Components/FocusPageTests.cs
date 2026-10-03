@@ -205,6 +205,40 @@ public sealed class FocusPageTests
     }
 
     [TestMethod]
+    public void ChangedOrUnknownConditions_BreakTheTrendAndDiscloseTheGlobalMinimum()
+    {
+        var history = new[]
+        {
+            Sample(1, 6), Sample(2, 3), Sample(3, 4.5) with { ComparisonGroupId = new string('f', 64) },
+            Sample(4, 5) with { ComparisonGroupId = null }
+        };
+        var service = new FakeFocusService(Status(Running(history), images: Images(4)));
+        using var context = CreateContext(service, out _);
+        var cut = context.Render<FocusPage>();
+        var path = cut.Find(".focus-trend path.line").GetAttribute("d")!;
+        Assert.AreEqual(3, path.Count(character => character == 'M'), "Changed and unknown groups start new subpaths.");
+        Assert.AreEqual(1, path.Count(character => character == 'L'), "Only the known unchanged group is connected.");
+        StringAssert.Contains(cut.Find("#focus-best").TextContent, "Session minimum (conditions differ)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("#focus-comparison-note").TextContent, "unknown", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".focus-trend").GetAttribute("aria-label")!, "same comparison group", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task CommandReturningANewerSample_ClearsTheOlderCropUntilAnAtomicRefresh()
+    {
+        var service = new FakeFocusService(Status(Running(Sample(1, 3)), images: Images(1)))
+        {
+            NewSampleOnStop = Sample(2, 6)
+        };
+        using var context = CreateContext(service, out _);
+        var cut = context.Render<FocusPage>();
+        Assert.IsNotNull(cut.Find(".focus-viewer img"));
+        await cut.Find("#focus-start").ClickAsync(new MouseEventArgs()).ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".focus-viewer img"), "The old crop cannot accompany the newly returned sample's centroid and metric.");
+        StringAssert.Contains(cut.Find("#focus-metric").TextContent, "6.00", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task DisconnectedBrowser_StopsTheHeartbeatWhileTheRetainedCircuitKeepsPolling()
     {
         var service = new FakeFocusService(Status(Running(Sample(1, 3.0))));
@@ -567,7 +601,7 @@ public sealed class FocusPageTests
             FocusStarMeasurement.MetricDefinition, FocusStarMeasurement.Units, FocusStarMeasurer.AlgorithmVersion, new string('b', 64),
             new string('d', 64));
         return new(sequence, Started.AddSeconds(sequence), new(TimeSpan.FromSeconds(1), 110), Model.DefaultPosition,
-            ManualFocusTargetSource.Automatic, measurement, provenance);
+            ManualFocusTargetSource.Automatic, measurement, provenance, new string('e', 64));
     }
 
     private static readonly PixelPoint FocusTestCentroid = new(242.5, 152.4);
@@ -607,6 +641,7 @@ public sealed class FocusPageTests
         public int SaveCount { get; private set; }
 
         public int DiscardCount { get; private set; }
+        public ManualFocusSample? NewSampleOnStop { get; init; }
 
         public ValueTask<OperatorUiResult<FocusUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
         {
@@ -658,6 +693,8 @@ public sealed class FocusPageTests
             return Command(_status!.Session with
             {
                 State = ManualFocusSessionState.Stopped,
+                History = NewSampleOnStop is { } sample ? [.. _status.Session.History, sample] : _status.Session.History,
+                TotalSamples = NewSampleOnStop?.Sequence ?? _status.Session.TotalSamples,
                 EndedUtc = Started.AddMinutes(5),
                 EndReason = ManualFocusReasonCodes.StoppedByOperator
             });

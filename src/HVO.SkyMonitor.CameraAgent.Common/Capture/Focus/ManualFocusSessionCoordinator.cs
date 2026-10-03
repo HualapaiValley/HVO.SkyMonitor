@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text.Json;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Hosting;
@@ -46,6 +48,18 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
     public ManualFocusSessionAvailability Availability => _source.GetAvailability();
 
     public bool RetentionAvailable => _store is not null;
+
+    /// <summary>Reads the metrics and their images together without recording owner observation.</summary>
+    public ManualFocusPresentation Presentation
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return new(_session?.ToSnapshot() ?? ManualFocusSessionSnapshot.Idle, _session?.Images);
+            }
+        }
+    }
 
     /// <summary>Current session view for any authorized reader. Reading does not count as owner observation.</summary>
     public ManualFocusSessionSnapshot Snapshot
@@ -129,6 +143,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 Hint = request.Target,
                 TargetSource = request.Target is null ? ManualFocusTargetSource.Automatic : ManualFocusTargetSource.Operator,
                 ModuleType = availability.ModuleType,
+                ModuleGeneration = availability.ModuleGeneration,
                 Fidelity = availability.Fidelity,
                 SimulatedFocus = availability.SimulatedFocus,
                 LastObservedUtc = now
@@ -181,16 +196,22 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             }
             if (adjustment.Settings is { } changed)
             {
+                if (changed != session.Settings)
+                {
+                    session.ComparisonRevision++;
+                }
                 session.Settings = changed;
             }
             if (adjustment.Target is { } target)
             {
+                session.ComparisonRevision++;
                 session.Hint = target;
                 session.Target = null;
                 session.TargetSource = ManualFocusTargetSource.Operator;
             }
             else if (adjustment.ResetToAutomaticTarget)
             {
+                session.ComparisonRevision++;
                 session.Hint = null;
                 session.Target = null;
                 session.TargetSource = ManualFocusTargetSource.Automatic;
@@ -364,6 +385,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 double? position;
                 PixelPoint? target, hint;
                 ManualFocusTargetSource targetSource;
+                long comparisonRevision;
+                long? moduleGeneration;
                 lock (_sync)
                 {
                     if (_timeProvider.GetUtcNow() - session.LastObservedUtc > _limits.ObserverTimeout)
@@ -377,6 +400,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                     target = session.Target;
                     hint = session.Hint;
                     targetSource = session.TargetSource;
+                    comparisonRevision = session.ComparisonRevision;
+                    moduleGeneration = session.ModuleGeneration;
                 }
 
                 ManualFocusPreview preview;
@@ -386,7 +411,11 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                 {
                     try
                     {
-                        preview = await _source.AcquireAsync(settings, position, linked.Token).ConfigureAwait(false);
+                        preview = await _source.AcquireAsync(settings, position, moduleGeneration, linked.Token).ConfigureAwait(false);
+                        lock (_sync)
+                        {
+                            session.ModuleGeneration ??= preview.ModuleGeneration;
+                        }
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
@@ -460,7 +489,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                     }
                     break;
                 }
-                var sample = CreateSample(sequence, settings, position, targetSource, preview, outcome);
+                var sample = CreateSample(sequence, settings, position, targetSource, comparisonRevision, preview, outcome);
                 lock (_sync)
                 {
                     session.Record(sample, outcome, target, hint);
@@ -503,6 +532,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         ManualFocusPreviewSettings settings,
         double? position,
         ManualFocusTargetSource targetSource,
+        long comparisonRevision,
         ManualFocusPreview preview,
         ManualFocusPreviewOutcome outcome)
     {
@@ -515,7 +545,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             frame.Height,
             frame.PixelFormat,
             outcome.FrameSha256,
-            extra is not null && extra.TryGetValue("sceneId", out var sceneId) ? sceneId : frame.Metadata.Scene?.SceneId,
+            ManualFocusSceneProvenance.Bounded(extra is not null && extra.TryGetValue("sceneId", out var sceneId)
+                ? sceneId : frame.Metadata.Scene?.SceneId),
             preview.ModuleType,
             preview.ModuleGeneration,
             preview.Fidelity.Kind,
@@ -534,9 +565,28 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             ManualFocusPreviewMeasurement.PreviewSettingsIdentity(settings, position),
             preview.RequestedUtc,
             preview.CompletedUtc,
-            ManualFocusSceneProvenance.FromMetadata(frame.Metadata));
+            ManualFocusSceneProvenance.FromMetadata(frame.Metadata),
+            frame.Layout?.Validate().IsValid == true ? frame.Layout : null,
+            ManualFocusPsfProvenance.FromMetadata(frame.Metadata, preview.SimulatedFocus));
+        // Focus position is intentionally excluded: positions within the same target/settings group are comparable.
+        // Bind every other declared measurement condition, and use the revision captured before this exposure began.
+        var comparisonGroup = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            comparisonRevision,
+            settings,
+            preview.ModuleGeneration,
+            frame.Width,
+            frame.Height,
+            frame.PixelFormat,
+            provenance.SensorLayout,
+            provenance.Scene?.RigProfileHashSha256,
+            provenance.SimulatedFocusParametersSha256,
+            provenance.SamplerAlgorithmVersion,
+            provenance.MetricAlgorithmVersion,
+            provenance.MetricSettingsIdentitySha256
+        })));
         return new ManualFocusSample(sequence, _timeProvider.GetUtcNow(), settings, position, targetSource,
-            outcome.Measurement, provenance);
+            outcome.Measurement, provenance, comparisonGroup);
     }
 
     private Session RequireOwned(string sessionId, string actor)
@@ -675,6 +725,8 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         public string? EndReason { get; private set; }
         public DateTimeOffset? EndedUtc { get; private set; }
         public string? ModuleType { get; init; }
+        public long? ModuleGeneration { get; set; }
+        public long ComparisonRevision { get; set; } = 1;
         public AgentCore.CameraFocusPreviewFidelity? Fidelity { get; init; }
         public AgentCore.CameraSimulatedFocusModel? SimulatedFocus { get; init; }
         public DateTimeOffset LastObservedUtc { get; set; }

@@ -38,6 +38,7 @@ public static class FocusStarReasonCodes
     public const string BackgroundUnavailable = "background-unavailable";
     public const string NoCandidate = "no-candidate";
     public const string NoCandidateNearSelection = "no-candidate-near-selection";
+    public const string CrowdedAutomaticTarget = "crowded-automatic-target";
 }
 
 /// <summary>
@@ -94,6 +95,9 @@ public sealed record FocusStarMeasurement(
     public string AlgorithmVersion { get; init; } = FocusStarMeasurer.AlgorithmVersion;
 
     public bool HasMeasurement => Status == FocusStarStatus.Valid;
+
+    /// <summary>A positive signal over an exactly zero-noise background has no finite SNR; JSON retains this explicitly.</summary>
+    public bool SignalToNoiseUnbounded { get; init; }
 }
 
 /// <summary>Result of selecting a focus star from frame pixels.</summary>
@@ -128,7 +132,7 @@ public sealed record FocusStarTarget(PixelPoint? Position, double? PeakAboveBack
 /// </summary>
 public static class FocusStarMeasurer
 {
-    public const string AlgorithmVersion = "focus-star-hfr-v3";
+    public const string AlgorithmVersion = "focus-star-hfr-v4";
 
     private const double FwhmPerSigma = 2.3548200450309493;
     private const double MadToSigma = 1.4826;
@@ -330,7 +334,10 @@ public static class FocusStarMeasurer
         cancellationToken.ThrowIfCancellationRequested();
         var signalToNoise = noise > 0 ? total / (noise * Math.Sqrt(samples)) : double.PositiveInfinity;
         var measured = new FocusStarMeasurement(FocusStarStatus.Valid, FocusStarReasonCodes.Valid, centroid, null,
-            null, total, peak, sky.Level, noise, signalToNoise, saturated, samples, identity);
+            null, total, peak, sky.Level, noise, double.IsFinite(signalToNoise) ? signalToNoise : null, saturated, samples, identity)
+        {
+            SignalToNoiseUnbounded = noise == 0 && total > 0
+        };
         if (masked > 0)
         {
             return measured with { Status = FocusStarStatus.ApertureTruncated, ReasonCode = FocusStarReasonCodes.ApertureMasked };
@@ -599,9 +606,11 @@ public static class FocusStarMeasurer
                 return Selected(candidate, objects.Count);
             }
         }
-        return (crowdedFallback ?? clippedFallback) is { } fallback
-            ? Selected(fallback, objects.Count)
-            : new(null, null, objects.Count, FocusStarReasonCodes.NoCandidate);
+        return crowdedFallback is not null
+            ? new(null, null, objects.Count, FocusStarReasonCodes.CrowdedAutomaticTarget)
+            : clippedFallback is { } fallback
+                ? Selected(fallback, objects.Count)
+                : new(null, null, objects.Count, FocusStarReasonCodes.NoCandidate);
     }
 
     private static bool ApertureUnmasked(ReadOnlySpan<bool> validMask, int width, int height, Candidate candidate, double radius)
