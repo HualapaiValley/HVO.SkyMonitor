@@ -6,6 +6,21 @@ must not redefine its policy inconsistently.
 
 ## Toolchain and Validation
 
+- Select the protected CI profile by the PR's **target branch** before applying
+  the risk-tier ladder. For `development/v1`, the merge checks are
+  `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
+  control checks, one Release build, and the complete Docker-disabled Unit
+  selection. Full qualification in `ci.yml` belongs to `main`/`release/**`
+  and explicitly requested qualification. Do not dispatch it for an ordinary
+  v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
+  on a base-sync delta. See `docs/development-v1.md` for this branch-specific
+  contract, which takes precedence over generic protected-CI wording below.
+- Risk-tier local validation and explicit issue acceptance still apply.
+  Record the target profile, classifier output, local evidence and any separately
+  authorized qualification. A v1 pass is integration evidence, not production
+  qualification. Whole-repository ShellCheck and exhaustive category discovery
+  run in full CI; changes to shell/category behavior still need focused local
+  validation of that behavior.
 - Use the SDK pinned in `global.json` (`10.0.401`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
 - The complete Tier C/M local candidate gate is:
@@ -57,7 +72,7 @@ must not redefine its policy inconsistently.
 - Use the risk-tiered validation ladder in `docs/planning/agent-execution.md`:
   focused tests in the inner loop, tier-appropriate local candidate evidence
   before the first push, affected gates for corrections, and classifier-selected
-  protected CI on the final reviewed head. Tier C/M work runs the complete local
+  target-branch protected CI on the final reviewed head. Tier C/M work runs the complete local
   candidate gate; Tier A/B work relies on focused/affected local evidence plus
   protected CI. Do not repeatedly run unchanged long suites or performance
   harnesses.
@@ -67,13 +82,14 @@ must not redefine its policy inconsistently.
   without naming the selector that chose them is incomplete evidence, because a
   gate that was never selected then shows up as an absence rather than as a
   silence. `complete` is not a condition on using the classifier. It governs one
-  thing, whether the complete solution matrix is required, and `complete=false`
+  thing, whether the full-qualification profile selects the complete solution
+  matrix, and `complete=false`
   is the ordinary result for a change confined to one component's paths, where
   the lane flags the classifier sets are exactly the selection being asked for.
   Requiring `complete=true` before trusting it would send agents back to reading
   the diff in the case the classifier serves best. The
-  classifier is the only selector in this repository that is not bounded by the
-  diff, and until the ready transition it is the only one available at all: the
+  classifier supplies the affected local/full-qualification plan; it does not
+  override the v1 profile or authorize a full workflow dispatch. In full CI the
   `changes` job is gated on `draft == false`, so through the whole convergence
   phase every gate decision would otherwise be made from the diff by parties
   whose view is the diff. On PR #756 the classifier returned `mode=full
