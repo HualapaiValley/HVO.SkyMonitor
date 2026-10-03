@@ -490,13 +490,13 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(text, "Unretained artifact", StringComparison.Ordinal);
             StringAssert.Contains(text, "Completed (Produced)", StringComparison.Ordinal);
             StringAssert.Contains(text, "850 ms", StringComparison.Ordinal);
-            StringAssert.Contains(text, "Retained predecessors", StringComparison.Ordinal);
+            StringAssert.Contains(text, "Other retained outputs of this step", StringComparison.Ordinal);
             Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000201/content",
                 cut.FindAll("a").Single(link => link.TextContent.Contains("Download content", StringComparison.Ordinal)).GetAttribute("href"));
         });
 
         var missing = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
-        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find("[role='alert']").TextContent, "was not found", StringComparison.Ordinal));
+        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find(".page-state--info").TextContent, "was not found", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -560,6 +560,7 @@ public sealed class ArchivePagesTests
     private static TestOperatorUiService Configure(BunitContext context)
     {
         RetainedPreviewImageTestSupport.Configure(context);
+        ProductDetailTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
