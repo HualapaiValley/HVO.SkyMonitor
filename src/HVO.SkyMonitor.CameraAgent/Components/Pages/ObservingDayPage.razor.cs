@@ -60,6 +60,16 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     private string CandidatesUrl => _view is { } view ? ArchiveCalendarPage.CandidatesUrl(view.Day.Day) : "/transients";
 
+    private string CalendarUrl
+    {
+        get
+        {
+            var url = _invalidDate ? "/archive/calendar" : $"/archive/calendar?month={Date:yyyy-MM}";
+            return CalendarVersion is null ? url : url + (_invalidDate ? "?" : "&") +
+                "calendar=" + Uri.EscapeDataString(CalendarVersion);
+        }
+    }
+
     // The calendar's own clamp; a step never leaves it.
     internal static readonly DateOnly MinimumDate = new(1, 2, 1);
     internal static readonly DateOnly MaximumDate = new(9999, 11, 30);

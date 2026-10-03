@@ -15,7 +15,7 @@
     @if (_invalidDate)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd within the calendar range.">
-            <a class="btn btn-outline-light btn-sm" href="/archive/calendar">Back to calendar</a>
+            <a class="btn btn-outline-light btn-sm" href="@CalendarUrl">Back to calendar</a>
         </PageStateNotice>
     }
     else
@@ -39,7 +39,7 @@
                 {
                     <a class="btn btn-outline-light" href="@CandidatesUrl">View events</a>
                 }
-                <a class="btn btn-outline-light" href="/archive/calendar?month=@Date.ToString("yyyy-MM")">Calendar</a>
+                <a class="btn btn-outline-light" href="@CalendarUrl">Calendar</a>
             </div>
         </header>
 

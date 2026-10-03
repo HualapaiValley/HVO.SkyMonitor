@@ -106,8 +106,40 @@ public sealed class SunriseReportingCalendarTests
         malformed[nameof(SunriseReportingPeriod.IdentitySha256)] = original.IdentitySha256;
         malformed["futureWindow"] = true;
         Assert.ThrowsExactly<JsonException>(() => JsonSerializer.Deserialize<SunriseReportingPeriod>(malformed.ToJsonString()));
-        Assert.AreEqual(original.EndUtc.AddMinutes(10), retained.EarliestFinalUtc(TimeSpan.FromMinutes(10)));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => retained.EarliestFinalUtc(TimeSpan.FromSeconds(-1)));
+        Assert.AreEqual(original.EndUtc.AddMinutes(10), retained.BindFinality(TimeSpan.FromMinutes(10)).EarliestFinalUtc);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => retained.BindFinality(TimeSpan.FromSeconds(-1)));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => retained.BindFinality(TimeSpan.FromDays(1) + TimeSpan.FromTicks(1)));
+        Assert.ThrowsExactly<ArgumentException>(() => (retained with { EndUtc = retained.EndUtc.AddMinutes(1) })
+            .BindFinality(TimeSpan.Zero));
+    }
+
+    [TestMethod]
+    public void RetainedFinality_KeepsOriginalEligibilityAcrossRetryAndRejectsChangedMetadata()
+    {
+        var period = new SunriseReportingCalendar(Site()).Resolve(new DateOnly(2026, 10, 12)).Period!;
+        var original = period.BindFinality(TimeSpan.FromMinutes(10));
+        var retained = JsonSerializer.Deserialize<SunriseReportingFinality>(JsonSerializer.Serialize(original))!;
+        var changedConfiguration = period.BindFinality(TimeSpan.Zero);
+
+        Assert.AreEqual(original, retained);
+        Assert.IsTrue(retained.IsValid());
+        Assert.AreEqual(period.EndUtc.AddMinutes(10), retained.EarliestFinalUtc);
+        Assert.IsFalse(retained.IsEligibleForFinal(period.EndUtc));
+        Assert.IsFalse(retained.IsEligibleForFinal(retained.EarliestFinalUtc.AddTicks(-1)));
+        Assert.IsTrue(retained.IsEligibleForFinal(retained.EarliestFinalUtc));
+        Assert.AreNotEqual(retained.IdentitySha256, changedConfiguration.IdentitySha256);
+        Assert.IsTrue(changedConfiguration.IsEligibleForFinal(period.EndUtc));
+        Assert.IsFalse((retained with { ProcessingSettleAllowance = TimeSpan.Zero, EarliestFinalUtc = period.EndUtc })
+            .IsValid(), "Changing current settings cannot reuse the retained finality identity.");
+        Assert.IsFalse((retained with { EarliestFinalUtc = retained.EarliestFinalUtc.AddTicks(1) }).IsValid());
+        Assert.IsFalse((retained with { Period = period with { EndUtc = period.EndUtc.AddSeconds(1) } }).IsValid());
+        Assert.IsFalse((retained with { ContractVersion = "future" }).IsValid());
+        var malformed = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(original))!.AsObject();
+        malformed.Remove(nameof(SunriseReportingFinality.EarliestFinalUtc));
+        Assert.ThrowsExactly<JsonException>(() => JsonSerializer.Deserialize<SunriseReportingFinality>(malformed.ToJsonString()));
+        malformed[nameof(SunriseReportingFinality.EarliestFinalUtc)] = original.EarliestFinalUtc;
+        malformed["currentSettleAllowance"] = "00:00:00";
+        Assert.ThrowsExactly<JsonException>(() => JsonSerializer.Deserialize<SunriseReportingFinality>(malformed.ToJsonString()));
     }
 
     [TestMethod]

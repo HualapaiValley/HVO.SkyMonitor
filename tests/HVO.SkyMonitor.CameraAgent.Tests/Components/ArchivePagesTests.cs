@@ -24,6 +24,37 @@ public sealed class ArchivePagesTests
         public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
             => Handler(observingDate, cancellationToken);
     }
+
+    [TestMethod]
+    [DataRow(ObservingDayCalendar.LegacyNoonVersion)]
+    [DataRow(SunriseReportingPeriod.CurrentVersion)]
+    public void ObservingDay_CalendarReturnAndInvalidDateKeepTheSelectedInterpretation(string version)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var calendar = version == ObservingDayCalendar.LegacyNoonVersion ? Phoenix :
+            ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create("fixture", 1, "Fixture site", null,
+                DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 850, "America/Phoenix"));
+        var day = calendar.Resolve(new DateOnly(2026, 10, 12));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/archive/day/2026-10-12?calendar=" + version);
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-12"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find(".day-facts"));
+            Assert.AreEqual("/archive/calendar?month=2026-10&calendar=" + version,
+                cut.Find(".day-actions a[href^='/archive/calendar']").GetAttribute("href"));
+        });
+        navigation.NavigateTo("/archive/day/yesterday?calendar=" + version);
+        var invalid = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "yesterday"));
+        invalid.WaitForAssertion(() => Assert.AreEqual("/archive/calendar?calendar=" + version,
+            invalid.Find("a[href^='/archive/calendar']").GetAttribute("href")));
+    }
     // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
     // matched against visible text so a negated disclaimer is not mistaken for a claim.
     private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];

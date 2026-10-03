@@ -34,15 +34,12 @@ public sealed record SunriseReportingPeriod(
 
     public bool Contains(DateTimeOffset sourceUtc) => sourceUtc >= StartUtc && sourceUtc < EndUtc;
 
-    /// <summary>Closure and publication eligibility are independent of when a job starts or finishes.</summary>
-    public DateTimeOffset EarliestFinalUtc(TimeSpan settleAllowance)
-    {
-        if (settleAllowance < TimeSpan.Zero || settleAllowance > TimeSpan.FromDays(1))
-        {
-            throw new ArgumentOutOfRangeException(nameof(settleAllowance));
-        }
-        return EndUtc + settleAllowance;
-    }
+    /// <summary>
+    /// Binds publication eligibility once for a new occurrence. Persist this complete value; retries consume its
+    /// retained allowance and eligibility rather than binding the current configuration again.
+    /// </summary>
+    public SunriseReportingFinality BindFinality(TimeSpan settleAllowance)
+        => SunriseReportingFinality.Create(this, settleAllowance);
 
     /// <summary>Checks a retained value without consulting current coordinates, time-zone rules or wall time.</summary>
     public bool IsValid()

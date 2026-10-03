@@ -15,8 +15,11 @@ that value without consulting the current site or wall clock. Changed configurat
 
 Missing sunrise, skipped civil dates and a missing/invalid site have explicit unavailable states. They do not produce
 substitute noon or midnight windows. A dark-night producer selects actual eligible sources inside a resolved full
-period; neither daylight exclusion nor missing coverage changes its planned boundaries. A product can become final
-only at or after end plus a separately configured, bounded settle allowance. This issue does not implement scheduling,
+period; neither daylight exclusion nor missing coverage changes its planned boundaries. `BindFinality` creates a
+separate immutable `SunriseReportingFinality` value containing the complete period, bounded settle allowance, exact
+earliest-final UTC and their identity. An occurrence retains that complete value; retries use its original eligibility,
+and changing the allowance creates a different finality identity. A product can become final only at or after that
+retained eligibility. This issue does not implement scheduling,
 coverage pixels, source interpolation or a producer.
 
 Raw ingress has already normalized retained capture timestamps to milliseconds. Solar endpoints retain the full

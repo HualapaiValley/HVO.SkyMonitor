@@ -109,11 +109,10 @@ internal sealed class CameraAgentObservingDayUiService(
                 .OrderBy(static run => run.ScheduledForUtc)
                 .ToArray();
             var scheduleView = BuildSchedule(day, detail.ExposureInstantsUtc);
-            var neighbours = await archive.GetCalendarAsync(
-                new CameraAgentGalleryCalendarQuery(observingDate.AddDays(-1), observingDate.AddDays(1),
-                    CalendarVersion: day.CalendarVersion), cancellationToken).ConfigureAwait(false);
-            var previous = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(-1));
-            var next = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(1));
+            var previous = await GetNeighbourAsync(observingDate.AddDays(-1), day.CalendarVersion,
+                cancellationToken).ConfigureAwait(false);
+            var next = await GetNeighbourAsync(observingDate.AddDays(1), day.CalendarVersion,
+                cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentObservingDayView>.Success(new CameraAgentObservingDayView(
                 detail.Day,
                 detail.ExposureInstantsUtc,
@@ -144,6 +143,22 @@ internal sealed class CameraAgentObservingDayUiService(
         {
             logger.LogWarning(exception, "CameraAgent observing day read failed.");
             return OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable, "The observing day is temporarily unavailable.");
+        }
+    }
+
+    private async ValueTask<CameraAgentGalleryCalendarDay?> GetNeighbourAsync(DateOnly date, string calendarVersion,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await archive.GetCalendarAsync(new CameraAgentGalleryCalendarQuery(date, date,
+                CalendarVersion: calendarVersion), cancellationToken).ConfigureAwait(false);
+            return result.Days.FirstOrDefault(item => item.Day.Date == date);
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            // An optional neighbor may lack a sunrise; that does not change the qualified selected period.
+            return null;
         }
     }
 
