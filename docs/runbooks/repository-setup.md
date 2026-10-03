@@ -11,7 +11,7 @@ The model in one picture:
 
 ```text
 feature/<issue>-<name>          PR -> development/v1   fast CI (~7 min), bot-posted review
-development/v1  (default)       nightly promotion PR   opened by hvo-agentcontrol[bot]
+development/v1  (default)       nightly draft PR       opened by hvo-agentcontrol[bot]
 main            (stable)        full qualification     operator merges with a merge commit
 ```
 
@@ -163,9 +163,9 @@ Copy these from `HVO.SkyMonitor` and adjust the marked lines.
 
 | File | Purpose | Adjust |
 | --- | --- | --- |
-| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint) + self-hosted Build and Unit under a 720s workload budget (600s target, 900s hard timeout) with a timing manifest | build/test commands; `runs-on` labels; the stage list if the repo has no ShellCheck or category audit |
+| `.github/workflows/development-v1.yml` | hosted Preflight (whitespace, actionlint, cheap CI-control checks) + self-hosted Build and Unit under a 720s workload budget (600s target, 900s hard timeout) with a timing manifest | build/test commands and `runs-on` labels; keep exhaustive lint/category checks in full qualification |
 | `.github/workflows/agentcontrol.yml` | `verify-identity`, `post-review` as the App | nothing; it reads owner/repo from context |
-| `.github/workflows/promote-main.yml` | nightly promotion PR, 02:00 America/Phoenix | the aggregate check name if the green-run check is extended to `main`'s pipeline |
+| `.github/workflows/promote-main.yml` | nightly draft promotion PR, 02:00 America/Phoenix; reviewed promotion becomes ready for planned full qualification | the aggregate check name if the green-run check is extended to `main`'s pipeline |
 | `.github/ISSUE_TEMPLATE/development-v1.yml`, `.github/PULL_REQUEST_TEMPLATE/development-v1.md` | issue form and PR template | project-specific fields |
 | `.github/dependabot.yml` | no `target-branch`, so it follows the default | ecosystems |
 | `scripts/review:v1` | emits review request / correction / converged skeletons with exact ranges | nothing |
@@ -186,16 +186,18 @@ Labels the process uses (create with `gh label create`): `review:mechanical`,
 In this order, because each step depends on the last:
 
 1. Open a trivial PR to `development/v1`. Preflight runs hosted; Build and Unit
-   waits for a `hvo-linux-x64` runner. Confirm the job's `runner_group_name`.
+   starts on a `hvo-skymonitor` runner after review and the ready transition.
+   Confirm the job's `runner_group_name`.
 2. `gh workflow run agentcontrol.yml -f operation=verify-identity`. The summary
    must show the App slug and that the token sees exactly this repository.
 3. Commit a review body under `.agentcontrol/reviews/PR-<n>-R0-<head8>.md`,
    dispatch `post-review`, confirm the comment author is `hvo-agentcontrol[bot]`.
    Delete the file before marking ready.
 4. Merge. Wait for the push run on `development/v1` to go green.
-5. `gh workflow run promote-main.yml`. Confirm a promotion PR opens, authored by
-   the bot, and that `main`'s full pipeline runs on it. Merge it with a merge
-   commit.
+5. `gh workflow run promote-main.yml`. Confirm a draft promotion PR opens,
+   authored by the bot. After review and operator authorization for the promotion
+   window, mark it ready and verify `main`'s full pipeline. Merge only when green,
+   using a merge commit. Return deferred or stale promotions to draft.
 
 ## 8. Known follow-ups
 

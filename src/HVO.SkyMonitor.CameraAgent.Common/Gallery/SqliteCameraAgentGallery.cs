@@ -56,7 +56,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _storageResolver = storageResolver;
-        _observingDays = observingDays ?? new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create(null));
+        _observingDays = observingDays ?? new DeploymentObservingDayCalendarProvider();
         _deploymentLocation = deploymentLocation;
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
@@ -583,7 +583,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var calendar = _observingDays.Current;
+        var calendar = _observingDays.Current.SelectVersion(query.CalendarVersion);
         IReadOnlyList<ObservingDay> days;
         try
         {
@@ -606,8 +606,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         for (var index = 0; index < days.Count; index++)
         {
             var day = days[index];
-            var start = day.StartUtc.ToUnixTimeMilliseconds();
-            var end = day.EndUtc.ToUnixTimeMilliseconds();
+            var start = day.StartUnixMillisecondsInclusive;
+            var end = day.EndUnixMillisecondsExclusive;
             long captures;
             DateTimeOffset? first = null;
             DateTimeOffset? last = null;
@@ -650,7 +650,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             result[index] = new CameraAgentGalleryCalendarDay(
                 day, captures, candidates, first, last, representative?.CaptureId, representative?.ExposureUtc);
         }
-        return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result);
+        return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result, calendar.CalendarVersion);
     }
 
     /// <summary>
@@ -699,11 +699,17 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return (id, DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)));
     }
 
-    public async ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+    public ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
         DateOnly observingDate,
         CancellationToken cancellationToken)
+        => GetObservingDayAsync(observingDate, _observingDays.Current.CalendarVersion, cancellationToken);
+
+    public async ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+        DateOnly observingDate,
+        string calendarVersion,
+        CancellationToken cancellationToken)
     {
-        var calendar = _observingDays.Current;
+        var calendar = _observingDays.Current.SelectVersion(calendarVersion);
         ObservingDay day;
         try
         {
@@ -713,7 +719,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             return null;
         }
-        var summary = await GetCalendarAsync(new CameraAgentGalleryCalendarQuery(observingDate, observingDate), cancellationToken).ConfigureAwait(false);
+        var summary = await GetCalendarAsync(new CameraAgentGalleryCalendarQuery(observingDate, observingDate,
+            CalendarVersion: calendar.CalendarVersion), cancellationToken).ConfigureAwait(false);
         var facts = summary.Days.Count == 1 ? summary.Days[0] : new CameraAgentGalleryCalendarDay(day, 0, 0, null, null);
         var (instants, integration) = await ReadExposuresAsync(day, cancellationToken).ConfigureAwait(false);
         return new CameraAgentObservingDayDetail(facts, instants, integration);
@@ -739,8 +746,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
               AND raw.state = 'committed'
             ORDER BY raw.exposure_started_unix_ms ASC, raw.capture_sequence ASC, raw.raw_capture_row_id ASC;
             """;
-        command.Parameters.AddWithValue("$day_start", day.StartUtc.ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$day_end", day.EndUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$day_start", day.StartUnixMillisecondsInclusive);
+        command.Parameters.AddWithValue("$day_end", day.EndUnixMillisecondsExclusive);
         var instants = new List<DateTimeOffset>();
         var total = TimeSpan.Zero;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -977,7 +984,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return new CameraAgentProductDetail(
             product,
             exposureStartedUtc,
-            _observingDays.Current.Resolve(exposureStartedUtc),
+            _observingDays.Current.LegacyNoon.Resolve(exposureStartedUtc),
             rigId,
             sources.Sources,
             sources.Truncated,
@@ -1204,7 +1211,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException($"Page size must be between 1 and {MaximumPageSize}.");
         }
-        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var from = query.FromUtc is { } fromUtc ? SunriseReportingPeriod.StoredMillisecondAtOrAfter(fromUtc) : (long?)null;
         var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         if (from > to)
         {
@@ -1518,7 +1525,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException($"Page size must be between 1 and {MaximumPageSize}.");
         }
-        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var from = query.FromUtc is { } fromUtc ? SunriseReportingPeriod.StoredMillisecondAtOrAfter(fromUtc) : (long?)null;
         var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         if (from > to)
         {

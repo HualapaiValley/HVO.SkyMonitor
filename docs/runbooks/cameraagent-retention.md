@@ -178,7 +178,8 @@ rollback-to-baseline contract. A baseline image never opens this file, so a
 rollback simply leaves it in place and a roll-forward finds the same definitions
 and run history. Back it up with the raw-ingress evidence. Its retention is
 bounded by the contract itself: at most 32 definitions, 50 retained revisions and
-200 retained runs per live definition, a further 200 retained revisions and 200
+200 terminal runs per live definition plus at most 32 queued and one running attempt,
+a further 200 retained revisions and 200
 retained runs in total for definitions that have been removed (pruned on every
 removal, because per-definition retention only runs from a live definition's own
 write paths and removal frees its slot), and a seven-day idempotency ledger whose

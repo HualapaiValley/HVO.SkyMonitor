@@ -36,6 +36,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal TimeProvider Clock { get; set; } = default!;
     [Parameter] public string DateText { get; set; } = string.Empty;
+    [Parameter, SupplyParameterFromQuery(Name = "calendar")] public string? CalendarVersion { get; set; }
 
     private DateOnly Date { get; set; }
 
@@ -46,14 +47,28 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private string DayTitle => Date.ToString("d MMMM yyyy", CultureInfo.InvariantCulture);
 
     private string DayLead => _view is { } view
-        ? FormattableString.Invariant($"Local noon {view.Day.Day.Date:d MMMM} through local noon {view.Day.Day.Date.AddDays(1):d MMMM}{(view.Day.Day.TimeZoneFallback ? " (UTC days; no deployment time zone)" : "")}.")
-        : "Local noon through the next local noon.";
+        ? $"{(view.Day.Day.SunrisePeriod is null ? "Legacy noon association" : "Starting-sunrise report date")}: " +
+          $"{CivilBoundary(view.Day.Day.StartUtc)} through {CivilBoundary(view.Day.Day.EndUtc)} ({TimeZoneId})."
+        : "The report date names the starting sunrise; the source period ends at the following sunrise.";
+
+    private string CivilBoundary(DateTimeOffset utc)
+        => TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, TimeZoneId).ToString("d MMM yyyy HH:mm:ss", CultureInfo.InvariantCulture);
 
     private string TimeZoneId => _view?.Day.Day.TimeZoneFallback == false ? _view.Day.Day.TimeZoneId : TimeZoneInfo.Utc.Id;
 
     private string CapturesUrl => _view is { } view ? ArchiveCalendarPage.CapturesUrl(view.Day.Day) : "/gallery";
 
     private string CandidatesUrl => _view is { } view ? ArchiveCalendarPage.CandidatesUrl(view.Day.Day) : "/transients";
+
+    private string CalendarUrl
+    {
+        get
+        {
+            var url = _invalidDate ? "/archive/calendar" : $"/archive/calendar?month={Date:yyyy-MM}";
+            return CalendarVersion is null ? url : url + (_invalidDate ? "?" : "&") +
+                "calendar=" + Uri.EscapeDataString(CalendarVersion);
+        }
+    }
 
     // The calendar's own clamp; a step never leaves it.
     internal static readonly DateOnly MinimumDate = new(1, 2, 1);
@@ -62,7 +77,8 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private string DayUrl(int direction)
     {
         var target = Date.AddDays(direction);
-        return ArchiveCalendarPage.DayUrl(target < MinimumDate ? MinimumDate : target > MaximumDate ? MaximumDate : target);
+        var url = ArchiveCalendarPage.DayUrl(target < MinimumDate ? MinimumDate : target > MaximumDate ? MaximumDate : target);
+        return CalendarVersion is null ? url : url + "?calendar=" + Uri.EscapeDataString(CalendarVersion);
     }
 
     private string LocalTime(DateTimeOffset utc)
@@ -244,7 +260,9 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         _errorMessage = null;
         try
         {
-            var result = await DayService.GetAsync(Date, cancellation.Token);
+            var result = CalendarVersion is null
+                ? await DayService.GetAsync(Date, cancellation.Token)
+                : await DayService.GetAsync(Date, CalendarVersion, cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;

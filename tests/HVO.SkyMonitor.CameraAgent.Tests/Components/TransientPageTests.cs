@@ -112,6 +112,30 @@ public sealed class TransientPageTests
     }
 
     [TestMethod]
+    public void MissingSiteKeepsCandidateSourceTimeAndDisclosesAnUnassignedCalendarDate()
+    {
+        using var context = new BunitContext();
+        var candidate = Candidate();
+        Configure(context, new TestTransientUiService
+        {
+            Page = OperatorUiResult<CameraAgentTransientOperatorPage>.Success(new([candidate], null)),
+            Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(Detail())
+        });
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new DeploymentObservingDayCalendarProvider());
+        var list = context.Render<TransientPage>();
+        list.WaitForAssertion(() => StringAssert.Contains(list.Markup, "Reporting date unavailable", StringComparison.Ordinal));
+
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/transients?view=calendar&month=2026-07");
+        var calendar = context.Render<TransientPage>();
+        calendar.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(calendar.Markup, "Reporting date unavailable for 1 matching local candidate", StringComparison.Ordinal);
+            Assert.IsEmpty(calendar.FindAll(".event-month-day.has-event"));
+            Assert.IsNotNull(calendar.Find(".event-calendar-panel"));
+        });
+    }
+
+    [TestMethod]
     public void CalendarKeepsAllMatchesOnTheLocalNoonObservingDate()
     {
         using var context = new BunitContext();

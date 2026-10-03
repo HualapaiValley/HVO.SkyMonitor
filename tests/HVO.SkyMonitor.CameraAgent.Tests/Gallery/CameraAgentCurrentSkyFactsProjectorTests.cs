@@ -29,7 +29,10 @@ public sealed class CameraAgentCurrentSkyFactsProjectorTests
 
         Assert.AreEqual(capture.CaptureId, facts.CaptureId);
         Assert.AreEqual("rig-1", facts.RigId);
-        Assert.AreEqual(new DateOnly(2026, 9, 3), facts.ObservingDay.Date);
+        Assert.AreEqual(new DateOnly(2026, 9, 3), facts.ObservingDay!.Value.Date);
+        var withoutSite = CameraAgentCurrentSkyFactsProjector.Project(capture, ObservingDayCalendar.ForDeployment(null));
+        Assert.IsNull(withoutSite.ObservingDay, "A missing site must not invent a UTC reporting period.");
+        Assert.AreEqual(capture.ExposureStartedUtc, withoutSite.ExposureStartedUtc);
         Assert.AreEqual(2500d, facts.ExposureMilliseconds);
         Assert.AreEqual(120d, facts.Gain);
         Assert.AreEqual(-9.5d, facts.SensorTemperatureC);
@@ -63,8 +66,8 @@ public sealed class CameraAgentCurrentSkyFactsProjectorTests
         Assert.IsNull(facts.Cloud.Status);
         Assert.IsNull(facts.CombinedLineage);
         Assert.IsNull(facts.ProcessingProfile);
-        Assert.IsTrue(facts.ObservingDay.TimeZoneFallback);
-        Assert.AreEqual(new DateOnly(2026, 9, 3), facts.ObservingDay.Date);
+        Assert.IsTrue(facts.ObservingDay!.Value.TimeZoneFallback);
+        Assert.AreEqual(new DateOnly(2026, 9, 3), facts.ObservingDay!.Value.Date);
     }
 
     [TestMethod]

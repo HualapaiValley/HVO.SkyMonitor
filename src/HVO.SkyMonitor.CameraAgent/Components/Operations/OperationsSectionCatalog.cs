@@ -98,7 +98,7 @@ public static class OperationsSectionCatalog
             "Adjust the lens by hand at the camera. This page does not imply a motorized focuser or autofocus capability.", [])
         {
             Badge = "Manual",
-            CapabilityNote = "Focus sessions, temporary previews and image-derived sharpness measurements are not implemented on this CameraAgent."
+            CapabilityNote = "Manual focus only: CameraAgent measures temporary previews but moves no focuser and runs no autofocus."
         },
         new("calibration", "Calibration", "Capture", "/operations/calibration",
             "Capture / immutable references",

@@ -320,6 +320,20 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerCalendar.StatusCode);
         var calendar = await ownerCalendar.Content.ReadFromJsonAsync<CameraAgentGalleryCalendar>().ConfigureAwait(false);
         Assert.AreEqual(3, calendar?.Days.Count);
+        Assert.AreEqual(SunriseReportingPeriod.CurrentVersion, calendar?.CalendarVersion);
+        Assert.IsTrue(calendar!.Days.All(static day => day.Day.SunrisePeriod?.IsValid() == true));
+        Assert.AreEqual(calendar.Days[0].Day.EndUtc, calendar.Days[1].Day.StartUtc);
+        using var legacyCalendar = await ownerClient.GetAsync(new Uri(
+            "/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03&calendar=" + ObservingDayCalendar.LegacyNoonVersion,
+            UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, legacyCalendar.StatusCode);
+        var legacy = await legacyCalendar.Content.ReadFromJsonAsync<CameraAgentGalleryCalendar>().ConfigureAwait(false);
+        Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, legacy?.CalendarVersion);
+        Assert.IsTrue(legacy!.Days.All(static day => day.Day.SunrisePeriod is null));
+        using var unsupportedCalendar = await ownerClient.GetAsync(new Uri(
+            "/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03&calendar=future-calendar",
+            UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, unsupportedCalendar.StatusCode);
         using var unboundedCalendar = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/gallery/calendar?from=2026-01-01&to=2026-12-31", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, unboundedCalendar.StatusCode);

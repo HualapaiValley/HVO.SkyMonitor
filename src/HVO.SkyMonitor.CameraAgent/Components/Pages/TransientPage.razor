@@ -22,7 +22,7 @@
             else if (Latest is { } latest)
             {
                 <strong>@TimeZoneInfo.ConvertTime(RecordedUtc(latest), _calendar.TimeZone).ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</strong>
-                <small>@ObservingDate(latest).ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture) observing date · @UtcTime(RecordedUtc(latest))</small>
+                <small>@ObservingDateLabel(latest) reporting date · @UtcTime(RecordedUtc(latest))</small>
             }
             else { <strong>Unavailable</strong><small>No retained candidate on this page</small> }
         </article>
@@ -57,6 +57,10 @@
         @if (VisibleItems.Count == 0) { <section class="page-state" role="status"><div><strong>No matching local candidates</strong><p>No retained candidate on this page matches these filters.</p></div></section> }
         @if (CalendarView)
         {
+            @if (UnassignedReportingDateCount > 0)
+            {
+                <p class="event-result-count" role="status">Reporting date unavailable for @UnassignedReportingDateCount matching local candidate@(UnassignedReportingDateCount == 1 ? string.Empty : "s"). Their source times remain available in list view.</p>
+            }
             <section class="event-calendar-panel" aria-label="Event calendar">
                 <header class="event-month-heading"><button class="btn btn-outline-light" aria-label="Previous month" @onclick="() => ChangeMonth(-1)">←</button><h2>@CalendarMonth.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)</h2><button class="btn btn-outline-light" aria-label="Next month" @onclick="() => ChangeMonth(1)">→</button></header>
                 <div class="event-month-weekdays" aria-hidden="true">@foreach (var day in new[] { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }) { <span>@day</span> }</div>
@@ -77,7 +81,7 @@
                 {
                     <p class="event-calendar-empty event-other-months">@OtherMonthCount matching local candidate@(OtherMonthCount == 1 ? string.Empty : "s") in other months on this page. Change month to view those candidates.</p>
                 }
-                <p class="event-calendar-empty">The calendar shows matching candidates in the displayed month by local noon-to-noon observing date. <a href="/archive/calendar">Open capture calendar</a>.</p>
+                <p class="event-calendar-empty">The calendar groups matching candidates by @(_calendar.UsesSunrise ? "starting-sunrise report date" : "legacy noon association"). Records without a qualified period remain unassigned. <a href="/archive/calendar">Open capture calendar</a>.</p>
             </section>
         }
         else
@@ -94,7 +98,7 @@
                             <span>@UtcTime(RecordedUtc(candidate)) @(evidence?.Reference?.Source is null ? "· candidate recorded" : "· source observed")</span>
                         </a>
                         <div class="event-card-main">
-                            <header><div><p class="eyebrow">@ObservingDate(candidate).ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture) observing date / Local camera</p><h2>@CameraAgentEventFacts.Title(assessment)</h2></div><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(assessment)">@CameraAgentEventFacts.Classification(assessment)</span></header>
+                            <header><div><p class="eyebrow">@ObservingDateLabel(candidate) reporting date / Local camera</p><h2>@CameraAgentEventFacts.Title(assessment)</h2></div><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(assessment)">@CameraAgentEventFacts.Classification(assessment)</span></header>
                             <p>Local assessment: @(assessment?.State ?? "Unavailable"). Centered context: @(evidence?.Detail.CenteredEvidence.CenteredContextConverged == true ? "Converged receipt" : "Incomplete or unavailable"). Source imagery shows its retained frame, not an extracted event product.</p>
                             <a href="@DetailUrl(candidate.CandidateId)">Open event evidence →</a>
                             <details class="event-local-evidence"><summary>Local workflow and identity</summary><dl><div><dt>Candidate ID</dt><dd><code>@candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@candidate.EventId</code></dd></div><div><dt>Workflow</dt><dd>@SplitWords(candidate.WorkflowPhase) · @SplitWords(candidate.EventState)</dd></div><div><dt>Causal / Centered / Assessment / Final</dt><dd>@candidate.CausalEvidenceState / @candidate.CenteredEvidenceState / @candidate.AssessmentEvidenceState / @candidate.FinalEvidenceState</dd></div></dl></details>

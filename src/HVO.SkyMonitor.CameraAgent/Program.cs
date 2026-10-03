@@ -31,6 +31,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.Common.Configuration;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http;
@@ -296,6 +297,9 @@ public class Program
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
+        builder.Services.AddScoped<ICameraAgentFocusUiService, CameraAgentFocusUiService>();
+        builder.Services.AddScoped<CircuitConnectionState>();
+        builder.Services.AddScoped<CircuitHandler>(services => services.GetRequiredService<CircuitConnectionState>());
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
@@ -423,6 +427,7 @@ public class Program
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
+        app.MapCameraAgentFocusSessionEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();

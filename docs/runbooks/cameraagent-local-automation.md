@@ -9,30 +9,31 @@ This runbook covers the versioned durable local contract behind that section.
 
 ## What A Definition Can Express
 
-A definition names exactly four things plus its identity:
+A definition names a registered task, its source policy and trigger, plus its identity:
 
 | Field | Meaning |
 | --- | --- |
 | `taskKind` | One value of a closed registry enumeration. |
 | `taskTarget` | One target the registry currently publishes for that task kind. |
-| `triggerKind` | `Periodic` or `CaptureRelative`. |
-| `triggerInterval` | Seconds for `Periodic`, durable captures for `CaptureRelative`. |
+| `triggerKind` | `Periodic`, `CaptureRelative`, or adapter-supported `SourceWindowClosed`. |
+| `triggerInterval` | Seconds for `Periodic`, durable captures for `CaptureRelative`; exactly 1 for `SourceWindowClosed`. |
+| `sourceWindow` | Required only for `SourceWindowClosed`: versioned completed civil hour or sunrise day, actual-source selection and fixed 0–24-hour processing allowance. |
 | `definitionId`, `name`, `enabled` | Identity and enablement. |
 
 There is deliberately no field that can hold a command line, a script, a path, an
-executable, or a URL, and no task kind that would interpret one. Two task kinds are
-registered:
+executable, or a URL, and no task kind that would interpret one. The default
+registered task kind is `EnvironmentalOnDemandAcquisition`, whose targets are the
+configured environmental sources that declare the `OnDemand` trigger. A save that
+names a target the registry does not publish is rejected with
+`automation.unregisteredTarget` before anything durable changes.
 
-| Task kind | Targets | Triggers |
-| --- | --- | --- |
-| `EnvironmentalOnDemandAcquisition` | The configured environmental sources that declare the `OnDemand` trigger. | `Periodic`, `CaptureRelative` |
-| `NightlyProductGeneration` | `keogram` and `star-trail`, only while `CameraAgent:NightlyProducts:Enabled` is `true`. | `Periodic` |
-
-A save that names a target the registry does not publish is rejected with
-`automation.unregisteredTarget` before anything durable changes. Rolling back to a
-build that predates a task kind is not transparent. That build cannot read a stored
-definition of the newer kind, so its automation store fails closed. Remove those
-definitions before such a rollback.
+Built-in producers register `ILocalAutomationWindowTaskAdapter`; their descriptors
+publish actual installed targets and supported presets. `StillImageGeneration` is
+a reserved typed kind, unavailable until a producer registers its adapter. A target
+must identify its immutable producer preset; an adapter must reject a retained preset
+it can no longer resolve, rather than reinterpret it using changed settings. Each
+definition has its own revision and schedule. Hourly and daily definitions of the
+same task kind coexist; a daily definition does not require hourly outputs.
 
 Capture-relative triggers are evaluated by the automation runner from the durable
 capture sequence on its own timer. They are not the environmental capture trigger
@@ -45,7 +46,7 @@ definable here.
 `<raw-ingress-root>/.automation/local-automations.db`, a dedicated SQLite database
 with WAL journaling, `synchronous = FULL`, and `PRAGMA user_version` pinned to the
 contract's schema version. The drift guard counts schema objects, which cannot see a
-column change, so any column change bumps the schema version and a database written by
+column change, so any column change bumps the schema version (currently 3) and a database written by
 an earlier build is refused rather than opened. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt
 database rather than migrating it. Every open re-asserts that write-ahead logging is
@@ -77,7 +78,9 @@ Tables:
   `automation.idempotencyKeyConflict`. The ledger retains keys for seven days, so
   the retained window is the replay window.
 - **Bounded retention.** At most 32 definitions, and 50 retained revisions and 200
-  retained runs per live definition. Per-definition retention only runs from that
+  terminal runs per live definition, plus at most 32 queued attempts and one running
+  attempt per definition. Active work is never evicted by terminal retention.
+  Per-definition retention only runs from that
   definition's own write paths, and a removal frees its slot, so removed definitions
   have their own global bound: 200 retained revisions and 200 retained runs in total
   across every removed definition, pruned on each removal. Projections return at most
@@ -102,75 +105,81 @@ Tables:
   epoch as missed.
 - A newly enabled capture-relative definition is baselined at the current durable
   capture sequence rather than firing for captures that predate it.
-- A failed run is recorded as `Failed`; the definition stays enabled and retries at
-  its next occurrence.
+- A failed run is recorded as `Failed`; the next automatic occurrence has its own
+  identity. An explicit retry reuses the failed/interrupted occurrence, not a new window.
 - The runner issues the same on-demand acquisition an operator can issue by hand. It
   never admits an exposure, never changes acquisition cadence, and never occupies the
   live processing slot.
-
-## Nightly Products
-
-A `NightlyProductGeneration` definition schedules keogram or star-trail generation
-from published Preview frames. Use one definition per target, with a `Periodic`
-interval of about 15 minutes so that hourly segments appear soon after they settle.
-Each run does the following:
-
-- **Windows.** It evaluates the previous and the current observing day. An observing
-  day runs from local noon to local noon in the observatory time zone, so a day has 23
-  or 25 segments across a daylight-saving change. A segment window is evaluated once
-  it closed at least `SettleSeconds` ago. The night product is composed once the whole
-  observing day has settled, at the next run after the noon rollover.
-- **Sources.** It reads the published, `Available` Preview outputs of the
-  `SourceNodeId` node, chosen by each raw capture's own exposure start. An output that
-  only an unpublished execution recorded is never a source. A capture that has several outputs contributes only its latest. A window
-  with more than 4096 candidates is `Rejected` with `nightly.window-source-bound`
-  rather than truncated.
-- **Admission.** A frame is admitted only if it was captured through the current rig
-  profile and the Sun was at or below the kind's altitude limit. The Sun's altitude is
-  evaluated at the frame's own exposure start and capture location. The default limits
-  are 0° for keograms and −18° for star trails. A frame without a usable location is
-  excluded, not assumed. Every exclusion is counted per reason code on the window.
-- **Composition.** A window is composed in ordered parts of at most
-  `MaximumSegmentSources` frames.
-  - A keogram samples the true north–zenith–south meridian. A gap longer than
-    `KeogramMaximumGapSeconds` is drawn as patterned columns.
-  - A keogram night is assembled from its segments, byte for byte the same as composing
-    every frame directly.
-  - A star-trail night is reduced through ordered rollups of at most
-    `MaximumSegmentSources` products each.
-  - A run stops after `MaximumSegmentsPerRun` recipe executions and reports the rest as
-    pending. Product identity is the recipe output identity, so the next run continues
-    without recomputing anything already published.
-- **Publication.** Products are immutable. The database is
-  `<raw-ingress-root>/.nightly-products/nightly-products.db`. Each product also has
-  three files under
-  `<raw-ingress-root>/nightly-products/<yyyy>/<MM>/<dd>/<target>/<product-id>`:
-  - `.bin`, the packed payload;
-  - `.jpg`, the rendition;
-  - `.provenance.json`, the ordered lineage, the recipe identity and the checksums.
-
-  The files are written and synchronized before the row commits. Database triggers
-  refuse to update or delete products and their lineage. A window re-evaluated over
-  different sources records new current products without removing the earlier ones.
-  The run detail reports windows evaluated, products published, pending, rejected, and
-  failed. A failed window does not stop the remaining windows.
-
-Nightly products are not pruned by capture retention. Video slots are not produced
-here; time-lapse generation is tracked by #1130.
 
 ## Restart Recovery
 
 `InitializeAsync` runs from the runner's `StartAsync`, so a store that fails any of
 those checks fails host startup rather than letting the host serve traffic and stop
-later. It settles every run still marked `Running` as `Interrupted` with its completion
-time, because the process that claimed it is gone. A restarted process and a
-competing second instance are indistinguishable at that point, so liveness is
-asserted at completion instead: a run stays authoritative for the instance that
-claimed it, and that instance records its real outcome even if another settled the
-row meanwhile. Progress already advanced with
+later. Before opening SQLite it acquires an exclusive lifetime file handle at
+`.automation/local-automations.lock`. A competing process fails startup without
+settling or changing the owner's rows. Execution retains that authority through actual
+drain, including tasks that ignore cancellation. Every admitted journal operation also
+retains the handle through its transaction and projection. Disposal rejects new admissions
+and waits for admitted commands and tasks to drain; a running task may finish its own
+durable completion while draining. A new sole owner settles the preceding owner's `Running`
+rows as `Interrupted`, including when a status read initialized the schema before hosted
+startup; it preserves claims made by the current owner. It never automatically reruns
+interrupted work. An adapter-local cancellation with the host still running is recorded
+as a failed attempt so subsequent scheduling remains possible. Progress already advanced with
 the claim, so the cadence continues at the next occurrence rather than repeating the
 interrupted one. If a completion ever finds its run no longer claimed, that is logged
 as a warning (event 7408) rather than passing silently.
+
+## Source Windows And Finality
+
+The source policy uses #1135's configured-site sunrise calendar. A named daily report
+date covers that date's sunrise through the following date's sunrise. Windows retain
+exact UTC `[start,end)`, report date, full site snapshot, time-zone rule digest, both
+solar algorithm identities, definition/revision identity and canonical occurrence/run
+identity. The occurrence is committed before adapter execution. Retry reads the retained
+value and does not consult current coordinates, time-zone rules or wall time to rebuild it.
+
+Completed civil hours partition the entire sunrise period. Enumerate site-local
+top-of-hour boundaries: omit invalid DST boundaries and retain both UTC instants of
+ambiguous boundaries. Repeated hours have distinct identities. Sunrise clips the first
+and last hour. Non-hour offset changes may produce shorter or longer elapsed spans;
+every actual instant still belongs to exactly one window. No sunrise means explicit
+unavailability; no noon or fixed-time replacement is generated.
+
+Final generation waits until `endUtc + processingSettleAllowance`. Daily finality
+also retains the shared sunrise finality contract. The adapter receives the same fixed
+period; `AllActualSources` accepts only actual observations within it and
+`DarkNightActualSources` additionally requires geometric solar altitude at each
+source's actual timestamp to be at most −18 degrees. Missing leading/trailing/interior
+coverage remains missing. Selection cannot shorten the planned chart, synthesize
+pixels or interpolate trails. The product adapter owns actual output/provenance checks.
+
+The preview and runner share one planner. `definitions[].nextOccurrence`, calendar
+entries' `occurrence`, and `windowUnavailableReasonCode` expose exact upcoming spans
+and eligibility. A late automatic sweep runs only the latest eligible window, records
+the number missed within a bounded seven-day UTC lookback of final-run eligibility,
+reconciled against retained original occurrence identities for the exact definition
+revision, including explicit backfills and retries outside the recent run page,
+and identifies earlier coverage as unresolved. The date search includes periods that
+start before that UTC bound but close and settle inside it, using each bound's actual
+site-local offset. Search padding never hides coverage excluded by the UTC bound.
+It does not launch a catch-up burst.
+
+Explicit backfill names a report date and, for an hour, its exact UTC start. It requires
+finality, current enablement/version and a window ending within seven days. Explicit
+retry accepts only a retained `Failed` or `Interrupted` attempt and caps each occurrence
+at three attempts. Both commands require an operator reason and retain actor, request
+key/time and payload digest. Queued rows have no start time. Disabling pauses queued work;
+removal cancels queued work and is rejected while an attempt is running. Retries retain
+the original definition/window while requiring the operator's current definition version.
+Adapter command identity stays the original run key; journal retries use `:retry2` or
+`:retry3`. Prepared work does not rewind automatic progress. Restart retains queued work.
+
+The existing bounded BackgroundService/SQLite journal provides the calendar scheduling
+and sole durable authority. No scheduler framework, sidecar or SQL/Redis dependency is
+needed. A future worker must execute through this authority and its immutable occurrence;
+opening a second competing journal owner is unsupported. Installed-instance migration
+remains separately held; older automation schemas fail closed and are never upgraded here.
 
 ## Configuration
 
@@ -185,26 +194,6 @@ corrupt store fails host startup whether or not the runner is enabled. That is
 deliberate: the store is durable operator state, and a CameraAgent that cannot read it
 must say so rather than start and silently present nothing.
 
-`CameraAgent:NightlyProducts` bounds nightly generation:
-
-| Setting | Default | Range |
-| --- | --- | --- |
-| `Enabled` | `false` | |
-| `SourceNodeId` | none; required when enabled | the Preview-producing pipeline node |
-| `SegmentMinutes` | `60` | 15–240 |
-| `SettleSeconds` | `300` | 0–3600 |
-| `MaximumSegmentSources` | `32` | 1–512 |
-| `MaximumSegmentsPerRun` | `32` | 1–256 |
-| `StarTrailMaximumSolarAltitudeDegrees` | `-18` | −90–0 |
-| `KeogramMaximumSolarAltitudeDegrees` | `0` | −90–90 |
-| `KeogramMaximumGapSeconds` | `300` | 1–86400 |
-| `KeogramMaximumGapColumnCount` | `64` | 1–65536, at most `KeogramMaximumColumnCount` |
-| `KeogramMaximumColumnCount` | `16384` | 2–65536 |
-| `RenditionJpegQuality` | `90` | 1–100 |
-
-`MaximumSegmentSources` bounds a run's working set, because every source of one part
-is resident at once.
-
 ## Endpoints
 
 | Method | Route | Policy |
@@ -212,8 +201,10 @@ is resident at once.
 | `GET` | `/api/v1/operations/automations` | `CameraAgent.Operations.Read.V1` |
 | `POST` | `/api/v1/operations/automations/definitions` | `CameraAgent.Operations.Mutate.V1`, antiforgery |
 | `POST` | `/api/v1/operations/automations/definitions/{definitionId}/removal` | `CameraAgent.Operations.Mutate.V1`, antiforgery |
+| `POST` | `/api/v1/operations/automations/definitions/{definitionId}/backfill` | `CameraAgent.Operations.Mutate.V1`, antiforgery |
+| `POST` | `/api/v1/operations/automations/definitions/{definitionId}/retry` | `CameraAgent.Operations.Mutate.V1`, antiforgery |
 
-Both mutations require the `Idempotency-Key` header and a body `expectedVersion`, and
+All mutations require the `Idempotency-Key` header and a body `expectedVersion`, and
 record the authenticated owner identity as the actor. A caller-supplied actor is
 ignored.
 

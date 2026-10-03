@@ -49,6 +49,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2009, Level = LogLevel.Information, Message = "Camera module {Module} initialized")]
     public static partial void CameraModuleInitialized(this ILogger logger, string module);
 
+    [LoggerMessage(EventId = 4710, Level = LogLevel.Warning, Message = "Camera module {Module} leases did not drain within {DrainTimeout} after revocation; disposing it anyway")]
+    public static partial void CameraModuleLeaseDrainTimedOut(this ILogger logger, string module, TimeSpan drainTimeout);
+
     [LoggerMessage(EventId = 2010, Level = LogLevel.Error, Message = "Capture loop encountered an error")]
     public static partial void CaptureLoopFailed(this ILogger logger, Exception exception);
 

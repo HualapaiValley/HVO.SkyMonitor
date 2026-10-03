@@ -21,6 +21,12 @@
          by every project that compiles it. -->
     <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\ObjectStoreConformanceSuite.cs" Link="Services\ObjectStoreConformanceSuite.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\LogicHostProcessingConformanceTests.cs" Link="Services\LogicHostProcessingConformanceTests.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.cs" Link="Services\HostRecipeContractConformanceTests.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Reconstruction.cs" Link="Services\HostRecipeContractConformanceTests.Reconstruction.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Calibration.cs" Link="Services\HostRecipeContractConformanceTests.Calibration.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Scene.cs" Link="Services\HostRecipeContractConformanceTests.Scene.cs" />
+    <!-- Central and combined host lanes use the canonical analytic/mask/noise Imaging conformance suite. -->
+    <Compile Include="..\HVO.SkyMonitor.Imaging.Tests\FocusStarMeasurerTests.cs" Link="Imaging\FocusStarMeasurerTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

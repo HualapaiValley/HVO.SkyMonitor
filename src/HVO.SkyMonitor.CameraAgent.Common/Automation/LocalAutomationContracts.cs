@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
@@ -9,14 +10,33 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 /// </summary>
 public static class LocalAutomationContract
 {
+    /// <summary>The revision identity covers every retained definition field.</summary>
+    public static string ComputeRevisionSha256(LocalAutomationDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            Schema = SchemaLabel,
+            definition.DefinitionId,
+            definition.Name,
+            definition.Enabled,
+            TaskKind = definition.TaskKind.ToString(),
+            definition.TaskTarget,
+            TriggerKind = definition.TriggerKind.ToString(),
+            definition.TriggerInterval,
+            definition.TriggerEpochUtc,
+            definition.SourceWindow
+        });
+    }
+
     /// <summary>The durable schema label recorded in every revision hash.</summary>
-    public const string SchemaLabel = "hvo-cameraagent-local-automation-v1";
+    public const string SchemaLabel = "hvo-cameraagent-local-automation-v2";
 
     /// <summary>
     /// The current durable schema version of the separate automation store file. The drift guard counts
     /// tables and indexes, which cannot see a column change, so any column change must bump this.
     /// </summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>The maximum accepted definition identifier length.</summary>
     public const int MaximumDefinitionIdLength = 64;
@@ -61,7 +81,7 @@ public static class LocalAutomationContract
     /// <summary>The most recent revisions one definition retains. Older revisions are dropped.</summary>
     public const int MaximumRetainedRevisions = 50;
 
-    /// <summary>The most recent runs one definition retains. Older runs are dropped.</summary>
+    /// <summary>The most recent terminal runs retained, in addition to bounded queued/running work.</summary>
     public const int MaximumRetainedRuns = 200;
 
     /// <summary>The most recent runs a projection returns across all definitions, newest first.</summary>
@@ -123,7 +143,10 @@ public enum LocalAutomationTaskKind
     /// <summary>Runs the existing on-demand acquisition of one registered environmental source.</summary>
     EnvironmentalOnDemandAcquisition,
 
-    /// <summary>Runs the scheduled keogram or star-trail generation over settled observing-day windows.</summary>
+    /// <summary>A still-image producer supplied by an explicitly registered window task adapter.</summary>
+    StillImageGeneration,
+
+    /// <summary>Legacy checkpoint kind; no current adapter registers its old periodic behavior.</summary>
     NightlyProductGeneration
 }
 
@@ -139,7 +162,10 @@ public enum LocalAutomationTriggerKind
     Periodic,
 
     /// <summary>Due once the durable capture sequence has advanced by the configured interval.</summary>
-    CaptureRelative
+    CaptureRelative,
+
+    /// <summary>Due when a retained source window closes and its fixed processing allowance expires.</summary>
+    SourceWindowClosed
 }
 
 /// <summary>The bounded disposition of one automation definition command.</summary>
@@ -169,6 +195,9 @@ public enum LocalAutomationCommandStatus
 [JsonConverter(typeof(JsonStringEnumConverter<LocalAutomationRunOutcome>))]
 public enum LocalAutomationRunOutcome
 {
+    /// <summary>An explicitly prepared backfill/retry retains its inputs and awaits the bounded runner.</summary>
+    Queued,
+
     /// <summary>The run is claimed and executing in this process.</summary>
     Running,
 
@@ -200,7 +229,8 @@ public sealed record LocalAutomationDefinition(
     [property: JsonRequired] string TaskTarget,
     [property: JsonRequired] LocalAutomationTriggerKind TriggerKind,
     [property: JsonRequired] int TriggerInterval,
-    [property: JsonRequired] DateTimeOffset TriggerEpochUtc);
+    [property: JsonRequired] DateTimeOffset TriggerEpochUtc,
+    [property: JsonRequired] LocalAutomationSourceWindowPolicy? SourceWindow = null);
 
 /// <summary>One immutable recorded revision of a definition, including its removal.</summary>
 public sealed record LocalAutomationRevision(
@@ -220,11 +250,20 @@ public sealed record LocalAutomationRun(
     string RevisionSha256,
     LocalAutomationTriggerKind TriggerKind,
     DateTimeOffset ScheduledForUtc,
-    DateTimeOffset StartedAtUtc,
+    DateTimeOffset? StartedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     LocalAutomationRunOutcome Outcome,
     string Detail,
-    long? ObservedCaptureSequence);
+    long? ObservedCaptureSequence)
+{
+    /// <summary>The exact inputs passed to the adapter, retained for an explicitly requested retry.</summary>
+    public LocalAutomationOccurrence? Occurrence { get; init; }
+
+    /// <summary>The bounded execution attempt number; retries keep the occurrence identity.</summary>
+    public int Attempt { get; init; } = 1;
+
+    public LocalAutomationRunPreparation? Preparation { get; init; }
+}
 
 /// <summary>The operator-facing state of one definition, its concurrency token, and its history.</summary>
 public sealed record LocalAutomationDefinitionState(
@@ -237,7 +276,12 @@ public sealed record LocalAutomationDefinitionState(
     DateTimeOffset? NextRunUtc,
     long? NextRunCaptureSequence,
     LocalAutomationRun? LastRun,
-    IReadOnlyList<LocalAutomationRevision> History);
+    IReadOnlyList<LocalAutomationRevision> History)
+{
+    public LocalAutomationOccurrence? NextOccurrence { get; init; }
+
+    public string? WindowUnavailableReasonCode { get; init; }
+}
 
 /// <summary>One entry of the next-run calendar over the enabled wall-clock definitions.</summary>
 public sealed record LocalAutomationCalendarEntry(
@@ -245,7 +289,10 @@ public sealed record LocalAutomationCalendarEntry(
     string Name,
     LocalAutomationTaskKind TaskKind,
     string TaskTarget,
-    DateTimeOffset DueUtc);
+    DateTimeOffset DueUtc)
+{
+    public LocalAutomationOccurrence? Occurrence { get; init; }
+}
 
 /// <summary>One registered task kind, the triggers it accepts, and the targets it can name.</summary>
 public sealed record LocalAutomationTaskDescriptor(
@@ -254,7 +301,11 @@ public sealed record LocalAutomationTaskDescriptor(
     IReadOnlyList<LocalAutomationTriggerKind> CompatibleTriggers,
     IReadOnlyList<string> Targets,
     bool Available,
-    string? UnavailableReason);
+    string? UnavailableReason)
+{
+    /// <summary>Only the source-window presets that this installed adapter actually accepts.</summary>
+    public IReadOnlyList<LocalAutomationSourceWindowKind> SupportedSourceWindows { get; init; } = [];
+}
 
 /// <summary>The complete operator projection of the local automation contract.</summary>
 public sealed record LocalAutomationOperatorState(
@@ -266,6 +317,10 @@ public sealed record LocalAutomationOperatorState(
     IReadOnlyList<LocalAutomationCalendarEntry> Calendar,
     IReadOnlyList<LocalAutomationRun> Runs)
 {
+    /// <summary>Exact journal totals, independent of the bounded recent-run projection.</summary>
+    public int? RunningRunCount { get; init; }
+    public int? QueuedRunCount { get; init; }
+
     /// <summary>The state a store reports before any definition or run exists.</summary>
     public static LocalAutomationOperatorState Empty { get; } = new(
         StoreVersion: 0,
@@ -289,7 +344,8 @@ public sealed record LocalAutomationSaveRequest(
     long ExpectedVersion,
     string IdempotencyKey,
     string Actor,
-    string? Reason);
+    string? Reason,
+    LocalAutomationSourceWindowPolicy? SourceWindow = null);
 
 /// <summary>One operator command that removes a definition and retains its recorded history.</summary>
 public sealed record LocalAutomationRemoveRequest(

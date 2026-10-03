@@ -243,12 +243,14 @@ public sealed class CameraAgentGalleryQueryException : Exception
 public sealed record CameraAgentGalleryCalendarQuery(
     DateOnly FromDate,
     DateOnly ToDate,
-    CameraAgentGalleryQuery? Filters = null);
+    CameraAgentGalleryQuery? Filters = null,
+    string? CalendarVersion = null);
 
 public sealed record CameraAgentGalleryCalendar(
     string TimeZoneId,
     bool TimeZoneFallback,
-    IReadOnlyList<CameraAgentGalleryCalendarDay> Days);
+    IReadOnlyList<CameraAgentGalleryCalendarDay> Days,
+    string CalendarVersion = ObservingDayCalendar.LegacyNoonVersion);
 
 /// <summary>
 /// One observing night's retained facts. <c>RepresentativeCaptureId</c> is the newest capture of the
@@ -301,6 +303,16 @@ public interface ICameraAgentArchive
     ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
         DateOnly observingDate,
         CancellationToken cancellationToken);
+
+    /// <summary>Reads an explicit supported historical/calendar interpretation without rewriting source evidence.</summary>
+    ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+        DateOnly observingDate,
+        string calendarVersion,
+        CancellationToken cancellationToken)
+        => calendarVersion == ObservingDays.CalendarVersion
+            ? GetObservingDayAsync(observingDate, cancellationToken)
+            : ValueTask.FromException<CameraAgentObservingDayDetail?>(
+                new NotSupportedException("This archive does not expose the requested calendar interpretation."));
 
     ValueTask<CameraAgentProductPage> GetProductPageAsync(
         CameraAgentProductQuery query,

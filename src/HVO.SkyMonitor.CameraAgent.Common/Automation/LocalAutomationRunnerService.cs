@@ -24,7 +24,8 @@ public sealed partial class LocalAutomationRunnerService(
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
     ILogger<LocalAutomationRunnerService> logger,
-    LocalAutomationTelemetry? telemetry = null) : BackgroundService
+    LocalAutomationTelemetry? telemetry = null,
+    LocalAutomationWindowPlanner? windowPlanner = null) : BackgroundService
 {
     private readonly LocalAutomationOptions _options = options.Value.Automation;
 
@@ -129,6 +130,47 @@ public sealed partial class LocalAutomationRunnerService(
         long? captureSequence,
         CancellationToken cancellationToken)
     {
+        using var authority = (store as ILocalAutomationExecutionAuthority)?.RetainExecutionAuthority();
+        if (store is ILocalAutomationOccurrenceStore occurrenceStore &&
+            await occurrenceStore.TryClaimQueuedAsync(entry, cancellationToken).ConfigureAwait(false) is { Occurrence: { } prepared } queued)
+        {
+            await ExecuteClaimedAsync(prepared, queued.RunKey, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (entry.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            if (windowPlanner is null || store is not ILocalAutomationOccurrenceStore windowStore)
+            {
+                WindowUnavailable(logger, entry.Definition.DefinitionId, "automation.window-planner-unavailable");
+                return;
+            }
+            var plan = windowPlanner.Resolve(entry, now);
+            if (plan.UnavailableReasonCode is { } unavailable)
+            {
+                WindowUnavailable(logger, entry.Definition.DefinitionId, unavailable);
+            }
+            if (plan.DueOccurrence is not { } due)
+            {
+                return;
+            }
+            var recorded = await windowStore.GetRecordedOccurrenceIdentitiesAsync(entry, cancellationToken)
+                .ConfigureAwait(false);
+            var missed = plan.EarlierDueWindows.Count(window =>
+                !recorded.Contains(LocalAutomationWindowPlanner.CreateOccurrenceIdentity(entry, window)));
+            if (missed > 0 || plan.EarlierOccurrencesOutsideLookback)
+            {
+                await store.RecordTerminalRunAsync(entry, due.RunKey + ":missed", due.ScheduledForUtc,
+                    LocalAutomationRunOutcome.Missed,
+                    string.Create(CultureInfo.InvariantCulture,
+                        $"{missed} closed window(s) were missed within the seven-day lookback; older coverage unresolved: {plan.EarlierOccurrencesOutsideLookback}. No automatic replay."),
+                    null, cancellationToken).ConfigureAwait(false);
+            }
+            if (await windowStore.TryBeginOccurrenceAsync(due, cancellationToken).ConfigureAwait(false))
+            {
+                await ExecuteClaimedAsync(due, due.RunKey, cancellationToken).ConfigureAwait(false);
+            }
+            return;
+        }
         if (entry.Definition.TriggerKind == LocalAutomationTriggerKind.Periodic)
         {
             var resolved = LocalAutomationSchedule.ResolvePeriodic(
@@ -180,8 +222,6 @@ public sealed partial class LocalAutomationRunnerService(
         await RunAsync(entry, RunKey(entry, 'c', current), now, current, cancellationToken).ConfigureAwait(false);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "A throwing task is recorded as a failed run rather than leaving the claim open.")]
     private async Task RunAsync(
         LocalAutomationRunnerEntry entry,
         string runKey,
@@ -196,16 +236,32 @@ public sealed partial class LocalAutomationRunnerService(
         {
             return;
         }
+        await ExecuteClaimedAsync(LocalAutomationOccurrence.Create(entry, runKey, scheduledForUtc), runKey,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A throwing task is recorded as a failed run rather than leaving the claim open.")]
+    private async Task ExecuteClaimedAsync(LocalAutomationOccurrence occurrence, string journalRunKey,
+        CancellationToken cancellationToken)
+    {
         using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.run");
-        activity?.SetTag("trigger", entry.Definition.TriggerKind.ToString());
+        activity?.SetTag("trigger", occurrence.Definition.TriggerKind.ToString());
+        activity?.SetTag("window", occurrence.SourceWindow?.Policy.Kind.ToString());
         var started = Stopwatch.GetTimestamp();
         LocalAutomationExecution execution;
         try
         {
-            execution = await registry.ExecuteAsync(entry.Definition, runKey, cancellationToken)
+            execution = await registry.ExecuteAsync(occurrence, cancellationToken)
                 .ConfigureAwait(false);
+            if (execution is null || !Enum.IsDefined(execution.Outcome) ||
+                execution.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running ||
+                execution.Detail is null)
+            {
+                execution = new(LocalAutomationRunOutcome.Failed, "The task returned no valid terminal outcome.");
+            }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The claimed run stays claimed and restart recovery settles it as interrupted.
             throw;
@@ -214,20 +270,20 @@ public sealed partial class LocalAutomationRunnerService(
         {
             // A registry that throws instead of returning a disposition must not leave the claim open
             // until the next restart: the occurrence is terminal and is recorded as failed.
-            DefinitionFailed(logger, entry.Definition.DefinitionId, exception);
+            DefinitionFailed(logger, occurrence.Definition.DefinitionId, exception);
             execution = new LocalAutomationExecution(
                 LocalAutomationRunOutcome.Failed,
                 string.Concat("The registered task threw ", exception.GetType().Name, "."));
         }
         var elapsed = Stopwatch.GetElapsedTime(started);
         activity?.SetTag("outcome", execution.Outcome.ToString());
-        await store.CompleteRunAsync(runKey, execution.Outcome, execution.Detail, cancellationToken)
+        await store.CompleteRunAsync(journalRunKey, execution.Outcome, execution.Detail, cancellationToken)
             .ConfigureAwait(false);
-        telemetry?.RecordRun(entry.Definition.TriggerKind, execution.Outcome, elapsed);
+        telemetry?.RecordRun(occurrence.Definition.TriggerKind, execution.Outcome, elapsed);
         RunSettled(
             logger,
-            entry.Definition.DefinitionId,
-            entry.Definition.TriggerKind.ToString(),
+            occurrence.Definition.DefinitionId,
+            occurrence.Definition.TriggerKind.ToString(),
             execution.Outcome.ToString());
     }
 
@@ -250,6 +306,10 @@ public sealed partial class LocalAutomationRunnerService(
     [LoggerMessage(7405, LogLevel.Warning,
         "The durable capture sequence is unavailable; capture-relative automations stay pending.")]
     private static partial void CaptureSequenceUnavailable(ILogger logger, Exception exception);
+
+    [LoggerMessage(7424, LogLevel.Warning,
+        "Local automation {DefinitionId} has no upcoming source window: {ReasonCode}.")]
+    private static partial void WindowUnavailable(ILogger logger, string definitionId, string reasonCode);
 
     [LoggerMessage(7423, LogLevel.Warning, "Local automation {DefinitionId} failed to evaluate.")]
     private static partial void DefinitionFailed(ILogger logger, string definitionId, Exception exception);

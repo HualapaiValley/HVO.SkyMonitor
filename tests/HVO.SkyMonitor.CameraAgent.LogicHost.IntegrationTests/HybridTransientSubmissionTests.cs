@@ -418,6 +418,30 @@ public sealed class HybridTransientSubmissionTests
             .Select(item => item.CanonicalEventSha256).ToArrayAsync().ConfigureAwait(false);
         var release = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
             "combined-release", CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(release.Response);
+        var releaseIdentity = (release.Response.ReleaseId, release.Response.ETag);
+        if (release.Status == CentralTransientPayloadReleaseStatus.Accepted)
+        {
+            // The hosted processor can acquire the same release lock first. Accepted
+            // is a pending receipt, so replay the retained command until deletion completes.
+            Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, release.Response.State);
+            await WaitUntilAsync(async () =>
+            {
+                release = await releaseService.ReleaseAsync(principal, eventId, current.RowVersion,
+                    "combined-release", CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(release.Status is CentralTransientPayloadReleaseStatus.Accepted or
+                    CentralTransientPayloadReleaseStatus.Released, $"Release failed: {release.Status}.");
+                Assert.IsNotNull(release.Response);
+                Assert.AreEqual(releaseIdentity, (release.Response.ReleaseId, release.Response.ETag));
+                Assert.IsTrue(release.Response.Replayed);
+                if (release.Status == CentralTransientPayloadReleaseStatus.Accepted)
+                {
+                    Assert.AreEqual(CentralTransientPayloadReleaseState.Pending, release.Response.State);
+                    return false;
+                }
+                return true;
+            }, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
         Assert.AreEqual(CentralTransientPayloadReleaseStatus.Released, release.Status);
         Assert.IsNotNull(release.Response);
         Assert.AreEqual(CentralTransientPayloadReleaseState.Completed, release.Response.State);
