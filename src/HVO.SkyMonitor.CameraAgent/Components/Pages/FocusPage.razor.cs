@@ -451,7 +451,7 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void SetDisplayImages(ManualFocusPreviewImages? latestImages)
+    private void SetDisplayImages(ManualFocusPreviewImages? latestImages, bool resetViewer = true)
     {
         if (latestImages is { } images && images.Sequence != _imageSequence)
         {
@@ -465,7 +465,10 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             _imageSequence = -1;
             _overviewUrl = null;
             _starUrl = null;
-            _viewer = FocusViewer.Star;
+            if (resetViewer)
+            {
+                _viewer = FocusViewer.Star;
+            }
         }
     }
 
@@ -661,7 +664,7 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
             var images = result.Value!.SessionId == _status!.Session.SessionId &&
                 result.Value.Latest?.Sequence == _status.Images?.Sequence ? _status.Images : null;
             _status = _status with { Session = result.Value, Images = images, IsOwner = true };
-            SetDisplayImages(images);
+            SetDisplayImages(images, resetViewer: false);
             if (clearDirty)
             {
                 _dirty = false;

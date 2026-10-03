@@ -122,7 +122,6 @@ public sealed class CameraAgentBrowserAcceptanceTests
         // measures depends on where the render instant puts it. Either way the sample must say what it is: a width, or
         // its explicit reason with no width. Measured evidence on a full-size frame is the native preview's.
         await VisibleAsync(page.Locator("#focus-sample-detail")).ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".focus-viewer img").First).ConfigureAwait(false);
         var metric = (await page.Locator("#focus-metric").TextContentAsync().ConfigureAwait(false))!.Trim();
         if (await page.Locator("#focus-sample-detail.invalid").CountAsync().ConfigureAwait(false) == 0)
         {
@@ -132,7 +131,13 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             StringAssert.Contains(metric, "not measured", StringComparison.Ordinal);
             Assert.IsGreaterThan(0, (await page.Locator("#focus-sample-detail").TextContentAsync().ConfigureAwait(false))!.Length);
+            // No selected target means no star crop. The real overview remains available for choosing another field.
+            if (await page.Locator(".focus-viewer img").CountAsync().ConfigureAwait(false) == 0)
+            {
+                await page.Locator("#focus-select-region").ClickAsync().ConfigureAwait(false);
+            }
         }
+        await VisibleAsync(page.Locator(".focus-viewer img").First).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".focus-simulated")).ConfigureAwait(false);
         foreach (var width in new[] { 1440, 390, 320 })
         {
