@@ -378,8 +378,19 @@ public sealed class NightlyProductGenerationPerformanceTests
             kind, NightlyProductScope.Final, NightlyProductFixture.DayStartUtc, CancellationToken.None);
         Assert.IsNotNull(nightWindow);
         Assert.AreEqual(NightlyProductWindowDisposition.Produced, nightWindow.Status.Disposition);
-        var night = await store.GetAsync(nightWindow.ProductIds.Single(), CancellationToken.None);
-        Assert.IsNotNull(night);
+        // Final window state retains intermediate rollups for checksum-verified reuse.
+        // Require one actual Final product without treating those rollups as extra finals.
+        var finals = new List<NightlyProductDetail>();
+        foreach (var productId in nightWindow.ProductIds)
+        {
+            var product = await store.GetAsync(productId, CancellationToken.None);
+            Assert.IsNotNull(product);
+            Assert.AreEqual(kind, product.Summary.Kind);
+            Assert.IsTrue(product.Summary.Scope is NightlyProductScope.Rollup or NightlyProductScope.Final);
+            if (product.Summary.Scope == NightlyProductScope.Final) finals.Add(product);
+        }
+        Assert.HasCount(1, finals, "A completed window must contain exactly one final product.");
+        var night = finals.Single();
         var directory = Path.Combine(
             root, SqliteNightlyProductStore.ProductDirectoryName, "2026", "10", "01", NightlyProductContract.TargetFor(kind));
         var stem = Path.Combine(directory, night.Summary.ProductId.ToString("N"));
