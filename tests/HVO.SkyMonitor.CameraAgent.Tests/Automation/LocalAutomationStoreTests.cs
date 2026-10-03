@@ -622,6 +622,41 @@ public sealed class LocalAutomationStoreTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_AfterAnEarlyReadRecoversOldClaimsAndPreservesThisOwnersClaims()
+    {
+        using (var stopped = await CreateInitializedStoreAsync().ConfigureAwait(false))
+        {
+            await stopped.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+            await stopped.SaveAsync(SaveRequest(definitionId: "new-owner", key: "new-owner"), CancellationToken.None)
+                .ConfigureAwait(false);
+            var entry = (await stopped.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static item => item.Definition.DefinitionId == "sky-temperature");
+            Assert.IsTrue(await stopped.TryBeginRunAsync(entry, "old-owner-run", Now.AddHours(1), null,
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        using var restarted = CreateStore();
+        Assert.AreEqual(LocalAutomationRunOutcome.Running,
+            (await restarted.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Outcome);
+        var current = (await restarted.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
+            .Single(static item => item.Definition.DefinitionId == "new-owner");
+        Assert.IsTrue(await restarted.TryBeginRunAsync(current, "current-owner-run", Now.AddHours(1), null,
+            CancellationToken.None).ConfigureAwait(false));
+
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var state = await restarted.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted,
+            state.Runs.Single(static run => run.RunKey == "old-owner-run").Outcome);
+        Assert.AreEqual(LocalAutomationRunOutcome.Running,
+            state.Runs.Single(static run => run.RunKey == "current-owner-run").Outcome);
+        var recovered = (await restarted.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false))
+            .Single(static item => item.Definition.DefinitionId == "sky-temperature");
+        Assert.IsTrue(await restarted.TryBeginRunAsync(recovered, "after-recovery", Now.AddHours(2), null,
+            CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task CompleteRunAsync_BoundsTheRetainedRunHistoryPerDefinition()
     {
         using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);

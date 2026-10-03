@@ -403,6 +403,9 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
+        public ValueTask<IReadOnlySet<string>> GetRecordedOccurrenceIdentitiesAsync(
+            LocalAutomationRunnerEntry entry, CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken)
             => Throw
                 ? ValueTask.FromException<LocalAutomationOperatorState>(new IOException("/secret/automation/path"))

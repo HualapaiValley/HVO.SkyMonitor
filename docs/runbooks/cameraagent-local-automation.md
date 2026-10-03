@@ -121,8 +121,11 @@ settling or changing the owner's rows. Execution retains that authority through 
 drain, including tasks that ignore cancellation. Every admitted journal operation also
 retains the handle through its transaction and projection. Disposal rejects new admissions
 and waits for admitted commands and tasks to drain; a running task may finish its own
-durable completion while draining. A new sole owner settles remaining `Running`
-rows as `Interrupted`; it never automatically reruns them. Progress already advanced with
+durable completion while draining. A new sole owner settles the preceding owner's `Running`
+rows as `Interrupted`, including when a status read initialized the schema before hosted
+startup; it preserves claims made by the current owner. It never automatically reruns
+interrupted work. An adapter-local cancellation with the host still running is recorded
+as a failed attempt so subsequent scheduling remains possible. Progress already advanced with
 the claim, so the cadence continues at the next occurrence rather than repeating the
 interrupted one. If a completion ever finds its run no longer claimed, that is logged
 as a warning (event 7408) rather than passing silently.
@@ -155,9 +158,12 @@ The preview and runner share one planner. `definitions[].nextOccurrence`, calend
 entries' `occurrence`, and `windowUnavailableReasonCode` expose exact upcoming spans
 and eligibility. A late automatic sweep runs only the latest eligible window, records
 the number missed within a bounded seven-day UTC lookback of final-run eligibility,
+reconciled against retained original occurrence identities for the exact definition
+revision, including explicit backfills and retries outside the recent run page,
 and identifies earlier coverage as unresolved. The date search includes periods that
 start before that UTC bound but close and settle inside it, using each bound's actual
-site-local offset. It does not launch a catch-up burst.
+site-local offset. Search padding never hides coverage excluded by the UTC bound.
+It does not launch a catch-up burst.
 
 Explicit backfill names a report date and, for an hour, its exact UTC start. It requires
 finality, current enablement/version and a window ending within seven days. Explicit

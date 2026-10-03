@@ -291,11 +291,54 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
         Assert.AreEqual(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition, state.QueuedRunCount);
         Assert.AreEqual(LocalAutomationContract.MaximumProjectedRuns, state.Runs.Count);
         Assert.IsFalse(state.Runs.Any(static run => run.Outcome == LocalAutomationRunOutcome.Queued));
+        var recorded = await _store.GetRecordedOccurrenceIdentitiesAsync(entry, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition, recorded.Count);
+        Assert.IsTrue(recorded.Contains(LocalAutomationWindowPlanner.CreateOccurrence(entry, first).IdentitySha256),
+            "Accounting reads retained identities outside the recent operator page.");
         var claimed = await _store.TryClaimQueuedAsync(entry, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(first.IdentitySha256, claimed!.Occurrence!.SourceWindow!.IdentitySha256);
         var running = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, running.RunningRunCount);
         Assert.AreEqual(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition - 1, running.QueuedRunCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SuccessfulBackfill_IsNotCountedAsMissedAndDoesNotReplay(bool retry)
+    {
+        var windows = _planner.ResolveWindows(new DateOnly(2026, 10, 12),
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.CompletedCivilHour));
+        MoveTo(windows[0].EarliestFinalUtc.AddTicks(-1));
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        MoveTo(windows[2].EarliestFinalUtc);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied,
+            (await _store.BackfillAsync(new("hourly", windows[0].ReportingPeriod.ReportDate, windows[0].StartUtc,
+                1, "missed-accounting-backfill", "owner", "fill W1"), CancellationToken.None).ConfigureAwait(false)).Status);
+        if (retry)
+        {
+            _registry.Executor = (_, _) => ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Failed, "retry fixture"));
+        }
+        using var runner = CreateRunner();
+        await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        if (retry)
+        {
+            var failed = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied,
+                (await _store.RetryAsync(new("hourly", failed.RunKey, 1, "missed-accounting-retry", "owner", "retry W1"),
+                    CancellationToken.None).ConfigureAwait(false)).Status);
+            _registry.Executor = null;
+            await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var state = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var missed = state.Runs.Single(static run => run.Outcome == LocalAutomationRunOutcome.Missed);
+        StringAssert.StartsWith(missed.Detail, "1 closed window(s)", StringComparison.Ordinal);
+        Assert.AreEqual(retry ? 3 : 2, _registry.Executed.Count);
+        Assert.AreEqual(windows[0].IdentitySha256, _registry.Executed[0].SourceWindow!.IdentitySha256);
+        Assert.AreEqual(windows[2].IdentitySha256, _registry.Executed[^1].SourceWindow!.IdentitySha256);
     }
 
     private LocalAutomationRunnerService CreateRunner() => new(_store, _registry, _captures,

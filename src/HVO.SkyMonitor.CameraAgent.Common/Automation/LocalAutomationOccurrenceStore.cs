@@ -20,6 +20,10 @@ public sealed record LocalAutomationRetryRequest(
 
 public interface ILocalAutomationOccurrenceStore
 {
+    /// <summary>Retained original identities, including prepared backfills and retries, for this exact revision.</summary>
+    ValueTask<IReadOnlySet<string>> GetRecordedOccurrenceIdentitiesAsync(
+        LocalAutomationRunnerEntry entry, CancellationToken cancellationToken);
+
     ValueTask<bool> TryBeginOccurrenceAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken);
 
     ValueTask<LocalAutomationCommandResult> BackfillAsync(

@@ -159,6 +159,19 @@ public sealed class LocalAutomationWindowTests
             LocalAutomationTriggerKind.SourceWindowClosed, 1,
             new DateTimeOffset(2026, 10, 12, 10, 0, 0, TimeSpan.Zero), policy);
 
+    [TestMethod]
+    public void Lookback_ReportsExcludedCoverageEvenWhenItsCursorIsInsideThePaddedDateSearch()
+    {
+        var planner = Planner();
+        var definition = Definition("padded-lookback", Policy(LocalAutomationSourceWindowKind.CompletedCivilHour));
+        var entry = new LocalAutomationRunnerEntry(definition, 1,
+            LocalAutomationContract.ComputeRevisionSha256(definition), null, null);
+        var now = new DateTimeOffset(2026, 10, 20, 10, 0, 0, TimeSpan.Zero);
+        Assert.IsTrue(planner.Resolve(entry, now).EarlierOccurrencesOutsideLookback);
+        Assert.IsFalse(planner.Resolve(entry with { LastOccurrenceUtc = now.AddDays(-7) }, now)
+            .EarlierOccurrencesOutsideLookback);
+    }
+
     private static LocalAutomationWindowPlanner Planner()
         => new(new FixedObservingDayCalendarProvider(ObservingDayCalendar.ForDeployment(Site())));
 }

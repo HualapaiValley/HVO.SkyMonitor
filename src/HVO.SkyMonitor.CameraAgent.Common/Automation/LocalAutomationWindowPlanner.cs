@@ -11,7 +11,11 @@ public sealed record LocalAutomationWindowPlan(
     int MissedOccurrencesInLookback,
     bool EarlierOccurrencesOutsideLookback,
     string? UnavailableReasonCode,
-    IReadOnlyList<SunriseReportingPeriodResolution> UnavailableDates);
+    IReadOnlyList<SunriseReportingPeriodResolution> UnavailableDates)
+{
+    /// <summary>Potentially missed windows; the runner reconciles their exact identities with retained runs.</summary>
+    public IReadOnlyList<LocalAutomationOccurrence> EarlierDueOccurrences { get; init; } = [];
+}
 
 /// <summary>Shared preview/runner arithmetic over the configured site's delivered sunrise calendar.</summary>
 public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider calendarProvider)
@@ -75,12 +79,15 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
             .OrderBy(static window => window.EarliestFinalUtc).ToArray();
         var next = windows.Where(window => window.EarliestFinalUtc > nowUtc && window.EarliestFinalUtc > cursor)
             .MinBy(static window => window.EarliestFinalUtc);
-        var cutoff = windows.Count > 0 ? windows.Min(static window => window.EarliestFinalUtc) : nowUtc;
         return new(due.Length > 0 ? CreateOccurrence(entry, due[^1]) : null,
             next is not null ? CreateOccurrence(entry, next) : null, Math.Max(0, due.Length - 1),
-            cursor < cutoff && cursor < LookbackStart(nowUtc),
+            cursor < lookback,
             next is null ? unavailable.LastOrDefault()?.UnavailableReasonCode ?? ObservingDayCalendar.SiteUnavailable : null,
-            unavailable);
+            unavailable)
+        {
+            EarlierDueOccurrences = due.Take(Math.Max(0, due.Length - 1))
+                .Select(window => CreateOccurrence(entry, window)).ToArray()
+        };
     }
 
     /// <summary>Explicit bounded backfill resolves a named reporting date; it never infers a sliding period.</summary>

@@ -190,6 +190,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     private string? _connectionString;
     private string? _databasePath;
     private bool _schemaReady;
+    private bool _interruptedRunsSettled;
 
     public SqliteLocalAutomationStore(
         ILocalAutomationTaskRegistry registry,
@@ -237,7 +238,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         bool settleInterruptedRuns,
         CancellationToken cancellationToken)
     {
-        if (_schemaReady)
+        if (_schemaReady && (!settleInterruptedRuns || _interruptedRunsSettled))
         {
             return;
         }
@@ -303,13 +304,14 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 SET outcome = 'Interrupted',
                     completed_unix_ms = $now,
                     detail = 'The CameraAgent stopped while this run was claimed.'
-                WHERE outcome = 'Running';
+                WHERE outcome = 'Running' AND claimant <> $claimant;
                 """,
                 cancellationToken,
-                ("$now", ToUnixMilliseconds(Now()))).ConfigureAwait(false);
+                ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant)).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
+        _interruptedRunsSettled |= settleInterruptedRuns;
         if (interrupted > 0)
         {
             RunsSettled(_logger, interrupted, null);

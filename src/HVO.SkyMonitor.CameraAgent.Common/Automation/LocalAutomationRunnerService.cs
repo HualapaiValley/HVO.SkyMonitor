@@ -153,12 +153,15 @@ public sealed partial class LocalAutomationRunnerService(
             {
                 return;
             }
-            if (plan.MissedOccurrencesInLookback > 0 || plan.EarlierOccurrencesOutsideLookback)
+            var recorded = await windowStore.GetRecordedOccurrenceIdentitiesAsync(entry, cancellationToken)
+                .ConfigureAwait(false);
+            var missed = plan.EarlierDueOccurrences.Count(occurrence => !recorded.Contains(occurrence.IdentitySha256));
+            if (missed > 0 || plan.EarlierOccurrencesOutsideLookback)
             {
                 await store.RecordTerminalRunAsync(entry, due.RunKey + ":missed", due.ScheduledForUtc,
                     LocalAutomationRunOutcome.Missed,
                     string.Create(CultureInfo.InvariantCulture,
-                        $"{plan.MissedOccurrencesInLookback} closed window(s) were missed within the seven-day lookback; older coverage unresolved: {plan.EarlierOccurrencesOutsideLookback}. No automatic replay."),
+                        $"{missed} closed window(s) were missed within the seven-day lookback; older coverage unresolved: {plan.EarlierOccurrencesOutsideLookback}. No automatic replay."),
                     null, cancellationToken).ConfigureAwait(false);
             }
             if (await windowStore.TryBeginOccurrenceAsync(due, cancellationToken).ConfigureAwait(false))
@@ -257,7 +260,7 @@ public sealed partial class LocalAutomationRunnerService(
                 execution = new(LocalAutomationRunOutcome.Failed, "The task returned no valid terminal outcome.");
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The claimed run stays claimed and restart recovery settles it as interrupted.
             throw;

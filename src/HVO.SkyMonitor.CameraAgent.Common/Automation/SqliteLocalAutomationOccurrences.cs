@@ -11,6 +11,44 @@ public sealed partial class SqliteLocalAutomationStore
     public const int MaximumQueuedOccurrencesPerDefinition = 32;
     public const int MaximumOccurrenceAttempts = 3;
 
+    public async ValueTask<IReadOnlySet<string>> GetRecordedOccurrenceIdentitiesAsync(
+        LocalAutomationRunnerEntry entry, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        ArgumentNullException.ThrowIfNull(entry);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            // Retention bounds this definition's rows, independently of the recent operator page.
+            // Retry rows retain the original occurrence identity rather than their attempt run key.
+            command.CommandText = """
+                SELECT DISTINCT occurrence_id FROM automation_runs
+                WHERE definition_id = $id AND revision_sha256 = $revision AND occurrence_id IS NOT NULL;
+                """;
+            command.Parameters.AddWithValue("$id", entry.Definition.DefinitionId);
+            command.Parameters.AddWithValue("$revision", entry.RevisionSha256);
+            var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    identities.Add(reader.GetString(0));
+                }
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return identities;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(
         LocalAutomationRunnerEntry currentEntry, CancellationToken cancellationToken)
     {
