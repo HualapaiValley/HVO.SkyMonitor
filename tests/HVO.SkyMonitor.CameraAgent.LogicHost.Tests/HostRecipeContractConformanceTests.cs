@@ -80,6 +80,9 @@ public sealed partial class HostRecipeContractConformanceTests
     [DataRow(BuiltInProcessingRecipes.RollingMean, "{\"maximumFrameCount\":0}")]
     [DataRow(BuiltInProcessingRecipes.RollingMean, "{\"maximumAgeMilliseconds\":-1}")]
     [DataRow(BuiltInProcessingRecipes.Annotation, "{\"markRadius\":-1}")]
+    [DataRow(BuiltInProcessingRecipes.FixedPreview, "{\"blackLevel\":100,\"whiteLevel\":90}")]
+    [DataRow(BuiltInProcessingRecipes.Keogram, "{\"maximumColumnCount\":0}")]
+    [DataRow(BuiltInProcessingRecipes.StarTrail, "{\"maximumFrameCount\":0}")]
     public async Task HostsRejectInvalidFrozenRecipeOptions(string recipe, string json)
     {
         var source = Source(CameraPixelFormat.Mono16);
@@ -160,7 +163,8 @@ public sealed partial class HostRecipeContractConformanceTests
 
     private static ProcessingArtifact AsArtifact(ProcessingProduct product) => new(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role,
         product.Variant, product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload,
-        ProcessingConformanceFixture.CapturedUtc, product.TotalIntegration, product.Compatibility);
+        ProcessingConformanceFixture.CapturedUtc, product.TotalIntegration, product.Compatibility,
+        SourceArtifactIds: product.SourceArtifactIds);
 
     private sealed class RecordingExecutor : IProcessingRecipeExecutor
     {

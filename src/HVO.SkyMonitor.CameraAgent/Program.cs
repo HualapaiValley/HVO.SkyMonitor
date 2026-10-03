@@ -418,6 +418,7 @@ public class Program
         app.MapControllers();
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
+        app.MapCameraAgentStillProductEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();

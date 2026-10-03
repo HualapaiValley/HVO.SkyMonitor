@@ -14,11 +14,15 @@ internal static class BuiltInProcessingProductContracts
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
+        if (request.RecipeName is Keogram or StarTrail or KeogramAssembly)
+        {
+            return CreateNightlyProductContract(request, identity);
+        }
         var primary = ProcessingRecipeSupport.ResolveSingle(request, out _);
         var role = request.RecipeName switch
         {
             LinearNormalization or ReferenceCalibration => FrameArtifactRole.Calibrated,
-            EncodedPreview => FrameArtifactRole.Preview,
+            EncodedPreview or FixedPreview => FrameArtifactRole.Preview,
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
@@ -79,6 +83,11 @@ internal static class BuiltInProcessingProductContracts
             ProcessingIdentity.ComputePayloadSha256(payload),
             contract.ExpectedPayloadSha256,
             StringComparison.Ordinal))
+        {
+            return false;
+        }
+        if (request.RecipeName is Keogram or StarTrail or KeogramAssembly &&
+            (contract.ExactLayout is null || payload.Length != contract.ExactLayout.ByteLength))
         {
             return false;
         }
@@ -188,6 +197,83 @@ internal static class BuiltInProcessingProductContracts
         return true;
     }
 
+    private static ProcessingProductContract CreateNightlyProductContract(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity)
+    {
+        if (string.Equals(request.RecipeName, KeogramAssembly, StringComparison.Ordinal))
+        {
+            var plan = NightlyProductRecipeSupport.ResolveKeogramAssembly(request, identity, out _)
+                ?? throw new InvalidOperationException("The keogram assembly source contract is unavailable.");
+            var planned = NightlyProductRecipeSupport.PlannedAxis(identity);
+            var width = planned?.Width(plan.Composition.MaximumColumnCount)
+                ?? KeogramComposer.ComputeAssemblyTimeAxis(plan.Segments, plan.Composition).Width;
+            return new ProcessingProductContract(
+                FrameArtifactRole.Preview,
+                plan.Sources.Select(static source => source.ArtifactId).ToArray(),
+                "application/x-hvo-packed-image",
+                true,
+                ProcessingRecipeSupport.CreatePackedLayout(
+                    width, plan.Geometry.SampleCount, plan.Sources[0].Layout!.PixelFormat),
+                null,
+                ProcessingProductKind.PixelData,
+                null,
+                false,
+                null,
+                NightlyProductRecipeSupport.AssemblyAlgorithms(identity),
+                plan.TotalIntegration,
+                plan.Sources[0].Compatibility,
+                null);
+        }
+        var sources = NightlyProductRecipeSupport.ResolveOrderedFrames(request, out _);
+        if (sources.Count == 0 || !NightlyProductRecipeSupport.TryValidatePreviewSources(sources, out _))
+        {
+            throw new InvalidOperationException("The nightly product source contract is unavailable.");
+        }
+        var first = sources[0];
+        var firstLayout = first.Layout!;
+        var sourceIds = sources.Select(static source => source.ArtifactId).ToArray();
+        var totalIntegration = TimeSpan.FromTicks(sources.Sum(static source => source.Integration.Ticks));
+        if (string.Equals(request.RecipeName, Keogram, StringComparison.Ordinal))
+        {
+            var geometry = NightlyProductRecipeSupport.ResolveKeogramGeometry(request, sources, out _)
+                ?? throw new InvalidOperationException("The keogram geometry contract is unavailable.");
+            var composition = NightlyProductRecipeSupport.CreateKeogramComposition(identity, geometry);
+            var width = NightlyProductRecipeSupport.PlannedAxis(identity)?.Width(composition.MaximumColumnCount)
+                ?? KeogramComposer.ComputeOutputWidth(NightlyProductRecipeSupport.ToKeogramFrames(sources), composition);
+            return new ProcessingProductContract(
+                FrameArtifactRole.Preview,
+                sourceIds,
+                "application/x-hvo-packed-image",
+                true,
+                ProcessingRecipeSupport.CreatePackedLayout(width, geometry.SampleCount, firstLayout.PixelFormat),
+                null,
+                ProcessingProductKind.PixelData,
+                null,
+                false,
+                null,
+                NightlyProductRecipeSupport.FrameAlgorithms(identity),
+                totalIntegration,
+                first.Compatibility,
+                null);
+        }
+        return new ProcessingProductContract(
+            FrameArtifactRole.Preview,
+            sourceIds,
+            "application/x-hvo-packed-image",
+            true,
+            ProcessingRecipeSupport.CreatePackedLayout(firstLayout.Width, firstLayout.Height, firstLayout.PixelFormat),
+            null,
+            ProcessingProductKind.PixelData,
+            null,
+            false,
+            null,
+            NightlyProductRecipeSupport.StarTrailAlgorithms,
+            totalIntegration,
+            first.Compatibility,
+            null);
+    }
+
     private static ProductDetails CreateDetails(
         ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity,
@@ -206,6 +292,10 @@ internal static class BuiltInProcessingProductContracts
                 primary.Compatibility,
                 null,
                 null),
+            FixedPreview => PixelDetails("application/x-hvo-packed-image", true,
+                ProcessingRecipeSupport.CreatePackedLayout(primary.Layout!.Width, primary.Layout.Height,
+                    primary.Layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.Mono8 ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24),
+                FixedPreviewRecipe.Algorithms(primary.Layout.PixelFormat), primary),
             EncodedPreview => CreateEncodedPreviewDetails(identity, primary),
             JpegEncoding => CreateJpegDetails(identity, primary),
             Annotation => CreateAnnotationDetails(identity, primary),

@@ -29,7 +29,8 @@ names a target the registry does not publish is rejected with
 
 Built-in producers register `ILocalAutomationWindowTaskAdapter`; their descriptors
 publish actual installed targets and supported presets. `StillImageGeneration` is
-a reserved typed kind, unavailable until a producer registers its adapter. A target
+registered for keograms and star trails when the pinned [still-product configuration](cameraagent-still-products.md)
+is enabled and valid; it has no target otherwise. A target
 must identify its immutable producer preset; an adapter must reject a retained preset
 it can no longer resolve, rather than reinterpret it using changed settings. Each
 definition has its own revision and schedule. Hourly and daily definitions of the

@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -285,6 +286,19 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddSingleton<SqliteNightlyProductStore>();
+        services.AddSingleton<INightlyProductCatalog>(static provider =>
+            provider.GetRequiredService<SqliteNightlyProductStore>());
+        services.AddSingleton<INightlyProductSourceReader, JournalNightlyProductSourceReader>();
+        services.AddSingleton(static provider => new NightlyProductGenerator(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            provider.GetRequiredService<INightlyProductSourceReader>(),
+            provider.GetRequiredService<SqliteNightlyProductStore>(),
+            provider.GetRequiredService<IPlanetEphemeris>(),
+            () => provider.GetService<IDeploymentLocationStore>(),
+            provider.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<ILocalAutomationWindowTaskAdapter, NightlyProductAutomationTaskRegistry>();
         services.AddSingleton<ICameraAgentPresentationMaterializer, CameraAgentPresentationMaterializer>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();

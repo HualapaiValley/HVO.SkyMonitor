@@ -7,10 +7,13 @@ label on 2026-10-02; code qualification and production adoption are separate.
 
 The rendering input for the first complete run is #1131 prototype
 `37338b3866248200b3aa0751c3457177766ca823`, based on target
-`cb5d7e3f63c69e85f0f079ef63c687fbb7e5f818`. `Pinned/` contains byte-for-byte pure
+`cb5d7e3f63c69e85f0f079ef63c687fbb7e5f818`. `Pinned/` originated as byte-for-byte pure
 composer sources from #993 checkpoint
 `75185e7e794b1028f28ac3f09e7125c14a1b4e98`; its scheduling and product-store code
-are not used. The keogram wrapper samples one source column at a time and places
+are not used. When #993 integrates the production types, these prototype copies
+use the isolated `HVO.SkyMonitor.VirtualSkyPoc.Pinned` namespace and explicit
+composer aliases. Only the namespace/import differs; composer bodies and POC
+behavior remain unchanged. The keogram wrapper samples one source column at a time and places
 it on a planned sunrise-period axis. The trail folds one source at a time.
 
 The fixed scenario is October 12, 2026, Hualapai coordinates 35.347 N / 113.878 W,
