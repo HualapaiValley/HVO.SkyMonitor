@@ -25,10 +25,33 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
     [Parameter, SupplyParameterFromQuery(Name = "month")] public string? Month { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "calendar")] public string? CalendarVersion { get; set; }
 
     internal sealed record CalendarCell(DateOnly Date, bool InMonth, bool IsToday, CameraAgentGalleryCalendarDay? Day);
 
-    private DateOnly LatestObservingDay => ObservingDays.Current.Resolve(TimeProvider.GetUtcNow()).Date;
+    private ObservingDayCalendar SelectedCalendar => CalendarVersion == ObservingDayCalendar.LegacyNoonVersion
+        ? ObservingDays.Current.LegacyNoon : ObservingDays.Current;
+
+    private bool HasCurrentReportingPeriod =>
+        (CalendarVersion is null || CalendarVersion == SelectedCalendar.CalendarVersion) &&
+        SelectedCalendar.TryResolve(TimeProvider.GetUtcNow(), out _);
+
+    private string PeriodLabel => (_calendar?.CalendarVersion ?? CalendarVersion ?? ObservingDays.Current.CalendarVersion) switch
+    {
+        SunriseReportingPeriod.CurrentVersion => "Local reporting period / sunrise-to-sunrise",
+        ObservingDayCalendar.LegacyNoonVersion => "Legacy observing day / noon-to-noon",
+        _ => "Unsupported reporting calendar"
+    };
+
+    private DateOnly LatestObservingDay => SelectedCalendar.TryResolve(TimeProvider.GetUtcNow(), out var day)
+        ? day.Date : DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(TimeProvider.GetUtcNow(), SelectedCalendar.TimeZone).DateTime);
+
+    private string SelectedDayUrl(DateOnly date) => CalendarVersion is null ? DayUrl(date) :
+        DayUrl(date) + "?calendar=" + Uri.EscapeDataString(CalendarVersion);
+
+    private string LegacyCalendarUrl => NavigationManager.GetUriWithQueryParameter("calendar", ObservingDayCalendar.LegacyNoonVersion);
+
+    private string SunriseCalendarUrl => NavigationManager.GetUriWithQueryParameter("calendar", SunriseReportingPeriod.CurrentVersion);
 
     // The month is taken from the query when it parses, otherwise the current observing day's
     // month; clamped so grid arithmetic never leaves the calendar.
@@ -65,11 +88,12 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         {
             var byDate = _calendar?.Days.ToDictionary(static day => day.Day.Date) ?? [];
             var today = LatestObservingDay;
+            var hasCurrentPeriod = HasCurrentReportingPeriod;
             var cells = new List<CalendarCell>();
             for (var date = GridStart; date <= GridEnd; date = date.AddDays(1))
             {
                 byDate.TryGetValue(date, out var day);
-                cells.Add(new CalendarCell(date, date.Month == MonthStart.Month, date == today, day));
+                cells.Add(new CalendarCell(date, date.Month == MonthStart.Month, hasCurrentPeriod && date == today, day));
             }
             return cells;
         }
@@ -127,7 +151,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     internal static string CandidatesUrl(ObservingDay day) => NavigationUrl("/transients", day);
 
     private static string NavigationUrl(string path, ObservingDay day) => FormattableString.Invariant(
-        $"{path}?from={day.StartUtc.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}&to={day.EndUtc.AddMilliseconds(-1).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}");
+        $"{path}?from={DateTimeOffset.FromUnixTimeMilliseconds(day.StartUnixMillisecondsInclusive).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}&to={DateTimeOffset.FromUnixTimeMilliseconds(day.EndUnixMillisecondsExclusive - 1).UtcDateTime:yyyy-MM-ddTHH:mm:ss.fff}");
 
     internal static string ThumbnailUrl(Guid captureId) => FormattableString.Invariant($"/api/v1/operations/gallery/{captureId:D}/thumbnail");
 
@@ -154,7 +178,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         try
         {
             var result = await OperatorService.GetArchiveCalendarAsync(
-                new CameraAgentGalleryCalendarQuery(GridStart, GridEnd), cancellation.Token);
+                new CameraAgentGalleryCalendarQuery(GridStart, GridEnd, CalendarVersion: CalendarVersion), cancellation.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;

@@ -11,14 +11,19 @@
 <div class="calendar-page">
     <header class="calendar-heading">
         <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions and local detection candidates. Product and schedule coverage are shown only when verified.</p></div>
-        <a class="btn btn-outline-light" href="@DayUrl(LatestObservingDay)">Latest observing day</a>
+        @if (HasCurrentReportingPeriod)
+        {
+            <a class="btn btn-outline-light" href="@SelectedDayUrl(LatestObservingDay)">Latest observing day</a>
+        }
+        <a class="btn btn-outline-light" href="@SunriseCalendarUrl">Sunrise periods</a>
+        <a class="btn btn-outline-light" href="@LegacyCalendarUrl">Legacy noon view</a>
     </header>
 
     <nav class="month-nav" aria-label="Calendar month">
         <a class="btn btn-outline-light btn-sm month-nav__step" href="@MonthUrl(-1)" aria-label="Previous month">‹</a>
         <div class="month-nav__label">
             <strong>@MonthLabel</strong>
-            <small>Local observing day / noon-to-noon</small>
+            <small>@PeriodLabel</small>
         </div>
         <a class="btn btn-outline-light btn-sm month-nav__step" href="@MonthUrl(1)" aria-label="Next month">›</a>
         <a class="btn btn-outline-light btn-sm month-nav__today" href="@MonthUrl(0, today: true)">Today</a>
@@ -38,7 +43,7 @@
     {
         @if (_calendar.TimeZoneFallback)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Observing nights use UTC days" Message="No deployment time zone is configured, so nights are bounded at 12:00 UTC instead of local noon." />
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Legacy noon view uses UTC" Message="No deployment time zone is configured. This explicitly selected legacy view uses noon-to-noon UTC; it does not qualify sunrise products." />
         }
 
         <section class="observing-calendar" aria-label="Observing days">
@@ -55,7 +60,7 @@
                     var hasSession = day is { CaptureCount: > 0 };
                     var missingThumbnail = hasSession && (day!.RepresentativeCaptureId is not { } id || _failedThumbnails.Contains(id));
                     <li class="@CellClass(cell)" aria-current="@(cell.IsToday ? "date" : null)">
-                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
+                        <a class="calendar-day__link" href="@SelectedDayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
                             <header class="calendar-day__date">
                                 <strong><time datetime="@cell.Date.ToString("yyyy-MM-dd")">@CellDayLabel(cell)</time></strong>
                                 @if (day is { CandidateCount: > 0 })
@@ -103,7 +108,7 @@
             <span><i class="calendar-legend__event" aria-hidden="true"></i>Local detection candidate</span>
             <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Coverage and nightly products unavailable</span>
             <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate; muted badges are unavailable, not produced</span>
-            <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
+            <span>@(_calendar.CalendarVersion == SunriseReportingPeriod.CurrentVersion ? "Report date names the starting sunrise; the period ends at the following sunrise." : "Legacy noon association: 12:00 to 12:00") @(_calendar.TimeZoneFallback ? "UTC" : _calendar.TimeZoneId)</span>
         </div>
 
         <section class="calendar-summary" aria-label="Month summary">

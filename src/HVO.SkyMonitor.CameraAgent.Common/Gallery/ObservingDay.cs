@@ -1,26 +1,37 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
-// An observatory-local observing day runs from local noon to the next local
-// noon so that one night never splits across two days. The identity is the
-// local calendar date of the starting noon; the boundaries are UTC instants
-// resolved through the deployment time zone, so a daylight-saving transition
-// shortens or lengthens the day without moving evidence to another day.
+// The default deployment calendar names an actual sunrise-to-sunrise period by its starting civil date.
+// Explicit legacy calendars retain the historical noon association. Every value carries its interpretation.
 public readonly record struct ObservingDay(
     DateOnly Date,
     DateTimeOffset StartUtc,
     DateTimeOffset EndUtc,
     string TimeZoneId,
-    bool TimeZoneFallback)
+    bool TimeZoneFallback,
+    SunriseReportingPeriod? SunrisePeriod = null)
 {
     public TimeSpan Duration => EndUtc - StartUtc;
 
     public bool Contains(DateTimeOffset instantUtc) => instantUtc >= StartUtc && instantUtc < EndUtc;
+
+    public string CalendarVersion => SunrisePeriod?.ContractVersion ?? ObservingDayCalendar.LegacyNoonVersion;
+
+    public long StartUnixMillisecondsInclusive => SunriseReportingPeriod.StoredMillisecondAtOrAfter(StartUtc);
+
+    public long EndUnixMillisecondsExclusive => SunriseReportingPeriod.StoredMillisecondAtOrAfter(EndUtc);
 }
 
 public sealed class ObservingDayCalendar
 {
     public const int MaximumRangeDays = 62;
+    public const string LegacyNoonVersion = "hvo-noon-observing-day-v1";
+    public const string SiteUnavailable = "reporting.site-unavailable";
     private static readonly TimeSpan Noon = TimeSpan.FromHours(12);
+    private SunriseReportingCalendar? _sunrise;
+    private string? _unavailableReason;
 
     private ObservingDayCalendar(TimeZoneInfo timeZone, string timeZoneId, bool timeZoneFallback)
     {
@@ -36,6 +47,42 @@ public sealed class ObservingDayCalendar
     public string TimeZoneId { get; }
 
     public bool TimeZoneFallback { get; }
+
+    public string CalendarVersion { get; private init; } = LegacyNoonVersion;
+
+    public bool UsesSunrise => CalendarVersion == SunriseReportingPeriod.CurrentVersion;
+
+    /// <summary>Explicitly retains the supported historical noon interpretation in this calendar's zone.</summary>
+    public ObservingDayCalendar LegacyNoon => new(TimeZone, TimeZoneId, TimeZoneFallback);
+
+    public ObservingDayCalendar SelectVersion(string? version)
+        => version switch
+        {
+            null => this,
+            LegacyNoonVersion => LegacyNoon,
+            SunriseReportingPeriod.CurrentVersion when UsesSunrise => this,
+            SunriseReportingPeriod.CurrentVersion => throw new ReportingPeriodUnavailableException(default, SiteUnavailable),
+            _ => throw new ArgumentException("The reporting-calendar version is unsupported.", nameof(version))
+        };
+
+    /// <summary>Default reporting uses an initialized valid site; unavailable sites never resolve fallback periods.</summary>
+    public static ObservingDayCalendar ForDeployment(DeploymentLocationSnapshot? site, ISolarEventCalculator? solar = null)
+    {
+        if (site is null || !site.Validate().IsValid)
+        {
+            return new ObservingDayCalendar(TimeZoneInfo.Utc, TimeZoneInfo.Utc.Id, timeZoneFallback: true)
+            {
+                CalendarVersion = SunriseReportingPeriod.CurrentVersion,
+                _unavailableReason = SiteUnavailable
+            };
+        }
+        var sunrise = new SunriseReportingCalendar(site, solar);
+        return new ObservingDayCalendar(sunrise.TimeZone, site.TimeZoneId, timeZoneFallback: false)
+        {
+            CalendarVersion = SunriseReportingPeriod.CurrentVersion,
+            _sunrise = sunrise
+        };
+    }
 
     public static ObservingDayCalendar Utc { get; } = new(TimeZoneInfo.Utc, TimeZoneInfo.Utc.Id, timeZoneFallback: false);
 
@@ -59,6 +106,10 @@ public sealed class ObservingDayCalendar
 
     public ObservingDay Resolve(DateOnly date)
     {
+        if (UsesSunrise)
+        {
+            return FromSunrise(_sunrise?.Resolve(date), date);
+        }
         var start = ToUtc(date.ToDateTime(TimeOnly.FromTimeSpan(Noon), DateTimeKind.Unspecified));
         var end = ToUtc(date.AddDays(1).ToDateTime(TimeOnly.FromTimeSpan(Noon), DateTimeKind.Unspecified));
         return new ObservingDay(date, start, end, TimeZoneId, TimeZoneFallback);
@@ -66,6 +117,11 @@ public sealed class ObservingDayCalendar
 
     public ObservingDay Resolve(DateTimeOffset instantUtc)
     {
+        if (UsesSunrise)
+        {
+            return FromSunrise(_sunrise?.Resolve(instantUtc),
+                DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(instantUtc, TimeZone).DateTime));
+        }
         var local = TimeZoneInfo.ConvertTime(instantUtc, TimeZone);
         var date = DateOnly.FromDateTime(local.DateTime);
         var day = Resolve(local.TimeOfDay >= Noon ? date : date.AddDays(-1));
@@ -76,6 +132,31 @@ public sealed class ObservingDayCalendar
             return Resolve(day.Date.AddDays(-1));
         }
         return instantUtc >= day.EndUtc ? Resolve(day.Date.AddDays(1)) : day;
+    }
+
+    public bool TryResolve(DateTimeOffset instantUtc, out ObservingDay day)
+    {
+        try
+        {
+            day = Resolve(instantUtc);
+            return true;
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            day = default;
+            return false;
+        }
+    }
+
+    private ObservingDay FromSunrise(SunriseReportingPeriodResolution? result, DateOnly date)
+    {
+        var period = result?.Period;
+        if (period is null)
+        {
+            throw new ReportingPeriodUnavailableException(date,
+                result?.UnavailableReasonCode ?? _unavailableReason ?? SiteUnavailable);
+        }
+        return new(period.ReportDate, period.StartUtc, period.EndUtc, TimeZoneId, false, period);
     }
 
     public IReadOnlyList<ObservingDay> Range(DateOnly fromDate, DateOnly toDate)
@@ -115,4 +196,36 @@ public sealed class ObservingDayCalendar
         }
         return new DateTimeOffset(local, TimeZone.GetUtcOffset(local)).ToUniversalTime();
     }
+}
+
+/// <summary>A reporting date has no qualified solar/site window. Consumers must expose it as unavailable.</summary>
+public sealed class ReportingPeriodUnavailableException : InvalidOperationException
+{
+    public ReportingPeriodUnavailableException()
+        : this(default, SunriseReportingCalendar.NoContainingPeriod)
+    {
+    }
+
+    public ReportingPeriodUnavailableException(string message)
+        : base(message)
+    {
+        ReasonCode = SunriseReportingCalendar.NoContainingPeriod;
+    }
+
+    public ReportingPeriodUnavailableException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+        ReasonCode = SunriseReportingCalendar.NoContainingPeriod;
+    }
+
+    public ReportingPeriodUnavailableException(DateOnly date, string reasonCode)
+        : base($"The sunrise reporting period for {date:yyyy-MM-dd} is unavailable ({reasonCode}).")
+    {
+        ReportDate = date;
+        ReasonCode = reasonCode;
+    }
+
+    public DateOnly ReportDate { get; }
+
+    public string ReasonCode { get; }
 }

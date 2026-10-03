@@ -1222,16 +1222,72 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
-    public async Task GetCalendarAsync_ReportsTheUtcFallbackWhenNoTimeZoneIsConfigured()
+    public async Task SunriseCalendarAndIndexedPagesAgreeWhileLegacyProductsKeepTheirAssociation()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var site = DeploymentLocationSnapshot.Create("reporting-site", 1, "manual", null,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.347, -113.878, 1000, "America/Phoenix");
+        var calendar = ObservingDayCalendar.ForDeployment(site);
+        var date = new DateOnly(2026, 10, 12);
+        var day = calendar.Resolve(date);
+        var first = DateTimeOffset.FromUnixTimeMilliseconds(day.StartUnixMillisecondsInclusive);
+        var end = DateTimeOffset.FromUnixTimeMilliseconds(day.EndUnixMillisecondsExclusive);
+        await fixture.AddRawAsync(first.AddMilliseconds(-1), "Physical", null).ConfigureAwait(false);
+        var morning = await fixture.AddRawAsync(first, "Physical", null).ConfigureAwait(false);
+        var last = await fixture.AddRawAsync(end.AddMilliseconds(-1), "Physical", null).ConfigureAwait(false);
+        var next = await fixture.AddRawAsync(end, "Physical", null).ConfigureAwait(false);
+        var preview = await fixture.AddProcessingOutputAsync(morning, "Preview", DurableProcessingNodeStatus.Completed)
+            .ConfigureAwait(false);
+        var archive = fixture.OpenArchive(calendar);
+
+        var days = await archive.GetCalendarAsync(new CameraAgentGalleryCalendarQuery(date, date.AddDays(1)),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SunriseReportingPeriod.CurrentVersion, days.CalendarVersion);
+        Assert.AreEqual(2, days.Days[0].CaptureCount);
+        Assert.AreEqual(1, days.Days[1].CaptureCount);
+        Assert.AreEqual(day.SunrisePeriod, days.Days[0].Day.SunrisePeriod);
+        var detail = await archive.GetObservingDayAsync(date, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { first, end.AddMilliseconds(-1) }, detail!.ExposureInstantsUtc.ToArray());
+        var page = await archive.GetPageAsync(new CameraAgentGalleryQuery(FromUtc: day.StartUtc,
+            ToUtc: end.AddMilliseconds(-1)), CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEquivalent(new[] { morning.Descriptor.Capture.CaptureId, last.Descriptor.Capture.CaptureId },
+            page.Items.Select(static capture => capture.CaptureId).ToArray());
+
+        var product = await archive.GetProductAsync(preview.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(date.AddDays(-1), product!.ObservingDay.Date,
+            "Existing output association remains the original noon interpretation, including sunrise-to-noon captures.");
+        Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, product.ObservingDay.CalendarVersion);
+        Assert.AreEqual(first, product.CaptureExposureStartedUtc);
+        var source = await archive.GetSourceCaptureAsync(next.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(end, source!.ExposureStartedUtc, "A read must never move the immutable source timestamp.");
+
+        var legacy = await archive.GetCalendarAsync(new CameraAgentGalleryCalendarQuery(date.AddDays(-1), date,
+            CalendarVersion: ObservingDayCalendar.LegacyNoonVersion), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, legacy.CalendarVersion);
+        Assert.AreEqual(2, legacy.Days[0].CaptureCount);
+        Assert.AreEqual(2, legacy.Days[1].CaptureCount);
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () => await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(date, date, CalendarVersion: "future-policy"), CancellationToken.None)
+            .ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task GetCalendarAsync_NoSiteIsUnavailableAndExplicitLegacyViewKeepsUtcAssociation()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
         await fixture.AddRawAsync(new DateTimeOffset(2026, 9, 4, 2, 0, 0, TimeSpan.Zero), "Physical", null).ConfigureAwait(false);
 
-        var calendar = await ((ICameraAgentArchive)fixture.Gallery).GetCalendarAsync(
-            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 3), new DateOnly(2026, 9, 4)), CancellationToken.None).ConfigureAwait(false);
+        var archive = fixture.Gallery;
+        await Assert.ThrowsExactlyAsync<ReportingPeriodUnavailableException>(async () => await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 3), new DateOnly(2026, 9, 4)), CancellationToken.None)
+            .ConfigureAwait(false)).ConfigureAwait(false);
+        var calendar = await archive.GetCalendarAsync(
+            new CameraAgentGalleryCalendarQuery(new DateOnly(2026, 9, 3), new DateOnly(2026, 9, 4),
+                CalendarVersion: ObservingDayCalendar.LegacyNoonVersion), CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsTrue(calendar.TimeZoneFallback);
         Assert.AreEqual(TimeZoneInfo.Utc.Id, calendar.TimeZoneId);
+        Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, calendar.CalendarVersion);
         // 02:00Z on 4 September precedes UTC noon, so it belongs to observing day 2026-09-03.
         Assert.AreEqual(1, calendar.Days[0].CaptureCount);
         Assert.AreEqual(0, calendar.Days[1].CaptureCount);

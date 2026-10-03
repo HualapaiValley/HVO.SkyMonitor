@@ -298,7 +298,7 @@ public sealed class CurrentSkyPageTests
             var summary = cut.Find(".current-sky-summary").TextContent;
             StringAssert.Contains(summary, "Observing night", StringComparison.Ordinal);
             // 11:59 UTC is 04:59 in Phoenix, inside the night that began at local noon on the 22nd.
-            StringAssert.Contains(summary, "2026-07-22 (America/Phoenix)", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "2026-07-22 (legacy noon, America/Phoenix)", StringComparison.Ordinal);
             StringAssert.Contains(summary, "1 s", StringComparison.Ordinal);
             StringAssert.Contains(summary, "640 x 480", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Quantified, 25% cover", StringComparison.Ordinal);
@@ -318,7 +318,7 @@ public sealed class CurrentSkyPageTests
         degraded.WaitForAssertion(() =>
         {
             StringAssert.Contains(degraded.Find(".facts-unavailable").TextContent, "temporarily unavailable", StringComparison.Ordinal);
-            StringAssert.Contains(degraded.Find(".current-sky-summary").TextContent, "Observing nightUnavailable", StringComparison.Ordinal);
+            StringAssert.Contains(degraded.Find(".current-sky-summary").TextContent, "Observing nightReporting period unavailable", StringComparison.Ordinal);
             Assert.IsNotNull(degraded.Find(".capture-image img"));
         });
     }

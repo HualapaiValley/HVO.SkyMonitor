@@ -9,7 +9,7 @@ public sealed record CameraAgentCurrentSkyFacts(
     long CaptureSequence,
     string? RigId,
     DateTimeOffset ExposureStartedUtc,
-    ObservingDay ObservingDay,
+    ObservingDay? ObservingDay,
     double? ExposureMilliseconds,
     double? Gain,
     double? SensorTemperatureC,
@@ -54,6 +54,7 @@ public static class CameraAgentCurrentSkyFactsProjector
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(calendar);
+        var hasReportingPeriod = calendar.TryResolve(capture.ExposureStartedUtc, out var reportingDay);
         var detail = capture.Detail;
         var cloud = detail?.CloudAssessment;
         var combinedArtifacts = capture.Artifacts.Where(static artifact => artifact.Role == FrameArtifactRole.Combined).ToArray();
@@ -67,7 +68,7 @@ public static class CameraAgentCurrentSkyFactsProjector
             capture.CaptureSequence,
             capture.RigId,
             capture.ExposureStartedUtc,
-            calendar.Resolve(capture.ExposureStartedUtc),
+            hasReportingPeriod ? reportingDay : null,
             detail?.Controls?.EffectiveExposureMilliseconds,
             detail?.Controls?.EffectiveGain,
             detail?.Controls?.EffectiveTemperatureC,
