@@ -1179,11 +1179,11 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         return presentation.SelectedStage;
     }
 
-    private string ObservingNightLabel => _facts is { } facts
-        ? facts.ObservingDay.TimeZoneFallback
-            ? $"{facts.ObservingDay.Date:yyyy-MM-dd} (UTC day; no deployment time zone)"
-            : $"{facts.ObservingDay.Date:yyyy-MM-dd} ({facts.ObservingDay.TimeZoneId})"
-        : "Unavailable";
+    private string ObservingNightLabel => _facts?.ObservingDay is { } day
+        ? day.SunrisePeriod is not null
+            ? $"{day.Date:yyyy-MM-dd} (sunrise to sunrise, {day.TimeZoneId})"
+            : $"{day.Date:yyyy-MM-dd} (legacy noon, {(day.TimeZoneFallback ? "UTC fallback" : day.TimeZoneId)})"
+        : "Reporting period unavailable";
 
     private static string FormatExposure(double? milliseconds) => milliseconds switch
     {

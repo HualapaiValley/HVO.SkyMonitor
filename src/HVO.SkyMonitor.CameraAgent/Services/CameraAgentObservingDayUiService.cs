@@ -45,6 +45,15 @@ internal sealed record CameraAgentObservingDayScheduleView(
 internal interface ICameraAgentObservingDayUiService
 {
     ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken);
+
+    async ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate,
+        string calendarVersion, CancellationToken cancellationToken)
+    {
+        var result = await GetAsync(observingDate, cancellationToken).ConfigureAwait(false);
+        return result.Value is { } view && view.Day.Day.CalendarVersion != calendarVersion
+            ? OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable,
+                "The requested calendar interpretation is unavailable.") : result;
+    }
 }
 
 internal sealed class CameraAgentObservingDayUiService(
@@ -63,7 +72,16 @@ internal sealed class CameraAgentObservingDayUiService(
     internal static readonly TimeSpan CoverageBin = TimeSpan.FromMinutes(1);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
+    public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
+        => GetCoreAsync(observingDate, null, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate,
+        string calendarVersion, CancellationToken cancellationToken)
+        => GetCoreAsync(observingDate, calendarVersion, cancellationToken);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    private async ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetCoreAsync(DateOnly observingDate,
+        string? calendarVersion, CancellationToken cancellationToken)
     {
         var state = await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false);
         var authorized = await authorizationService.AuthorizeAsync(state.User, resource: null, CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
@@ -73,14 +91,18 @@ internal sealed class CameraAgentObservingDayUiService(
         }
         try
         {
-            var detail = await archive.GetObservingDayAsync(observingDate, cancellationToken).ConfigureAwait(false);
+            var detail = calendarVersion is null
+                ? await archive.GetObservingDayAsync(observingDate, cancellationToken).ConfigureAwait(false)
+                : await archive.GetObservingDayAsync(observingDate, calendarVersion, cancellationToken).ConfigureAwait(false);
             if (detail is null)
             {
                 return OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.NotFound, "The requested observing day is outside the calendar.");
             }
             var day = detail.Day.Day;
             var candidates = await transients.GetPageAsync(
-                new CameraAgentTransientOperatorQuery(MaximumCandidates, null, day.StartUtc, day.EndUtc.AddMilliseconds(-1)), cancellationToken).ConfigureAwait(false);
+                new CameraAgentTransientOperatorQuery(MaximumCandidates, null,
+                    DateTimeOffset.FromUnixTimeMilliseconds(day.StartUnixMillisecondsInclusive),
+                    DateTimeOffset.FromUnixTimeMilliseconds(day.EndUnixMillisecondsExclusive - 1)), cancellationToken).ConfigureAwait(false);
             var automationState = await automations.GetStateAsync(cancellationToken).ConfigureAwait(false);
             var runs = automationState.Runs
                 .Where(run => run.ScheduledForUtc >= day.StartUtc && run.ScheduledForUtc < day.EndUtc)
@@ -88,7 +110,8 @@ internal sealed class CameraAgentObservingDayUiService(
                 .ToArray();
             var scheduleView = BuildSchedule(day, detail.ExposureInstantsUtc);
             var neighbours = await archive.GetCalendarAsync(
-                new CameraAgentGalleryCalendarQuery(observingDate.AddDays(-1), observingDate.AddDays(1)), cancellationToken).ConfigureAwait(false);
+                new CameraAgentGalleryCalendarQuery(observingDate.AddDays(-1), observingDate.AddDays(1),
+                    CalendarVersion: day.CalendarVersion), cancellationToken).ConfigureAwait(false);
             var previous = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(-1));
             var next = neighbours.Days.FirstOrDefault(item => item.Day.Date == observingDate.AddDays(1));
             return OperatorUiResult<CameraAgentObservingDayView>.Success(new CameraAgentObservingDayView(
@@ -107,6 +130,16 @@ internal sealed class CameraAgentObservingDayUiService(
         {
             throw;
         }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable,
+                "A complete sunrise-to-sunrise period is unavailable for this site and date. No substitute period is used.");
+        }
+        catch (ArgumentException)
+        {
+            return OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Invalid,
+                "The requested reporting-calendar interpretation is unsupported.");
+        }
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent observing day read failed.");
@@ -119,7 +152,7 @@ internal sealed class CameraAgentObservingDayUiService(
         CaptureSchedulePreview? preview;
         try
         {
-            // The observing day spans two local calendar days (noon to noon); expand both.
+            // Both supported interpretations span two civil dates; expand the actual schedule on both.
             preview = schedule.ExpandActive(day.Date, 2);
         }
         catch (Exception exception) when (exception is InvalidOperationException or TimeZoneNotFoundException or ArgumentException)

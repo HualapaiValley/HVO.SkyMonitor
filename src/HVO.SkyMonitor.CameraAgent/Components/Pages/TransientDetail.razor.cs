@@ -15,7 +15,7 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
     private CameraAgentEventEvidenceView? _evidence;
     private HashSet<Guid> _failedPreviews = [];
     private CameraAgentTransientOperatorDetail? _detail => _evidence?.Detail;
-    private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
+    private ObservingDayCalendar _calendar = ObservingDayCalendar.ForDeployment(null);
     private string? _errorMessage;
     private bool _isLoading;
     private long _generation;
@@ -98,20 +98,21 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
     private static string FormatList(IReadOnlyList<string>? values) => values is null || values.Count == 0 ? "None recorded" : string.Join(", ", values);
     private static string FormatBoolean(bool? value) => value is null ? "Not recorded" : value.Value ? "Yes" : "No";
     private static string Number(double? value, string unit) => value is null || !double.IsFinite(value.Value) ? "Not recorded" : value.Value.ToString("0.##", CultureInfo.InvariantCulture) + " " + unit;
-    private string ObservingDayUrl => _evidence is null ? "/archive/calendar" : "/archive/day/" + _calendar.Resolve(_evidence.RecordedUtc).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string ObservingDayUrl => _evidence is not null && _calendar.TryResolve(_evidence.RecordedUtc, out var day)
+        ? "/archive/day/" + day.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) +
+          "?calendar=" + Uri.EscapeDataString(day.CalendarVersion) : "/archive/calendar";
     private string NearbyUrl
     {
         get
         {
-            if (_evidence is null)
+            if (_evidence is null || !_calendar.TryResolve(_evidence.RecordedUtc, out var day))
             {
                 return "/gallery";
             }
-            var day = _calendar.Resolve(_evidence.RecordedUtc);
             return QueryHelpers.AddQueryString("/gallery", new Dictionary<string, string?>
             {
-                ["from"] = day.StartUtc.ToString("O", CultureInfo.InvariantCulture),
-                ["to"] = day.EndUtc.ToString("O", CultureInfo.InvariantCulture)
+                ["from"] = DateTimeOffset.FromUnixTimeMilliseconds(day.StartUnixMillisecondsInclusive).ToString("O", CultureInfo.InvariantCulture),
+                ["to"] = DateTimeOffset.FromUnixTimeMilliseconds(day.EndUnixMillisecondsExclusive - 1).ToString("O", CultureInfo.InvariantCulture)
             });
         }
     }

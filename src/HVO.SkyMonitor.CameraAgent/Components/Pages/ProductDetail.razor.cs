@@ -55,7 +55,12 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     private bool GenerationRunning => _detail?.Node?.Status is "Running" or "Pending" or "RetryableFailure";
     private string GenerationLabel => _detail?.Node is not { } node ? "Step state not retained" : node.Status;
     private string ZoneLabel => _detail?.ObservingDay is { } day ? day.TimeZoneFallback ? "UTC fallback" : day.TimeZoneId : "UTC";
-    private string DayUrl => _detail is null ? "/archive/calendar" : $"/archive/day/{_detail.ObservingDay.Date:yyyy-MM-dd}";
+    private string PeriodLabel => _detail?.ObservingDay.SunrisePeriod is not null
+        ? "starting-sunrise report" : "legacy noon association";
+    private string PeriodSpan => _detail is { } detail
+        ? $"{FormatTime(detail.ObservingDay.StartUtc)} through {FormatTime(detail.ObservingDay.EndUtc)}" : "Unavailable";
+    private string DayUrl => _detail is null ? "/archive/calendar" :
+        $"/archive/day/{_detail.ObservingDay.Date:yyyy-MM-dd}?calendar={Uri.EscapeDataString(_detail.ObservingDay.CalendarVersion)}";
     private bool IsVideo => _detail?.Product.MediaType is "video/mp4" or "video/webm";
     private bool UsesOriginalImage => _detail?.Product.MediaType is "image/jpeg" or "image/png" or "image/webp";
     private string? MediaUrl
