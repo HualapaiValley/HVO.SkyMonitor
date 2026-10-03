@@ -531,7 +531,10 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             FocusStarMeasurement.Units,
             outcome.Measurement.AlgorithmVersion,
             outcome.Measurement.SettingsIdentitySha256,
-            ManualFocusPreviewMeasurement.PreviewSettingsIdentity(settings, position));
+            ManualFocusPreviewMeasurement.PreviewSettingsIdentity(settings, position),
+            preview.RequestedUtc,
+            preview.CompletedUtc,
+            ManualFocusSceneProvenance.FromMetadata(frame.Metadata));
         return new ManualFocusSample(sequence, _timeProvider.GetUtcNow(), settings, position, targetSource,
             outcome.Measurement, provenance);
     }

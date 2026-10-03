@@ -60,7 +60,7 @@ public sealed class CameraModuleManualFocusPreviewSource(
                     ManualFocusReasonCodes.ModuleWithoutPreview(lease.Module.ModuleType));
             }
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Revoked);
-            var requestedUtc = _timeProvider.GetUtcNow();
+            DateTimeOffset requestedUtc = default;
             CaptureResult result;
             try
             {
@@ -70,8 +70,9 @@ public sealed class CameraModuleManualFocusPreviewSource(
                     {
                         throw AdmissionUnavailable();
                     }
+                    requestedUtc = _timeProvider.GetUtcNow();
                     var request = new CaptureRequest(
-                        _timeProvider.GetUtcNow(),
+                        requestedUtc,
                         settings.Exposure,
                         CaptureMode.Still,
                         new CaptureSetpoint(settings.Exposure, settings.Gain, null, null));

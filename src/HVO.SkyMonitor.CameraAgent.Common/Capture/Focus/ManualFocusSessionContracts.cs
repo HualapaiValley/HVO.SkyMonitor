@@ -161,7 +161,10 @@ public sealed record ManualFocusSampleProvenance(
     string MetricUnits,
     string MetricAlgorithmVersion,
     string MetricSettingsIdentitySha256,
-    string PreviewSettingsIdentitySha256);
+    string PreviewSettingsIdentitySha256,
+    DateTimeOffset? CaptureRequestedUtc = null,
+    DateTimeOffset? CaptureCompletedUtc = null,
+    ManualFocusSceneProvenance? Scene = null);
 
 /// <summary>One image-derived sample. Invalid measurements are samples too; they never carry a width.</summary>
 public sealed record ManualFocusSample(
