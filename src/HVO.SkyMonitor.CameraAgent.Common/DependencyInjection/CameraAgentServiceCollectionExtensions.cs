@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
@@ -127,6 +128,14 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
+        services.AddSingleton<CameraModuleOwnership>();
+        services.AddSingleton<IManualFocusPreviewSource, CameraModuleManualFocusPreviewSource>();
+        services.AddSingleton<IManualFocusSessionStore, ManualFocusSessionStore>();
+        services.AddSingleton(provider => new ManualFocusSessionCoordinator(
+            provider.GetRequiredService<IManualFocusPreviewSource>(),
+            provider.GetRequiredService<TimeProvider>(),
+            store: provider.GetRequiredService<IManualFocusSessionStore>(),
+            logger: provider.GetRequiredService<ILogger<ManualFocusSessionCoordinator>>()));
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -386,6 +395,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ProcessingReplayWorker>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ProcessingReplayWorker>());
         services.AddHostedService<CameraCaptureService>();
+        // Registered after the capture owner so host shutdown stops a focus session before the module is revoked.
+        services.AddHostedService(provider => provider.GetRequiredService<ManualFocusSessionCoordinator>());
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
