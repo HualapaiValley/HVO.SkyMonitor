@@ -97,6 +97,49 @@ public sealed partial class HostRecipeContractConformanceTests
     }
 
     [TestMethod]
+    [DataRow(false, CameraPixelFormat.Mono8)]
+    [DataRow(true, CameraPixelFormat.Mono8)]
+    [DataRow(false, CameraPixelFormat.Rgb24)]
+    [DataRow(true, CameraPixelFormat.Rgb24)]
+    public async Task EqualTimeSegmentAssemblyUsesOriginalSourceOrderAcrossHosts(bool planned, CameraPixelFormat format)
+    {
+        var seed = StillFrames(format)[0];
+        var frames = Enumerable.Range(1, 4).Select(i => seed with
+        {
+            ArtifactId = Guid.Parse($"40000000-0000-0000-0000-{i:D12}"),
+            Payload = Enumerable.Repeat((byte)(i * 10), seed.Payload.Length).ToArray()
+        }).ToArray();
+        var geometry = StillGeometry(seed);
+        var natural = StillOptions(seed.ObservationStartedUtc!.Value, false);
+        var final = StillOptions(seed.ObservationStartedUtc!.Value, planned);
+        var direct = await StillWindow([frames[3], frames[1], frames[0], frames[2]], BuiltInProcessingRecipes.Keogram,
+            final, [KeogramGeometryJson.CreateAuxiliaryInput(geometry)]);
+        var parts = new List<ProcessingArtifact>();
+        var axes = new List<KeogramSegmentAxisV1>();
+        foreach (var chunk in new[] { new[] { frames[0], frames[2] }, new[] { frames[1], frames[3] } })
+        {
+            var result = await StillWindow(chunk, BuiltInProcessingRecipes.Keogram, natural,
+                [KeogramGeometryJson.CreateAuxiliaryInput(geometry)]);
+            var part = AsArtifact(result) with
+            {
+                ArtifactId = Guid.Parse($"50000000-0000-0000-0000-{9 - parts.Count:D12}"),
+                ObservationStartedUtc = seed.ObservationStartedUtc,
+                SourceArtifactIds = result.SourceArtifactIds
+            };
+            parts.Add(part);
+            axes.Add(KeogramSegmentAxesJson.CreateSegment(part.ArtifactId,
+                chunk.Select(f => f.ObservationStartedUtc!.Value).ToArray(), natural));
+        }
+        var assembled = await StillWindow([parts[1], parts[0]], BuiltInProcessingRecipes.KeogramAssembly, final,
+            [KeogramGeometryJson.CreateAuxiliaryInput(geometry), KeogramSegmentAxesJson.CreateAuxiliaryInput(
+                new KeogramSegmentAxesV1(KeogramSegmentAxesV1.CurrentSchemaVersion, axes))]);
+        Assert.AreEqual(direct.Layout, assembled.Layout);
+        CollectionAssert.AreEqual(direct.Payload.ToArray(), assembled.Payload.ToArray(),
+            "Equal-time source identity order must survive interleaved segment membership and reversed segment identities.");
+        Assert.AreEqual(direct.TotalIntegration, assembled.TotalIntegration);
+    }
+
+    [TestMethod]
     [DataRow(CameraPixelFormat.Mono8)]
     [DataRow(CameraPixelFormat.Rgb24)]
     public async Task WindowTrailLightensActualSourcesAndRetainsLineageAcrossHosts(CameraPixelFormat format)

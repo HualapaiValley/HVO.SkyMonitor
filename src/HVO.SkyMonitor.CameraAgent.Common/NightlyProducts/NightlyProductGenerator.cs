@@ -64,7 +64,7 @@ internal sealed class NightlyProductGenerator : IDisposable
     internal const string StarTrailFinalVariant = "still-star-trail-final-v2";
     internal const string MixedSegmentRecipesReasonCode = "nightly.mixed-segment-recipes";
     internal const string RecipeFailedReasonCode = "nightly.recipe-failed";
-    private const string FingerprintSchemaVersion = "hvo-still-window-fingerprint-v2";
+    private const string FingerprintSchemaVersion = "hvo-still-window-fingerprint-v3";
 
     private readonly CameraAgentHostOptions _options;
     private readonly ICameraAgentConfigurationAccessor _configuration;
@@ -219,6 +219,14 @@ internal sealed class NightlyProductGenerator : IDisposable
                     admission.Exclusions, cancellationToken).ConfigureAwait(false);
             }
 
+            var parts = Partition(admission.Admitted, context.Options.MaximumSegmentSources);
+            if (context.Kind == NightlyProductKind.Keogram && KeogramPlanRejection(context, parts) is { } planReason)
+            {
+                return await RecordUnlessUnchangedAsync(context, NightlyProductScope.Segment, window,
+                    NightlyProductWindowDisposition.Rejected, planReason, candidateCount, [], admission.Exclusions,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var admittedIdentities = admission.Admitted.Select(static candidate => candidate.OutputIdentitySha256).ToArray();
             var fingerprint = Fingerprint(
                 context, NightlyProductScope.Segment, admittedIdentities, candidateCount, admission.Exclusions, null);
@@ -230,7 +238,6 @@ internal sealed class NightlyProductGenerator : IDisposable
 
             var byArtifact = admission.Admitted.ToDictionary(static candidate => candidate.ArtifactId);
             var productIds = new List<Guid>();
-            var parts = Partition(admission.Admitted, context.Options.MaximumSegmentSources);
             var requiredExecutions = parts.Count + 1;
             if (context.Kind == NightlyProductKind.StarTrail)
             {
@@ -296,6 +303,44 @@ internal sealed class NightlyProductGenerator : IDisposable
             context.FailedWindows = 1;
             return false;
         }
+    }
+
+    private static string? KeogramPlanRejection(RunContext context, IReadOnlyList<IReadOnlyList<NightlyProductCandidate>> parts)
+    {
+        var geometry = context.Geometry!;
+        int plannedWidth;
+        try
+        {
+            plannedWidth = new PlannedKeogramAxis(context.Occurrence.SourceWindow!.StartUtc,
+                context.Occurrence.SourceWindow.EndUtc, TimeSpan.FromSeconds(context.Options.KeogramColumnSeconds))
+                .Width(context.Options.KeogramMaximumColumnCount);
+        }
+        catch (ArgumentException) { return "nightly.keogram-column-bound"; }
+        var first = parts[0][0].Layout;
+        if (first is null || first.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24) ||
+            parts.SelectMany(static part => part).Any(source => source.Layout is not { } layout ||
+                layout.Width != geometry.Projection.WidthPixels || layout.Height != geometry.Projection.HeightPixels ||
+                layout.PixelFormat != first.PixelFormat || layout.ByteLength != source.PayloadBytes))
+            return "nightly.keogram-layout-mismatch";
+        var columnBytes = (long)geometry.SampleCount * ImageLayout.BytesPerPixel(first.PixelFormat);
+        if (plannedWidth * columnBytes > NightlyProductRecipeLimits.MaximumSourceBytes)
+            return "nightly.keogram-output-byte-bound";
+        var assemblyBytes = 0L;
+        foreach (var part in parts)
+        {
+            int width;
+            try
+            {
+                width = KeogramComposer.ComputeTimeAxis([.. part.Select(static source => source.ExposureStartedUtc)],
+                    context.KeogramOptions.MaximumGapSeconds, context.KeogramOptions.MaximumGapColumnCount,
+                    context.KeogramOptions.MaximumColumnCount).Width;
+            }
+            catch (ArgumentException) { return "nightly.keogram-column-bound"; }
+            var bytes = width * columnBytes;
+            if (bytes > NightlyProductRecipeLimits.MaximumSourceBytes) return "nightly.keogram-output-byte-bound";
+            assemblyBytes += bytes;
+        }
+        return assemblyBytes > NightlyProductRecipeLimits.MaximumSourceBytes ? "nightly.keogram-assembly-byte-bound" : null;
     }
 
     /// <summary>Composes a settled observing day from the current products of its segment windows.</summary>
@@ -758,6 +803,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         stored.Detail.Summary.CreatedUtc,
         stored.Detail.Summary.TotalIntegration,
         stored.Compatibility,
+        SourceArtifactIds: [.. stored.Detail.Sources.Select(static source => source.ArtifactId)],
         ObservationStartedUtc: stored.Detail.Sources[0].ObservationStartedUtc);
 
     private static NightlyProductRunReport NotReady(NightlyProductKind kind, string note) =>

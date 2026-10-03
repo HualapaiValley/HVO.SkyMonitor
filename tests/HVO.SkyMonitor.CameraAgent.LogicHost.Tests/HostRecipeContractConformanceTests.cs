@@ -163,7 +163,8 @@ public sealed partial class HostRecipeContractConformanceTests
 
     private static ProcessingArtifact AsArtifact(ProcessingProduct product) => new(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role,
         product.Variant, product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload,
-        ProcessingConformanceFixture.CapturedUtc, product.TotalIntegration, product.Compatibility);
+        ProcessingConformanceFixture.CapturedUtc, product.TotalIntegration, product.Compatibility,
+        SourceArtifactIds: product.SourceArtifactIds);
 
     private sealed class RecordingExecutor : IProcessingRecipeExecutor
     {

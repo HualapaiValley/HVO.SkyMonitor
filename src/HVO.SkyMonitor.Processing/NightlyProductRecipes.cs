@@ -334,7 +334,7 @@ internal sealed class StarTrailRecipe : IProcessingRecipe
 internal sealed class KeogramAssemblyRecipe : IProcessingRecipe
 {
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.KeogramAssembly, "2.0.0", "keogram-assembly-recipe-v2",
+        BuiltInProcessingRecipes.KeogramAssembly, "3.0.0", "keogram-assembly-recipe-v3",
         ProcessingOperationKind.Window);
 
     public JsonElement NormalizeOptions(JsonElement options) => new KeogramRecipe().NormalizeOptions(options);
@@ -409,7 +409,7 @@ internal static class NightlyProductRecipeSupport
     internal static readonly IReadOnlyList<ProcessingAlgorithmIdentity> KeogramAssemblyAlgorithms =
     [
         .. KeogramAlgorithms,
-        new("keogram-segment-assembly", "keogram-segment-assembly-v1")
+        new("keogram-segment-assembly", "keogram-segment-assembly-source-order-v2")
     ];
 
     internal static PlannedKeogramAxis? PlannedAxis(ProcessingRecipeIdentity identity) =>
@@ -577,14 +577,34 @@ internal static class NightlyProductRecipeSupport
             return null;
         }
 
-        var segments = sources.Select(source => new KeogramSegment(
-            source.Layout!.Width,
-            source.Layout.Height,
-            source.Layout.StrideBytes,
-            source.Layout.PixelFormat,
-            source.Payload,
-            [.. bySegment[source.ArtifactId].Frames.Select(static frame =>
-                new KeogramSegmentColumn(frame.Column, frame.ObservationStartedUtc))])).ToArray();
+        // Immediate segment identity is not the original equal-time source tie-breaker. Keep the committed
+        // ordered source lineage and pair it with each sampled column before globally ordering actual frames.
+        if (sources.Any(source => source.SourceArtifactIds is null ||
+                source.SourceArtifactIds.Count != bySegment[source.ArtifactId].Frames.Count ||
+                source.SourceArtifactIds.Any(static id => id == Guid.Empty)) ||
+            sources.Sum(static source => (long)source.SourceArtifactIds!.Count) > KeogramComposer.MaximumColumnLimit ||
+            sources.SelectMany(static source => source.SourceArtifactIds!).Distinct().Count() !=
+                sources.Sum(static source => source.SourceArtifactIds!.Count))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidKeogramSegmentAxes,
+                KeogramSegmentAxesV1.AuxiliaryInputName);
+            return null;
+        }
+        if (sources.Any(source => bySegment[source.ArtifactId].Frames.Select((frame, index) =>
+                frame.Column < 0 || frame.Column >= source.Layout!.Width || (index > 0 &&
+                    (frame.Column <= bySegment[source.ArtifactId].Frames[index - 1].Column ||
+                     frame.ObservationStartedUtc < bySegment[source.ArtifactId].Frames[index - 1].ObservationStartedUtc)))
+                .Any(static invalid => invalid)))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidLineage, nameof(request.Inputs));
+            return null;
+        }
+        var segments = sources.SelectMany(source => bySegment[source.ArtifactId].Frames.Select((frame, index) =>
+                (Source: source, Frame: frame, OriginalId: source.SourceArtifactIds![index])))
+            .OrderBy(static item => item.Frame.ObservationStartedUtc).ThenBy(static item => item.OriginalId)
+            .Select(static item => new KeogramSegment(item.Source.Layout!.Width, item.Source.Layout.Height,
+                item.Source.Layout.StrideBytes, item.Source.Layout.PixelFormat, item.Source.Payload,
+                [new KeogramSegmentColumn(item.Frame.Column, item.Frame.ObservationStartedUtc)])).ToArray();
         failure = null;
         return new KeogramAssemblyPlan(
             sources,

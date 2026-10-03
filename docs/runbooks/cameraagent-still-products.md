@@ -101,8 +101,9 @@ lighten composition of actual eligible frames, preserving any missing interval.
 | Resident source bytes per recipe | 256 MiB; parts and rollups also obey this bound |
 | Recipe executions per occurrence | Configured 1–256; rejects excess before restoring or publishing |
 | Star-trail reduction | Multiple frames require fan-in ≥2 within the source count/byte bound; impossible reductions reject before restoration |
-| Planned axis | Configured maximum columns, default 16,384; at most 65,536 |
-| Planned output bytes | 256 MiB; reject excess |
+| Planned axis | Configured maximum columns, default 16,384; at most 65,536; reject before source restoration |
+| Planned output bytes | 256 MiB; final and part output sizes are checked before source restoration |
+| Keogram assembly inputs | Predicted total part bytes at most 256 MiB; reject before publishing parts |
 | Provenance document | 8 MiB |
 | Products or windows in one date listing | 1,024; larger listings fail explicitly |
 
@@ -111,11 +112,18 @@ closed; installed-state migration is outside this change. Packed payload,
 JPEG rendition and canonical provenance are durably written before the SQLite
 publication transaction. Immutable product IDs bind recipe and occurrence.
 Ordered lineage identifies actual preview outputs and intermediate products.
+Keogram assembly recipe 3.0.0 retains each segment’s original source IDs and
+orders actual sampled columns by exposure time then original source identity,
+including equal-time sources split across segments. The window fingerprint
+version is 3; earlier candidate evaluations are re-evaluated, with immutable
+outputs reused only when their current recipe identity still matches.
 Current pointers belong to the occurrence, including definition revision, and
 are updated transactionally. Unchanged retries verify checksums of all three
 files before reusing publication; missing or corrupt files fail the run.
 Selected sources that become unavailable fail restoration rather than produce
-a silently thinner result. Rejected and empty windows retain their reason and
+a silently thinner result. Payload and sidecar reads are bounded by their
+committed journal lengths before allocation; excess, truncation or growth fails
+restoration. Candidate layout and length must still match the selected facts. Rejected and empty windows retain their reason and
 exclusion counts in the catalog.
 
 Authenticated `OperationsReadV1` endpoints under

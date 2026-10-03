@@ -24,6 +24,7 @@ internal sealed record NightlyProductCandidate(
 {
     internal bool UsesFixedDisplayTransfer { get; init; }
     internal long PayloadBytes { get; init; }
+    internal FrameLayoutDescriptor? Layout { get; init; }
 }
 
 /// <summary>Reads nightly candidates and restores admitted ones as verified recipe inputs.</summary>
@@ -86,6 +87,7 @@ internal sealed class JournalNightlyProductSourceReader(
                 descriptor.Location)
             {
                 PayloadBytes = descriptor.Layout.ByteLength,
+                Layout = descriptor.Layout,
                 UsesFixedDisplayTransfer = output.Algorithms.Any(static algorithm =>
                     algorithm.Name == "fixed-display-transfer" && algorithm.Version == FixedDisplayTransfer.AlgorithmVersion)
             });
@@ -106,6 +108,7 @@ internal sealed class JournalNightlyProductSourceReader(
             var output = await store.ReadOutputByArtifactIdAsync(candidate.ArtifactId, cancellationToken)
                 .ConfigureAwait(false);
             if (output is null || output.AvailabilityState != "Available" ||
+                output.Descriptor?.Layout != candidate.Layout || output.Descriptor?.Layout.ByteLength != candidate.PayloadBytes ||
                 !string.Equals(output.OutputIdentitySha256, candidate.OutputIdentitySha256, StringComparison.Ordinal))
             {
                 throw new InvalidDataException("A selected nightly product source is no longer available.");

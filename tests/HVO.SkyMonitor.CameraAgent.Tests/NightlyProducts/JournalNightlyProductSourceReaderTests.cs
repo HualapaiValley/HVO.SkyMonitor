@@ -172,6 +172,31 @@ public sealed class JournalNightlyProductSourceReaderTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Restore_RejectsOversizedCommittedFilesWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    {
+        using var provider = CreateProvider();
+        await CaptureAsync(provider);
+        var reader = provider.GetRequiredService<INightlyProductSourceReader>();
+        var selected = (await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId, Exposure(0), Exposure(1), 32,
+            static _ => Assert.Fail("Unsupported source."), CancellationToken.None)).Single();
+        var output = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+            .ReadOutputByArtifactIdAsync(selected.ArtifactId, CancellationToken.None);
+        Assert.IsNotNull(output);
+        var path = Path.Combine(_root, sidecar ? output.SidecarRelativePath : output.PayloadRelativePath);
+        using (var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
+            file.SetLength(256L * 1024 * 1024 + 1);
+
+        var before = GC.GetTotalAllocatedBytes(precise: true);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await reader.RestoreAsync([selected], CancellationToken.None));
+        var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        Assert.IsLessThan(1024L * 1024, allocated,
+            "A sparse corrupt payload/sidecar must be rejected using its retained length before reading its oversized contents.");
+    }
+
+    [TestMethod]
     public async Task WindowQuery_SearchesIndexesRatherThanScanningTheJournal()
     {
         using var provider = CreateProvider();

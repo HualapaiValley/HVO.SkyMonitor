@@ -115,7 +115,7 @@ internal static class NightlyProductFixture
             exposureStartedUtc,
             rig ?? RigProfileSha256,
             null)
-        { UsesFixedDisplayTransfer = true, PayloadBytes = artifact.Payload.Length };
+        { UsesFixedDisplayTransfer = true, PayloadBytes = artifact.Payload.Length, Layout = artifact.Layout };
         return new NightlyFrame(candidate, artifact);
     }
 

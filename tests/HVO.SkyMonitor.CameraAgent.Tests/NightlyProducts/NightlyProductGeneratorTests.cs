@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
@@ -194,6 +195,109 @@ public sealed class NightlyProductGeneratorTests
     }
 
     [TestMethod]
+    public async Task PlannedKeogramColumnBound_RejectsBeforeRestorationAndPublicationOnEveryRetry()
+    {
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var options = new NightlyProductOptions
+        {
+            Enabled = true,
+            SourceNodeId = NightlyProductFixture.NodeId,
+            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+            RigProfileSha256 = NightlyProductFixture.RigProfileSha256,
+            KeogramMaximumColumnCount = 64,
+            KeogramMaximumGapColumnCount = 64
+        };
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram, options);
+        using var harness = Harness(reader, options);
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FailedWindows, $"Attempt {attempt} must be rejected.");
+            Assert.AreEqual(LocalAutomationRunOutcome.Failed, NightlyProductAutomationTaskRegistry.Outcome(report));
+            Assert.AreEqual(0, report.ProductsPublished);
+            Assert.AreEqual(0, reader.Restores);
+        }
+        Assert.IsEmpty(await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+        var status = await harness.Store.ReadWindowAsync(NightlyProductKind.Keogram, NightlyProductScope.Final,
+            occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrence.IdentitySha256);
+        Assert.AreEqual(NightlyProductWindowDisposition.Rejected, status!.Status.Disposition);
+        Assert.AreEqual("nightly.keogram-column-bound", status.Status.ReasonCode);
+    }
+
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono8, false)]
+    [DataRow(CameraPixelFormat.Rgb24, false)]
+    [DataRow(CameraPixelFormat.Rgb24, true)]
+    public async Task KeogramByteBounds_RejectLargeGeometryBeforeRestoration(CameraPixelFormat format, bool assemblyInputs)
+    {
+        const int height = 8192;
+        const double radius = height / 2.0 - 0.5;
+        var rig = NightlyProductFixture.Rig with
+        {
+            Sensor = NightlyProductFixture.Rig.Sensor with { HeightPixels = height },
+            Optics = NightlyProductFixture.Rig.Optics with
+            {
+                PrincipalPointY = height / 2.0,
+                ImageCircleRadiusPixels = radius,
+                FocalLengthXPixels = radius * 2 / Math.PI,
+                FocalLengthYPixels = radius * 2 / Math.PI
+            }
+        };
+        var configuration = NightlyProductFixture.Configuration() with { Rig = rig };
+        var rigHash = RigProjectionContextFactory.CreateProfileHashSha256(rig);
+        var samples = MeridianSamplePath.RecommendedSampleCount(RigProjectionContextFactory.Create(rig));
+        Assert.IsGreaterThan(6500, samples, "The fixture must exercise the large output geometry.");
+        var channels = format == CameraPixelFormat.Rgb24 ? 3 : 1;
+        var bytes = NightlyProductFixture.Size * height * channels;
+        var layout = NightlyProductFixture.Layout() with
+        {
+            Height = height,
+            StrideBytes = NightlyProductFixture.Size * channels,
+            PixelFormat = format,
+            ByteLength = bytes
+        };
+        var reader = new InMemoryNightlySourceReader();
+        var pixels = new byte[bytes];
+        foreach (var index in Enumerable.Range(0, assemblyInputs ? 128 : 1))
+        {
+            var offset = index % 32;
+            var time = NightlyProductFixture.DayStartUtc.AddHours(index / 32 * 6)
+                .AddSeconds(offset < 16 ? offset : 3600 + offset - 16);
+            var frame = NightlyProductFixture.Frame(index + 1, time, rigHash);
+            reader.Add(frame with
+            {
+                Artifact = frame.Artifact with { Layout = layout, Payload = pixels },
+                Candidate = frame.Candidate with { Layout = layout, PayloadBytes = bytes }
+            });
+        }
+        var options = new NightlyProductOptions
+        {
+            Enabled = true,
+            SourceNodeId = NightlyProductFixture.NodeId,
+            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+            RigProfileSha256 = rigHash,
+            KeogramColumnSeconds = assemblyInputs ? 60 : 2,
+            KeogramMaximumColumnCount = 65536,
+            KeogramMaximumGapColumnCount = assemblyInputs ? 65536 : 1024
+        };
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram, options);
+        using var harness = Harness(reader, options, configuration: configuration);
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FailedWindows, $"Attempt {attempt} must remain failed.");
+            Assert.AreEqual(0, reader.Restores);
+            Assert.AreEqual(0, report.ProductsPublished);
+        }
+        var status = await harness.Store.ReadWindowAsync(NightlyProductKind.Keogram, NightlyProductScope.Final,
+            occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrence.IdentitySha256);
+        Assert.AreEqual(assemblyInputs ? "nightly.keogram-assembly-byte-bound" : "nightly.keogram-output-byte-bound",
+            status!.Status.ReasonCode);
+        Assert.IsEmpty(await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task ExecutionBudget_RejectsBeforeRestoringOrPublishingPartialProducts()
     {
         var reader = new InMemoryNightlySourceReader();
@@ -259,14 +363,15 @@ public sealed class NightlyProductGeneratorTests
         return details.Single(static detail => detail.Summary.Scope == NightlyProductScope.Final);
     }
 
-    private HarnessState Harness(InMemoryNightlySourceReader reader, NightlyProductOptions options, DateTimeOffset? now = null)
+    private HarnessState Harness(InMemoryNightlySourceReader reader, NightlyProductOptions options, DateTimeOffset? now = null,
+        CameraModuleConfig? configuration = null)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-window-tests");
         _roots.Add(root);
         var host = NightlyProductFixture.HostOptions(root, options);
         var clock = new NightlyClock(now ?? NightlyProductFixture.DayEndUtc.AddMinutes(10));
         var store = new SqliteNightlyProductStore(host, clock);
-        var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
+        var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(configuration ?? NightlyProductFixture.Configuration()),
             reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
         return new(store, generator);
     }

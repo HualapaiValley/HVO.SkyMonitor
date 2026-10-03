@@ -871,7 +871,7 @@ public sealed class NightlyProductGenerationPerformanceTests
                 NightlyProductFixture.DayStartUtc.AddMinutes(index),
                 _compatibility.Rig,
                 null)
-            { UsesFixedDisplayTransfer = true, PayloadBytes = _frameBytes };
+            { UsesFixedDisplayTransfer = true, PayloadBytes = _frameBytes, Layout = _layout };
         }
     }
 }

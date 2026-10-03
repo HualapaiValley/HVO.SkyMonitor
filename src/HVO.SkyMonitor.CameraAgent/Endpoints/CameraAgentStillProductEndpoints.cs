@@ -41,7 +41,7 @@ internal static class CameraAgentStillProductEndpoints
     private static async Task<IResult> ReadAsync(Func<Task<IResult>> read)
     {
         try { return await read().ConfigureAwait(false); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or SqliteException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException or SqliteException)
         {
             return Results.Problem("The still product catalog is temporarily unavailable.", statusCode: StatusCodes.Status503ServiceUnavailable);
         }

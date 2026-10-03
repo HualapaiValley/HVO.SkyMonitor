@@ -311,7 +311,7 @@ public sealed class NightlyProductRecipeTests
             segments.Select(static segment => segment.ArtifactId).ToArray(),
             product.SourceArtifactIds.ToArray());
         Assert.AreEqual(
-            new ProcessingAlgorithmIdentity("keogram-segment-assembly", "keogram-segment-assembly-v1"),
+            new ProcessingAlgorithmIdentity("keogram-segment-assembly", "keogram-segment-assembly-source-order-v2"),
             product.Algorithms[^1]);
         ProcessingRecipeTests.AssertProductMatchesContract(request, product);
     }
@@ -399,7 +399,8 @@ public sealed class NightlyProductRecipeTests
             await executor.ExecuteAsync(unbound).ConfigureAwait(false),
             await executor.ExecuteAsync(forgedPayload).ConfigureAwait(false),
             await executor.ExecuteAsync(otherRig).ConfigureAwait(false),
-            await executor.ExecuteAsync(collidingColumns).ConfigureAwait(false)
+            await executor.ExecuteAsync(collidingColumns).ConfigureAwait(false),
+            await executor.ExecuteAsync(AssemblyRequest([segment with { SourceArtifactIds = null }], options, axes)).ConfigureAwait(false)
         };
 
         Assert.AreEqual(ProcessingOutcomeStatus.Skipped, outcomes[0].Status);
@@ -408,6 +409,7 @@ public sealed class NightlyProductRecipeTests
         Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcomes[2].Status);
         Assert.AreEqual(ProcessingReasonCodes.KeogramGeometryMismatch, outcomes[3].ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, outcomes[4].ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidKeogramSegmentAxes, outcomes[5].ReasonCode);
     }
 
     [TestMethod]
