@@ -164,6 +164,19 @@ public sealed class VirtualSkyFocusPreviewTests
             "A preview never shares an identity with a capture of the same instant.");
         Assert.AreEqual("200", defaulted.Frame!.Metadata.Extra!["simulatedFocusPosition"]);
         Assert.AreEqual(8, options.SigmaPixels(1, -10_000), 1e-12, "The declared ceiling bounds the rendered width.");
+
+        var changedDefault = FocusTestModules.Create();
+        await using var changedLifetime = changedDefault.ConfigureAwait(false);
+        await changedDefault.InitializeAsync(FocusTestModules.Config(options with { DefaultPosition = 560 }),
+            CancellationToken.None).ConfigureAwait(false);
+        var changedPreview = await changedDefault.CaptureFocusPreviewAsync(new(request), CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreNotEqual(model.ParametersSha256, changedDefault.SimulatedFocus!.ParametersSha256,
+            "Every declared model parameter, including the default position, belongs to its immutable identity.");
+        Assert.AreEqual("560", changedPreview.Frame!.Metadata.Extra!["simulatedFocusPosition"]);
+        Assert.AreEqual("1", changedPreview.Frame.Metadata.Extra["psfSigmaPixels"]);
+        Assert.IsFalse(defaulted.Frame.PixelData.Span.SequenceEqual(changedPreview.Frame.PixelData.Span),
+            "A changed declared default must resolve a different actual rendered PSF, not only metadata.");
     }
 
     [TestMethod]

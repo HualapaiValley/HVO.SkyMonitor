@@ -70,9 +70,11 @@ public sealed record VirtualSimulatedFocusOptions
         => Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
             model = ModelId,
+            enabled = Enabled,
             baseSigmaPixels = baseSigmaPixels.ToString("R", CultureInfo.InvariantCulture),
             minimum = MinimumPosition.ToString("R", CultureInfo.InvariantCulture),
             maximum = MaximumPosition.ToString("R", CultureInfo.InvariantCulture),
+            defaultPosition = DefaultPosition.ToString("R", CultureInfo.InvariantCulture),
             best = BestPosition.ToString("R", CultureInfo.InvariantCulture),
             slope = DefocusSigmaPixelsPerStep.ToString("R", CultureInfo.InvariantCulture),
             ceiling = MaximumSigmaPixels.ToString("R", CultureInfo.InvariantCulture)
