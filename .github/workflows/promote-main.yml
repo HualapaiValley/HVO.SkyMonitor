@@ -133,6 +133,7 @@ jobs:
 
       - name: Open or refresh the promotion pull request
         if: steps.compare.outputs.nothing_to_promote != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPOSITORY: ${{ github.repository }}

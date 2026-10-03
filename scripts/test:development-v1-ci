@@ -114,6 +114,14 @@ for name, candidate, qualification in mutations:
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
 promotion_step = promotion.split("      - name: Open or refresh the promotion pull request\n", 1)[1]
 promotion_script = textwrap.dedent(promotion_step.split("        run: |\n", 1)[1])
+promotion_settings = promotion_step.split("        run: |\n", 1)[0]
+shell_match = re.search(r"^        shell: (.+)$", promotion_settings, re.M)
+if shell_match and shell_match.group(1) != "bash":
+    raise SystemExit("Update the promotion regression for the configured shell")
+# Match Actions: unspecified Linux shell is bash -e; explicit bash also enables
+# pipefail. Removing shell: bash must therefore make the API-failure cases fail.
+promotion_shell = (["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c"]
+                   if shell_match else ["bash", "-e", "-c"])
 with tempfile.TemporaryDirectory(prefix="hvo-v1-ci-") as directory:
     fixture = pathlib.Path(directory)
     gh = fixture / "gh"
@@ -147,7 +155,7 @@ else:
             HVO_V1_TEST_FAIL="1" if failure else "0",
         )
         result = subprocess.run(
-            ["bash", "-e", "-o", "pipefail", "-c", promotion_script],
+            [*promotion_shell, promotion_script],
             env=environment, capture_output=True, text=True,
         )
         if (result.returncode != 0) != failure:
