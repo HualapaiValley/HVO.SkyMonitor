@@ -2,6 +2,13 @@
 
 This runbook describes the required current-head checks in `.github/workflows/ci.yml` and their local equivalents.
 
+This is the **full qualification** profile for main/release and explicitly
+requested qualification. Ordinary PRs targeting `development/v1` use the
+[short v1 profile](../development-v1.md), including after a base sync. Classifier
+output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
+Whole-repository ShellCheck remains in Quality; exhaustive category discovery
+remains in Build. Both are intentionally absent from the short workflow.
+
 ## Required Checks
 
 | Check | Enforced behavior |
