@@ -145,7 +145,7 @@ public sealed class StellarExposureRenderPlan
         var dark = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
         // Cloud transmission + scatter is at most one. Include outward float-rounding
         // allowance because the native background path adds two float conversions.
-        var background = options.BackgroundElectronsPerSecond * options.ExposureSeconds *
+        var background = options.MaximumBackgroundRate * options.ExposureSeconds *
             (options.Cloud?.RequiresEvaluation == true ? 1 + Math.ScaleB(1d, -23) : 1);
         var requiredCharge = double.MaxValue;
         foreach (var weight in DisplayWeights(options))
@@ -173,7 +173,7 @@ public sealed class StellarExposureRenderPlan
         settings ??= new();
         settings.Validate();
         if (options.StellarExposure is not null ||
-            TimeSpan.FromSeconds(options.ExposureSeconds) != geometry.EndUtc - geometry.StartUtc)
+            options.ExposureSeconds != (geometry.EndUtc - geometry.StartUtc).TotalSeconds)
             throw new ArgumentException("Stellar geometry must bind the exact rendered exposure.", nameof(options));
         var temporalStep = TemporalPointSpreadRaster.MaximumTemporalStepPixels(options.PsfSigmaPixels, options.PsfRadiusPixels);
         if (geometry.MaximumSampleMotionPixels > temporalStep * (1 + 1e-12) ||
@@ -224,14 +224,16 @@ public sealed class StellarExposureRenderPlan
                 cancellationToken.ThrowIfCancellationRequested();
                 var x = index % projection.WidthPixels; var y = index / projection.WidthPixels;
                 var vignette = 1 - options.VignettingStrength * projection.NormalizedRadiusSquared(x + .5, y + .5);
-                var background = options.BackgroundElectronsPerSecond;
+                var backgroundTransmission = 1d;
+                var diskTransmission = 1d;
                 if (projector is not null)
                 {
                     var direction = projector.Unproject(new(x + .5, y + .5))
                         ?? throw new InvalidOperationException("An active stellar aperture could not be unprojected.");
                     var cloud = options.Cloud!;
                     var effect = cloud.Field.Integrate(direction, cloud.IntegrationStartUtc, cloud.IntegrationDuration);
-                    background *= (float)effect.Transmission + (float)effect.Scatter;
+                    backgroundTransmission = (float)effect.Transmission + (float)effect.Scatter;
+                    diskTransmission = (float)effect.Transmission;
                 }
                 var channelCount = options is Rgb24CompatibilityRenderOptions ? 3 : 1;
                 for (var channel = 0; channel < channelCount; channel++)
@@ -244,7 +246,14 @@ public sealed class StellarExposureRenderPlan
                         _ => 1
                     };
                     var sourceElectrons = sourceRate * options.ExposureSeconds * fractions.GetValueOrDefault(index) * vignette * multiplier;
-                    var backgroundElectrons = background * options.ExposureSeconds * vignette;
+                    var skyChannel = options switch
+                    {
+                        BayerRggb16RenderOptions => CfaChannel(x, y, settings),
+                        Rgb24CompatibilityRenderOptions => channel,
+                        _ => -1
+                    };
+                    var backgroundElectrons = (options.BackgroundRate(x, y, skyChannel) * backgroundTransmission +
+                        options.DiskRate(x, y, skyChannel) * diskTransmission) * options.ExposureSeconds * vignette;
                     var darkElectrons = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
                     var channelWeight = maximumDisplayWeight > 0 ? displayWeights[channel] / maximumDisplayWeight : 0;
                     if (response is null && options.Gain == 0) channelWeight = 0;
