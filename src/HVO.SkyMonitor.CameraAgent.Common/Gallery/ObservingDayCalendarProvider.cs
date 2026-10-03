@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -8,30 +9,30 @@ public interface IObservingDayCalendarProvider
 }
 
 // Resolves the observing-day calendar from the active deployment location.
-// Before the location initializes, or when no store is registered, the
-// calendar falls back to UTC and every resolved day says so.
+// Before the location initializes, no sunrise period is qualified. UTC is used only for navigation
+// and for an explicitly requested historical noon interpretation.
 public sealed class DeploymentObservingDayCalendarProvider(IDeploymentLocationStore? deploymentLocation = null)
     : IObservingDayCalendarProvider
 {
     private readonly object _gate = new();
-    private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
-    private string? _timeZoneId;
+    private ObservingDayCalendar _calendar = ObservingDayCalendar.ForDeployment(null);
+    private DeploymentLocationSnapshot? _site;
     private bool _resolved;
 
     public ObservingDayCalendar Current
     {
         get
         {
-            var timeZoneId = deploymentLocation?.Active?.TimeZoneId;
+            var site = deploymentLocation?.Active;
             lock (_gate)
             {
-                // Recompute only when the configured identifier changes; an
-                // identifier this host cannot resolve stays cached as a fallback.
-                if (!_resolved || !string.Equals(timeZoneId, _timeZoneId, StringComparison.Ordinal))
+                // Coordinates/version matter even when the zone is unchanged. Previously resolved periods retain
+                // their immutable site and endpoints; only new reads use a changed active snapshot.
+                if (!_resolved || site != _site)
                 {
                     _resolved = true;
-                    _calendar = ObservingDayCalendar.Create(timeZoneId);
-                    _timeZoneId = timeZoneId;
+                    _calendar = ObservingDayCalendar.ForDeployment(site);
+                    _site = site;
                 }
                 return _calendar;
             }

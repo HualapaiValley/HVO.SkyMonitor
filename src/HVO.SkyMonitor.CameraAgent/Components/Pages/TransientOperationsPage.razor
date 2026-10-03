@@ -1,0 +1,256 @@
+@page "/operations/transients"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Common.Options
+@using HVO.SkyMonitor.CameraAgent.Common.Transients
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Transients</PageTitle>
+
+<OperationsPageHeading Eyebrow="Processing / independent detector lane" Title="Transients" HeadingId="transients-heading"
+                       Description="Inspect local causal candidate extraction and the handoff to authoritative centered validation without conflating it with display processing.">
+    <Actions>
+        <button type="button" id="@FocusFallbackId" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@_loading" @onclick="LoadAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        @if (_view?.LatestEventRun?.ExecutionId is { } executionId)
+        {
+            <a id="transients-event-run" class="button secondary" href="@($"/operations/pipeline/executions/{executionId:D}")">Open event run</a>
+        }
+        else
+        {
+            <button type="button" id="transients-event-run" class="button secondary" title="@EventRunUnavailableReason"
+                    aria-describedby="transients-event-run-reason" disabled>Open event run</button>
+            <span id="transients-event-run-reason" class="visually-hidden">@EventRunUnavailableReason</span>
+        }
+        <button type="button" id="@ProfileTriggerId" class="button secondary" disabled="@(_view is null)" @onclick="OpenProfileDialog">Review detector profile</button>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _view is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading the detector lane.</span></div>
+}
+else if (_view is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Detector status unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var view = _view;
+    var banner = Banner(view);
+    <section class="ops-profile-banner transients-state" aria-label="Detector state">
+        <div>
+            <span class="status-icon @banner.Icon" aria-hidden="true"></span>
+            <span>
+                <strong id="transients-state-title">@banner.Title</strong>
+                <small>
+                    @banner.Detail
+                    @if (view.Worker.Availability == TransientWorkerAvailability.Degraded)
+                    {
+                        <a href="/operations/quarantine?kind=TransientRuntime">Review quarantine</a>
+                    }
+                </small>
+            </span>
+        </div>
+        <dl>
+            <div><dt>Mode</dt><dd>@view.Mode</dd></div>
+            <div><dt>Profile</dt><dd>@view.Profile.ExtractionProfile</dd></div>
+            <div><dt>Window</dt><dd>N-2..N+2</dd></div>
+            <div><dt>Pending frames</dt><dd>@Count(view.Worker.PendingFrames)</dd></div>
+            <div><dt>Pending candidates</dt><dd>@Count(view.Worker.PendingCandidates)</dd></div>
+        </dl>
+    </section>
+
+    <div class="ops-grid two">
+        <section class="ops-panel transients-outcomes" aria-labelledby="transients-outcomes-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="transients-outcomes-heading">Recent detector outcomes</h2><p>No candidate is a successful bounded result.</p></div>
+                <span>Last @CameraAgentTransientOperationsUiService.RecentOutcomeCount captures</span>
+            </header>
+            @if (view.OutcomesUnavailable is not null)
+            {
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@view.OutcomesUnavailable</span></div>
+            }
+            else if (view.RecentOutcomes is not { Count: > 0 } outcomes)
+            {
+                <p class="transients-empty">@NoOutcomesText(view)</p>
+            }
+            else
+            {
+                <div class="ops-table-wrap">
+                    <table class="ops-table transients-outcome-table">
+                        <thead><tr><th>Endpoint</th><th>Edge outcome</th><th>Lane state</th><th>Evidence</th></tr></thead>
+                        <tbody>
+                            @foreach (var outcome in outcomes)
+                            {
+                                var edge = EdgeOutcome(outcome);
+                                var lane = LaneState(outcome);
+                                <tr class="@(outcome.CaptureId == view.LatestEventRun?.CaptureId ? "current-row" : null)">
+                                    <td><strong>@Sequence(outcome.CaptureSequence)</strong><small>@FormatUtc(outcome.ExposureStartedUtc)</small></td>
+                                    <td>@edge.Text@if (edge.Detail is not null)
+                                        {
+                                            <small class="@(edge.Failed ? "failure" : null)">@edge.Detail</small>
+                                        }</td>
+                                    <td><span class="state-chip @lane.Chip">@lane.Text</span></td>
+                                    <td><a href="@($"/gallery/{outcome.CaptureId:D}")" aria-label="@($"Open capture {Sequence(outcome.CaptureSequence)}")">Capture</a></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section class="ops-panel transients-latest" aria-labelledby="transients-latest-heading">
+            @if (view.CandidatesUnavailable is not null)
+            {
+                <header class="ops-panel-heading"><div><h2 id="transients-latest-heading">Latest candidate</h2><p>The newest causal candidate and its evidence stages.</p></div></header>
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@view.CandidatesUnavailable</span></div>
+            }
+            else if (view.RecentCandidates is not { Count: > 0 } candidates)
+            {
+                <header class="ops-panel-heading"><div><h2 id="transients-latest-heading">Latest candidate</h2><p>The newest causal candidate and its evidence stages.</p></div></header>
+                <p class="transients-empty">No causal candidate has been retained on this agent.</p>
+            }
+            else
+            {
+                var latest = candidates[0];
+                <header class="ops-panel-heading">
+                    <div><h2 id="transients-latest-heading">Latest candidate</h2><p>Created @FormatUtc(latest.CreatedUtc) UTC / @Words(latest.WorkflowPhase)</p></div>
+                    <span class="state-chip @EventChip(latest.EventState)">@Words(latest.EventState)</span>
+                </header>
+                <dl class="ops-facts">
+                    <div><dt>Causal frames</dt><dd>@latest.CausalEvidenceState</dd></div>
+                    <div><dt>Centered window</dt><dd>@latest.CenteredEvidenceState</dd></div>
+                    <div><dt>Assessment</dt><dd>@latest.AssessmentEvidenceState</dd></div>
+                    <div><dt>Final evidence</dt><dd>@latest.FinalEvidenceState</dd></div>
+                    <div class="full"><dt>Candidate</dt><dd><a href="@($"/transients/{latest.CandidateId:D}")">@latest.CandidateId</a></dd></div>
+                </dl>
+            }
+        </section>
+    </div>
+
+    <div class="ops-grid two">
+        <section class="ops-panel transients-candidates" aria-labelledby="transients-candidates-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="transients-candidates-heading">Recent candidates</h2><p>Each candidate keeps its causal, centered, assessment and final evidence separately.</p></div>
+                <a class="button secondary small" href="/transients">All candidates</a>
+            </header>
+            @if (view.CandidatesUnavailable is not null)
+            {
+                <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@view.CandidatesUnavailable</span></div>
+            }
+            else if (view.RecentCandidates is not { Count: > 0 } candidates)
+            {
+                <p class="transients-empty">No candidates yet.</p>
+            }
+            else
+            {
+                <div class="ops-table-wrap">
+                    <table class="ops-table transients-candidate-table">
+                        <thead><tr><th>Created (UTC)</th><th>Event</th><th>Evidence</th></tr></thead>
+                        <tbody>
+                            @foreach (var candidate in candidates)
+                            {
+                                <tr>
+                                    <td><a href="@($"/transients/{candidate.CandidateId:D}")">@FormatUtc(candidate.CreatedUtc)</a><small>@Words(candidate.WorkflowPhase)</small></td>
+                                    <td><span class="state-chip @EventChip(candidate.EventState)">@Words(candidate.EventState)</span></td>
+                                    <td>
+                                        <ul class="transients-stages">
+                                            <li class="@StageClass(candidate.CausalEvidenceState)">Causal<span class="visually-hidden"> @candidate.CausalEvidenceState</span></li>
+                                            <li class="@StageClass(candidate.CenteredEvidenceState)">Centered<span class="visually-hidden"> @candidate.CenteredEvidenceState</span></li>
+                                            <li class="@StageClass(candidate.AssessmentEvidenceState)">Assessed<span class="visually-hidden"> @candidate.AssessmentEvidenceState</span></li>
+                                            <li class="@StageClass(candidate.FinalEvidenceState)">Final<span class="visually-hidden"> @candidate.FinalEvidenceState</span></li>
+                                        </ul>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section class="ops-panel transients-handoff" aria-labelledby="transients-handoff-heading">
+            @{ var handoff = Handoff(view); }
+            <header class="ops-panel-heading">
+                <div><h2 id="transients-handoff-heading">Central handoff</h2><p>Hybrid mode hands candidates to LogicHost for centered assessment.</p></div>
+                <span class="state-chip @handoff.Chip">@handoff.Text</span>
+            </header>
+            @if (view.Mode != TransientOperatingMode.Hybrid)
+            {
+                <p class="transients-empty">@handoff.Detail</p>
+            }
+            else
+            {
+                var delivery = view.Delivery;
+                @if (handoff.Detail is not null)
+                {
+                    <div class="ops-note-banner compact" role="status"><span class="status-icon @handoff.Icon" aria-hidden="true"></span><span>@handoff.Detail</span></div>
+                }
+                <dl class="ops-facts">
+                    <div><dt>Pending</dt><dd>@Count(delivery.PendingCount)</dd></div>
+                    <div><dt>Retrying</dt><dd>@Count(delivery.RetryingCount)</dd></div>
+                    <div><dt>Sign-in blocked</dt><dd>@Count(delivery.AuthenticationBlockedCount)</dd></div>
+                    <div><dt>Quarantined</dt><dd>@Count(delivery.QuarantinedCount)</dd></div>
+                    <div><dt>Oldest pending</dt><dd>@(delivery.OldestPendingUtc is { } oldest ? FormatAge(view.EvaluatedUtc - oldest) : "None")</dd></div>
+                    <div><dt>Last acknowledged</dt><dd>@(delivery.LastAcknowledgedUtc is { } acknowledged ? FormatAge(view.EvaluatedUtc - acknowledged) : "Never")</dd></div>
+                </dl>
+            }
+        </section>
+    </div>
+
+    <p class="transients-evaluated">Read @FormatUtc(view.EvaluatedUtc) UTC.</p>
+
+    @if (_dialogOpen)
+    {
+        var profile = view.Profile;
+        <dialog class="action-dialog operations-dialog transients-dialog" aria-labelledby="transients-profile-heading" aria-describedby="transients-profile-description" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Detector profile</p><h2 id="transients-profile-heading">@profile.ExtractionProfile</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="transients-profile-description" class="dialog-intro">The extraction profile is versioned with CameraAgent, so every candidate records exactly which thresholds found it. The lane bounds below come from this agent's configuration.</p>
+            <div class="transients-dialog-body">
+                <h3>Extraction thresholds</h3>
+                <dl class="ops-facts">
+                    <div><dt>Minimum residual</dt><dd>@Number(profile.Extraction.MinimumResidualAdu) ADU</dd></div>
+                    <div><dt>Minimum signal</dt><dd>@Number(profile.Extraction.MinimumIntegratedSignalAdu) ADU</dd></div>
+                    <div><dt>Minimum pixels</dt><dd>@Count(profile.Extraction.MinimumComponentPixels)</dd></div>
+                    <div><dt>Candidates per frame</dt><dd>Up to @Count(profile.Extraction.MaximumCandidates)</dd></div>
+                    <div><dt>Fragment gap</dt><dd>@Number(profile.Extraction.MaximumFragmentGapPixels) px</dd></div>
+                    <div><dt>Fragment alignment</dt><dd>@Number(profile.Extraction.MinimumFragmentAlignmentCosine) cosine</dd></div>
+                </dl>
+                <h3>Windows and association</h3>
+                <dl class="ops-facts">
+                    <div><dt>Causal window</dt><dd>N-2..N</dd></div>
+                    <div><dt>Centered window</dt><dd>N-2..N+2</dd></div>
+                    <div><dt>Adjacent frame gap</dt><dd>Up to @Seconds(profile.MaximumAdjacentStartIntervalSeconds)</dd></div>
+                    <div><dt>Association gap</dt><dd>Up to @Seconds(profile.AssociationMaximumStartIntervalSeconds)</dd></div>
+                    <div><dt>Endpoint gap</dt><dd>@Number(profile.AssociationMaximumEndpointGapPixels) px</dd></div>
+                    <div><dt>Axis alignment</dt><dd>@Number(profile.AssociationMinimumAxisAlignment) or better</dd></div>
+                    <div class="full"><dt>Association algorithm</dt><dd>@profile.AssociationAlgorithm</dd></div>
+                </dl>
+                <h3>Lane bounds</h3>
+                <dl class="ops-facts">
+                    <div><dt>Backlog limits</dt><dd>@(view.Required ? "Required lane" : "Optional lane")</dd></div>
+                    <div><dt>Candidate timeout</dt><dd>@Count(profile.CandidateTimeoutMinutes) min</dd></div>
+                    <div><dt>Attempts</dt><dd>Up to @Count(profile.MaximumAttempts)</dd></div>
+                    <div><dt>Retry delay</dt><dd>@Seconds(profile.RetryInitialDelaySeconds) to @Seconds(profile.RetryMaximumDelaySeconds)</dd></div>
+                    <div><dt>Star catalog limit</dt><dd>Magnitude @Number(profile.StarMaximumMagnitude)</dd></div>
+                    <div><dt>Stars considered</dt><dd>Up to @Count(profile.StarMaximumResults)</dd></div>
+                </dl>
+            </div>
+            <footer>
+                <button type="button" id="transients-profile-close" class="button primary" @onclick="CloseDialog">Close</button>
+            </footer>
+        </dialog>
+    }
+}

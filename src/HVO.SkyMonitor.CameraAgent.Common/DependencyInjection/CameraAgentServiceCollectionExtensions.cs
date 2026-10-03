@@ -7,15 +7,18 @@ using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Replay;
@@ -126,6 +129,14 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
+        services.AddSingleton<CameraModuleOwnership>();
+        services.AddSingleton<IManualFocusPreviewSource, CameraModuleManualFocusPreviewSource>();
+        services.AddSingleton<IManualFocusSessionStore, ManualFocusSessionStore>();
+        services.AddSingleton(provider => new ManualFocusSessionCoordinator(
+            provider.GetRequiredService<IManualFocusPreviewSource>(),
+            provider.GetRequiredService<TimeProvider>(),
+            store: provider.GetRequiredService<IManualFocusSessionStore>(),
+            logger: provider.GetRequiredService<ILogger<ManualFocusSessionCoordinator>>()));
         services.AddSingleton<SqliteTransientCandidateJournal>();
         services.AddSingleton<ITransientCandidateJournal>(provider =>
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
@@ -218,7 +229,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAssociationService>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
-        services.AddSingleton<ILocalAutomationTaskRegistry, EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<ILocalAutomationTaskRegistry, LocalAutomationTaskRegistry>();
+        services.AddSingleton<LocalAutomationWindowPlanner>();
         services.AddSingleton<SqliteLocalAutomationStore>();
         services.AddSingleton<ILocalAutomationStore>(provider =>
             provider.GetRequiredService<SqliteLocalAutomationStore>());
@@ -273,6 +286,19 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddSingleton<SqliteNightlyProductStore>();
+        services.AddSingleton<INightlyProductCatalog>(static provider =>
+            provider.GetRequiredService<SqliteNightlyProductStore>());
+        services.AddSingleton<INightlyProductSourceReader, JournalNightlyProductSourceReader>();
+        services.AddSingleton(static provider => new NightlyProductGenerator(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            provider.GetRequiredService<INightlyProductSourceReader>(),
+            provider.GetRequiredService<SqliteNightlyProductStore>(),
+            provider.GetRequiredService<IPlanetEphemeris>(),
+            () => provider.GetService<IDeploymentLocationStore>(),
+            provider.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<ILocalAutomationWindowTaskAdapter, NightlyProductAutomationTaskRegistry>();
         services.AddSingleton<ICameraAgentPresentationMaterializer, CameraAgentPresentationMaterializer>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
@@ -385,6 +411,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ProcessingReplayWorker>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ProcessingReplayWorker>());
         services.AddHostedService<CameraCaptureService>();
+        // Registered after the capture owner so host shutdown stops a focus session before the module is revoked.
+        services.AddHostedService(provider => provider.GetRequiredService<ManualFocusSessionCoordinator>());
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
@@ -395,6 +423,16 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
         services.AddSingleton<TransientCandidateDeliveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientCandidateDeliveryService>());
+        services.TryAddSingleton<ISntpClient, SntpClient>();
+        services.TryAddSingleton<IKernelClockReader, LinuxKernelClockReader>();
+        services.AddSingleton(provider => new ClockSyncMonitor(
+            () => TimeSyncSettings.Read(configuration),
+            provider.GetRequiredService<ISntpClient>(),
+            provider.GetRequiredService<IKernelClockReader>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<ClockSyncMonitor>>()));
+        services.AddSingleton<IClockSyncMonitor>(provider => provider.GetRequiredService<ClockSyncMonitor>());
+        services.AddHostedService(provider => provider.GetRequiredService<ClockSyncMonitor>());
 
         return services;
     }

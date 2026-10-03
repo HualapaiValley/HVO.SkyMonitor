@@ -61,7 +61,8 @@ internal sealed record CalibrationUiStatus(
     DateTimeOffset? LastSelectionUtc,
     string? LastReconciliationReason,
     DateTimeOffset? LastReconciliationUtc,
-    CalibrationLibraryActivationSnapshot? LastActivation);
+    CalibrationLibraryActivationSnapshot? LastActivation,
+    string? AcquisitionUnavailableReason = null);
 
 internal sealed record CalibrationUiBundlePage(
     IReadOnlyList<CalibrationUiBundleSummary> Items,
@@ -144,8 +145,12 @@ internal sealed class CameraAgentCalibrationUiService(
         }
         try
         {
-            return OperatorUiResult<CalibrationUiStatus>.Success(Project(
-                await store.GetOperationsStatusAsync(cancellationToken).ConfigureAwait(false)));
+            var status = Project(await store.GetOperationsStatusAsync(cancellationToken).ConfigureAwait(false));
+            return OperatorUiResult<CalibrationUiStatus>.Success(status with
+            {
+                AcquisitionUnavailableReason = await acquisitionCoordinator
+                    .GetAcquisitionUnavailableReasonAsync(cancellationToken).ConfigureAwait(false)
+            });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

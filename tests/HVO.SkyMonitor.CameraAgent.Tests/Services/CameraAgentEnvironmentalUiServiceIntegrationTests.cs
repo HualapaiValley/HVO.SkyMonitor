@@ -81,6 +81,7 @@ public sealed class CameraAgentEnvironmentalUiServiceIntegrationTests
             Mock.Of<IEnvironmentalAcquisitionStateStore>(),
             Mock.Of<ILocalEnvironmentalObservationStore>(),
             commandService,
+            new EnvironmentalObservationDeliveryState(),
             options,
             null!,
             TimeProvider.System,

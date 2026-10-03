@@ -9,7 +9,7 @@ public sealed record CameraAgentCurrentSkyFacts(
     long CaptureSequence,
     string? RigId,
     DateTimeOffset ExposureStartedUtc,
-    ObservingDay ObservingDay,
+    ObservingDay? ObservingDay,
     double? ExposureMilliseconds,
     double? Gain,
     double? SensorTemperatureC,
@@ -19,7 +19,9 @@ public sealed record CameraAgentCurrentSkyFacts(
     CameraAgentCurrentSkyCloudFacts Cloud,
     CameraAgentCombinedLineage? CombinedLineage,
     ProfileIdentityDescriptor? ProcessingProfile,
-    bool CombinedLineageUnavailable = false);
+    bool CombinedLineageUnavailable = false,
+    CameraAgentCaptureProfileFacts? CaptureProfile = null,
+    CameraAgentCaptureLocationFacts? Location = null);
 
 public sealed record CameraAgentCurrentSkyCloudFacts(
     string Availability,
@@ -52,6 +54,7 @@ public static class CameraAgentCurrentSkyFactsProjector
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(calendar);
+        var hasReportingPeriod = calendar.TryResolve(capture.ExposureStartedUtc, out var reportingDay);
         var detail = capture.Detail;
         var cloud = detail?.CloudAssessment;
         var combinedArtifacts = capture.Artifacts.Where(static artifact => artifact.Role == FrameArtifactRole.Combined).ToArray();
@@ -65,7 +68,7 @@ public static class CameraAgentCurrentSkyFactsProjector
             capture.CaptureSequence,
             capture.RigId,
             capture.ExposureStartedUtc,
-            calendar.Resolve(capture.ExposureStartedUtc),
+            hasReportingPeriod ? reportingDay : null,
             detail?.Controls?.EffectiveExposureMilliseconds,
             detail?.Controls?.EffectiveGain,
             detail?.Controls?.EffectiveTemperatureC,
@@ -89,6 +92,8 @@ public static class CameraAgentCurrentSkyFactsProjector
             detail?.ProcessingProfile,
             // Combined lineage could not be described: the bounded artifact list
             // either hid the displayed artifact or leaves the newest one unknowable.
-            combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0));
+            combined is null && capture.ArtifactsTruncated && (combinedArtifactId is not null || combinedArtifacts.Length > 0),
+            detail?.CaptureProfile,
+            detail?.Location);
     }
 }

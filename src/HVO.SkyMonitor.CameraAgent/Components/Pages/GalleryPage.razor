@@ -21,7 +21,7 @@
         <div class="gallery-heading-facts">
             <span aria-live="polite" aria-atomic="true"><strong>@VisibleItems.Count</strong> on this page</span>
             <span><strong>@ArtifactCount</strong> artifacts on this page</span>
-            <span title="Event linkage is not projected onto captures yet"><strong>Not linked</strong> events</span>
+            <span title="Prospectively recorded local candidate links; central event review is unavailable"><strong>@(CandidateLinksAvailable ? LinkedCandidateCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : LinkedCandidateCount > 0 ? $"{LinkedCandidateCount}+" : "Unavailable")</strong> linked local candidates on this page</span>
         </div>
     </header>
 
@@ -106,7 +106,11 @@
             {
                 <ArchiveCard Capture="@capture"
                              Presentation="@CardPresentation(capture)"
-                             DetailUrl="@DetailUrl(capture.CaptureId)" />
+                             DetailUrl="@DetailUrl(capture.CaptureId)"
+                             RunUrl="@RunUrl(capture.CaptureId)"
+                             RunUnavailableReason="@(CardLinks(capture.CaptureId)?.RunUnavailableReason ?? "The pipeline run identity is unavailable.")"
+                             DisplayProduct="@CardProduct(capture.CaptureId)"
+                             CandidateIds="@(CardLinks(capture.CaptureId)?.CandidateIds ?? [])" />
             }
         </section>
     }

@@ -21,6 +21,73 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed class CameraAgentAutomationOperationsEndpointsTests
 {
     [TestMethod]
+    public async Task Save_PreservesTypedWindowPolicyAndUsesAuthenticatedOwner()
+    {
+        var store = new RecordingStore();
+        using var app = CreateApp(store);
+        var response = await PostAsync(app, "SaveCameraAgentAutomation",
+            """{"definitionId":"daily","name":"Daily","enabled":true,"taskKind":"StillImageGeneration","taskTarget":"test-rig","triggerKind":"SourceWindowClosed","triggerInterval":1,"expectedVersion":0,"actor":"untrusted","sourceWindow":{"contractVersion":"hvo-automation-source-window-policy-v1","kind":"SunriseDay","selection":"DarkNightActualSources","processingSettleAllowance":"00:15:00"}}""",
+            idempotencyKey: "save-window").ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status200OK, response.Status);
+        var request = store.SaveRequests.Single();
+        Assert.AreEqual("owner", request.Actor);
+        Assert.IsTrue(request.SourceWindow!.IsValid());
+        Assert.AreEqual(LocalAutomationSourceSelection.DarkNightActualSources, request.SourceWindow.Selection);
+        Assert.AreEqual(TimeSpan.FromMinutes(15), request.SourceWindow.ProcessingSettleAllowance);
+    }
+
+    [TestMethod]
+    [DataRow("BackfillCameraAgentAutomation", "{\"reportDate\":\"2026-10-12\",\"expectedVersion\":2,\"reason\":\"missing period\"}")]
+    [DataRow("RetryCameraAgentAutomation", "{\"previousRunKey\":\"retained-key\",\"expectedVersion\":2,\"reason\":\"retry same period\"}")]
+    public async Task OccurrenceCommand_PassesBoundedOwnerVersionAndKeyAndRejectsAnonymous(string endpoint, string payload)
+    {
+        var store = new RecordingStore();
+        using var app = CreateApp(store);
+        var route = new Dictionary<string, object?> { ["definitionId"] = "daily" };
+        var rejected = await PostAsync(app, endpoint, payload, idempotencyKey: "prepared-key", anonymous: true,
+            routeValues: route).ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status403Forbidden, rejected.Status);
+        Assert.IsEmpty(store.BackfillRequests);
+        Assert.IsEmpty(store.RetryRequests);
+        var response = await PostAsync(app, endpoint, payload, idempotencyKey: "prepared-key", routeValues: route)
+            .ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status200OK, response.Status);
+        if (endpoint == "BackfillCameraAgentAutomation")
+        {
+            var request = store.BackfillRequests.Single();
+            Assert.AreEqual("daily", request.DefinitionId);
+            Assert.AreEqual("owner", request.Actor);
+            Assert.AreEqual(2L, request.ExpectedVersion);
+            Assert.AreEqual("prepared-key", request.IdempotencyKey);
+            Assert.AreEqual(new DateOnly(2026, 10, 12), request.ReportDate);
+        }
+        else
+        {
+            var request = store.RetryRequests.Single();
+            Assert.AreEqual("daily", request.DefinitionId);
+            Assert.AreEqual("owner", request.Actor);
+            Assert.AreEqual(2L, request.ExpectedVersion);
+            Assert.AreEqual("prepared-key", request.IdempotencyKey);
+            Assert.AreEqual("retained-key", request.PreviousRunKey);
+        }
+    }
+
+    [TestMethod]
+    public async Task OccurrenceCommands_RejectMissingRequiredInputsBeforePersistence()
+    {
+        var store = new RecordingStore();
+        using var app = CreateApp(store);
+        foreach (var endpoint in new[] { "BackfillCameraAgentAutomation", "RetryCameraAgentAutomation" })
+        {
+            var response = await PostAsync(app, endpoint, "{}",
+                routeValues: new Dictionary<string, object?> { ["definitionId"] = "daily" }).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status400BadRequest, response.Status);
+        }
+        Assert.IsEmpty(store.BackfillRequests);
+        Assert.IsEmpty(store.RetryRequests);
+    }
+
+    [TestMethod]
     public void AutomationEndpoints_RequireOwnerPoliciesAndAntiforgeryOnEveryMutation()
     {
         using var app = CreateApp(new RecordingStore());
@@ -28,11 +95,13 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         var read = FindEndpoint(app, "GetCameraAgentAutomations");
         var save = FindEndpoint(app, "SaveCameraAgentAutomation");
         var remove = FindEndpoint(app, "RemoveCameraAgentAutomation");
+        var backfill = FindEndpoint(app, "BackfillCameraAgentAutomation");
+        var retry = FindEndpoint(app, "RetryCameraAgentAutomation");
 
         CollectionAssert.Contains(
             read.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
             CameraAgentAuthorizationPolicyNames.OperationsReadV1);
-        foreach (var mutation in new[] { save, remove })
+        foreach (var mutation in new[] { save, remove, backfill, retry })
         {
             CollectionAssert.Contains(
                 mutation.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
@@ -289,7 +358,7 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         public PipeReader Reader { get; } = PipeReader.Create(stream);
     }
 
-    private sealed class RecordingStore : ILocalAutomationStore
+    private sealed class RecordingStore : ILocalAutomationStore, ILocalAutomationOccurrenceStore
     {
         private static readonly LocalAutomationOperatorState State = new(
             StoreVersion: 3,
@@ -303,6 +372,28 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         internal List<LocalAutomationSaveRequest> SaveRequests { get; } = [];
 
         internal List<LocalAutomationRemoveRequest> RemoveRequests { get; } = [];
+        internal List<LocalAutomationBackfillRequest> BackfillRequests { get; } = [];
+        internal List<LocalAutomationRetryRequest> RetryRequests { get; } = [];
+
+        public ValueTask<LocalAutomationCommandResult> BackfillAsync(LocalAutomationBackfillRequest request,
+            CancellationToken cancellationToken)
+        {
+            BackfillRequests.Add(request);
+            return ValueTask.FromResult(new LocalAutomationCommandResult(Status, ReasonCode, null, State));
+        }
+
+        public ValueTask<LocalAutomationCommandResult> RetryAsync(LocalAutomationRetryRequest request,
+            CancellationToken cancellationToken)
+        {
+            RetryRequests.Add(request);
+            return ValueTask.FromResult(new LocalAutomationCommandResult(Status, ReasonCode, null, State));
+        }
+
+        public ValueTask<bool> TryBeginOccurrenceAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(LocalAutomationRunnerEntry entry, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
         internal LocalAutomationCommandStatus Status { get; set; } = LocalAutomationCommandStatus.Applied;
 
@@ -311,6 +402,9 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         internal bool Throw { get; set; }
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask<IReadOnlySet<string>> GetRecordedOccurrenceIdentitiesAsync(
+            LocalAutomationRunnerEntry entry, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken)
             => Throw

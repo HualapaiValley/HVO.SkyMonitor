@@ -1,0 +1,272 @@
+@page "/operations/focus"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.Imaging
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Focus | Operations</PageTitle>
+
+<OperationsPageHeading Eyebrow="@Section.Eyebrow" Title="@Section.Label" HeadingId="focus-heading" Description="@Section.Description">
+    <Actions>
+        <a class="button secondary" href="/">Current sky</a>
+        @if (CanDiscard)
+        {
+            <button type="button" id="focus-discard" class="button secondary" disabled="@Busy" @onclick="DiscardAsync">Discard</button>
+        }
+        <button type="button" id="focus-start" class="button primary" disabled="@(!PrimaryEnabled)"
+                aria-describedby="@(PrimaryEnabled ? null : "focus-unavailable-reason")" title="@(PrimaryEnabled ? null : ControlReason)"
+                @onclick="PrimaryAsync">@PrimaryLabel</button>
+    </Actions>
+</OperationsPageHeading>
+
+<div class="focus-boundary" role="note">
+    <strong>Manual focus only.</strong> Loosen, adjust, and secure the lens at the camera. CameraAgent measures image
+    sharpness but does not move hardware.
+</div>
+
+@if (Fidelity is { QualifiesPhysicalFocus: false } fidelity)
+{
+    <div class="ops-note-banner focus-fidelity" role="note">
+        <span class="status-icon warning" aria-hidden="true"></span>
+        <span><strong>Simulated preview.</strong> @fidelity.Limitation</span>
+    </div>
+}
+
+@if (_message is not null)
+{
+    <div class="ops-note-banner focus-message" role="@(_messageIsError ? "alert" : "status")">
+        <span class="status-icon @(_messageIsError ? "danger" : "success")" aria-hidden="true"></span>
+        <span>@_message</span>
+    </div>
+}
+
+<section class="focus-workspace" aria-label="Focus workspace">
+    <div class="focus-viewer">
+        @if (Images is { } images && _viewer == FocusViewer.Field)
+        {
+            <div class="focus-image focus-field" @ref="_fieldElement">
+                <img src="@_overviewUrl" alt="Whole preview frame @images.FrameWidth by @images.FrameHeight pixels. Click a star to target it." draggable="false">
+                @if (CurrentTarget is { } fieldTarget)
+                {
+                    <span class="focus-field-marker" aria-hidden="true" style="@FieldPosition(images, fieldTarget)"></span>
+                }
+                @foreach (var star in images.CatalogStars)
+                {
+                    <button type="button" class="focus-catalog-star" style="@FieldPosition(images, star.Pixel)"
+                            aria-label="@CatalogLabel(star)" title="@CatalogLabel(star)" disabled="@(!CanAdjust)"
+                            @onclick="() => RetargetAsync(star.Pixel)" @onclick:stopPropagation="true"></button>
+                }
+                <span class="focus-target-label">Select a star / @images.CatalogStars.Count catalog stars in frame</span>
+            </div>
+        }
+        else if (Images is { StarJpeg: not null } star)
+        {
+            <div class="focus-image focus-star">
+                <div class="focus-star-frame" style="aspect-ratio: @star.StarWindowWidth / @star.StarWindowHeight">
+                    <img src="@_starUrl" alt="@StarAlt" draggable="false">
+                    <span class="focus-reticle" aria-hidden="true" style="@ReticlePosition(star)"></span>
+                </div>
+                <span class="focus-target-label">@TargetLabel</span>
+            </div>
+        }
+        else
+        {
+            <div class="focus-image" role="img" aria-label="@EmptyViewerText">
+                <span class="focus-reticle" aria-hidden="true"></span>
+                <span class="focus-target-label" aria-hidden="true">@EmptyViewerLabel</span>
+            </div>
+        }
+        <footer class="focus-viewer-toolbar">
+            <span>Preview is temporary and is not admitted to the normal capture pipeline.@(Session.IsRunning ? " Leaving this page ends the session within " + Seconds(Limits.ObserverTimeout) + "." : null)</span>
+            <span class="focus-viewer-actions">
+                @if (_viewer == FocusViewer.Field)
+                {
+                    <button type="button" id="focus-automatic-target" class="button secondary small" disabled="@(!CanAdjust)"
+                            @onclick="AutomaticTargetAsync">Automatic target</button>
+                }
+                <button type="button" id="focus-select-region" class="button secondary small" disabled="@(Images is null || !RendererInfo.IsInteractive)"
+                        aria-pressed="@(_viewer == FocusViewer.Field ? "true" : "false")"
+                        @onclick="ToggleViewer">@(_viewer == FocusViewer.Field ? "Show target star" : "Select region")</button>
+            </span>
+        </footer>
+    </div>
+
+    <aside class="focus-inspector" aria-labelledby="focus-session-status">
+        <div class="focus-session-state">
+            <span><strong id="focus-session-status">@StateTitle</strong><small id="focus-session-detail">@StateDetail</small></span>
+            <span class="state-chip @ChipTone">@ChipText</span>
+        </div>
+        @if (ControlReason is not null)
+        {
+            <p id="focus-unavailable-reason" class="focus-reason">@ControlReason</p>
+        }
+        <div class="focus-score">
+            <span>@MetricHeading</span>
+            <strong id="focus-metric">@if (LatestMetric is { } metric)
+                {
+                    @metric.ToString("F2", Culture)<small> px</small>
+                }
+                else
+                {
+                    @("— ")<small>@NoMetricText</small>
+                }</strong>
+            @if (Session.Latest is { } latest)
+            {
+                <p id="focus-sample-detail" class="focus-sample-detail @(latest.Measurement.Status == FocusStarStatus.Valid ? null : "invalid")">@SampleDetail(latest)</p>
+            }
+            <svg class="focus-trend" viewBox="0 0 240 90" role="img" aria-label="@TrendLabel">
+                <path class="grid" d="M0 20H240M0 45H240M0 70H240"></path>
+                @if (Trend.Line is { } line)
+                {
+                    <path class="line" d="@line"></path>
+                }
+                @foreach (var point in Trend.Points)
+                {
+                    <circle class="@point.Kind" cx="@point.X.ToString("F1", Culture)" cy="@point.Y.ToString("F1", Culture)" r="3"></circle>
+                }
+            </svg>
+            @if (Session.Best is { } best)
+            {
+                <p id="focus-best" class="focus-best">@BestLabel: <strong>@Value(best.Measurement.HalfFluxDiameterPixels) px HFD</strong> / @Value(best.Measurement.FwhmPixels) px FWHM / sample @best.Sequence@(best.SimulatedFocusPosition is { } at ? $" / position {at.ToString("0.#", Culture)}" : null)</p>
+            }
+            @if (ComparisonNote is { } comparisonNote)
+            {
+                <p id="focus-comparison-note" class="muted">@comparisonNote</p>
+            }
+        </div>
+        <div class="focus-controls">
+            <label>Preview exposure<input id="focus-exposure" type="text" @ref="_exposureInput" @bind="_exposureText" @bind:event="oninput" @bind:after="MarkDirty" disabled="@(!CanEditSettings)"
+                       aria-invalid="@InvalidAttribute(SettingsField.Exposure)" inputmode="decimal"
+                       aria-describedby="@(!CanEditSettings ? "focus-unavailable-reason" : _invalidField == SettingsField.Exposure ? "focus-settings-error focus-exposure-help" : "focus-exposure-help")"></label>
+            <label>Preview gain<input id="focus-gain" type="number" min="0" max="@Limits.MaximumGain.ToString(Culture)" step="1" @ref="_gainInput" @bind="_gain" @bind:event="oninput" @bind:after="MarkDirty"
+                       disabled="@(!CanEditSettings)" aria-invalid="@InvalidAttribute(SettingsField.Gain)"
+                       aria-describedby="@(!CanEditSettings ? "focus-unavailable-reason" : _invalidField == SettingsField.Gain ? "focus-settings-error" : null)"></label>
+            <label>Safety limit<select id="focus-safety-limit" @bind="_safetyMinutes" disabled="@(!CanStartSession)"
+                        aria-describedby="@(CanStartSession ? "focus-safety-help" : "focus-unavailable-reason")">
+                @foreach (var minutes in SafetyChoices)
+                {
+                    <option value="@minutes">@minutes minutes</option>
+                }
+            </select></label>
+            <label>Metric<select id="focus-metric-kind" @bind="_metric" disabled="@(!RendererInfo.IsInteractive)">
+                <option value="@MetricHfd">Half-flux diameter</option>
+                <option value="@MetricFwhm">FWHM</option>
+            </select></label>
+        </div>
+        @if (_settingsError is not null)
+        {
+            <p id="focus-settings-error" class="focus-settings-error" role="alert">@_settingsError</p>
+        }
+        <p id="focus-exposure-help" class="focus-help">Exposure as seconds (1.5 or 1.5s) or milliseconds (500ms), @Seconds(Limits.MinimumExposure) to @Seconds(Limits.MaximumExposure).</p>
+        <p id="focus-safety-help" class="focus-help">The loop exposes back to back until you end it. The safety limit ends it even if nobody does.</p>
+        @if (SimulatedFocus is { } model)
+        {
+            <fieldset class="focus-simulated" disabled="@(!CanEditSettings)">
+                <legend>Simulated focus position <small>@model.Units, @model.MinimumPosition.ToString("0", Culture)&ndash;@model.MaximumPosition.ToString("0", Culture). Simulated in VirtualSky only; not a motor.</small></legend>
+                <div class="focus-simulated-row">
+                    <button type="button" class="button secondary small" @onclick="() => NudgeAsync(-50)" aria-label="Move simulated focus 50 steps in">&minus;50</button>
+                    <button type="button" class="button secondary small" @onclick="() => NudgeAsync(-10)" aria-label="Move simulated focus 10 steps in">&minus;10</button>
+                    <input id="focus-position" type="number" step="1" min="@model.MinimumPosition.ToString(Culture)" max="@model.MaximumPosition.ToString(Culture)"
+                           @ref="_positionInput" @bind="_position" @bind:event="oninput" @bind:after="MarkDirty" aria-label="Simulated focus position"
+                           aria-invalid="@InvalidAttribute(SettingsField.Position)" aria-describedby="@(_invalidField == SettingsField.Position ? "focus-settings-error" : null)">
+                    <button type="button" class="button secondary small" @onclick="() => NudgeAsync(10)" aria-label="Move simulated focus 10 steps out">+10</button>
+                    <button type="button" class="button secondary small" @onclick="() => NudgeAsync(50)" aria-label="Move simulated focus 50 steps out">+50</button>
+                </div>
+            </fieldset>
+        }
+        <button type="button" id="focus-sample" class="button secondary" disabled="@(!CanApply)"
+                aria-describedby="@(CanApply ? null : "focus-apply-reason")" @onclick="ApplyAsync">Apply to next exposure</button>
+        <p id="focus-apply-reason" class="focus-help">@ApplyHelp</p>
+    </aside>
+</section>
+
+<section class="ops-panel ops-grid" aria-labelledby="focus-samples-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="focus-samples-heading">Session samples</h2><p>Every exposure is measured from its own pixels. The newest @Limits.HistoryCapacity samples are kept; the loop never stops at the cap.</p></div>
+        <span>@RetentionText</span>
+    </header>
+    <div class="ops-table-wrap">
+        <table class="ops-table focus-samples-table">
+            <thead><tr><th scope="col">Sample</th><th scope="col">Result</th><th scope="col">HFD</th><th scope="col">FWHM</th><th scope="col">Centroid</th><th scope="col">Settings</th></tr></thead>
+            <tbody>
+                @if (Session.History.Count == 0)
+                {
+                    <tr class="focus-history-empty"><td colspan="6">@(Session.Retention == ManualFocusRetentionState.Discarded ? "The session was discarded; nothing was retained." : "No samples in this session.")</td></tr>
+                }
+                @foreach (var sample in RecentSamples)
+                {
+                    <tr>
+                        <td><strong>#@sample.Sequence</strong> <small>@sample.MeasuredUtc.ToString("HH:mm:ss", Culture)</small></td>
+                        <td><span class="state-chip @StatusTone(sample.Measurement.Status)">@StatusText(sample.Measurement.Status)</span></td>
+                        <td>@Value(sample.Measurement.HalfFluxDiameterPixels)</td>
+                        <td>@Value(sample.Measurement.FwhmPixels)</td>
+                        <td>@(sample.Measurement.Centroid is { } c ? $"{c.X.ToString("F2", Culture)}, {c.Y.ToString("F2", Culture)}" : "—")</td>
+                        <td>@SettingsText(sample.Settings, sample.SimulatedFocusPosition)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="ops-panel ops-grid" aria-labelledby="focus-procedure-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="focus-procedure-heading">Manual focusing procedure</h2><p>Keep the measurement setup fixed while comparing adjustments.</p></div>
+        <span>No motor control</span>
+    </header>
+    <div class="ops-step-list">
+        <article class="ops-step"><strong>Choose a field</strong><span>Select a stable star-rich region away from the horizon and bright obstructions.</span></article>
+        <article class="ops-step"><strong>Start previews</strong><span>Use temporary exposure and gain values that avoid clipping the target stars.</span></article>
+        <article class="ops-step"><strong>Adjust by hand</strong><span>Move the lens in small increments and wait for the next measured sample.</span></article>
+        <article class="ops-step"><strong>Secure &amp; verify</strong><span>Tighten the lens, collect at least three stable samples, and retain the session result.</span></article>
+    </div>
+</section>
+
+<section class="ops-panel ops-grid" aria-labelledby="focus-history-heading">
+    <header class="ops-panel-heading">
+        <div><h2 id="focus-history-heading">Focus session history</h2><p>Measurements document optical setup; they do not alter active camera profiles.</p></div>
+        @if (SelectedExport is { } export)
+        {
+            <a id="focus-export" class="button secondary small" href="@ExportHref(export)" download>Export evidence</a>
+        }
+        else
+        {
+            <button type="button" id="focus-export" class="button secondary small" disabled aria-describedby="focus-history-note">Export evidence</button>
+        }
+    </header>
+    <p id="focus-history-note" class="focus-help">@HistoryNote</p>
+    <div class="ops-table-wrap">
+        <table class="ops-table focus-history-table">
+            <thead><tr><th scope="col">Session</th><th scope="col">Best HFD</th><th scope="col">Target</th><th scope="col">Conditions</th><th scope="col">Result</th></tr></thead>
+            <tbody>
+                @if (_saved.Count == 0)
+                {
+                    <tr class="focus-history-empty"><td colspan="5">@(RetentionAvailable ? "No focus sessions are retained on this CameraAgent." : "Focus session retention is not configured on this CameraAgent.")</td></tr>
+                }
+                @foreach (var record in _saved)
+                {
+                    var selected = string.Equals(record.RecordId, SelectedExport?.RecordId, StringComparison.Ordinal);
+                    <tr class="@(selected ? "selected" : null)">
+                        <td><button type="button" class="focus-record" aria-pressed="@(selected ? "true" : "false")" disabled="@(!record.Verified || !RendererInfo.IsInteractive)"
+                                    @onclick="() => _selectedRecordId = record.RecordId">@RecordTitle(record)</button></td>
+                        <td>@(record.BestHalfFluxDiameterPixels is { } hfd ? hfd.ToString("F2", Culture) + " px" : "—")</td>
+                        <td>@(record.BestTargetSource switch { ManualFocusTargetSource.Operator => "Operator pick", ManualFocusTargetSource.Automatic => "Automatic", _ => "—" })</td>
+                        <td>@RecordConditions(record)</td>
+                        <td>@if (record.Verified)
+                            {
+                                <span class="state-chip success">Saved</span>
+                            }
+                            else
+                            {
+                                <span class="state-chip danger">Checksum failed</span>
+                            }</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>

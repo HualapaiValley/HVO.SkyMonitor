@@ -1,0 +1,17 @@
+@* This agent's own clock in UTC and at the site, ticking once a second on the server. *@
+<div class="agent-clock"><dt>Agent UTC</dt><dd id="time-agent-utc"><time datetime="@Iso(_now)">@_now.ToString("yyyy-MM-dd HH:mm:ss", Invariant)</time></dd></div>
+<div class="agent-clock">
+    <dt>Site time</dt>
+    <dd id="time-site">
+        @if (_zone is null)
+        {
+            @(SiteTimeZoneId is null ? "No active location" : "Time zone not known to this host")
+        }
+        else
+        {
+            var site = TimeZoneInfo.ConvertTime(_now, _zone);
+            <time datetime="@Iso(site)">@site.ToString("HH:mm:ss", Invariant)</time>
+            <small>@SiteTimeZoneId, UTC@(Offset(site.Offset))</small>
+        }
+    </dd>
+</div>

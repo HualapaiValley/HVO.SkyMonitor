@@ -109,9 +109,9 @@ public static class PresentationLayerPayloadJson
         Markers = Freeze(value.Markers, PresentationLayerPayloadV1.MaximumMarkers),
         Segments = Freeze(value.Segments, PresentationLayerPayloadV1.MaximumSegments),
         Ellipses = Freeze(value.Ellipses, PresentationLayerPayloadV1.MaximumEllipses),
-        TextBlocks = new ReadOnlyCollection<PresentationTextBlockV1>(value.TextBlocks.Select(static block => block with
+        TextBlocks = new ReadOnlyCollection<PresentationTextBlockV1>(Freeze(value.TextBlocks, PresentationLayerPayloadV1.MaximumTextBlocks).Select(static block => block with
         {
-            Lines = new ReadOnlyCollection<string>(block.Lines.ToArray())
+            Lines = Freeze(block.Lines, PresentationLayerPayloadV1.MaximumLinesPerBlock)
         }).ToArray()),
         TileMask = Freeze(value.TileMask)
     };

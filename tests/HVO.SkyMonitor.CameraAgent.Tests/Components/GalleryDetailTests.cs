@@ -19,6 +19,13 @@ public sealed class GalleryDetailTests
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
     }
 
+    private static BunitJSModuleInterop SetupViewerModule(BunitContext context)
+    {
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.SetupVoid("disconnect", _ => true).SetVoidResult();
+        return module;
+    }
+
     private static CameraAgentCapturePresentation LayeredStages(CameraAgentGalleryCapture capture)
     {
         var stages = new TestOperatorUiService().Project(capture);
@@ -229,7 +236,7 @@ public sealed class GalleryDetailTests
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
 
-        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+        SetupViewerModule(context)
             .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
 
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
@@ -282,7 +289,7 @@ public sealed class GalleryDetailTests
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
-        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        var module = SetupViewerModule(context);
         module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
         module.SetupVoid("downloadUrl", _ => true).SetVoidResult();
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
@@ -339,7 +346,7 @@ public sealed class GalleryDetailTests
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
-        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        var module = SetupViewerModule(context);
         module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, first.CaptureId));
         cut.WaitForElement(".sky-layer-canvas--verified");
@@ -741,7 +748,7 @@ public sealed class GalleryDetailTests
         if (importFails)
             context.Services.AddSingleton<Microsoft.JSInterop.IJSRuntime>(new FailingImportRuntime());
         else
-            context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            SetupViewerModule(context)
                 .SetupVoid("openTechnicalEvidence", _ => true).SetException(new Microsoft.JSInterop.JSException("private browser diagnostic"));
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
         await cut.Find(".figure-actions a").ClickAsync().ConfigureAwait(false);

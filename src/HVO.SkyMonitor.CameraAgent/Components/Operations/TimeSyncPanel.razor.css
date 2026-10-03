@@ -1,0 +1,34 @@
+/* The Time panel on System control. The shared Operations vocabulary (.ops-*, .button, .state-chip) lives in
+   OperationsLayout.razor.css; this file lays out the facts beside the actions and the two settings forms. */
+
+.time-sync-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: .8rem; align-items: start; }
+.time-facts { align-self: stretch; }
+.time-facts dd small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; font-weight: 500; }
+
+.time-note { margin: .35rem 0 0; color: var(--muted); font-size: .6rem; line-height: 1.45; }
+.time-note.warning { color: #e6bd62; }
+div.ops-note-banner.compact.time-message { margin: 0; }
+
+.time-settings { min-width: 0; padding-top: .7rem; border-top: 1px solid var(--border); }
+.time-settings h3 { margin: 0; font-size: .7rem; font-weight: 600; }
+.time-settings-form { display: grid; gap: .55rem; margin: .6rem 0 0; padding: 0; border: 0; min-width: 0; }
+.time-settings-form input:not([type="checkbox"]) { max-width: 26rem; }
+.time-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.time-gps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.time-gps-pps { display: flex; align-items: center; gap: .4rem; min-height: 2.75rem; color: var(--muted); font-size: .6rem; }
+.time-gps-pps input { width: 1rem; height: 1rem; }
+
+/* Current Sky's .text-button, copied so this panel does not depend on another page's scoped styles. */
+.text-button { display: inline-flex; min-height: 2.75rem; align-items: center; padding: .35rem 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: .63rem; font-weight: 700; }
+.text-button:disabled { color: var(--muted); opacity: .45; cursor: not-allowed; }
+
+.ops-table-wrap .ops-table.time-servers-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; }
+.ops-table-wrap .ops-table.time-servers-table td:first-child { overflow-wrap: anywhere; white-space: normal; }
+
+@media (max-width: 940px) {
+    .time-sync-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+    .time-gps { grid-template-columns: 1fr; }
+}

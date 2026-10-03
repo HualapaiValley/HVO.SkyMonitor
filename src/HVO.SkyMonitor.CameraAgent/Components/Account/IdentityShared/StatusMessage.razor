@@ -1,6 +1,7 @@
 ﻿@if (DisplayMessage is not null)
 {
-    <div class="alert alert-@StatusMessageClass" role="alert">
-        @DisplayMessage
+    <div class="ops-note-banner @StatusMessageClass" role="alert">
+        <span class="status-icon @StatusMessageClass" aria-hidden="true"></span>
+        <span>@DisplayMessage</span>
     </div>
 }

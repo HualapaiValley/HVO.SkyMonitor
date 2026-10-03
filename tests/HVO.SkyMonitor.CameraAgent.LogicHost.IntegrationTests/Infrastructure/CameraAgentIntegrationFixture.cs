@@ -8,6 +8,8 @@ using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Authentication;
@@ -50,6 +52,10 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 /// </summary>
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
+    private static readonly JsonSerializerOptions ConfigurationJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly string[] RecurringWorkerSuppressionEvidenceVariables =
     [
         "HVO_ISSUE_246_RETENTION_EVIDENCE",
@@ -68,8 +74,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     /// </remarks>
     private static readonly TimeSpan WarmReadinessBudget = TimeSpan.FromSeconds(20);
     private readonly bool _hybridTransientMode;
+    private readonly TimeSpan _startupDelay;
     private readonly EnvironmentalDeliveryCompletionTracker _environmentalDelivery = new();
-    private readonly IntegrationTestFixture _hostFixture = CreateHostFixture();
+    private readonly IntegrationTestFixture _hostFixture;
     private readonly BoundedLogRecorder _logRecorder = new(capacity: 200);
     private readonly object _consumerGate = new();
     private readonly List<string> _consumerHistory = [];
@@ -96,9 +103,12 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private string? _storageRoot;
     private CatalogFixtureInstallation? _catalogFixture;
 
-    public CameraAgentIntegrationFixture(bool hybridTransientMode = false)
+    public CameraAgentIntegrationFixture(bool hybridTransientMode = false, int startupDelayMilliseconds = 0)
     {
         _hybridTransientMode = hybridTransientMode;
+        _hostFixture = CreateHostFixture(hybridTransientMode);
+        ArgumentOutOfRangeException.ThrowIfNegative(startupDelayMilliseconds);
+        _startupDelay = TimeSpan.FromMilliseconds(startupDelayMilliseconds);
     }
 
     internal IntegrationTestFixture HostFixture => _hostFixture;
@@ -156,10 +166,41 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         TransientEpochUtc = (_hybridTransientMode
             ? DateTimeOffset.UtcNow.AddSeconds(10)
             : DateTimeOffset.UtcNow.AddMinutes(-1)).ToUniversalTime();
-        await File.WriteAllTextAsync(_configurationPath,
-            template
-                .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
-                .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
+        var captureConfigurationJson = JsonNode.Parse(template
+            .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
+            .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))!;
+        if (_hybridTransientMode)
+        {
+            // Four empty captures establish background before the event; host startup and
+            // scheduler phase must not decide whether its half-second lifetime is observed.
+            var virtualOptions = captureConfigurationJson["module"]!["options"]!;
+            virtualOptions["fixedSequenceStartUtc"] = JsonSerializer.SerializeToNode(TransientEpochUtc.AddSeconds(-2));
+            // Both background windows must contain identical stellar pixels, not merely
+            // noise-free pixels at different sidereal times. Transients retain sequence time.
+            virtualOptions["fixedSceneUtc"] = JsonSerializer.SerializeToNode(TransientEpochUtc);
+            // This fixture qualifies transport/identity convergence. Keep the ordinary renderer,
+            // but make the causal and centered background windows observe the same quiet field.
+            virtualOptions["asi174Sensor"]!["enabled"] = false;
+            virtualOptions["readNoiseStandardDeviation"] = 0;
+            virtualOptions["shotNoiseEnabled"] = false;
+            // Cloud observations require physical capture UTC. This controlled clear-sky
+            // transport case uses logical sequence time; ordinary cloud cases are unchanged.
+            virtualOptions["cloudScenario"] = null;
+            captureConfigurationJson["rig"]!["sensor"]!["simulationResponse"] = JsonSerializer.SerializeToNode(
+                new ConfiguredSensorResponseProfile(
+                    "integration-quiet-mono16-v1", 16, 0, 1, 1, 200, 65535,
+                    [new SensorReadNoisePoint(0, 0), new SensorReadNoisePoint(1, 0)],
+                    64, "configured-gain", "controlled-transient-transport-fixture",
+                    ShotNoiseEnabled: false, DarkNoiseEnabled: false),
+                ConfigurationJsonOptions);
+            captureConfigurationJson["rig"]!["readout"] = JsonSerializer.SerializeToNode(
+                new SensorReadoutProfile(
+                    new SensorCrop(0, 0, 64, 48), 1, 1, FrameBinningAlgorithm.IdentityV1,
+                    CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned,
+                    FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.StoredContainer, 64, 65535),
+                ConfigurationJsonOptions);
+        }
+        await File.WriteAllTextAsync(_configurationPath, captureConfigurationJson.ToJsonString())
             .ConfigureAwait(false);
 
         _agentBaseFactory = new WebApplicationFactory<Program>();
@@ -217,6 +258,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 });
             });
 
+        await Task.Delay(_startupDelay).ConfigureAwait(false);
         using var scope = _agentFactory.Services.CreateScope();
         var scopedProvider = scope.ServiceProvider;
         var ownerManager = scopedProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<ApplicationUser>>();
@@ -346,19 +388,24 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             DescribeRuntimeState());
     }
 
-    private static IntegrationTestFixture CreateHostFixture()
+    private static IntegrationTestFixture CreateHostFixture(bool hybridTransientMode)
     {
         var suppressRecurringWorkers = RecurringWorkerSuppressionEvidenceVariables.Any(name => string.Equals(
             Environment.GetEnvironmentVariable(name),
             "1",
             StringComparison.Ordinal));
-        return new IntegrationTestFixture(
-            new Dictionary<string, string?>
-            {
-                ["CentralTransient:Mode"] = "Hybrid",
-                ["CentralTransient:SourceRole"] = "Raw"
-            },
-            suppressRecurringWorkers);
+        var overrides = new Dictionary<string, string?>
+        {
+            ["CentralTransient:Mode"] = "Hybrid",
+            ["CentralTransient:SourceRole"] = "Raw"
+        };
+        if (hybridTransientMode)
+        {
+            // Match the controlled edge fixture. A central-only, physical-time star mask
+            // can change the geometry that exact Hybrid binding must independently recover.
+            overrides["CentralTransient:StarMaximumMagnitude"] = "-30";
+        }
+        return new IntegrationTestFixture(overrides, suppressRecurringWorkers);
     }
 
     /// <summary>
@@ -788,6 +835,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         };
         if (_hybridTransientMode)
         {
+            // The location must cover both logical scene time and real capture time,
+            // including a host start delayed beyond the configured pulse epoch.
+            overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] =
+                TransientEpochUtc.AddMinutes(-1).ToString("O", CultureInfo.InvariantCulture);
             overrides["CameraAgent:TransientDetection:Mode"] = TransientOperatingMode.Hybrid.ToString();
             overrides["CameraAgent:TransientDetection:Required"] = "true";
             overrides["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100";

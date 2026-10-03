@@ -53,7 +53,39 @@ public sealed record CameraAgentGalleryCaptureDetail(
     IReadOnlyList<CameraAgentGalleryArtifactState> ArtifactStates,
     IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> ProcessingNodes,
     CameraAgentGalleryCloudAssessment CloudAssessment,
-    ProfileIdentityDescriptor? ProcessingProfile = null);
+    ProfileIdentityDescriptor? ProcessingProfile = null,
+    CameraAgentCaptureProfileFacts? CaptureProfile = null,
+    CameraAgentCaptureLocationFacts? Location = null)
+{
+    public CameraAgentCaptureScheduleFacts? Schedule { get; init; }
+}
+
+// Small read-only projection of verified capture-time schedule admission, never current settings.
+public sealed record CameraAgentCaptureScheduleFacts(
+    string RevisionId,
+    string RevisionSha256,
+    string SetpointProfileId,
+    string Reason,
+    DateTimeOffset DecisionUtc);
+
+// Local owner-facing facts resolved from the exact manifest provenance and protected deployment history.
+public sealed record CameraAgentCaptureLocationFacts(
+    string Availability,
+    double? LatitudeDegrees = null,
+    double? LongitudeDegrees = null,
+    double? ElevationMeters = null,
+    string? TimeZoneId = null,
+    long? DeploymentVersion = null);
+
+// A deliberately small projection of the verified capture-time envelope. Module
+// options, device identity and precise location are never part of this UI contract.
+public sealed record CameraAgentCaptureProfileFacts(
+    double? PixelSizeMicrons,
+    double? FocalLengthMillimeters,
+    double? FieldOfViewDegrees,
+    string ProjectionModel,
+    TimeSpan EffectiveInterval,
+    CaptureCadenceMode? CadenceMode);
 
 public sealed record CameraAgentGalleryLayout(
     int Width,
@@ -182,6 +214,10 @@ public interface ICameraAgentGallery
     ValueTask<CameraAgentGalleryCapture?> GetCaptureAsync(
         Guid captureId,
         CancellationToken cancellationToken);
+
+    /// <summary>Reads raw source identity and manifest facts without traversing processing products.</summary>
+    ValueTask<CameraAgentGalleryCapture?> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetCaptureAsync(captureId, cancellationToken);
 }
 
 public sealed class CameraAgentGalleryQueryException : Exception
@@ -207,12 +243,14 @@ public sealed class CameraAgentGalleryQueryException : Exception
 public sealed record CameraAgentGalleryCalendarQuery(
     DateOnly FromDate,
     DateOnly ToDate,
-    CameraAgentGalleryQuery? Filters = null);
+    CameraAgentGalleryQuery? Filters = null,
+    string? CalendarVersion = null);
 
 public sealed record CameraAgentGalleryCalendar(
     string TimeZoneId,
     bool TimeZoneFallback,
-    IReadOnlyList<CameraAgentGalleryCalendarDay> Days);
+    IReadOnlyList<CameraAgentGalleryCalendarDay> Days,
+    string CalendarVersion = ObservingDayCalendar.LegacyNoonVersion);
 
 /// <summary>
 /// One observing night's retained facts. <c>RepresentativeCaptureId</c> is the newest capture of the
@@ -265,6 +303,16 @@ public interface ICameraAgentArchive
     ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
         DateOnly observingDate,
         CancellationToken cancellationToken);
+
+    /// <summary>Reads an explicit supported historical/calendar interpretation without rewriting source evidence.</summary>
+    ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+        DateOnly observingDate,
+        string calendarVersion,
+        CancellationToken cancellationToken)
+        => calendarVersion == ObservingDays.CalendarVersion
+            ? GetObservingDayAsync(observingDate, cancellationToken)
+            : ValueTask.FromException<CameraAgentObservingDayDetail?>(
+                new NotSupportedException("This archive does not expose the requested calendar interpretation."));
 
     ValueTask<CameraAgentProductPage> GetProductPageAsync(
         CameraAgentProductQuery query,

@@ -1,6 +1,5 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -9,10 +8,28 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 {
-    private const int MaximumIntervals = 12;
+    private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
-    /// <summary>The identifier the save confirmation returns focus to.</summary>
+    /// <summary>The day track covers the current observing night and the next one, so two nights always span it.</summary>
+    private const int CalendarNights = 2;
+
+    /// <summary>A run marker card is about a fifth of the minimum track width; closer markers share a row only as ticks.</summary>
+    private const double MarkerSpacingPercent = 21;
+    private const double MarkerMinimumPercent = 11;
+    private const double MarkerMaximumPercent = 89;
+    private const int MarkerRows = 2;
+
+    /// <summary>The identifier the create action returns focus to.</summary>
+    internal const string CreateTriggerId = "automation-create";
+
+    /// <summary>The editor action that validates the definition and asks for confirmation.</summary>
     internal const string SaveTriggerId = "automation-save";
+
+    internal const string ConfirmId = "automation-confirm";
+    internal const string CancelId = "automation-cancel";
+    private const string FocusFallbackId = "automation-refresh";
+    private const string DefaultPeriodicInterval = "3600";
+    private const string DefaultCaptureInterval = "10";
 
     private enum PendingCommandKind
     {
@@ -21,24 +38,46 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         Remove
     }
 
-    private CaptureScheduleOperatorState? _schedule;
-    private EnvironmentalUiStatus? _environment;
+    private enum DialogMode
+    {
+        None,
+        Editor,
+        Confirm
+    }
+
+    internal enum AutomationView
+    {
+        Definitions,
+        Schedule,
+        Runs
+    }
+
+    private readonly CancellationTokenSource _lifetime = new();
     private LocalAutomationOperatorState? _automation;
-    private string? _message;
+    private CameraAgentScheduleCalendar? _calendar;
+    private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
+    private string _timeZoneId = "UTC";
+    private string? _calendarMessage;
+    private string? _error;
     private bool _loading = true;
+    private AutomationView _view;
+    private string? _appliedView;
 
     private string _idInput = string.Empty;
     private string _nameInput = string.Empty;
     private string _targetInput = string.Empty;
-    private string _intervalInput = "3600";
+    private string _intervalInput = DefaultPeriodicInterval;
     private string _reasonInput = string.Empty;
+    private string _commandReasonInput = string.Empty;
     private LocalAutomationTaskKind _taskKindInput = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition;
     private LocalAutomationTriggerKind _triggerKindInput = LocalAutomationTriggerKind.Periodic;
+    private LocalAutomationSourceWindowPolicy? _sourceWindowInput;
     private bool _enabledInput = true;
     private long _editingVersion;
+    private bool _editTargetRemoved;
     private bool _formDirty;
 
-    private bool _confirming;
+    private DialogMode _dialog;
     private bool _busy;
     private PendingCommandKind _pendingKind;
     private LocalAutomationDefinitionState? _pendingDefinition;
@@ -47,16 +86,14 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private string? _commandKey;
     private string? _commandPayload;
     private long _commandExpectedVersion;
-    private string _restoreFocusId = SaveTriggerId;
+    private string _restoreFocusId = CreateTriggerId;
 
     private IJSObjectReference? _module;
-    private ElementReference _confirmationDialog;
-    private bool _focusConfirmation;
-    private bool _restoreTriggerFocus;
+    private ElementReference _dialogElement;
+    private bool _showDialog;
+    private string? _focusTargetId;
 
     [Inject] internal ICameraAgentScheduleUiService ScheduleService { get; set; } = default!;
-
-    [Inject] internal ICameraAgentEnvironmentalUiService EnvironmentalService { get; set; } = default!;
 
     [Inject] internal ICameraAgentAutomationUiService AutomationService { get; set; } = default!;
 
@@ -64,20 +101,89 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
 
-    protected override async Task OnInitializedAsync() => await LoadAsync().ConfigureAwait(false);
+    [SupplyParameterFromQuery(Name = "view")]
+    public string? View { get; set; }
+
+    private bool Editing => _editingVersion != 0;
+
+    /// <summary>Why a new definition cannot be created right now, or null when it can.</summary>
+    private string? CreateUnavailableReason
+    {
+        get
+        {
+            if (_automation is null)
+            {
+                return "The local automation store has not been read.";
+            }
+            if (_automation.Definitions.Count >= LocalAutomationContract.MaximumDefinitions)
+            {
+                return string.Create(
+                    Invariant,
+                    $"This CameraAgent already holds the maximum of {LocalAutomationContract.MaximumDefinitions} automation definitions. Remove one before creating another.");
+            }
+            return EditorTasks.Any(static descriptor => descriptor.Available && descriptor.Targets.Count > 0)
+                ? null : AvailableTask is null ? RegistryUnavailableReason : "No task can be configured with this editor.";
+        }
+    }
+
+    /// <summary>The first registered task that can actually be scheduled here.</summary>
+    private LocalAutomationTaskDescriptor? AvailableTask => _automation?.Registry
+        .FirstOrDefault(static descriptor => descriptor.Available && descriptor.Targets.Count > 0);
+
+    private IReadOnlyList<LocalAutomationTaskDescriptor> EditorTasks => _automation?.Registry
+        .Where(static descriptor => descriptor.CompatibleTriggers.Any(static trigger =>
+            trigger is LocalAutomationTriggerKind.Periodic or LocalAutomationTriggerKind.CaptureRelative)).ToArray() ?? [];
+
+    private string RegistryUnavailableReason => _automation?.Registry
+        .Select(static descriptor => descriptor.UnavailableReason)
+        .FirstOrDefault(static reason => !string.IsNullOrWhiteSpace(reason))
+        ?? "No registered automation task is available on this CameraAgent.";
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    protected override void OnParametersSet()
+    {
+        if (string.Equals(_appliedView, View, StringComparison.Ordinal))
+        {
+            return;
+        }
+        _appliedView = View;
+        _view = ParseView(View);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_focusConfirmation)
+        if (_showDialog)
         {
-            _focusConfirmation = false;
-            await InvokeModuleAsync("showModal", _confirmationDialog).ConfigureAwait(false);
+            _showDialog = false;
+            await InvokeModuleAsync("showModal", _dialogElement);
         }
-        else if (_restoreTriggerFocus)
+        if (_focusTargetId is not null)
         {
-            _restoreTriggerFocus = false;
-            await InvokeModuleAsync("focusById", _restoreFocusId, "automation-definitions").ConfigureAwait(false);
+            var target = _focusTargetId;
+            _focusTargetId = null;
+            await InvokeModuleAsync("focusById", target, FocusFallbackId);
         }
+    }
+
+    internal static AutomationView ParseView(string? value) => value switch
+    {
+        _ when string.Equals(value, "schedule", StringComparison.OrdinalIgnoreCase) => AutomationView.Schedule,
+        _ when string.Equals(value, "runs", StringComparison.OrdinalIgnoreCase) => AutomationView.Runs,
+        _ => AutomationView.Definitions
+    };
+
+    private void SelectView(AutomationView view)
+    {
+        _view = view;
+        var value = view switch
+        {
+            AutomationView.Schedule => "schedule",
+            AutomationView.Runs => "runs",
+            _ => null
+        };
+        _appliedView = value;
+        NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameter("view", value), replace: true);
     }
 
     private async Task LoadAsync()
@@ -85,45 +191,44 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _loading = true;
         try
         {
-            var schedule = await ScheduleService.GetAsync(CancellationToken.None).ConfigureAwait(false);
-            var environment = await EnvironmentalService.GetStatusAsync(CancellationToken.None).ConfigureAwait(false);
-            var automation = await AutomationService.GetAsync(CancellationToken.None).ConfigureAwait(false);
-            if (schedule.Kind == OperatorUiResultKind.Unauthorized ||
-                environment.Kind == OperatorUiResultKind.Unauthorized ||
-                automation.Kind == OperatorUiResultKind.Unauthorized)
+            var automation = await AutomationService.GetAsync(_lifetime.Token);
+            var calendar = await ScheduleService.GetCalendarAsync(CalendarNights, _lifetime.Token);
+            if (automation.Kind == OperatorUiResultKind.Unauthorized ||
+                calendar.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
                 return;
             }
-            _schedule = schedule.IsSuccess ? schedule.Value : null;
-            _environment = environment.IsSuccess ? environment.Value : null;
-            _automation = automation.IsSuccess ? automation.Value : null;
-            var failures = new List<string>(3);
-            if (!schedule.IsSuccess)
+            if (automation.IsSuccess && automation.Value is { } state)
             {
-                failures.Add(schedule.Message ?? "The capture schedule could not be read.");
+                _automation = state;
+                _error = null;
+                // A conflict re-read is only useful if the next attempt carries the version it just read.
+                // A failed read tells us nothing about the version, so it leaves the edit alone rather than
+                // silently demoting it to a create that can never succeed. A definition that is no longer
+                // there keeps its edit identity too: saving it again is a create, and that is the operator's
+                // explicit choice rather than a side effect of the re-read.
+                if (Editing)
+                {
+                    var current = state.Definitions.FirstOrDefault(candidate => string.Equals(
+                        candidate.Definition.DefinitionId, _idInput.Trim(), StringComparison.Ordinal));
+                    _editTargetRemoved = current is null;
+                    if (current is not null)
+                    {
+                        _editingVersion = current.Version;
+                    }
+                }
             }
-            if (!environment.IsSuccess)
+            else
             {
-                failures.Add(environment.Message ?? "The environmental sources could not be read.");
+                // The last valid snapshot stays on screen; the banner says it is no longer current.
+                _error = automation.Message ?? "The local automations could not be read.";
             }
-            if (!automation.IsSuccess)
-            {
-                failures.Add(automation.Message ?? "The local automations could not be read.");
-            }
-            _message = failures.Count == 0 ? null : string.Join(' ', failures);
-            // A conflict re-read is only useful if the next attempt carries the version it just read.
-            // Without this the operator would resend the version captured when the editor was opened.
-            // A failed automation read tells us nothing about the version, so it must leave the edit
-            // alone rather than silently demoting it to a create that can never succeed.
-            if (_editingVersion != 0 && _automation is not null)
-            {
-                _editingVersion = _automation.Definitions
-                    .FirstOrDefault(candidate => string.Equals(
-                        candidate.Definition.DefinitionId, _idInput.Trim(), StringComparison.Ordinal))
-                    ?.Version ?? 0;
-            }
+            ApplyCalendar(calendar);
             SeedForm();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
         }
         finally
         {
@@ -131,18 +236,48 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The schedule calendar supplies the site timezone and the capture windows. Without it every time is shown in
+    /// UTC and labelled so, and the day track has no capture-window band.
+    /// </summary>
+    private void ApplyCalendar(OperatorUiResult<CameraAgentScheduleCalendar> result)
+    {
+        var message = result.Message;
+        if (result.IsSuccess && result.Value is { } calendar)
+        {
+            try
+            {
+                _timeZone = TimeZoneInfo.FindSystemTimeZoneById(calendar.TimeZoneId);
+                _timeZoneId = calendar.TimeZoneId;
+                _calendar = calendar;
+                _calendarMessage = null;
+                return;
+            }
+            catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+            {
+                message = $"The site timezone '{calendar.TimeZoneId}' is not available on this host.";
+            }
+        }
+        _calendar = null;
+        _timeZone = TimeZoneInfo.Utc;
+        _timeZoneId = "UTC";
+        _calendarMessage = message ?? "The capture schedule calendar could not be read.";
+    }
+
     /// <summary>Seeds the editor from the registry while the operator has not edited it.</summary>
     private void SeedForm()
     {
-        if (_formDirty || _confirming || _automation is null)
+        if (_formDirty || _dialog != DialogMode.None || _automation is null)
         {
             return;
         }
-        if (_automation.Registry.Count == 0)
+        var tasks = EditorTasks;
+        var descriptor = tasks.FirstOrDefault(static item => item.Available && item.Targets.Count > 0)
+            ?? (tasks.Count == 0 ? null : tasks[0]);
+        if (descriptor is null)
         {
             return;
         }
-        var descriptor = _automation.Registry[0];
         _taskKindInput = descriptor.TaskKind;
         _triggerKindInput = descriptor.CompatibleTriggers.Count == 0
             ? LocalAutomationTriggerKind.Periodic
@@ -156,82 +291,205 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _commandMessage = null;
     }
 
+    private void TaskChanged()
+    {
+        FormChanged();
+        // A target or trigger of another task kind is never valid for this one, so both follow the task.
+        var targets = Targets();
+        if (!targets.Contains(_targetInput, StringComparer.Ordinal))
+        {
+            _targetInput = targets.Count == 0 ? string.Empty : targets[0];
+        }
+        var triggers = CompatibleTriggers();
+        if (!triggers.Contains(_triggerKindInput) && triggers.Count > 0)
+        {
+            _triggerKindInput = triggers[0];
+        }
+    }
+
+    private void TriggerChanged()
+    {
+        FormChanged();
+        // Seconds and captures are different units, so an untouched default follows the trigger it belongs to.
+        _intervalInput = (_triggerKindInput, _intervalInput) switch
+        {
+            (LocalAutomationTriggerKind.CaptureRelative, DefaultPeriodicInterval) => DefaultCaptureInterval,
+            (LocalAutomationTriggerKind.Periodic, DefaultCaptureInterval) => DefaultPeriodicInterval,
+            _ => _intervalInput
+        };
+    }
+
     private void ResetForm()
     {
         _editingVersion = 0;
+        _editTargetRemoved = false;
         _formDirty = false;
         _idInput = string.Empty;
         _nameInput = string.Empty;
-        _intervalInput = "3600";
+        _intervalInput = DefaultPeriodicInterval;
+        _sourceWindowInput = null;
         _reasonInput = string.Empty;
         _enabledInput = true;
-        _commandMessage = null;
         SeedForm();
+    }
+
+    private void OpenCreate()
+    {
+        if (CreateUnavailableReason is not null || _busy)
+        {
+            return;
+        }
+        _commandMessage = null;
+        ResetForm();
+        _restoreFocusId = CreateTriggerId;
+        OpenDialog(DialogMode.Editor, "automation-id");
     }
 
     private void BeginEdit(LocalAutomationDefinitionState definition)
     {
+        if (_busy || definition.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            return;
+        }
         _commandMessage = null;
         _editingVersion = definition.Version;
+        _editTargetRemoved = false;
         _idInput = definition.Definition.DefinitionId;
         _nameInput = definition.Definition.Name;
         _taskKindInput = definition.Definition.TaskKind;
         _targetInput = definition.Definition.TaskTarget;
         _triggerKindInput = definition.Definition.TriggerKind;
-        _intervalInput = definition.Definition.TriggerInterval.ToString(CultureInfo.InvariantCulture);
+        _sourceWindowInput = definition.Definition.SourceWindow;
+        _intervalInput = definition.Definition.TriggerInterval.ToString(Invariant);
         _enabledInput = definition.Definition.Enabled;
         _reasonInput = string.Empty;
         _formDirty = true;
-        _restoreFocusId = "automation-editor";
-        _restoreTriggerFocus = true;
+        _restoreFocusId = EditTriggerId(definition);
+        OpenDialog(DialogMode.Editor, "automation-name");
     }
 
     private void BeginSave()
     {
         _commandMessage = null;
+        if (_editTargetRemoved)
+        {
+            SetCommandMessage(RemovedEditMessage, error: true);
+            return;
+        }
         if (!TryValidateForm())
         {
             return;
         }
         _pendingKind = PendingCommandKind.Save;
         _pendingDefinition = null;
-        _restoreFocusId = SaveTriggerId;
-        _confirming = true;
-        _focusConfirmation = true;
+        _dialog = DialogMode.Confirm;
+        _focusTargetId = CancelId;
+    }
+
+    private string RemovedEditMessage => string.Create(
+        Invariant,
+        $"{_idInput.Trim()} was removed by another change, so there is nothing to edit. Choose Recreate to record it as a new automation, or cancel.");
+
+    /// <summary>Turns an edit whose definition was removed elsewhere into an explicit create of the same fields.</summary>
+    private void RecreateRemoved()
+    {
+        if (_busy || !_editTargetRemoved)
+        {
+            return;
+        }
+        if (CreateUnavailableReason is { } reason)
+        {
+            SetCommandMessage(reason, error: true);
+            return;
+        }
+        _editingVersion = 0;
+        _editTargetRemoved = false;
+        _commandMessage = null;
+        _focusTargetId = SaveTriggerId;
     }
 
     private void BeginToggle(LocalAutomationDefinitionState definition)
-    {
-        _commandMessage = null;
-        _pendingKind = PendingCommandKind.Toggle;
-        _pendingDefinition = definition;
-        _restoreFocusId = ToggleTriggerId(definition);
-        _confirming = true;
-        _focusConfirmation = true;
-    }
+        => BeginRowCommand(PendingCommandKind.Toggle, definition, ToggleTriggerId(definition));
 
     private void BeginRemove(LocalAutomationDefinitionState definition)
+        => BeginRowCommand(PendingCommandKind.Remove, definition, RemoveTriggerId(definition));
+
+    private void BeginRowCommand(PendingCommandKind kind, LocalAutomationDefinitionState definition, string triggerId)
     {
+        if (_busy)
+        {
+            return;
+        }
         _commandMessage = null;
-        _pendingKind = PendingCommandKind.Remove;
+        _commandReasonInput = string.Empty;
+        _pendingKind = kind;
         _pendingDefinition = definition;
-        _restoreFocusId = RemoveTriggerId(definition);
-        _confirming = true;
-        _focusConfirmation = true;
+        _restoreFocusId = triggerId;
+        OpenDialog(DialogMode.Confirm, CancelId);
     }
 
+    private void OpenDialog(DialogMode mode, string focusId)
+    {
+        var opening = _dialog == DialogMode.None;
+        _dialog = mode;
+        _showDialog = opening;
+        _focusTargetId = focusId;
+    }
+
+    /// <summary>Cancel steps back one level: a save confirmation returns to its editor, anything else closes.</summary>
     private void CancelCommand()
     {
         if (_busy)
         {
             return;
         }
-        _confirming = false;
-        _restoreTriggerFocus = true;
+        if (_dialog == DialogMode.Confirm && _pendingKind == PendingCommandKind.Save)
+        {
+            _dialog = DialogMode.Editor;
+            _focusTargetId = SaveTriggerId;
+            return;
+        }
+        CloseDialog();
+    }
+
+    /// <summary>Escape behaves like the dialog's own cancel button and is ignored while a command is in flight.</summary>
+    private void DismissDialog()
+    {
+        if (_dialog == DialogMode.Confirm)
+        {
+            CancelCommand();
+            return;
+        }
+        CloseDialog();
+    }
+
+    private void CloseDialog()
+    {
+        if (_busy)
+        {
+            return;
+        }
+        var wasEditing = _dialog == DialogMode.Editor || _pendingKind == PendingCommandKind.Save;
+        _dialog = DialogMode.None;
+        _pendingDefinition = null;
+        // Closing abandons an uncertain command. Its key belongs to that attempt only, so a later action with the
+        // same fields is a new command with a new key rather than a replay of the abandoned one.
+        _commandKey = null;
+        _commandPayload = null;
+        if (wasEditing)
+        {
+            // Closing the editor discards it; a definition is only ever changed through a confirmed save.
+            ResetForm();
+        }
+        _focusTargetId = _restoreFocusId;
     }
 
     private async Task ConfirmCommandAsync()
     {
+        if (_busy)
+        {
+            return;
+        }
         var signature = PendingSignature();
         if (signature is null)
         {
@@ -242,15 +500,17 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (!string.Equals(_commandPayload, signature.Value.Signature, StringComparison.Ordinal))
         {
             _commandPayload = signature.Value.Signature;
-            _commandKey = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            _commandKey = Guid.NewGuid().ToString("N", Invariant);
             _commandExpectedVersion = signature.Value.ExpectedVersion;
         }
         var reason = TrimmedReason();
+        var kind = _pendingKind;
         _busy = true;
+        _commandMessage = null;
         OperatorUiResult<LocalAutomationCommandResult> result;
         try
         {
-            result = _pendingKind == PendingCommandKind.Remove
+            result = kind == PendingCommandKind.Remove
                 ? await AutomationService.RemoveAsync(
                     new LocalAutomationRemoveRequest(
                         signature.Value.DefinitionId,
@@ -258,7 +518,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                         _commandKey!,
                         string.Empty,
                         reason),
-                    CancellationToken.None).ConfigureAwait(false)
+                    CancellationToken.None)
                 : await AutomationService.SaveAsync(
                     new LocalAutomationSaveRequest(
                         signature.Value.DefinitionId,
@@ -271,58 +531,66 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
                         _commandExpectedVersion,
                         _commandKey!,
                         string.Empty,
-                        reason),
-                    CancellationToken.None).ConfigureAwait(false);
+                        reason,
+                        signature.Value.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed
+                            ? kind == PendingCommandKind.Save ? _sourceWindowInput : _pendingDefinition?.Definition.SourceWindow
+                            : null),
+                    CancellationToken.None);
         }
         finally
         {
             _busy = false;
         }
-        if (result.Kind != OperatorUiResultKind.Unavailable)
+        // A command is never abandoned half-way by navigation, but a page that has gone has nothing to update.
+        if (_lifetime.IsCancellationRequested)
         {
-            _commandKey = null;
-            _commandPayload = null;
-            _confirming = false;
+            return;
         }
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
             NavigationManager.NavigateTo("/Account/AccessDenied");
             return;
         }
+        if (result.Kind == OperatorUiResultKind.Unavailable)
+        {
+            // The command may or may not have committed, so the dialog stays open on the same key for a retry.
+            SetCommandMessage(result.Message ?? "The automation store is unavailable. Try again.", error: true);
+            return;
+        }
+        _commandKey = null;
+        _commandPayload = null;
         if (result.IsSuccess && result.Value is { } applied)
         {
-            var removedTheEditedDefinition = _pendingKind == PendingCommandKind.Remove
-                && _editingVersion != 0
-                && string.Equals(signature.Value.DefinitionId, _idInput.Trim(), StringComparison.Ordinal);
-            // Only a Save owns the editor. A Toggle or Remove of some other row must never clear the
-            // dirty flag, because the reseed that follows would silently replace the task and trigger
-            // the operator chose for the definition they are still editing.
-            if (_pendingKind == PendingCommandKind.Save)
+            if (kind == PendingCommandKind.Save)
             {
                 _formDirty = false;
                 _reasonInput = string.Empty;
                 _editingVersion = 0;
             }
-            await LoadAsync().ConfigureAwait(false);
-            if (_pendingKind == PendingCommandKind.Save || removedTheEditedDefinition)
-            {
-                ResetForm();
-            }
+            _dialog = DialogMode.None;
+            _pendingDefinition = null;
+            await LoadAsync();
+            ResetForm();
             SetCommandMessage(Describe(applied), error: false);
+            _focusTargetId = _restoreFocusId;
+            return;
         }
-        else
+        if (result.Kind is OperatorUiResultKind.Conflict or OperatorUiResultKind.NotFound)
         {
-            if (result.Kind is OperatorUiResultKind.Conflict or OperatorUiResultKind.NotFound)
-            {
-                // Re-read durable state so the next attempt carries the current expected version.
-                await LoadAsync().ConfigureAwait(false);
-            }
-            SetCommandMessage(result.Message ?? "The automation command failed.", error: true);
+            // Re-read durable state so the next attempt carries the current expected version.
+            await LoadAsync();
         }
-        if (result.Kind != OperatorUiResultKind.Unavailable)
+        SetCommandMessage(result.Message ?? "The automation command failed.", error: true);
+        if (kind == PendingCommandKind.Save)
         {
-            _restoreTriggerFocus = true;
+            // A rejected save goes back to the editor with the reason, so the operator can correct it in place.
+            _dialog = DialogMode.Editor;
+            _focusTargetId = SaveTriggerId;
+            return;
         }
+        _dialog = DialogMode.None;
+        _pendingDefinition = null;
+        _focusTargetId = _restoreFocusId;
     }
 
     private (string DefinitionId, string Name, bool Enabled, LocalAutomationTaskKind TaskKind, string TaskTarget,
@@ -340,8 +608,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             var target = _targetInput.Trim();
             return (id, name, _enabledInput, _taskKindInput, target, _triggerKindInput, interval, _editingVersion,
                 string.Join('|', "save", id, name, _enabledInput, _taskKindInput, target, _triggerKindInput,
-                    interval.ToString(CultureInfo.InvariantCulture),
-                    _editingVersion.ToString(CultureInfo.InvariantCulture),
+                    interval.ToString(Invariant),
+                    _editingVersion.ToString(Invariant),
                     TrimmedReason() ?? string.Empty));
         }
         if (_pendingDefinition is not { } pending)
@@ -354,13 +622,13 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return (definition.DefinitionId, definition.Name, definition.Enabled, definition.TaskKind,
                 definition.TaskTarget, definition.TriggerKind, definition.TriggerInterval, pending.Version,
                 string.Join('|', "remove", definition.DefinitionId,
-                    pending.Version.ToString(CultureInfo.InvariantCulture),
+                    pending.Version.ToString(Invariant),
                     TrimmedReason() ?? string.Empty));
         }
         return (definition.DefinitionId, definition.Name, !definition.Enabled, definition.TaskKind,
             definition.TaskTarget, definition.TriggerKind, definition.TriggerInterval, pending.Version,
             string.Join('|', "toggle", definition.DefinitionId, !definition.Enabled,
-                pending.Version.ToString(CultureInfo.InvariantCulture),
+                pending.Version.ToString(Invariant),
                 TrimmedReason() ?? string.Empty));
     }
 
@@ -384,7 +652,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             SetCommandMessage(
                 string.Create(
-                    CultureInfo.InvariantCulture,
+                    Invariant,
                     $"The name must be a single line of at most {LocalAutomationContract.MaximumNameLength} characters."),
                 error: true);
             return false;
@@ -400,29 +668,52 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     /// <summary>The reason exactly as the store will hash it, so the retained key stays payload-accurate.</summary>
     private string? TrimmedReason()
-        => string.IsNullOrWhiteSpace(_reasonInput) ? null : _reasonInput.Trim();
+    {
+        var reason = _pendingKind == PendingCommandKind.Save ? _reasonInput : _commandReasonInput;
+        return string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+    }
 
     private bool TryParseInterval(out int interval)
     {
-        if (!int.TryParse(_intervalInput, NumberStyles.Integer, CultureInfo.InvariantCulture, out interval))
+        if (!int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out interval))
         {
             SetCommandMessage("The interval must be a whole number.", error: true);
             return false;
         }
-        var (minimum, maximum) = _triggerKindInput == LocalAutomationTriggerKind.Periodic
-            ? (LocalAutomationContract.MinimumPeriodicIntervalSeconds,
-               LocalAutomationContract.MaximumPeriodicIntervalSeconds)
-            : (LocalAutomationContract.MinimumCaptureInterval, LocalAutomationContract.MaximumCaptureInterval);
+        var (minimum, maximum) = IntervalBounds(_triggerKindInput);
         if (interval < minimum || interval > maximum)
         {
             SetCommandMessage(
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"The interval must be between {minimum} and {maximum}."),
+                string.Create(Invariant, $"The interval must be between {minimum} and {maximum}."),
                 error: true);
             return false;
         }
         return true;
+    }
+
+    private static (int Minimum, int Maximum) IntervalBounds(LocalAutomationTriggerKind trigger)
+        => trigger switch
+        {
+            LocalAutomationTriggerKind.Periodic => (LocalAutomationContract.MinimumPeriodicIntervalSeconds,
+                LocalAutomationContract.MaximumPeriodicIntervalSeconds),
+            LocalAutomationTriggerKind.SourceWindowClosed => (1, 1),
+            _ => (LocalAutomationContract.MinimumCaptureInterval, LocalAutomationContract.MaximumCaptureInterval)
+        };
+
+    private string IntervalHint()
+    {
+        if (_triggerKindInput == LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            return "One run when the retained source window closes and its settle allowance has elapsed. Source-window configuration is supplied by the task definition.";
+        }
+        var (minimum, maximum) = IntervalBounds(_triggerKindInput);
+        var bounds = _triggerKindInput == LocalAutomationTriggerKind.Periodic
+            ? string.Create(Invariant, $"{minimum} to {maximum} seconds")
+            : string.Create(Invariant, $"{minimum} to {maximum} durable captures");
+        return int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out var interval) &&
+               interval >= minimum && interval <= maximum
+            ? $"{DescribeTrigger(_triggerKindInput, interval)}. Accepted range: {bounds}."
+            : $"Accepted range: {bounds}.";
     }
 
     private void SetCommandMessage(string message, bool error)
@@ -439,15 +730,24 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _ => "The stored definition already matches this request, so no revision was created."
     };
 
+    private string ConfirmationEyebrow() => _pendingKind switch
+    {
+        PendingCommandKind.Remove => "Remove automation",
+        PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
+            ? "Disable automation"
+            : "Enable automation",
+        _ => Editing ? "Record a new revision" : "Create automation"
+    };
+
     private string ConfirmationHeading() => _pendingKind switch
     {
         PendingCommandKind.Remove => $"Remove {_pendingDefinition?.Definition.DefinitionId}?",
         PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
             ? $"Disable {_pendingDefinition?.Definition.DefinitionId}?"
             : $"Enable {_pendingDefinition?.Definition.DefinitionId}?",
-        _ => _editingVersion == 0
-            ? $"Record automation {_idInput}?"
-            : $"Record revision {_editingVersion + 1} of {_idInput}?"
+        _ => Editing
+            ? string.Create(Invariant, $"Record revision {_editingVersion + 1} of {_idInput.Trim()}?")
+            : $"Record automation {_idInput.Trim()}?"
     };
 
     private string ConfirmationDescription() => _pendingKind switch
@@ -463,14 +763,53 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
              + "are stored; the runner issues the same operation an operator can issue by hand."
     };
 
-    private IReadOnlyList<string> Targets()
-        => _automation?.Registry.FirstOrDefault(descriptor => descriptor.TaskKind == _taskKindInput)?.Targets ?? [];
+    private string ConfirmLabel() => _pendingKind switch
+    {
+        PendingCommandKind.Remove => "Remove automation",
+        PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
+            ? "Disable automation"
+            : "Enable automation",
+        _ => "Record revision"
+    };
+
+    private LocalAutomationTaskDescriptor? Descriptor(LocalAutomationTaskKind kind)
+        => _automation?.Registry.FirstOrDefault(descriptor => descriptor.TaskKind == kind);
+
+    private IReadOnlyList<string> Targets() => Descriptor(_taskKindInput)?.Targets ?? [];
 
     private IReadOnlyList<LocalAutomationTriggerKind> CompatibleTriggers()
-        => _automation?.Registry
-            .FirstOrDefault(descriptor => descriptor.TaskKind == _taskKindInput)?.CompatibleTriggers ?? [];
+        => Descriptor(_taskKindInput)?.CompatibleTriggers ?? [];
 
-    private static string DescribeNextRun(LocalAutomationDefinitionState definition)
+    private string TaskDescription(LocalAutomationDefinition definition)
+        => Descriptor(definition.TaskKind)?.Description ?? Split(definition.TaskKind.ToString());
+
+    internal static string DescribeTrigger(LocalAutomationTriggerKind trigger, int interval)
+    {
+        if (trigger == LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            return "After source-window finality";
+        }
+        if (trigger == LocalAutomationTriggerKind.CaptureRelative)
+        {
+            return interval == 1
+                ? "Every capture"
+                : string.Create(Invariant, $"Every {interval} captures");
+        }
+        return interval switch
+        {
+            _ when interval % 3600 == 0 => string.Create(Invariant, $"Every {interval / 3600} h"),
+            _ when interval % 60 == 0 => string.Create(Invariant, $"Every {interval / 60} min"),
+            _ => string.Create(Invariant, $"Every {interval} s")
+        };
+    }
+
+    private static string DescribeTrigger(LocalAutomationDefinition definition)
+        => definition.SourceWindow is { } policy
+            ? string.Concat(policy.Kind == LocalAutomationSourceWindowKind.SunriseDay ? "Sunrise to sunrise" : "Completed site-local hour",
+                policy.Selection == LocalAutomationSourceSelection.DarkNightActualSources ? " / dark-night sources" : " / all actual sources")
+            : DescribeTrigger(definition.TriggerKind, definition.TriggerInterval);
+
+    private string DescribeNextRun(LocalAutomationDefinitionState definition)
     {
         if (!definition.Definition.Enabled)
         {
@@ -478,12 +817,162 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         }
         if (definition.NextRunUtc is { } due)
         {
-            return due.ToString("u", CultureInfo.InvariantCulture);
+            return DayClock(due);
+        }
+        if (definition.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            return definition.WindowUnavailableReasonCode is not null
+                ? "Source window unavailable"
+                : "No qualified upcoming period";
         }
         return definition.NextRunCaptureSequence is { } sequence
-            ? string.Create(CultureInfo.InvariantCulture, $"At capture sequence {sequence}")
+            ? string.Create(Invariant, $"At capture sequence {sequence}")
             : "After the next capture establishes a baseline";
     }
+
+    private string DescribeLastRun(LocalAutomationRun? run) => run is null
+        ? "None yet"
+        : $"{Split(run.Outcome.ToString())} / {DayClock(run.StartedAtUtc)}";
+
+    private string DefinitionName(string definitionId)
+        => _automation?.Definitions.FirstOrDefault(candidate => string.Equals(
+               candidate.Definition.DefinitionId, definitionId, StringComparison.Ordinal))?.Definition.Name
+           ?? definitionId;
+
+    private int EnabledCount => _automation?.Definitions.Count(static item => item.Definition.Enabled) ?? 0;
+
+    private int RunningCount => _automation?.RunningRunCount ??
+        _automation?.Runs.Count(static run => run.Outcome == LocalAutomationRunOutcome.Running) ?? 0;
+
+    private LocalAutomationCalendarEntry? NextEntry => _automation?.Calendar.MinBy(static entry => entry.DueUtc);
+
+    private LocalAutomationDefinitionState? NextCaptureRelative => _automation?.Definitions
+        .Where(static item => item.Definition.Enabled && item.NextRunCaptureSequence is not null)
+        .MinBy(static item => item.NextRunCaptureSequence);
+
+    /// <summary>Finished runs in the 24 hours before the read, and how many of them succeeded.</summary>
+    private (int Succeeded, int Finished, bool Truncated) LastDay
+    {
+        get
+        {
+            if (_automation is null)
+            {
+                return (0, 0, false);
+            }
+            var since = _automation.ReadAtUtc.AddHours(-24);
+            var finished = _automation.Runs
+                .Where(run => run.Outcome is not (LocalAutomationRunOutcome.Running or LocalAutomationRunOutcome.Queued) && run.StartedAtUtc >= since)
+                .ToList();
+            // The projection holds only the newest runs. When all of them fall inside the day, older ones may not.
+            var truncated = _automation.Runs.Count >= LocalAutomationContract.MaximumProjectedRuns &&
+                            _automation.Runs.Min(static run => run.StartedAtUtc) >= since;
+            return (finished.Count(static run => run.Outcome == LocalAutomationRunOutcome.Succeeded),
+                finished.Count, truncated);
+        }
+    }
+
+    internal static string OutcomeClass(LocalAutomationRunOutcome outcome) => outcome switch
+    {
+        LocalAutomationRunOutcome.Running => "running",
+        LocalAutomationRunOutcome.Succeeded => "success",
+        LocalAutomationRunOutcome.Skipped => "skipped",
+        LocalAutomationRunOutcome.Failed => "failure",
+        _ => "warning"
+    };
+
+    /// <summary>The 24-hour window the day track draws, starting at the current local hour.</summary>
+    private (DateTimeOffset Start, DateTimeOffset End) TrackWindow()
+    {
+        var anchor = _automation?.ReadAtUtc ?? _calendar?.GeneratedUtc ?? DateTimeOffset.UnixEpoch;
+        var local = TimeZoneInfo.ConvertTime(anchor, _timeZone);
+        var start = new DateTimeOffset(local.Year, local.Month, local.Day, local.Hour, 0, 0, local.Offset)
+            .ToUniversalTime();
+        return (start, start.AddHours(24));
+    }
+
+    private static double Percent(DateTimeOffset value, DateTimeOffset start, DateTimeOffset end)
+        => Math.Clamp((value - start).TotalMinutes / (end - start).TotalMinutes * 100, 0, 100);
+
+    private static string Css(double value) => value.ToString("0.##", Invariant);
+
+    /// <summary>Contiguous admitted spans inside the window; adjacent segments with different setpoints merge.</summary>
+    private List<TrackBand> CaptureWindows(DateTimeOffset start, DateTimeOffset end)
+    {
+        var bands = new List<TrackBand>();
+        if (_calendar is null)
+        {
+            return bands;
+        }
+        DateTimeOffset? openStart = null;
+        DateTimeOffset openEnd = default;
+        foreach (var segment in _calendar.Nights.SelectMany(static night => night.Segments).OrderBy(static s => s.StartUtc))
+        {
+            if (!segment.Admitted)
+            {
+                continue;
+            }
+            if (openStart is not null && segment.StartUtc <= openEnd)
+            {
+                openEnd = segment.EndUtc > openEnd ? segment.EndUtc : openEnd;
+                continue;
+            }
+            Add();
+            openStart = segment.StartUtc;
+            openEnd = segment.EndUtc;
+        }
+        Add();
+        return bands;
+
+        void Add()
+        {
+            if (openStart is not { } bandStart || openEnd <= start || bandStart >= end)
+            {
+                return;
+            }
+            var left = Percent(bandStart, start, end);
+            var right = Percent(openEnd, start, end);
+            // A window of a day or more would otherwise read as "12:00 – 12:00".
+            var label = bandStart <= start && openEnd >= end
+                ? "Capture window / open all 24 hours"
+                : openEnd - bandStart >= TimeSpan.FromDays(1)
+                    ? $"Capture window / {DayClock(bandStart)} – {DayClock(openEnd)}"
+                    : $"Capture window / {Clock(bandStart)} – {Clock(openEnd)}";
+            bands.Add(new TrackBand(left, right - left, label));
+        }
+    }
+
+    /// <summary>
+    /// Due runs inside the window. Each gets a tick at its exact time; a labelled card goes on the first row with room,
+    /// clamped so it never overflows the track. A run with no room keeps only its tick and still appears in the list.
+    /// </summary>
+    private List<TrackMarker> RunMarkers(DateTimeOffset start, DateTimeOffset end)
+    {
+        var markers = new List<TrackMarker>();
+        if (_automation is null)
+        {
+            return markers;
+        }
+        var lastCard = Enumerable.Repeat(double.NegativeInfinity, MarkerRows).ToArray();
+        foreach (var entry in _automation.Calendar.Where(item => item.DueUtc >= start && item.DueUtc < end).OrderBy(static item => item.DueUtc))
+        {
+            var exact = Percent(entry.DueUtc, start, end);
+            var card = Math.Clamp(exact, MarkerMinimumPercent, MarkerMaximumPercent);
+            var row = Array.FindIndex(lastCard, previous => card - previous >= MarkerSpacingPercent);
+            if (row >= 0)
+            {
+                lastCard[row] = card;
+            }
+            markers.Add(new TrackMarker(exact, row >= 0 ? card : null, row, Clock(entry.DueUtc), entry.Name));
+        }
+        return markers;
+    }
+
+    private string Clock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("HH:mm", Invariant);
+
+    private string DayClock(DateTimeOffset? utc) => utc is { } value ? DayClock(value) : "Not started";
+
+    private string DayClock(DateTimeOffset utc)
+        => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("ddd d MMM HH:mm", Invariant);
 
     internal static string EditTriggerId(LocalAutomationDefinitionState definition)
         => $"automation-edit-{definition.Definition.DefinitionId}";
@@ -494,28 +983,41 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     internal static string RemoveTriggerId(LocalAutomationDefinitionState definition)
         => $"automation-remove-{definition.Definition.DefinitionId}";
 
+    private static string Split(string value) => OperationsPage.SplitWords(value);
+
+    private static string Plural(int count, string singular, string plural)
+        => string.Create(Invariant, $"{count} {(count == 1 ? singular : plural)}");
+
     private async ValueTask InvokeModuleAsync(string identifier, params object?[] arguments)
     {
-        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./Components/Pages/AutomationsPage.razor.js").ConfigureAwait(false);
-        await _module.InvokeVoidAsync(identifier, arguments).ConfigureAwait(false);
+        try
+        {
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/AutomationsPage.razor.js");
+            await _module.InvokeVoidAsync(identifier, arguments);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
     }
-
-    private static string FormatUtc(DateTimeOffset? value) => value?.ToString("u") ?? "Not scheduled";
-
-    private static string Split(string value) => OperationsPage.SplitWords(value);
 
     public async ValueTask DisposeAsync()
     {
+        await _lifetime.CancelAsync();
+        _lifetime.Dispose();
         if (_module is not null)
         {
             try
             {
-                await _module.DisposeAsync().ConfigureAwait(false);
+                await _module.DisposeAsync();
             }
             catch (JSDisconnectedException)
             {
             }
         }
     }
+
+    private sealed record TrackBand(double Left, double Width, string Label);
+
+    private sealed record TrackMarker(double Tick, double? Card, int Row, string Time, string Name);
 }

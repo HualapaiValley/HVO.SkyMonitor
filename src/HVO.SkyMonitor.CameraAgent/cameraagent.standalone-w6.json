@@ -7,7 +7,7 @@
       "fixedSequenceStartUtc": "2026-01-15T07:59:50Z",
       "rigProfileVersion": "virtual-asi676mc-w6-provisional-v1",
       "maximumMagnitude": 6.5,
-      "maximumResults": 300,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 1000.0,
       "bortleClass": 3,
       "shotNoiseEnabled": true,

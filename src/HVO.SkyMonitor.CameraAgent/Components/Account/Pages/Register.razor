@@ -2,12 +2,18 @@
 
 <PageTitle>Registration unavailable</PageTitle>
 
-<h1>Registration unavailable</h1>
-
-<div class="row">
-    <div class="col-lg-6">
-        <p role="status">Local self-registration is disabled.</p>
-        <p>The site owner account is managed through CameraAgent configuration.</p>
-        <a href="Account/Login">Return to login</a>
+<AccountShell Class="single">
+    <header class="ops-page-heading">
+        <div>
+            <p class="eyebrow">Local owner</p>
+            <h1>Registration unavailable</h1>
+        </div>
+    </header>
+    <div class="ops-panel">
+        <p class="account-note" role="status">Local self-registration is disabled.</p>
+        <p class="account-note">The site owner account is managed through CameraAgent configuration.</p>
     </div>
-</div>
+    <div class="account-form-actions">
+        <a class="button secondary" href="Account/Login">Return to login</a>
+    </div>
+</AccountShell>

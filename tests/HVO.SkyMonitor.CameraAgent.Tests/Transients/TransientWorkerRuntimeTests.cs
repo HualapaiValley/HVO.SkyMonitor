@@ -34,6 +34,96 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 public sealed class TransientWorkerRuntimeTests
 {
     [TestMethod]
+    public async Task ExposureSweptStarMask_UsesCaptureClockAndIgnoresPoisonedRendererObjects()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-exposure-mask", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            await StageVirtualFramesAsync(provider, configuration, epoch, 3).ConfigureAwait(false);
+            Assert.IsTrue(await provider.GetRequiredService<TransientWorkerService>().ProcessFrameAsync(CancellationToken.None)
+                .ConfigureAwait(false));
+            var frames = await provider.GetRequiredService<SqliteTransientRuntimeStore>().LoadWindowAsync(
+                configuration.AgentId!, 3, [0], CancellationToken.None).ConfigureAwait(false);
+            var frame = frames[0];
+            var descriptor = frame.Manifest.Descriptor;
+            var start = descriptor.Timing.RequestedStartUtc.AddHours(-6);
+            var clock = VirtualExposureProvenance.Create(descriptor.Timing.RequestedStartUtc,
+                descriptor.Timing.RequestedStartUtc, start, descriptor.Controls.EffectiveExposure,
+                VirtualExposureTimeMapping.FixedCelestialUtc);
+            var projection = RigProjectionContextFactory.Create(configuration.Rig);
+            var horizontal = ProjectorFactory.Create(projection).Unproject(new(32, 24))!.Value;
+            var ofDate = CoordinateTransforms.HorizontalToEquatorial(horizontal, clock.CelestialMidpointUtc,
+                configuration.Observatory.LatitudeDegrees, configuration.Observatory.LongitudeDegrees);
+            var j2000 = EquatorialPrecession.PrecessToJ2000(ofDate, clock.CelestialMidpointUtc);
+            var catalog = new InMemoryCelestialCatalog([new("known", "known", j2000.RightAscensionHours, j2000.DeclinationDegrees, 1)]);
+            var runtime = new TransientDetectorRuntime(catalog);
+            var options = new TransientDetectionOptions { ExposureIntegratedStarMask = true, StarSupportRadiusSourcePixels = 2 };
+            var firstScene = frame.Manifest.Scene! with
+            {
+                SceneUtc = clock.CelestialMidpointUtc,
+                VirtualExposure = clock,
+                Objects = [new("poison", "poison", 3, 3, -12)]
+            };
+            var configured = new Dictionary<int, CameraModuleConfig> { [0] = configuration };
+            var first = await runtime.CreateSourcesAsync(configured, options,
+                new Dictionary<int, TransientLoadedFrame> { [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene } } },
+                CancellationToken.None).ConfigureAwait(false);
+            var second = await runtime.CreateSourcesAsync(configured, options,
+                new Dictionary<int, TransientLoadedFrame>
+                {
+                    [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene with { Objects = [new("other-truth", "other", 55, 30, 30)] } } }
+                }, CancellationToken.None).ConfigureAwait(false);
+            var star = first[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
+            var changedTruth = second[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
+            Assert.IsTrue(Linear16MaskOperations.IsExcluded(star.Mask, 31, 23));
+            Assert.IsFalse(Linear16MaskOperations.IsExcluded(star.Mask, 3, 3));
+            Assert.AreEqual(StellarExposureMask.AlgorithmVersion, star.Algorithm.Name);
+            Assert.AreEqual(star.MaskIdentitySha256, changedTruth.MaskIdentitySha256);
+            CollectionAssert.AreEqual(star.Mask.Bits.ToArray(), changedTruth.Mask.Bits.ToArray());
+        }
+        finally { Cleanup(root); }
+    }
+
+    [TestMethod]
+    public async Task ChangedMaskPolicyAcrossRestartPreservesCausalEvidenceAndFinalizesNeedsReview()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-mask-policy-restart", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var configuration = CreateConfiguration(CreateOneFrameScenario(epoch));
+            string frozen;
+            using (var original = CreateProvider(root))
+            {
+                original.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+                await StageVirtualFramesAsync(original, configuration, epoch, 7).ConfigureAwait(false);
+                var worker = original.GetRequiredService<TransientWorkerService>();
+                for (var index = 0; index < 7; index++)
+                    Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+                using var connection = await OpenAsync(root).ConfigureAwait(false);
+                frozen = await ScalarStringAsync(connection, "SELECT causal_extraction_json FROM transient_worker_candidates;")
+                    .ConfigureAwait(false);
+                Assert.IsFalse(string.IsNullOrEmpty(frozen));
+            }
+            SqliteConnection.ClearAllPools();
+            using var recovered = CreateProvider(root, exposureIntegratedStarMask: true);
+            recovered.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            Assert.IsTrue(await recovered.GetRequiredService<TransientWorkerService>().ProcessCandidateAsync(CancellationToken.None)
+                .ConfigureAwait(false));
+            using var after = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual("needs_review", await ScalarStringAsync(after, "SELECT state FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual("finalized", await ScalarStringAsync(after, "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(frozen, await ScalarStringAsync(after, "SELECT observation_extraction_json FROM transient_worker_candidates;")
+                .ConfigureAwait(false));
+        }
+        finally { Cleanup(root); }
+    }
+
+    [TestMethod]
     public void ResolveObservatory_MigratedLegacyContextFailsClosed()
     {
         var runtime = new TransientDetectorRuntime(new InMemoryCelestialCatalog([]));
@@ -401,6 +491,28 @@ public sealed class TransientWorkerRuntimeTests
             Assert.IsFalse(await provider.GetRequiredService<SqliteTransientRuntimeStore>()
                 .IsCausalWindowCompleteAsync(
                     "transient-runtime-agent", 3, CancellationToken.None).ConfigureAwait(false));
+
+            // The operations outcome read reports each capture newest first: the two frames without both prior
+            // frames were not assessed, and the three with a full causal window succeeded without a candidate.
+            var outcomes = await runtime.ReadRecentCaptureOutcomesAsync(
+                TransientCaptureOutcome.MaximumPageSize, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(5, outcomes);
+            var sequences = outcomes.Select(static outcome => outcome.CaptureSequence).ToArray();
+            CollectionAssert.AreEqual(sequences.OrderDescending().ToArray(), sequences);
+            Assert.IsTrue(outcomes.Take(3).All(static outcome =>
+                outcome.CausalSucceeded == true && outcome.CandidateCount == 0 &&
+                outcome.Reason == TransientCandidateExtractionReasonCodes.NoCandidate));
+            Assert.IsTrue(outcomes.Skip(3).All(static outcome =>
+                outcome.CausalSucceeded == false && outcome.Reason == "causal-context-pending"));
+            var newest = await runtime.ReadRecentCaptureOutcomesAsync(2, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(
+                outcomes.Take(2).Select(static outcome => outcome.CaptureId).ToArray(),
+                newest.Select(static outcome => outcome.CaptureId).ToArray());
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+                await runtime.ReadRecentCaptureOutcomesAsync(0, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+                await runtime.ReadRecentCaptureOutcomesAsync(
+                    TransientCaptureOutcome.MaximumPageSize + 1, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {
@@ -2229,12 +2341,14 @@ public sealed class TransientWorkerRuntimeTests
         ITransientRuntimeFaultInjector? faultInjector = null,
         ITransientCandidateFaultInjector? candidateFaultInjector = null,
         TimeProvider? timeProvider = null,
-        TransientOperatingMode mode = TransientOperatingMode.Edge)
+        TransientOperatingMode mode = TransientOperatingMode.Edge,
+        bool exposureIntegratedStarMask = false)
     {
         var values = new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:TransientDetection:Mode"] = mode.ToString(),
+            ["CameraAgent:TransientDetection:ExposureIntegratedStarMask"] = exposureIntegratedStarMask.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] =
                 (mode == TransientOperatingMode.Hybrid).ToString(System.Globalization.CultureInfo.InvariantCulture)

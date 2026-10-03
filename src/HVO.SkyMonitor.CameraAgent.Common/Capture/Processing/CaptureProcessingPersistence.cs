@@ -130,6 +130,8 @@ internal sealed class CaptureProcessingPersistence(
             var frame = restoredBase.Artifact.Frame with
             {
                 PixelData = product.Payload,
+                PixelFormat = product.Layout!.PixelFormat,
+                StrideBytes = product.Layout.StrideBytes,
                 Metadata = restoredBase.Artifact.Frame.Metadata with { SourceId = "gallery-materialization" },
                 Layout = product.Layout
             };
@@ -411,7 +413,11 @@ internal sealed class CaptureProcessingPersistence(
         return await RestoreWindowInputsAsync(outputs, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreWindowInputsAsync(
+    /// <summary>
+    /// Restores committed outputs as processing inputs, verifying each sidecar, payload, recipe, and lineage identity
+    /// against durable state. A window recipe and the nightly product generator both consume this.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreWindowInputsAsync(
         IReadOnlyList<DurableProcessingOutput> outputs,
         CancellationToken cancellationToken)
     {
@@ -691,7 +697,7 @@ internal sealed class CaptureProcessingPersistence(
         }
         var payloadPath = ResolveSafePath(output.PayloadRelativePath);
         var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        var sidecar = await ReadCommittedFileAsync(sidecarPath, output.EvidenceJson.LongLength, cancellationToken).ConfigureAwait(false);
         if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
         {
             throw new InvalidDataException("Committed processing output sidecar differs from its durable bytes.");
@@ -716,7 +722,7 @@ internal sealed class CaptureProcessingPersistence(
         {
             throw new InvalidDataException("Committed processing output sidecar conflicts with durable state.");
         }
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadCommittedFileAsync(payloadPath, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         if (!reconstruction.IsValid || frame is null)
         {
@@ -1016,7 +1022,7 @@ internal sealed class CaptureProcessingPersistence(
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
         ValidateLayoutlessOutputFacts(output, manifest);
         var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadCommittedFileAsync(payloadPath, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||
             !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
         {
@@ -1065,6 +1071,29 @@ internal sealed class CaptureProcessingPersistence(
             manifest.Artifact.CreatedUtc,
             null,
             product);
+    }
+
+    /// <summary>Restores only the length committed in the journal, never a corrupt file's untrusted length.</summary>
+    private static async Task<byte[]> ReadCommittedFileAsync(string path, long expectedLength, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (expectedLength < 0 || expectedLength > Array.MaxLength)
+            throw new InvalidDataException("Committed processing file length is unsupported.");
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous);
+        if (stream.Length != expectedLength)
+            throw new InvalidDataException("Committed processing file length differs from its durable length.");
+        var bytes = new byte[(int)expectedLength];
+        try
+        {
+            await stream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+        }
+        catch (EndOfStreamException exception)
+        {
+            throw new InvalidDataException("Committed processing file was truncated during restoration.", exception);
+        }
+        if (stream.Length != expectedLength || await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
+            throw new InvalidDataException("Committed processing file grew during restoration.");
+        return bytes;
     }
 
     private static async Task WriteAtomicallyAsync(

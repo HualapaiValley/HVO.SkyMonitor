@@ -1,39 +1,366 @@
 @page "/operations/pipeline"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Pipeline summary</PageTitle>
+<PageTitle>Pipeline</PageTitle>
 
-<div class="pipeline-page">
-    <PageHeader Eyebrow="Versioned processing authority" Title="Pipeline summary" Lead="The desired and effective processing graph of the active revision and, when one is staged, the pending revision. Nodes are enabled or disabled from the capture schedule editor; nothing here changes durable state.">
-        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
-    </PageHeader>
-
-    @if (_loading)
-    {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading processing graph" Message="Reading the immutable profile revisions." />
-    }
-    else if (_state is null)
-    {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Pipeline summary unavailable" Message="@_message">
-            <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
-        </PageStateNotice>
-    }
-    else
-    {
-        <p class="truth-note" role="note"><strong>Read-only graph facts:</strong> use <a href="/operations/schedule">Capture schedule</a> to preview, toggle, stage, apply, or roll back the local profile's graph. Named graph revisions live under <a href="/operations/pipeline/graphs">Named graphs</a>, and every live or replay run is listed under <a href="/operations/pipeline/executions">Processing executions</a>.</p>
-        <PipelineRevisionSummary Heading="Active revision" HeadingId="pipeline-active" RevisionNumber="_state.Active.RevisionNumber" ProfileSha256="@_state.Active.ProfileSha256" CanToggle="_state.Active.CanToggle" Plan="_state.Active.Plan" />
-        @if (_state.Pending is not null)
+<OperationsPageHeading Eyebrow="Processing / configured dependency graph" Title="Pipeline" HeadingId="pipeline-heading"
+                       Description="Inspect the configured steps, their dependencies and the effective graph CameraAgent compiled from them, and turn individual steps on or off.">
+    <Actions>
+        <button type="button" id="@FocusFallbackId" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="RefreshAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        @if (LatestRun is { } latest)
         {
-            <PipelineRevisionSummary Heading="Pending revision" HeadingId="pipeline-pending" RevisionNumber="_state.Pending.RevisionNumber" ProfileSha256="@_state.Pending.ProfileSha256" CanToggle="_state.Pending.CanToggle" Plan="_state.Pending.Plan" />
+            <a id="pipeline-latest-run" class="button secondary" href="@($"/operations/pipeline/executions/{latest.ExecutionId:D}")">View latest run</a>
         }
         else
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="No pending revision" Message="A validated draft appears here after it is saved and before it is applied at a capture boundary." />
+            <button type="button" id="pipeline-latest-run" class="button secondary" title="@LatestRunUnavailableReason"
+                    aria-describedby="pipeline-latest-run-reason" disabled>View latest run</button>
+            <span id="pipeline-latest-run-reason" class="visually-hidden">@LatestRunUnavailableReason</span>
         }
+        <a id="pipeline-create-draft" class="button primary" href="/operations/pipeline/graphs/new" title="Start a named graph draft in the graph editor">Create draft</a>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_message is not null)
+{
+    <div class="ops-note-banner pipeline-message" role="@(_messageError ? "alert" : "status")">
+        <span class="status-icon @(_messageError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span>
+    </div>
+}
+
+@if (_loading && _pipeline is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading the processing graph.</span></div>
+}
+else if (_pipeline is null)
+{
+    <div class="ops-note-banner pipeline-error" role="alert">
+        <span class="status-icon failure" aria-hidden="true"></span>
+        <span><strong>Processing graph unavailable.</strong> @_error</span>
+        <button type="button" class="button secondary small" disabled="@_loading" @onclick="RefreshAsync">Try again</button>
+    </div>
+}
+else
+{
+    var revision = ShownRevision!;
+    var plan = revision.Plan;
+    var placements = Arrange(plan);
+    var canvas = Layout(placements, _transients is { } lane ? MeteorDetectionLane.Stages(lane.Mode) : []);
+    var selectedKey = SelectedKey;
+    var checks = Validate(plan);
+    var passed = checks.Count(static check => check.Passed == true);
+    var applicable = checks.Count(static check => check.Passed is not null);
+    var valid = checks.All(static check => check.Passed != false);
+    var required = plan.DesiredNodes.Count(static node => node.Required);
+    var selected = SelectedNode;
+    var toggleReason = ToggleUnavailableReason();
+    var laneView = _transients;
+
+    @if (NamedActive is { } named)
+    {
+        <div class="ops-note-banner pipeline-named" role="note">
+            <span class="status-icon warning" aria-hidden="true"></span>
+            <span><strong>Live processing runs a named graph.</strong> CameraAgent runs <a href="@($"/operations/pipeline/graphs/{Uri.EscapeDataString(named.RevisionId)}")">@named.Name @named.Revision</a> instead of this configured graph. This graph runs again when the registry returns to it; manage that under <a href="/operations/pipeline/graphs">Named graphs</a>.</span>
+        </div>
     }
-</div>
+
+    <section class="ops-profile-banner" aria-label="Revision summary">
+        <div>
+            <span class="status-icon @(valid ? "success" : "failure")" aria-hidden="true"></span>
+            <span>
+                <strong>Revision @Revision(revision.RevisionNumber) @(valid ? "is valid" : "has validation problems")</strong>
+                <small>@Count(plan.DesiredNodes.Count) configured @(plan.DesiredNodes.Count == 1 ? "step" : "steps") / @Count(required) required / @Count(plan.EffectiveNodes.Count) in the effective graph</small>
+            </span>
+        </div>
+        <dl>
+            <div><dt>Schema</dt><dd>@plan.SchemaVersion</dd></div>
+            <div><dt>Dependency policy</dt><dd>@Policy(plan.DependencyPolicy)</dd></div>
+            <div><dt>Last run</dt><dd>@LastRun()</dd></div>
+            <div><dt>Draft</dt><dd>@(_pipeline.Pending is { } draft ? $"Revision {Revision(draft.RevisionNumber)}, not applied" : "None")</dd></div>
+        </dl>
+    </section>
+
+    @if (_pipeline.Pending is { } pending)
+    {
+        <div class="pipeline-switch-row">
+            <div class="pipeline-switch" role="group" aria-label="Revision shown">
+                <button type="button" id="pipeline-show-active" aria-pressed="@(_showDraft ? "false" : "true")" @onclick="() => ShowRevision(false)">Active revision @Revision(_pipeline.Active.RevisionNumber)</button>
+                <button type="button" id="pipeline-show-draft" aria-pressed="@(_showDraft ? "true" : "false")" @onclick="() => ShowRevision(true)">Draft revision @Revision(pending.RevisionNumber)</button>
+            </div>
+            <p>The draft is applied or discarded from <a href="/operations/schedule">Schedule</a>.</p>
+        </div>
+    }
+
+    <section class="ops-pipeline-workspace" aria-label="Pipeline configuration graph">
+        <div class="ops-pipeline-canvas">
+            <div class="ops-pipeline-graph" style="@GridStyle(canvas)">
+                <div class="ops-pipeline-lane-band" style="@BandStyle(canvas)" aria-hidden="true"></div>
+                <svg class="ops-pipeline-edges" viewBox="@ViewBox(canvas)" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                    @foreach (var edge in canvas.Edges)
+                    {
+                        <path class="@EdgeClass(edge, selectedKey)" d="@edge.Path"></path>
+                    }
+                </svg>
+                <button type="button" id="pipeline-source-raw" class="@SourceClass(RawKey, selectedKey)" style="grid-column:1;grid-row:1"
+                        aria-pressed="@Pressed(RawKey, selectedKey)" title="Raw frame" @onclick="() => SelectStage(MeteorDetectionLane.RawFrameKey)">
+                    <strong>Raw frame</strong>
+                    <small>Durable ingress</small>
+                    @if (canvas.HasOutput(RawKey))
+                    {
+                        <i class="node-port out" aria-hidden="true"></i>
+                    }
+                </button>
+                @if (placements.Count == 0)
+                {
+                    <p id="pipeline-empty" class="pipeline-empty" style="@RowStyle(0, "2 / -1")">This revision configures no processing steps.</p>
+                }
+                @for (var index = 0; index < placements.Count; index++)
+                {
+                    var placement = placements[index];
+                    var node = placement.Node;
+                    var key = StepKey(node.Id);
+                    var active = string.Equals(key, selectedKey, StringComparison.OrdinalIgnoreCase);
+                    var id = node.Id;
+                    <button type="button" id="@($"pipeline-node-{index}")" class="@NodeClass(node, active)" style="@CellStyle(placement)"
+                            aria-pressed="@(active ? "true" : "false")" title="@node.Id" @onclick="() => SelectNode(id)">
+                        <strong>@Label(node.Id)</strong>
+                        <small>@StepFacts(node)</small>
+                        @if (canvas.HasInput(key))
+                        {
+                            <i class="node-port in" aria-hidden="true"></i>
+                        }
+                        @if (canvas.HasOutput(key))
+                        {
+                            <i class="node-port out" aria-hidden="true"></i>
+                        }
+                    </button>
+                }
+                <p class="ops-pipeline-lane-title" style="@RowStyle(canvas.LaneTitleRow, "2 / -1")">
+                    <strong>Meteor detection</strong>
+                    <small>@LaneSubtitle(laneView)</small>
+                    @if (laneView is not null && canvas.Stages.Count > 0)
+                    {
+                        var state = TransientOperationsPage.Banner(laneView);
+                        <span class="ops-pipeline-lane-state"><span class="status-icon @state.Icon" aria-hidden="true"></span>@state.Title</span>
+                    }
+                </p>
+                @if (canvas.Stages.Count == 0)
+                {
+                    var note = LaneNote(laneView);
+                    <div class="ops-pipeline-lane-note" style="@RowStyle(canvas.LaneRow, "2 / -1")">
+                        <span class="status-icon @note.Icon" aria-hidden="true"></span>
+                        <span><strong>@note.Title</strong> @note.Detail <a href="/operations/transients">Open Transients</a></span>
+                    </div>
+                }
+                @foreach (var stage in canvas.Stages)
+                {
+                    var key = StageKey(stage.Key);
+                    var stageKey = stage.Key;
+                    <button type="button" id="@($"pipeline-stage-{stage.Key}")" class="@StageClass(stage, key, selectedKey)"
+                            style="@StageStyle(canvas, stage)" aria-pressed="@Pressed(key, selectedKey)" title="@stage.Title" @onclick="() => SelectStage(stageKey)">
+                        <strong>@stage.Title</strong>
+                        <small>@stage.Caption</small>
+                        @if (canvas.HasInput(key))
+                        {
+                            <i class="node-port in" aria-hidden="true"></i>
+                        }
+                        @if (canvas.HasOutput(key))
+                        {
+                            <i class="node-port out" aria-hidden="true"></i>
+                        }
+                    </button>
+                }
+            </div>
+        </div>
+        <aside class="ops-pipeline-inspector" aria-live="polite" aria-labelledby="pipeline-step-title">
+            @if (_selectedStage == MeteorDetectionLane.RawFrameKey)
+            {
+                <p class="eyebrow">Source</p>
+                <h2 id="pipeline-step-title">Raw frame</h2>
+                <p>Each acquired frame is written to durable ingress first. The processing steps and the meteor detection lane read it independently, so neither waits for the other.</p>
+                <dl class="ops-node-facts">
+                    <div><dt>Feeds</dt><dd>@RawConsumers(placements, canvas)</dd></div>
+                    <div><dt>Outputs</dt><dd>Raw frame</dd></div>
+                </dl>
+            }
+            else if (SelectedStage(canvas) is { } stage)
+            {
+                <p class="eyebrow">@(stage.Central ? "Meteor detection / LogicHost" : "Meteor detection / this agent")</p>
+                <h2 id="pipeline-step-title">@stage.Title</h2>
+                <p>@stage.Description</p>
+                <dl class="ops-node-facts">
+                    <div><dt>Stage</dt><dd>@stage.Caption</dd></div>
+                    <div><dt>Inputs</dt><dd>@StageInputs(canvas, stage)</dd></div>
+                    <div><dt>Outputs</dt><dd>@stage.Outputs</dd></div>
+                    <div><dt>Runs on</dt><dd>@(stage.Central ? "LogicHost" : "CameraAgent transient worker")</dd></div>
+                    <div><dt>Live state</dt><dd>@StageState(_transients, stage)</dd></div>
+                </dl>
+                <div class="pipeline-inspector-actions">
+                    <a id="pipeline-open-transients" class="button secondary" href="/operations/transients">Open Transients</a>
+                </div>
+                <p class="ops-inspector-footnote">The detection mode is set in the agent's host configuration. This lane runs beside the processing steps and is not part of the revision.</p>
+            }
+            else if (selected is null)
+            {
+                <p class="eyebrow">No step selected</p>
+                <h2 id="pipeline-step-title">Nothing to inspect</h2>
+                <p>@(placements.Count > 0 ? "Select a step to inspect it."
+                    : canvas.Stages.Count > 0 ? "This revision configures no processing steps. Select the raw frame or a meteor detection stage to inspect it."
+                    : "This revision configures no processing steps. Select the raw frame to inspect it.")</p>
+            }
+            else
+            {
+                <p class="eyebrow">@StepKind(selected)</p>
+                <h2 id="pipeline-step-title">@Label(selected.Id)</h2>
+                <p>@StepDescription(selected)</p>
+                <dl class="ops-node-facts">
+                    <div><dt>Step ID / registered type</dt><dd>@selected.Id / @selected.Alias</dd></div>
+                    <div><dt>Inputs</dt><dd>@Inputs(plan, selected)</dd></div>
+                    <div><dt>Outputs</dt><dd>@Outputs(plan, selected)</dd></div>
+                    <div><dt>Options</dt><dd>@Options(selected.Options)</dd></div>
+                    @if (Effective(plan, selected.Id)?.RecipeName is { Length: > 0 } recipe)
+                    {
+                        <div><dt>Recipe</dt><dd>@recipe</dd></div>
+                    }
+                </dl>
+                <div class="pipeline-inspector-actions">
+                    @if (toggleReason is null)
+                    {
+                        <button type="button" id="@ToggleTriggerId" class="button secondary" disabled="@(_busy || _loading)" @onclick="OpenToggleAsync">@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
+                    }
+                    else
+                    {
+                        <button type="button" id="@ToggleTriggerId" class="button secondary" title="@toggleReason" aria-describedby="pipeline-step-toggle-reason" disabled>@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
+                        <p id="pipeline-step-toggle-reason" class="pipeline-toggle-reason">@toggleReason</p>
+                    }
+                </div>
+                <p class="ops-inspector-footnote">A change is saved as a new immutable revision and applied at the next capture boundary. Earlier revisions stay available in <a href="/operations/schedule">Schedule</a> for rollback.</p>
+            }
+        </aside>
+    </section>
+
+    @if (placements.Count > 0 || canvas.Stages.Count > 0)
+    {
+        <details class="pipeline-text">
+            <summary>Steps as a list</summary>
+            @if (placements.Count == 0)
+            {
+                <p>This revision configures no processing steps.</p>
+            }
+            else
+            {
+                <ol>
+                    @foreach (var placement in placements)
+                    {
+                        var node = placement.Node;
+                        <li>
+                            <strong>@node.Id</strong> (@StepFacts(node)):
+                            @(placement.Dependencies.Count == 0 ? "no declared inputs" : $"depends on {string.Join(", ", placement.Dependencies.Select(Input))}")
+                        </li>
+                    }
+                </ol>
+            }
+            @if (canvas.Stages.Count > 0)
+            {
+                <p class="pipeline-text-lane">Meteor detection, beside the steps:</p>
+                <ol id="pipeline-lane-list">
+                    @foreach (var stage in canvas.Stages)
+                    {
+                        <li><strong>@stage.Title</strong> (@(stage.Central ? "LogicHost" : "this agent")): reads @StageInputs(canvas, stage)</li>
+                    }
+                </ol>
+            }
+        </details>
+    }
+
+    <div class="ops-grid two">
+        <section class="ops-panel" aria-labelledby="pipeline-validation-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="pipeline-validation-heading">Configuration validation</h2><p>Checked when CameraAgent compiles the graph at startup and before a revision is applied.</p></div>
+                <span>@Count(passed) / @Count(applicable) passed</span>
+            </header>
+            <ul class="ops-validation-list">
+                @foreach (var check in checks)
+                {
+                    <li class="@CheckClass(check)">
+                        <i aria-hidden="true">@(check.Passed switch { true => "+", false => "!", null => "~" })</i>
+                        <span class="visually-hidden">@(check.Passed switch { true => "Passed:", false => "Failed:", null => "Not checked:" })</span>
+                        @check.Text
+                    </li>
+                }
+            </ul>
+        </section>
+        <section class="ops-panel" aria-labelledby="pipeline-boundary-heading">
+            <header class="ops-panel-heading">
+                <div><h2 id="pipeline-boundary-heading">Execution boundary</h2><p>Configuration shape does not imply runtime concurrency.</p></div>
+                <span>Current behavior</span>
+            </header>
+            <div class="ops-note-banner compact"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Sequential topological execution.</strong> Independent branches are drawn so dependencies can be checked; the worker runs eligible steps one at a time.</span></div>
+            <dl class="ops-facts">
+                <div><dt>Failure policy</dt><dd>Required steps fail closed; optional steps degrade</dd></div>
+                <div><dt>Activation</dt><dd>Next capture boundary</dd></div>
+                <div><dt>History</dt><dd>Immutable revisions</dd></div>
+                <div><dt>Rollback</dt><dd>Re-apply an earlier revision from Schedule</dd></div>
+            </dl>
+            <p class="pipeline-links"><a href="/operations/pipeline/executions">Processing executions</a><a href="/operations/pipeline/graphs">Named graphs</a></p>
+        </section>
+    </div>
+
+    @if (_dialogOpen && _toggleNode is { } target)
+    {
+        var turningOn = _toggleTarget;
+        var before = _pipeline.Active.Plan.EffectiveNodes.Select(static node => node.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var after = _preview?.Plan.EffectiveNodes.Select(static node => node.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        <dialog class="action-dialog operations-dialog pipeline-dialog" aria-labelledby="pipeline-toggle-heading" aria-describedby="pipeline-toggle-description" @ref="_dialogElement" @oncancel="CloseDialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Pipeline step</p><h2 id="pipeline-toggle-heading">@(turningOn ? "Turn on" : "Turn off") @Label(target.Id)</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p id="pipeline-toggle-description" class="dialog-intro">This saves the active profile as a new revision with the step @(turningOn ? "on" : "off") and applies it at the next capture boundary. Nothing changes until you apply, and the current revision stays available for rollback.</p>
+            <div class="pipeline-dialog-body">
+                @if (_previewing)
+                {
+                    <div class="ops-note-banner compact" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Compiling the updated graph.</span></div>
+                }
+                else if (after is not null)
+                {
+                    var leaving = before.Where(id => !after.Contains(id)).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+                    var joining = after.Where(id => !before.Contains(id)).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+                    <dl class="ops-facts">
+                        <div><dt>Effective graph</dt><dd>@Count(before.Count) to @Count(after.Count) steps</dd></div>
+                        <div><dt>Leaves the graph</dt><dd>@(leaving.Length == 0 ? "None" : string.Join(", ", leaving))</dd></div>
+                        <div><dt>Joins the graph</dt><dd>@(joining.Length == 0 ? "None" : string.Join(", ", joining))</dd></div>
+                    </dl>
+                }
+                @if (target.Required && !turningOn)
+                {
+                    <p class="dialog-note"><strong>This is a required step.</strong> While it is off, runs no longer produce its output and nothing waits for it.</p>
+                }
+                @if (NamedActive is { } namedGraph)
+                {
+                    <p class="dialog-note"><strong>A named graph is live.</strong> Live processing keeps running @namedGraph.Name @namedGraph.Revision; this change applies to the configured graph when it runs again.</p>
+                }
+                @if (_dialogError is not null)
+                {
+                    <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_dialogError</span></div>
+                }
+            </div>
+            <footer>
+                <button type="button" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
+                <button type="button" id="pipeline-toggle-apply" class="button primary" disabled="@(_preview is null || _busy)" @onclick="ApplyToggleAsync">
+                    @(_busy ? "Applying" : _staged is { } staged ? $"Apply revision {Revision(staged.RevisionNumber)}" : turningOn ? "Turn on and apply" : "Turn off and apply")
+                </button>
+            </footer>
+        </dialog>
+    }
+}

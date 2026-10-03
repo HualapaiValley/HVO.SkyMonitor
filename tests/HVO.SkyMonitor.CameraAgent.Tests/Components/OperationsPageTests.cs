@@ -110,10 +110,10 @@ public sealed class OperationsPageTests
             var items = cut.FindAll(".ops-attention-item");
             Assert.HasCount(2, items);
             StringAssert.Contains(items[0].TextContent, "LogicHost connection unavailable", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/system", items[0].QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual("/operations/health", items[0].QuerySelector("a")!.GetAttribute("href"));
             StringAssert.Contains(items[1].TextContent, "Storage or lane pressure", StringComparison.Ordinal);
             StringAssert.Contains(items[1].TextContent, "Under pressure: Raw ingress storage, Standard lane.", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/data", items[1].QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual("/operations/storage", items[1].QuerySelector("a")!.GetAttribute("href"));
             Assert.IsNotNull(cut.Find(".ops-meter.attention[role='meter']"));
             Assert.AreEqual("Unavailable", cut.FindAll(".ops-state-facts dd")[3].TextContent);
             Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
@@ -559,7 +559,7 @@ public sealed class OperationsPageTests
         {
             var item = cut.Find(".ops-attention-item.info");
             StringAssert.Contains(item.TextContent, "One environmental delivery is retrying", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/data", item.QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual("/operations/delivery", item.QuerySelector("a")!.GetAttribute("href"));
         });
     }
 

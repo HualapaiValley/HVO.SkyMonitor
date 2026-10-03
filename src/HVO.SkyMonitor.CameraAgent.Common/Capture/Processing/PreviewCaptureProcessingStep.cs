@@ -1,8 +1,10 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -15,7 +17,8 @@ internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
 {
     public bool Enabled => Options.Enabled;
 
-    public string RecipeName => BuiltInProcessingRecipes.EncodedPreview;
+    public string RecipeName => Options.FixedTransfer is null
+        ? BuiltInProcessingRecipes.EncodedPreview : BuiltInProcessingRecipes.FixedPreview;
 
     public FrameArtifactRole OutputRole => FrameArtifactRole.Preview;
 
@@ -49,13 +52,15 @@ internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
         {
             input = input with { RecipeIdentitySha256 = sourceProduct.Recipe.IdentitySha256 };
         }
-        var recipeOptions = JsonSerializer.SerializeToElement(new EncodedPreviewOptions(
+        var recipeOptions = Options.FixedTransfer is { } fixedTransfer
+            ? JsonSerializer.SerializeToElement(fixedTransfer)
+            : JsonSerializer.SerializeToElement(new EncodedPreviewOptions(
             Options.BlackPercentile,
             Options.WhitePercentile,
             Options.AsinhStrength,
             OutputEncoding: "Packed"));
         var outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
-            BuiltInProcessingRecipes.EncodedPreview,
+            RecipeName,
             recipeOptions,
             CameraAgentRecipeExecutionAdapter.CreateSelector(sourceArtifact, sourceProduct, "source"),
             [input],
@@ -129,6 +134,10 @@ public class PreviewProcessingStepOptions : IValidatableObject
 
     public bool Enabled { get; init; } = true;
 
+    /// <summary>When present, use fixed native black/white levels and gamma instead of per-frame percentiles.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FixedDisplayTransferOptions? FixedTransfer { get; init; }
+
     [Required(AllowEmptyStrings = false)]
     public string RecipeVersion { get; init; } = "mono16-asinh-v2";
 
@@ -146,6 +155,13 @@ public class PreviewProcessingStepOptions : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (FixedTransfer is { } transfer &&
+            (!double.IsFinite(transfer.BlackLevel) || !double.IsFinite(transfer.WhiteLevel) ||
+             !double.IsFinite(transfer.Gamma) || transfer.BlackLevel < 0 || transfer.WhiteLevel <= transfer.BlackLevel ||
+             transfer.WhiteLevel > ushort.MaxValue || transfer.Gamma is < 0.1 or > 10))
+        {
+            yield return new ValidationResult("FixedTransfer requires valid native levels and gamma.", [nameof(FixedTransfer)]);
+        }
         if (BlackPercentile >= WhitePercentile)
         {
             yield return new ValidationResult(

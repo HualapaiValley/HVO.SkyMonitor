@@ -35,6 +35,15 @@ public sealed record ArtifactManifestV2(
         {
             return descriptorValidation;
         }
+        if (Scene?.VirtualExposure is { } exposure &&
+            (!exposure.IsValid(Descriptor!.Controls.EffectiveExposure) ||
+             exposure.RequestedStartUtc.ToUnixTimeMilliseconds() != Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
+             Scene.SceneUtc != exposure.CelestialMidpointUtc ||
+             Scene.CloudScenario is { } cloud &&
+                (cloud.IntegrationStartUtc != exposure.ScenarioStartUtc || cloud.IntegrationEndUtc != exposure.ScenarioEndUtc) ||
+             Scene.TransientScenario is { } virtualTransient &&
+                (virtualTransient.IntegrationStartUtc != exposure.ScenarioStartUtc || virtualTransient.IntegrationEndUtc != exposure.ScenarioEndUtc)))
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
         return Scene?.TransientScenario is not { } transient || transient.IsValid()
             ? CaptureContractValidationResult.Success
             : CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.transientScenario");

@@ -64,7 +64,8 @@ public sealed record ProjectedSceneProjection(
     [property: JsonRequired] double BoresightAzimuthDegrees,
     [property: JsonRequired] double RollDegrees,
     [property: JsonRequired] bool HorizontalFlip,
-    [property: JsonRequired] bool EnforceSensorBounds);
+    [property: JsonRequired] bool EnforceSensorBounds,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double RadialDistortionK1 = 0);
 
 /// <summary>Supported clockwise post-readout rotations in image coordinates.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<ProjectedSceneQuarterRotation>))]
@@ -219,7 +220,8 @@ public static class ProjectedSceneJson
                 projection.BoresightAzimuthDegrees,
                 projection.RollDegrees,
                 projection.HorizontalFlip,
-                projection.EnforceSensorBounds),
+                projection.EnforceSensorBounds,
+                projection.RadialDistortionK1),
             imageTransform,
             ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge,
             request.HorizonPolicy,
@@ -447,7 +449,8 @@ public static class ProjectedSceneJson
             value.WidthPixels is < 1 or > MaximumDimensionPixels || value.HeightPixels is < 1 or > MaximumDimensionPixels ||
             (long)value.WidthPixels * value.HeightPixels > MaximumPixelArea ||
             !Finite(value.PrincipalPointX, value.PrincipalPointY, value.FocalLengthXPixels,
-                value.FocalLengthYPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees, value.RollDegrees) ||
+                value.FocalLengthYPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees, value.RollDegrees,
+                value.RadialDistortionK1) ||
             value.FocalLengthXPixels <= 0 || value.FocalLengthYPixels <= 0 ||
             value.BoresightAltitudeDegrees is < -90 or > 90 ||
             value.Aperture == ProjectionAperture.Circular && value.ImageCircleRadiusPixels is not { } ||
@@ -514,7 +517,7 @@ public static class ProjectedSceneJson
         value.Model, value.PrincipalPointX, value.PrincipalPointY, value.FocalLengthXPixels,
         value.FocalLengthYPixels, value.WidthPixels, value.HeightPixels, value.Aperture,
         value.ImageCircleRadiusPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees,
-        value.RollDegrees, value.HorizontalFlip, value.EnforceSensorBounds);
+        value.RollDegrees, value.HorizontalFlip, value.EnforceSensorBounds, value.RadialDistortionK1);
 
     private static double Distance(EnuVector left, EnuVector right) => Math.Sqrt(
         Math.Pow(left.East - right.East, 2) + Math.Pow(left.North - right.North, 2) + Math.Pow(left.Up - right.Up, 2));

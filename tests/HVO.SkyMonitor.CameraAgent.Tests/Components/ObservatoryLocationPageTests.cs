@@ -646,7 +646,7 @@ public sealed class ObservatoryLocationPageTests
 
         Assert.AreEqual("Not registered", assignment.QuerySelector(".state-chip")!.TextContent);
         Assert.Contains("has not completed device registration", assignment.TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("/devices/bootstrap", assignment.QuerySelector("a")!.GetAttribute("href"));
+        Assert.AreEqual("/operations/registration", assignment.QuerySelector("a")!.GetAttribute("href"));
 
         service.Site = SiteView(assignment: Assignment(
             CameraAgentSiteAssignmentState.Registered,

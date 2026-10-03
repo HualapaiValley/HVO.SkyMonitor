@@ -1,0 +1,113 @@
+/* The subset of OperationsLayout.razor.css (itself ported from the prototype's operations-pages.css and styles.css)
+   that the account pages use. Tokens, selectors and values are OperationsLayout's; the account-* rules at the end
+   lay out the sign-in column and the forms, which the prototype has no page for. */
+.account-shell {
+    --surface: var(--hvo-surface);
+    --surface-raised: var(--hvo-surface-elevated);
+    --surface-hover: var(--hvo-surface-hover);
+    --border: var(--hvo-border-muted);
+    --border-strong: var(--hvo-border-strong);
+    --text: var(--hvo-body-color);
+    --muted: var(--hvo-muted);
+    --muted-strong: var(--hvo-muted-strong);
+    --blue: #58a6ff;
+    --blue-strong: #2f81f7;
+    --blue-soft: rgba(47, 129, 247, .16);
+    --green: #3fb950;
+    --green-soft: rgba(63, 185, 80, .15);
+    --amber: #d29922;
+    --red: #f85149;
+    --red-soft: rgba(248, 81, 73, .15);
+    color: var(--text);
+}
+
+.account-shell ::deep .eyebrow { margin: 0 0 .28rem; color: var(--blue); font-size: .65rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+
+.account-shell ::deep .button {
+    display: inline-flex;
+    min-height: 2.45rem;
+    align-items: center;
+    justify-content: center;
+    gap: .45rem;
+    padding: .5rem .85rem;
+    border: 1px solid var(--border-strong);
+    border-radius: .45rem;
+    font-size: .75rem;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.account-shell ::deep .button:disabled { cursor: not-allowed; opacity: .55; }
+.account-shell ::deep .button.secondary { color: var(--text); background: var(--surface-raised); }
+.account-shell ::deep .button.secondary:hover:not(:disabled) { background: var(--surface-hover); }
+.account-shell ::deep .button.primary { border-color: #3c8df2; color: white; background: var(--blue-strong); }
+.account-shell ::deep .button.primary:hover:not(:disabled) { background: #388bfd; }
+
+.account-shell ::deep .status-icon { position: relative; display: inline-grid; width: 1.05rem; height: 1.05rem; flex: 0 0 auto; place-items: center; border-radius: 50%; font-size: .62rem; }
+.account-shell ::deep .status-icon::after { color: #07110a; font-weight: 900; line-height: 1; content: ""; }
+.account-shell ::deep .status-icon.success { background: var(--green); }
+.account-shell ::deep .status-icon.success::after { content: "\2713"; }
+.account-shell ::deep .status-icon.warning { background: var(--amber); }
+.account-shell ::deep .status-icon.warning::after { color: #1d1504; content: "!"; }
+.account-shell ::deep .status-icon.failure { background: var(--red); }
+.account-shell ::deep .status-icon.failure::after { color: white; content: "\00d7"; }
+
+.account-shell ::deep .ops-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.2rem; margin-bottom: 1.2rem; }
+.account-shell ::deep .ops-page-heading h1 { margin: 0; font-size: clamp(1.9rem, 3.4vw, 3rem); line-height: 1; letter-spacing: -.045em; }
+.account-shell ::deep .ops-page-heading p:not(.eyebrow) { max-width: 48rem; margin: .6rem 0 0; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+
+.account-shell ::deep :is(.ops-panel, .ops-note-banner) {
+    border: 1px solid var(--border);
+    border-radius: .55rem;
+    background: rgba(9, 15, 24, .88);
+    box-shadow: 0 15px 38px rgba(0, 0, 0, .13);
+}
+
+.account-shell ::deep .ops-panel { min-width: 0; padding: .9rem; }
+.account-shell ::deep .ops-panel + .ops-panel { margin-top: .8rem; }
+.account-shell ::deep .ops-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; margin-bottom: .7rem; }
+.account-shell ::deep .ops-panel-heading h2 { margin: 0; font-size: .84rem; font-weight: 550; }
+.account-shell ::deep .ops-panel-heading p { margin: .24rem 0 0; color: var(--muted); font-size: .61rem; line-height: 1.4; }
+
+.account-shell ::deep .ops-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.account-shell ::deep .ops-facts > div { padding: .58rem 0; border-top: 1px solid var(--border); }
+.account-shell ::deep .ops-facts > div:nth-child(odd) { padding-right: .65rem; }
+.account-shell ::deep .ops-facts > div:nth-child(even) { padding-left: .65rem; border-left: 1px solid var(--border); }
+.account-shell ::deep .ops-facts > div.full { grid-column: 1 / -1; padding-right: 0; padding-left: 0; border-left: 0; }
+.account-shell ::deep .ops-facts dt { color: var(--muted); font-size: .51rem; letter-spacing: .05em; text-transform: uppercase; }
+.account-shell ::deep .ops-facts dd { margin: .24rem 0 0; font-size: .65rem; font-weight: 720; overflow-wrap: anywhere; }
+
+.account-shell ::deep .ops-note-banner { display: flex; align-items: flex-start; gap: .65rem; margin-bottom: .8rem; padding: .7rem .8rem; color: var(--muted-strong); font-size: .6rem; line-height: 1.45; }
+.account-shell ::deep .ops-note-banner strong { color: var(--text); }
+.account-shell ::deep .ops-note-banner.failure { border-color: rgba(248, 81, 73, .45); background: var(--red-soft); }
+.account-shell ::deep .ops-note-banner.success { border-color: rgba(63, 185, 80, .4); background: var(--green-soft); }
+
+.account-shell ::deep .ops-field { display: grid; gap: .25rem; color: var(--muted); font-size: .6rem; }
+.account-shell ::deep .ops-field input:not([type="checkbox"]) { width: 100%; min-height: 2.15rem; padding: .4rem .5rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text); background: var(--surface); font-size: .72rem; }
+.account-shell ::deep .ops-field input:is([readonly], :disabled) { color: var(--muted-strong); background: var(--surface-raised); }
+.account-shell ::deep .ops-field input.invalid { border-color: rgba(248, 81, 73, .65); }
+
+/* Validation text from ValidationSummary and ValidationMessage, in the failure colour the Operations pages use. */
+.account-shell ::deep .validation-errors { display: grid; gap: .2rem; margin: 0 0 .8rem; padding: .7rem .8rem .7rem 1.8rem; border: 1px solid rgba(248, 81, 73, .45); border-radius: .55rem; color: #ff9b95; background: var(--red-soft); font-size: .6rem; line-height: 1.45; }
+.account-shell ::deep .validation-message { color: #ff9b95; font-size: .6rem; }
+
+/* Forms: a column of labelled fields, then the actions. */
+.account-shell ::deep .account-form { display: grid; gap: .75rem; }
+.account-shell ::deep .account-form fieldset { display: grid; gap: .75rem; min-width: 0; margin: 0; padding: 0; border: 0; }
+.account-shell ::deep .account-form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .55rem; margin-top: .15rem; }
+.account-shell ::deep .account-check { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted-strong); font-size: .68rem; cursor: pointer; }
+.account-shell ::deep .account-check input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--blue-strong); }
+.account-shell ::deep .account-note { margin: 0; color: var(--muted); font-size: .61rem; line-height: 1.5; }
+
+/* Sign-in pages: one narrow column, centred under the top bar. */
+.account-shell.single { width: min(100%, 28rem); margin: clamp(1rem, 6vh, 4.5rem) auto; padding: 0 1rem; }
+.account-shell.single.wide { width: min(100%, 44rem); }
+.account-shell.single ::deep .ops-page-heading { display: block; }
+.account-shell.single ::deep .account-form-actions .button { flex: 1; }
+
+@media (max-width: 480px) {
+    .account-shell ::deep .ops-facts { grid-template-columns: 1fr; }
+    .account-shell ::deep .ops-facts > div:nth-child(even) { padding-left: 0; border-left: 0; }
+    .account-shell ::deep .account-form-actions .button { flex: 1; }
+}

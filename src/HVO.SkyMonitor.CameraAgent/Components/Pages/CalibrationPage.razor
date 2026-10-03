@@ -2,6 +2,7 @@
 @page "/operations/calibration"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -9,205 +10,340 @@
 
 <PageTitle>Calibration</PageTitle>
 
-<div class="calibration-console">
-    <header class="calibration-header">
-        <div>
-            <p class="eyebrow">Immutable local references</p>
-            <h1 id="calibration-heading" tabindex="-1">Calibration library</h1>
-            <p>Acquire deterministic software references, inspect exact lineage, and activate only at a safe capture boundary.</p>
-        </div>
-        <button class="btn btn-outline-light btn-sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
-    </header>
+<OperationsPageHeading Eyebrow="Capture / immutable references" Title="Calibration" HeadingId="calibration-heading"
+                       Description="Manage compatible bias, dark, flat, and defect evidence without weakening raw-source immutability.">
+    <Actions>
+        <button type="button" id="calibration-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@(_loading || _busy)" @onclick="RefreshAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        <button type="button" id="start-calibration-acquisition" class="button primary"
+                title="@_status?.AcquisitionUnavailableReason"
+                disabled="@(_status is null || _busy || AcquisitionInProgress || _status.AcquisitionUnavailableReason is not null)"
+                @onclick="OpenAcquireDialog">@(AcquisitionInProgress ? "Acquisition running" : "Acquire references")</button>
+    </Actions>
+</OperationsPageHeading>
 
-    @if (_loading)
+@if (_loading)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading durable calibration state.</span></div>
+}
+else if (_status is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Calibration unavailable.</strong> @_message</span></div>
+}
+else
+{
+    var active = _status.ActiveBundle;
+    var compatibility = Compatibility(_status.LastSelectionReason);
+    @if (_message is not null && _dialog == CalibrationDialog.None)
     {
-        <section class="calibration-banner" role="status">Loading durable calibration state.</section>
+        <div class="ops-note-banner calibration-message" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div>
     }
-    else if (_status is null)
+    @if (_status.AcquisitionUnavailableReason is { } unavailable)
     {
-        <section class="calibration-banner calibration-banner--error" role="alert">
-            <strong>Calibration unavailable</strong><span>@_message</span>
+        <div class="ops-note-banner" role="note"><span class="status-icon pending" aria-hidden="true"></span><span><strong>Reference acquisition is unavailable.</strong> @unavailable Existing bundles can still be inspected, activated and rolled back.</span></div>
+    }
+
+    <section class="ops-status-rail" aria-label="Calibration library status">
+        <div><span>Library</span><strong>@_status.PublishedBundleCount published</strong><small>@_status.QuarantineCount quarantined / state v@(_status.Version)</small></div>
+        <div>
+            <span>Active references</span>
+            @if (active is null)
+            {
+                <strong>None</strong><small>Correction fails closed</small>
+            }
+            else
+            {
+                <strong>@active.MasterCount</strong><small>@ActiveKindsLabel(active)</small>
+            }
+        </div>
+        <div><span>Compatibility</span><strong>@compatibility.Label</strong><small>@compatibility.Detail</small></div>
+        <div><span>Next review</span><strong>@ReviewLabel(active)</strong><small>@ReviewDetail(active)</small></div>
+    </section>
+
+    @if (_status.PendingAcquisition is { } pending)
+    {
+        <section class="ops-note-banner calibration-pending" aria-label="Acquisition in progress">
+            <span class="status-icon running" aria-hidden="true"></span>
+            <div>
+                <p><strong>@AcquisitionStateLabel(pending.State).</strong> Step <code>@pending.Phase</code>, attempt @pending.AttemptCount. The new bundle is published but not activated when this finishes.</p>
+                <div class="calibration-actions">
+                    <button type="button" id="cancel-calibration-acquisition" class="button secondary small" disabled="@_busy" @onclick="CancelPendingAcquisitionAsync">Cancel acquisition</button>
+                </div>
+            </div>
         </section>
     }
-    else
+    else if (_acquisitionRunning)
     {
-        @if (_message is not null)
-        {
-            <section class="calibration-banner @(_messageIsError ? "calibration-banner--error" : null)"
-                     role="@(_messageIsError ? "alert" : "status")">@_message</section>
-        }
+        <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Starting reference acquisition.</span></div>
+    }
 
-        <section class="status-grid" aria-label="Calibration library status">
-            <article class="calibration-card calibration-card--active">
-                <p class="eyebrow">Active correction</p>
-                @if (_status.ActiveBundle is null)
+    <div class="ops-grid sidebar-right">
+        <section class="ops-panel" aria-labelledby="calibration-library-heading">
+            <header class="ops-panel-heading">
+                <div><h3 id="calibration-library-heading">Reference library</h3><p>Selection matches the exact sensor and readout facts bound to a capture.</p></div>
+                <span>@(active?.MasterCount ?? 0) active / @_status.PublishedBundleCount retained</span>
+            </header>
+            @if (active is null)
+            {
+                <article class="ops-library-card empty">
+                    <span class="ops-library-icon"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"></circle><path d="M10 6.5v4M10 13.5v.01"></path></svg></span>
+                    <span><strong>No active references</strong><small>Raw captures stay durable, but library correction fails closed until a compatible bundle is activated. Acquire references, then activate a bundle below.</small></span>
+                    <span class="state-chip warning">Missing</span>
+                </article>
+            }
+            else if (_activeDetail is null)
+            {
+                <article class="ops-library-card">
+                    <span class="ops-library-icon"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12v10H4z"></path><path d="M4 9h12"></path></svg></span>
+                    <span><strong>@active.BundleId</strong><small>@SourceLabel(active.Source) / @active.MasterCount masters from @active.SourceCount source frames / reference details are unavailable, refresh to retry</small></span>
+                    <span class="state-chip success">Active</span>
+                </article>
+            }
+            else
+            {
+                @foreach (var master in ActiveMasters)
                 {
-                    <h2>No active bundle</h2>
-                    <p>Raw acquisition remains durable. Library correction will fail closed until a compatible bundle is activated.</p>
+                    <article class="ops-library-card">
+                        <span class="ops-library-icon">@KindGlyph(master.Kind)</span>
+                        <span>
+                            <strong>@KindTitle(master.Kind) reference / @Seconds(master.Exposure) / gain @Number(master.Gain)</strong>
+                            <small>@Temperature(master.TemperatureC) / @SourceLabel(_activeDetail.Summary.Source) / SHA-256 <code>@ShortHash(master.PayloadSha256)</code> / @master.OrderedSourceArtifactIds.Count source frame@(master.OrderedSourceArtifactIds.Count == 1 ? "" : "s")</small>
+                        </span>
+                        <span class="state-chip success">Active</span>
+                    </article>
+                }
+            }
+        </section>
+
+        <section class="ops-panel" aria-labelledby="calibration-selection-heading">
+            <header class="ops-panel-heading">
+                <div><h3 id="calibration-selection-heading">Current selection</h3><p>A capture is corrected only when every fact below matches it exactly.</p></div>
+                <span class="state-chip @compatibility.Chip">@compatibility.Label</span>
+            </header>
+            <dl class="ops-facts">
+                @if (active is not null)
+                {
+                    var applicability = active.Applicability;
+                    <div><dt>Geometry</dt><dd>@applicability.InputLayout.Width x @applicability.InputLayout.Height</dd></div>
+                    <div><dt>CFA</dt><dd>@Cfa(applicability.InputLayout)</dd></div>
+                    <div><dt>Depth</dt><dd>@applicability.InputLayout.SampleDepthBits-bit in @applicability.InputLayout.ContainerDepthBits</dd></div>
+                    <div><dt>Exposure</dt><dd>@SecondsRange(applicability.MinimumLightExposure, applicability.MaximumLightExposure)</dd></div>
+                    <div><dt>Gain</dt><dd>@Range(applicability.MinimumGain, applicability.MaximumGain)</dd></div>
+                    <div><dt>Offset</dt><dd>@Range(applicability.MinimumOffset, applicability.MaximumOffset)</dd></div>
+                    <div><dt>Temperature</dt><dd>@TemperatureRange(applicability.MinimumTemperatureC, applicability.MaximumTemperatureC)</dd></div>
+                    <div><dt>Validity</dt><dd>@Validity(applicability)</dd></div>
+                    @* Whole-row facts follow the paired ones so the two-column borders stay aligned. *@
+                    <div class="full"><dt>Active bundle</dt><dd id="calibration-active-bundle">@active.BundleId</dd></div>
                 }
                 else
                 {
-                    <h2>@_status.ActiveBundle.BundleId</h2>
-                    <code>@_status.ActiveBundle.BundleIdentitySha256</code>
-                    <p><span class="state-chip">@_status.ActiveBundle.PublicationState</span> @_status.ActiveBundle.Source</p>
+                    <div class="full"><dt>Active bundle</dt><dd>None. Every capture reports a missing calibration until a bundle is activated.</dd></div>
                 }
-                <dl>
-                    <div><dt>State version</dt><dd>@_status.Version</dd></div>
-                    <div><dt>Published</dt><dd>@_status.PublishedBundleCount</dd></div>
-                    <div><dt>Quarantined</dt><dd>@_status.QuarantineCount</dd></div>
-                    <div><dt>Last selection</dt><dd><code>@(_status.LastSelectionReason ?? "none")</code></dd></div>
-                </dl>
-            </article>
-
-            <article class="calibration-card">
-                <p class="eyebrow">Acquisition</p>
-                @if (_status.PendingAcquisition is null)
+                <div class="full"><dt>Last selection</dt><dd><code>@(_status.LastSelectionReason ?? "none")</code> / @When(_status.LastSelectionUtc)</dd></div>
+                <div class="full"><dt>Last change</dt><dd>@(_status.LastActivation is { } change ? $"{ChangeLabel(change)} / {When(change.ActivatedUtc)}" : "No activation recorded")</dd></div>
+            </dl>
+            <div class="calibration-actions">
+                @if (active is not null)
                 {
-                    <h2>Idle</h2><p>No durable calibration acquisition is pending.</p>
+                    <button type="button" id="inspect-calibration-active" class="button secondary small" disabled="@_busy" @onclick="() => ShowDetailAsync(active.BundleId, InspectActiveTriggerId)">Inspect evidence</button>
                 }
-                else
-                {
-                    <h2>@Split(_status.PendingAcquisition.State)</h2>
-                    <p><code>@_status.PendingAcquisition.Phase</code> / attempt @_status.PendingAcquisition.AttemptCount</p>
-                    <p class="breakable">@_status.PendingAcquisition.JobId</p>
-                    <button class="btn btn-outline-warning" disabled="@_busy"
-                            @onclick="() => CancelAcquisitionAsync(_status.PendingAcquisition)">Cancel acquisition</button>
-                }
-            </article>
-
-            <article class="calibration-card">
-                <p class="eyebrow">Latest durable changes</p>
-                <h2>@(_status.LastActivation is null ? "No activation" : Split(_status.LastActivation.CommandKind))</h2>
-                <p>@FormatUtc(_status.LastActivation?.ActivatedUtc)</p>
-                <p><code>@(_status.LastReconciliationReason ?? "none")</code></p>
-                <p>@FormatUtc(_status.LastReconciliationUtc)</p>
                 @if (RollbackTarget is { } rollbackTarget)
                 {
-                    <button id="@RollbackTriggerId" class="btn btn-outline-light" disabled="@(_busy || AcquisitionInProgress)"
+                    <button type="button" id="@RollbackTriggerId" class="button secondary small" disabled="@(_busy || AcquisitionInProgress)"
                             @onclick="() => BeginActivation(rollbackTarget, RollbackTriggerId, rollback: true)">Review rollback</button>
                 }
-            </article>
+            </div>
         </section>
+    </div>
 
-        @if (_confirmation is not null)
+    <section class="ops-panel" aria-labelledby="calibration-bundles-heading">
+        <header class="ops-panel-heading">
+            <div><h3 id="calibration-bundles-heading">Retained bundles</h3><p>Newest first. Activating a bundle takes effect after the capture in progress publishes; earlier captures keep their references.</p></div>
+            <span>@(_page?.Items.Count ?? 0) shown</span>
+        </header>
+        @if (_page is null || _page.Items.Count == 0)
         {
-            <dialog class="confirmation-panel" aria-labelledby="confirmation-heading"
-                    aria-describedby="confirmation-description" @oncancel="CancelConfirmation" @ref="_confirmationDialog">
-                <div>
-                    <p class="eyebrow">Capture-boundary confirmation</p>
-                    <h2 id="confirmation-heading">@ConfirmationHeading</h2>
-                    <p id="confirmation-description">@ConfirmationDescription</p>
-                </div>
-                <div class="confirmation-actions">
-                    <button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmAsync">Confirm</button>
-                    <button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelConfirmation">Cancel</button>
-                </div>
-            </dialog>
+            <p class="calibration-empty">No calibration bundles are published yet. Use Acquire references to create the first one.</p>
         }
-
-        <section class="workspace-grid">
-            <article class="calibration-card acquisition-card">
-                <p class="eyebrow">VirtualSky software evidence</p>
-                <h2>Acquire ASI676 references</h2>
-                <p class="disclaimer">Generates deterministic pseudo references for workflow verification. This is not measured physical camera or illumination calibration.</p>
-                <div class="form-grid">
-                    <label for="cal-gain">Gain<input id="cal-gain" type="number" step="any" @bind="_gain" /></label>
-                    <label for="cal-offset">Effective offset<input id="cal-offset" type="number" step="any" @bind="_offset" /></label>
-                    <label for="cal-temperature">Camera temperature C<input id="cal-temperature" type="number" step="any" @bind="_temperatureC" /></label>
-                    <label for="cal-seed">Model seed<input id="cal-seed" type="number" @bind="_seed" /></label>
-                    <label for="cal-bias">Bias exposure seconds<input id="cal-bias" type="number" min="0" step="any" @bind="_biasSeconds" /></label>
-                    <label for="cal-dark">Dark exposure seconds<input id="cal-dark" type="number" min="0" step="any" @bind="_darkSeconds" /></label>
-                    <label for="cal-flat">Flat exposure seconds<input id="cal-flat" type="number" min="0" step="any" @bind="_flatSeconds" /></label>
-                    <label for="cal-defect">Defect exposure seconds<input id="cal-defect" type="number" min="0" step="any" @bind="_defectSeconds" /></label>
-                    <label for="cal-light">Exact light exposure seconds<input id="cal-light" type="number" min="0" step="any" @bind="_lightSeconds" /></label>
-                    <label for="cal-from">Effective from UTC<input id="cal-from" type="datetime-local" value="@_effectiveFrom" @onchange="EffectiveFromChanged" /></label>
-                    <label for="cal-until">Effective until UTC, optional<input id="cal-until" type="datetime-local" value="@_effectiveUntil" @onchange="EffectiveUntilChanged" /></label>
-                </div>
-                <label for="cal-reason">Operator reason, optional<input id="cal-reason" maxlength="512" @bind="_reason" /></label>
-                <p class="form-note">Creates three source frames for each of bias, dark, flat, and defect, then four immutable masters. Activation remains a separate command.</p>
-                <button id="start-calibration-acquisition" class="btn btn-primary" disabled="@(_busy || _acquisitionRunning)" @onclick="BeginAcquire">@(_acquisitionRunning ? "Acquisition running" : "Review acquisition")</button>
-            </article>
-
-            <article class="calibration-card library-card">
-                <header class="card-heading">
-                    <div><p class="eyebrow">Newest first</p><h2>Library</h2></div>
-                    <span>Page size 100</span>
-                </header>
-                @if (_page is null || _page.Items.Count == 0)
-                {
-                    <p>No immutable calibration bundles are published.</p>
-                }
-                else
-                {
-                    <ol class="bundle-list">
+        else
+        {
+            <div class="ops-table-wrap">
+                <table class="ops-table">
+                    <thead><tr><th scope="col">Bundle</th><th scope="col">Source</th><th scope="col">Applies to</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody>
                         @foreach (var bundle in _page.Items)
                         {
-                            <li class="@(bundle.BundleId == _status.ActiveBundle?.BundleId ? "bundle-list__active" : null)">
-                                <div>
-                                    <strong>@bundle.BundleId</strong>
-                                    <span>@bundle.Source / @bundle.CreatedUtc.ToString("u")</span>
-                                    <code>@ShortHash(bundle.BundleIdentitySha256)</code>
-                                </div>
-                                <div class="bundle-actions">
-                                    <button class="btn btn-sm btn-outline-light" disabled="@_busy" @onclick="() => ShowDetailAsync(bundle.BundleId)">Inspect</button>
-                                    @if (bundle.PublicationState == "published" && bundle.BundleId != _status.ActiveBundle?.BundleId)
-                                    {
-                                        <button id="@ActivationTriggerId(bundle.BundleId)" class="btn btn-sm btn-outline-warning" disabled="@(_busy || AcquisitionInProgress)" @onclick="() => BeginActivation(bundle.BundleId, ActivationTriggerId(bundle.BundleId), rollback: false)">Review activate</button>
-                                    }
-                                </div>
-                            </li>
+                            var isActive = bundle.BundleId == active?.BundleId;
+                            <tr class="@(isActive ? "current-row" : null)">
+                                <td><strong>@bundle.BundleId</strong><small class="calibration-cell-detail">@When(bundle.CreatedUtc) / <code>@ShortHash(bundle.BundleIdentitySha256)</code></small></td>
+                                <td>@SourceLabel(bundle.Source)</td>
+                                <td>Gain @Range(bundle.Applicability.MinimumGain, bundle.Applicability.MaximumGain) / @SecondsRange(bundle.Applicability.MinimumLightExposure, bundle.Applicability.MaximumLightExposure)</td>
+                                <td><span class="state-chip @PublicationChip(bundle, isActive)">@PublicationLabel(bundle, isActive)</span></td>
+                                <td>
+                                    <div class="calibration-row-actions">
+                                        <button type="button" id="@InspectTriggerId(bundle.BundleId)" class="button secondary small" disabled="@_busy" @onclick="() => ShowDetailAsync(bundle.BundleId, InspectTriggerId(bundle.BundleId))">Inspect</button>
+                                        @if (CanActivateOther(bundle))
+                                        {
+                                            <button type="button" id="@ActivationTriggerId(bundle.BundleId)" class="button secondary small" disabled="@(_busy || AcquisitionInProgress)" @onclick="() => BeginActivation(bundle.BundleId, ActivationTriggerId(bundle.BundleId), rollback: false)">Review activate</button>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
                         }
-                    </ol>
-                }
-                <div class="pager">
-                    <button class="btn btn-sm btn-outline-light" disabled="@(_busy || _cursor is null)" @onclick="LoadNewestAsync">Newest bundles</button>
-                    <button class="btn btn-sm btn-outline-light" disabled="@(_busy || _page?.NextCursor is null)" @onclick="LoadOlderAsync">Older bundles</button>
-                </div>
-            </article>
-        </section>
-
-        @if (_detail is not null)
-        {
-            <section class="calibration-card detail-card" aria-labelledby="bundle-detail-heading">
-                <header class="card-heading">
-                    <div><p class="eyebrow">Exact evidence</p><h2 id="bundle-detail-heading">@_detail.Summary.BundleId</h2></div>
-                    <button class="btn btn-sm btn-outline-light" @onclick="CloseDetail">Close detail</button>
-                </header>
-                <dl class="detail-facts">
-                    <div><dt>Bundle SHA-256</dt><dd><code>@_detail.Summary.BundleIdentitySha256</code></dd></div>
-                    <div><dt>Profile SHA-256</dt><dd><code>@_detail.Summary.ProfileIdentitySha256</code></dd></div>
-                    <div><dt>Model SHA-256</dt><dd><code>@_detail.Summary.AcquisitionModelIdentitySha256</code></dd></div>
-                    <div><dt>Agent / rig</dt><dd>@_detail.Summary.Applicability.AgentId / @_detail.Summary.Applicability.RigId</dd></div>
-                    <div><dt>Input readout</dt><dd>@FormatLayout(_detail.Summary.Applicability.InputLayout)</dd></div>
-                    <div><dt>Normalized output</dt><dd>@FormatLayout(_detail.Summary.Applicability.OutputLayout)</dd></div>
-                    <div><dt>Gain / offset / temperature</dt><dd>@FormatConditions(_detail.Summary.Applicability)</dd></div>
-                    <div><dt>Light exposure / interval</dt><dd>@FormatApplicability(_detail.Summary.Applicability)</dd></div>
-                </dl>
-                <div class="artifact-grid">
-                    @foreach (var artifact in _detail.Artifacts)
-                    {
-                        <article>
-                            <header><strong>@artifact.Kind / @artifact.Role</strong><span>@artifact.Exposure.TotalSeconds s</span></header>
-                            <code>@artifact.PayloadSha256</code>
-                            <p>@artifact.ArtifactId</p>
-                            <p>Gain @artifact.Gain, offset @(artifact.Offset?.ToString() ?? "unknown"), temperature @(artifact.TemperatureC?.ToString() ?? "unknown") C</p>
-                            @if (artifact.MasterBuildRecipe is { } recipe)
-                            {
-                                <p>@recipe.Name / @recipe.ImplementationVersion</p>
-                            }
-                            @if (artifact.OrderedSourceArtifactIds.Count > 0)
-                            {
-                                <ol aria-label="Ordered master source lineage">
-                                    @foreach (var sourceId in artifact.OrderedSourceArtifactIds)
-                                    {
-                                        <li>@sourceId</li>
-                                    }
-                                </ol>
-                            }
-                        </article>
-                    }
-                </div>
-            </section>
+                    </tbody>
+                </table>
+            </div>
         }
+        <div class="calibration-actions">
+            <button type="button" class="button secondary small" disabled="@(_busy || _cursor is null)" @onclick="LoadNewestAsync">Newest bundles</button>
+            <button type="button" class="button secondary small" disabled="@(_busy || _page?.NextCursor is null)" @onclick="LoadOlderAsync">Older bundles</button>
+        </div>
+    </section>
+
+    @if (_dialog == CalibrationDialog.Acquire)
+    {
+        var pinned = _pendingAcquisition is not null;
+        <dialog class="action-dialog operations-dialog calibration-dialog" aria-labelledby="calibration-acquire-heading" @ref="_dialogElement" @oncancel="CancelConfirmation">
+            <div class="dialog-header">
+                <div><p class="eyebrow">VirtualSky software evidence</p><h2 id="calibration-acquire-heading">Acquire references</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CancelConfirmation">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <div class="dialog-note"><strong>Software-generated, not measured.</strong><span>These deterministic references come from the VirtualSky model for workflow verification. They are not measured physical camera or illumination calibration.</span></div>
+            <p class="dialog-intro">Creates three source frames each for bias, dark, flat and defect, then four immutable masters. The new bundle is published but not activated; activation is a separate step.</p>
+            @if (pinned)
+            {
+                <div class="dialog-note"><strong>Retry the same request.</strong><span>The first attempt's result is unknown, so the settings are locked. Retrying sends the identical request with the same durable key, so references are never acquired twice.</span></div>
+            }
+            <fieldset disabled="@(_busy || pinned)">
+                <legend class="visually-hidden">Acquisition settings</legend>
+                <div class="calibration-dialog-grid">
+                    <label class="ops-field" for="cal-gain">Gain<input id="cal-gain" type="number" step="any" @bind="_gain" /></label>
+                    <label class="ops-field" for="cal-offset">Effective offset<input id="cal-offset" type="number" step="any" @bind="_offset" /></label>
+                    <label class="ops-field" for="cal-temperature">Camera temperature (C)<input id="cal-temperature" type="number" step="any" @bind="_temperatureC" /></label>
+                    <label class="ops-field" for="cal-light">Light exposure it applies to (s)<input id="cal-light" type="number" min="0" step="any" @bind="_lightSeconds" /></label>
+                    <label class="ops-field" for="cal-from">Effective from (UTC)<input id="cal-from" type="datetime-local" value="@_effectiveFrom" @onchange="EffectiveFromChanged" /></label>
+                    <label class="ops-field" for="cal-until">Effective until (UTC, optional)<input id="cal-until" type="datetime-local" value="@_effectiveUntil" @onchange="EffectiveUntilChanged" /></label>
+                </div>
+                <details class="calibration-advanced">
+                    <summary>Reference exposures and model seed</summary>
+                    <div class="calibration-dialog-grid">
+                        <label class="ops-field" for="cal-bias">Bias exposure (s)<input id="cal-bias" type="number" min="0" step="any" @bind="_biasSeconds" /></label>
+                        <label class="ops-field" for="cal-dark">Dark exposure (s)<input id="cal-dark" type="number" min="0" step="any" @bind="_darkSeconds" /></label>
+                        <label class="ops-field" for="cal-flat">Flat exposure (s)<input id="cal-flat" type="number" min="0" step="any" @bind="_flatSeconds" /></label>
+                        <label class="ops-field" for="cal-defect">Defect exposure (s)<input id="cal-defect" type="number" min="0" step="any" @bind="_defectSeconds" /></label>
+                        <label class="ops-field" for="cal-seed">Model seed<input id="cal-seed" type="number" @bind="_seed" /></label>
+                    </div>
+                </details>
+                <label class="ops-field" for="cal-reason">Operator reason (optional)<input id="cal-reason" maxlength="512" @bind="_reason" /></label>
+            </fieldset>
+            @if (_message is not null)
+            {
+                <div class="calibration-dialog-message"><div class="ops-note-banner compact" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_busy" @onclick="CancelConfirmation">Cancel</button>
+                <button type="button" id="calibration-acquire-confirm" class="button primary" disabled="@_busy" @onclick="ConfirmAcquireAsync">@(pinned ? "Retry acquisition" : "Acquire references")</button>
+            </footer>
+        </dialog>
     }
-</div>
+    else if (_dialog == CalibrationDialog.Activation && _pendingTarget is not null)
+    {
+        <dialog class="action-dialog operations-dialog calibration-dialog" aria-labelledby="calibration-activation-heading" aria-describedby="calibration-activation-description" @ref="_dialogElement" @oncancel="CancelConfirmation">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Capture-boundary confirmation</p><h2 id="calibration-activation-heading">@(_rollback ? "Roll back calibration?" : "Activate this bundle?")</h2></div>
+            </div>
+            <p id="calibration-activation-description" class="dialog-intro">Bundle <code>@_pendingTarget</code> becomes active after the capture in progress publishes durably. Captures already taken keep the references they were corrected with.</p>
+            <fieldset disabled="@(_busy || _activationSent)">
+                <legend class="visually-hidden">Activation details</legend>
+                <label class="ops-field" for="cal-activation-reason">Operator reason (optional)<input id="cal-activation-reason" maxlength="512" @bind="_activationReason" /></label>
+            </fieldset>
+            @if (_message is not null)
+            {
+                <div class="calibration-dialog-message"><div class="ops-note-banner compact" role="@(_messageIsError ? "alert" : "status")"><span class="status-icon @(_messageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_message</span></div></div>
+            }
+            <footer>
+                <button type="button" class="button secondary" disabled="@_busy" autofocus @onclick="CancelConfirmation">Cancel</button>
+                <button type="button" id="calibration-activation-confirm" class="button primary" disabled="@_busy" @onclick="ConfirmActivationAsync">@(_rollback ? "Confirm rollback" : "Confirm activate")</button>
+            </footer>
+        </dialog>
+    }
+    else if (_dialog == CalibrationDialog.Detail && _detail is not null)
+    {
+        var summary = _detail.Summary;
+        <dialog class="action-dialog operations-dialog calibration-dialog calibration-detail" aria-labelledby="calibration-detail-heading" @ref="_dialogElement" @oncancel="CloseDetail">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Exact evidence / @PublicationLabel(summary, summary.BundleId == active?.BundleId)</p><h2 id="calibration-detail-heading">@summary.BundleId</h2></div>
+                <button type="button" class="icon-button" aria-label="Close dialog" @onclick="CloseDetail">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <div class="calibration-detail-body">
+                <dl class="ops-facts">
+                    <div><dt>Source</dt><dd>@SourceLabel(summary.Source)</dd></div>
+                    <div><dt>Created</dt><dd>@When(summary.CreatedUtc)</dd></div>
+                    <div><dt>Agent / rig</dt><dd>@summary.Applicability.AgentId / @summary.Applicability.RigId</dd></div>
+                    <div><dt>Validity</dt><dd>@Validity(summary.Applicability)</dd></div>
+                    <div><dt>Input readout</dt><dd>@FormatLayout(summary.Applicability.InputLayout)</dd></div>
+                    <div><dt>Normalized output</dt><dd>@FormatLayout(summary.Applicability.OutputLayout)</dd></div>
+                    <div><dt>Gain / offset</dt><dd>@Range(summary.Applicability.MinimumGain, summary.Applicability.MaximumGain) / @Range(summary.Applicability.MinimumOffset, summary.Applicability.MaximumOffset)</dd></div>
+                    <div><dt>Temperature / light exposure</dt><dd>@TemperatureRange(summary.Applicability.MinimumTemperatureC, summary.Applicability.MaximumTemperatureC) / @SecondsRange(summary.Applicability.MinimumLightExposure, summary.Applicability.MaximumLightExposure)</dd></div>
+                    <div class="full"><dt>Bundle SHA-256</dt><dd><code>@summary.BundleIdentitySha256</code></dd></div>
+                    <div class="full"><dt>Profile SHA-256</dt><dd><code>@summary.ProfileIdentitySha256</code></dd></div>
+                    <div class="full"><dt>Acquisition model SHA-256</dt><dd><code>@summary.AcquisitionModelIdentitySha256</code></dd></div>
+                    @if (summary.FailureReason is { } failure)
+                    {
+                        <div class="full"><dt>Failure</dt><dd><code>@failure</code></dd></div>
+                    }
+                </dl>
+                <div class="ops-table-wrap">
+                    <table class="ops-table" aria-label="Bundle artifacts">
+                        <thead><tr><th scope="col">Artifact</th><th scope="col">Exposure</th><th scope="col">Conditions</th><th scope="col">Payload SHA-256</th><th scope="col">Lineage</th></tr></thead>
+                        <tbody>
+                            @foreach (var artifact in OrderedArtifacts(_detail.Artifacts))
+                            {
+                                <tr>
+                                    <td><strong>@KindTitle(artifact.Kind) @artifact.Role</strong>@if (artifact.SourceIndex is { } index) { <small class="calibration-cell-detail">frame @(index + 1)</small> }</td>
+                                    <td>@Seconds(artifact.Exposure)</td>
+                                    <td>Gain @Number(artifact.Gain) / offset @(artifact.Offset is { } offset ? Number(offset) : "not recorded") / @Temperature(artifact.TemperatureC)</td>
+                                    <td><code title="@artifact.PayloadSha256">@ShortHash(artifact.PayloadSha256)</code></td>
+                                    <td>
+                                        @if (artifact.MasterBuildRecipe is { } recipe)
+                                        {
+                                            <span>@recipe.Name / @recipe.ImplementationVersion</span>
+                                        }
+                                        @if (artifact.OrderedSourceArtifactIds.Count > 0)
+                                        {
+                                            <details class="calibration-lineage">
+                                                <summary>@artifact.OrderedSourceArtifactIds.Count ordered sources</summary>
+                                                <ol aria-label="Ordered master source lineage">
+                                                    @foreach (var sourceId in artifact.OrderedSourceArtifactIds)
+                                                    {
+                                                        <li><code>@sourceId</code></li>
+                                                    }
+                                                </ol>
+                                            </details>
+                                        }
+                                        else if (artifact.MasterBuildRecipe is null)
+                                        {
+                                            <span>Source frame</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <footer>
+                <button type="button" class="button secondary" autofocus @onclick="CloseDetail">Close</button>
+                @if (CanActivateOther(summary))
+                {
+                    <button type="button" class="button primary" disabled="@(_busy || AcquisitionInProgress)" @onclick="() => BeginActivation(summary.BundleId, ActivationTriggerId(summary.BundleId), rollback: false)">Review activate</button>
+                }
+            </footer>
+        </dialog>
+    }
+}

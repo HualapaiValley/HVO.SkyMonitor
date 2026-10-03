@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -165,7 +166,22 @@ internal sealed record CameraAgentRetentionStatus(
     double PressureThresholdPercent,
     double PressureRecoveryPercent,
     int PressureRetentionDays,
-    long RawIngressReserveBytes);
+    long RawIngressReserveBytes,
+    bool EnvironmentalHistoryEnabled,
+    int EnvironmentalRetentionDays,
+    int EnvironmentalMaximumHistoryCount,
+    long EnvironmentalMaximumHistoryBytes);
+
+/// <summary>
+/// The latest recorded reconciliation of local evidence with its durable records. Either member is null until its
+/// pass has completed in this process.
+/// </summary>
+internal sealed record CameraAgentStorageReconciliation(
+    RawIngressReconciliationReport? RawIngress,
+    DerivedProductReconciliationReport? DerivedProducts);
+
+/// <summary>One artifact outbox record on the Delivery page, with the storage alias that holds it.</summary>
+internal sealed record CameraAgentDeliveryRecord(string StorageAlias, ArtifactOutboxDeliveryRecord Record);
 
 internal sealed record CameraAgentUploadStatus(
     bool Enabled,
@@ -206,7 +222,21 @@ public sealed record CameraAgentCaptureDetailView(
 internal sealed record CameraAgentCurrentSkyView(
     CameraAgentCurrentImagePresentation Presentation,
     CameraAgentCurrentSkyFacts? Facts,
-    string? FactsUnavailableReason);
+    string? FactsUnavailableReason,
+    CameraAgentCurrentSkyOperations? Operations = null);
+
+// Current operational facts are separate from the retained capture's historical acquisition/profile facts.
+internal sealed record CameraAgentCurrentSkyOperations(
+    bool CentralIntegrationEnabled,
+    bool ArtifactUploadEnabled,
+    RawIngressReconciliationReport? RawReconciliation,
+    DerivedProductReconciliationReport? ProductReconciliation);
+
+// The current mode describes configuration now; only Run describes the requested capture's retained outcome.
+internal sealed record CameraAgentCaptureTransientView(
+    Guid CaptureId,
+    TransientOperatingMode CurrentMode,
+    TransientCaptureRunState? Run);
 
 internal interface ICameraAgentOperatorUiService
 {
@@ -230,6 +260,9 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetGalleryCaptureAsync(captureId, cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
         CancellationToken cancellationToken);
@@ -244,6 +277,9 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>> GetArchiveCalendarAsync(
         CameraAgentGalleryCalendarQuery query,
@@ -264,10 +300,24 @@ internal interface ICameraAgentOperatorUiService
 
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The newest artifact outbox records of each upload location in configuration order, each location
+    /// bounded separately: its unfinished work first, then its newest acknowledged or abandoned records.
+    /// Empty when central integration is disabled.
+    /// </summary>
+    ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Pauses or resumes capture admission. <paramref name="reason"/> is the operator's own note,
+    /// recorded with the durable command; when it is blank a fixed reason code is recorded instead.
+    /// </summary>
     Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(
         bool paused,
         long expectedVersion,
         string idempotencyKey,
+        string? reason,
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(
@@ -310,10 +360,16 @@ internal sealed class CameraAgentOperatorUiService(
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
     ILogger<CameraAgentOperatorUiService> logger,
-    ISiteProfileStore? siteProfileStore = null) : ICameraAgentOperatorUiService
+    ISiteProfileStore? siteProfileStore = null,
+    RawIngressState? rawIngressState = null,
+    CaptureProcessingState? captureProcessingState = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
+    /// <summary>The reason recorded for a pause the operator gave no note for.</summary>
+    internal const string PauseReasonCode = "operator-maintenance";
+    /// <summary>The reason recorded for a resume the operator gave no note for.</summary>
+    internal const string ResumeReasonCode = "operator-resume";
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
@@ -668,6 +724,26 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentGalleryCapture>();
+        try
+        {
+            var capture = await gallery.GetSourceCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return capture is null || capture.CaptureId != captureId
+                ? OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.NotFound, "The requested source capture was not found.")
+                : OperatorUiResult<CameraAgentGalleryCapture>.Success(capture);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent source capture UI read failed.");
+            return Unavailable<CameraAgentGalleryCapture>("The source capture is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
         CancellationToken cancellationToken)
@@ -721,6 +797,27 @@ internal sealed class CameraAgentOperatorUiService(
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentCaptureTransientView>();
+        if (captureId == Guid.Empty)
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Failure(OperatorUiResultKind.Invalid, "A capture is required.");
+        try
+        {
+            var run = await transientRuntime.ReadCaptureRunAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(captureId, _hostOptions.TransientDetection.Mode, run));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent capture transient outcome UI read failed.");
+            return Unavailable<CameraAgentCaptureTransientView>("The retained transient outcome is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
     {
         var presentation = await GetCurrentImagePresentationAsync(cancellationToken).ConfigureAwait(false);
@@ -728,10 +825,14 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
         }
+        var operations = new CameraAgentCurrentSkyOperations(
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
+            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
+            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
         var displayed = presentation.Value.DisplayCapture ?? presentation.Value.LatestCapture;
         if (displayed is null)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null, operations));
         }
         var combinedArtifactId = presentation.Value.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
@@ -741,18 +842,18 @@ internal sealed class CameraAgentOperatorUiService(
         if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, cached.Facts, null, operations));
         }
         try
         {
             var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained."));
+                return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "The displayed capture is no longer retained.", operations));
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, facts, null, operations));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -761,7 +862,7 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable."));
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, "Capture facts are temporarily unavailable.", operations));
         }
     }
 
@@ -777,6 +878,16 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             return OperatorUiResult<CameraAgentGalleryCalendar>.Success(await archive.GetCalendarAsync(query, cancellationToken).ConfigureAwait(false));
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return Unavailable<CameraAgentGalleryCalendar>(
+                "A complete sunrise-to-sunrise period is unavailable for this site and date range. No substitute period is used.");
+        }
+        catch (ArgumentException)
+        {
+            return OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Invalid,
+                "The requested reporting-calendar interpretation is unsupported.");
         }
         catch (CameraAgentGalleryQueryException exception)
         {
@@ -1073,7 +1184,11 @@ internal sealed class CameraAgentOperatorUiService(
                     _hostOptions.DiskPressureThresholdPercent,
                     _hostOptions.DiskPressureRecoveryPercent,
                     _hostOptions.DiskPressureRetentionDays,
-                    _hostOptions.RawIngressReserveBytes),
+                    _hostOptions.RawIngressReserveBytes,
+                    _hostOptions.EnvironmentalAcquisition.Enabled,
+                    _hostOptions.EnvironmentalAcquisition.RetentionDays,
+                    _hostOptions.EnvironmentalAcquisition.MaximumHistoryCount,
+                    _hostOptions.EnvironmentalAcquisition.MaximumHistoryBytes),
                 new CameraAgentUploadStatus(
                     centralEnabled && distribution.UploadEnabled,
                     _hostOptions.UploadBatchSize,
@@ -1121,6 +1236,7 @@ internal sealed class CameraAgentOperatorUiService(
         bool paused,
         long expectedVersion,
         string idempotencyKey,
+        string? reason,
         CancellationToken cancellationToken)
     {
         var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
@@ -1129,13 +1245,16 @@ internal sealed class CameraAgentOperatorUiService(
             return Denied<OperatorCommandReceipt>();
         }
 
+        var recordedReason = string.IsNullOrWhiteSpace(reason)
+            ? paused ? PauseReasonCode : ResumeReasonCode
+            : reason.Trim();
         try
         {
             var result = paused
                 ? await captureControl.PauseAsync(
-                    idempotencyKey, expectedVersion, actor, "operator-maintenance", cancellationToken).ConfigureAwait(false)
+                    idempotencyKey, expectedVersion, actor, recordedReason, cancellationToken).ConfigureAwait(false)
                 : await captureControl.ResumeAsync(
-                    idempotencyKey, expectedVersion, actor, "operator-resume", cancellationToken).ConfigureAwait(false);
+                    idempotencyKey, expectedVersion, actor, recordedReason, cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<OperatorCommandReceipt>.Success(new(
                 paused ? "Pause capture" : "Resume capture",
                 result.Replayed ? "Duplicate receipt" : result.Changed ? "Applied" : "Already current",
@@ -1302,6 +1421,59 @@ internal sealed class CameraAgentOperatorUiService(
             logger.LogWarning(exception, "CameraAgent outbox UI command failed.");
             return Unavailable<OperatorCommandReceipt>("The outbox command could not be completed.");
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<IReadOnlyList<CameraAgentDeliveryRecord>>();
+        }
+        // A standalone agent never exports, so it must not create outbox stores just to show none.
+        if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
+        {
+            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]);
+        }
+
+        try
+        {
+            // Each store orders its own records exactly (unfinished work newest queued first, then the newest
+            // finished), but keeps no enqueue time that orders one store against another: CreatedUtc is the
+            // artifact's capture time and the attempt times move with every retry. So the locations are never
+            // merged into one bounded list, which would let one busy location hide another's newer work. Each
+            // keeps its own bounded list, in configuration order.
+            var merged = new List<CameraAgentDeliveryRecord>();
+            foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                merged.AddRange((await artifactOutbox.ReadRecentDeliveryAsync(
+                        location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
+                    .Select(record => new CameraAgentDeliveryRecord(location.Alias, record)));
+            }
+            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success(merged);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent delivery UI read failed.");
+            return Unavailable<IReadOnlyList<CameraAgentDeliveryRecord>>("The delivery outbox could not be read.");
+        }
+    }
+
+    public async ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentStorageReconciliation>();
+        }
+        return OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(
+            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation));
     }
 
     private async ValueTask<IReadOnlyList<OperatorOutboxItem>> ReadArtifactQuarantineAsync(

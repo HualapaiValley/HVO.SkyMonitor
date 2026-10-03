@@ -86,7 +86,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         try
         {
             var configPath = Path.Combine(root, "cameraagent.standalone.json");
-            await WriteConfigurationAsync(configPath, root, useSyntheticCalibration, useProjectedScene).ConfigureAwait(false);
+            await WriteConfigurationAsync(configPath, root, useSyntheticCalibration, useProjectedScene,
+                useSidingSpringLocation).ConfigureAwait(false);
             var environmentalSettingsPath = useEnvironmentalAcquisition
                 ? Path.Combine(root, "environmental.settings.json")
                 : null;
@@ -119,6 +120,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Logging:LogLevel:Default"] = "Warning",
                 ["Serilog:MinimumLevel:Default"] = "Warning"
             };
+            if (useEnvironmentalAcquisition)
+            {
+                // This history/restart fixture requires a location valid over its periodic
+                // source schedule, including the first slot preceding host startup.
+                overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z";
+            }
             if (useSidingSpringLocation)
             {
                 overrides["CameraAgent:Observatory:LatitudeDegrees"] = "-31.2733";
@@ -317,7 +324,9 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                     ["EpochUtc"] = "2026-01-15T08:00:00Z",
                     ["NumericValue"] = source.Numeric,
                     ["BooleanValue"] = source.Boolean,
-                    ["NoiseAmplitude"] = 0.25,
+                    // Recovery requires every source to publish; clock-dependent noise can
+                    // make zero precipitation or low cloud cover invalid.
+                    ["NoiseAmplitude"] = 0,
                     ["Uncertainty"] = source.Boolean is null ? 0.1 : null,
                     ["Quality"] = "Good",
                     ["Mode"] = "Normal",
@@ -488,7 +497,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         string configPath,
         string root,
         bool useSyntheticCalibration,
-        bool useProjectedScene)
+        bool useProjectedScene,
+        bool useSidingSpringLocation)
     {
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
@@ -501,6 +511,14 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var configuration = JsonNode.Parse(json)?.AsObject()
             ?? throw new InvalidDataException("The standalone CameraAgent fixture configuration is invalid.");
         configuration["agentId"] = AgentId;
+        if (useSidingSpringLocation)
+        {
+            // This restart test requires visible catalog geometry, independently of host wall time.
+            // At 10ms the old M0=1000 fixture need not admit a source at the physical SNR threshold.
+            var moduleOptions = configuration["module"]!["options"]!.AsObject();
+            moduleOptions["magnitudeZeroElectronsPerSecond"] = 60000.0;
+            moduleOptions["fixedSceneUtc"] = "2025-01-15T08:00:00Z";
+        }
         var steps = configuration["pipeline"]!["steps"]!.AsArray();
         var localStorage = steps
             .Select(static node => node!.AsObject())

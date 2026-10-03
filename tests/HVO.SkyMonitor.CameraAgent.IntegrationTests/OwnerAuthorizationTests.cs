@@ -320,6 +320,20 @@ public sealed class OwnerAuthorizationTests
         Assert.AreEqual(HttpStatusCode.OK, ownerCalendar.StatusCode);
         var calendar = await ownerCalendar.Content.ReadFromJsonAsync<CameraAgentGalleryCalendar>().ConfigureAwait(false);
         Assert.AreEqual(3, calendar?.Days.Count);
+        Assert.AreEqual(SunriseReportingPeriod.CurrentVersion, calendar?.CalendarVersion);
+        Assert.IsTrue(calendar!.Days.All(static day => day.Day.SunrisePeriod?.IsValid() == true));
+        Assert.AreEqual(calendar.Days[0].Day.EndUtc, calendar.Days[1].Day.StartUtc);
+        using var legacyCalendar = await ownerClient.GetAsync(new Uri(
+            "/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03&calendar=" + ObservingDayCalendar.LegacyNoonVersion,
+            UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, legacyCalendar.StatusCode);
+        var legacy = await legacyCalendar.Content.ReadFromJsonAsync<CameraAgentGalleryCalendar>().ConfigureAwait(false);
+        Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, legacy?.CalendarVersion);
+        Assert.IsTrue(legacy!.Days.All(static day => day.Day.SunrisePeriod is null));
+        using var unsupportedCalendar = await ownerClient.GetAsync(new Uri(
+            "/api/v1/operations/gallery/calendar?from=2026-09-01&to=2026-09-03&calendar=future-calendar",
+            UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, unsupportedCalendar.StatusCode);
         using var unboundedCalendar = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/gallery/calendar?from=2026-01-01&to=2026-12-31", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, unboundedCalendar.StatusCode);
@@ -983,22 +997,32 @@ public sealed class OwnerAuthorizationTests
             (Path: "/", Expected: "Current sky"),
             (Path: "/operations", Expected: "Configure and operate this camera"),
             (Path: "/gallery", Expected: "Archive"),
-            (Path: "/schedule", Expected: "Capture schedule"),
-            (Path: "/calibration", Expected: "Calibration library"),
-            (Path: "/environmental", Expected: "Environmental acquisition"),
-            (Path: "/system", Expected: "System snapshot"),
-            (Path: "/operations/schedule", Expected: "Capture schedule"),
+            (Path: "/schedule", Expected: "Capture / deterministic admission"),
+            (Path: "/calibration", Expected: "Capture / immutable references"),
+            (Path: "/environmental", Expected: "Environment"),
+            (Path: "/system", Expected: "System / bounded diagnostics"),
+            (Path: "/operations/schedule", Expected: "Capture / deterministic admission"),
+            (Path: "/operations/calibration", Expected: "Capture / immutable references"),
+            (Path: "/operations/focus", Expected: "Capture / manual optical setup"),
             (Path: "/operations/camera", Expected: "Camera &amp; rig"),
-            (Path: "/operations/pipeline", Expected: "Pipeline summary"),
+            (Path: "/operations/pipeline", Expected: "Processing / configured dependency graph"),
+            (Path: "/operations/environment", Expected: "Processing / independent observations"),
+            (Path: "/operations/transients", Expected: "Processing / independent detector lane"),
             (Path: "/operations/automations", Expected: "Automations"),
-            (Path: "/operations/data", Expected: "Data &amp; storage"),
+            (Path: "/operations/delivery", Expected: "Data / one-way central integration"),
+            (Path: "/operations/storage", Expected: "Storage &amp; retention"),
+            (Path: "/operations/data", Expected: "Storage &amp; retention"),
             (Path: "/operations/site", Expected: "Observatory &amp; location"),
             (Path: "/operations/sky-map", Expected: "Observatory &amp; location"),
             (Path: "/operations/pipeline/executions", Expected: "Processing executions"),
             (Path: "/operations/pipeline/graphs", Expected: "Named graphs"),
             (Path: "/operations/pipeline/graphs/new", Expected: "Draft graph"),
             (Path: "/operations/pipeline/replays/new", Expected: "Submit this capture for replay"),
-            (Path: "/devices/bootstrap", Expected: "Device Bootstrap")
+            (Path: "/operations/health", Expected: "System / bounded diagnostics"),
+            (Path: "/operations/control", Expected: "System / authenticated local actions"),
+            (Path: "/operations/software", Expected: "System / verified local assets"),
+            (Path: "/operations/registration", Expected: "Setup / central integration"),
+            (Path: "/devices/bootstrap", Expected: "Setup / central integration")
         })
         {
             using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();

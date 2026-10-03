@@ -741,7 +741,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _ => "Read-only view of what LogicHost has told this camera."
     };
 
-    private static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
+    internal static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
     {
         DeploymentLocationResolutionStatus.Acknowledged => "Acknowledged by LogicHost",
         DeploymentLocationResolutionStatus.Rejected => "Rejected by LogicHost",

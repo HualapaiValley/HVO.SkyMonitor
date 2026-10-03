@@ -164,6 +164,8 @@ grep -Fq 'Deployment reason: pull request does not change deployment-contract in
 # nested file also named SKILL.md, fail closed to the complete matrix.
 verify_component_plan ".agents/skills/pr-lifecycle/resources/SKILL.md" full false true true true true true true
 
+verify_component_plan "tools/HVO.SkyMonitor.VirtualSkyPoc/Program.cs" full false true true true true true true
+
 # Component ownership. Shared contracts select every consuming lane, host-private
 # paths stay in their own lane, and exported host seams add combined coverage.
 verify_component_plan "src/HVO.SkyMonitor.AgentCore/Contract.cs"                       full false false true  true  true  true  true
@@ -417,7 +419,8 @@ comm -12 <(printf '%s\n' "${link_including_projects[@]}") <(printf '%s\n' "${src
   printf 'No src/ project file contributed a link record; the enumerator narrowed to tests/.\n' >&2
   exit 1
 }
-printf '%s\n' "${link_records[@]}" | grep -qE '^[^|]*\|(docs|deploy)/' || {
+# Consume every record: an early grep -q exit can SIGPIPE printf and fail under pipefail.
+printf '%s\n' "${link_records[@]}" | grep -E '^[^|]*\|(docs|deploy)/' >/dev/null || {
   printf 'No link outside src/, tests/, and tools/ was resolved; the depth widening regressed.\n' >&2
   exit 1
 }
@@ -425,7 +428,10 @@ printf '%s\n' "${link_records[@]}" | grep -qE '^[^|]*\|(docs|deploy)/' || {
 # Every real project directory must be claimed by a component, except the
 # intentionally cross-cutting ones. A new project therefore cannot slip into a
 # narrow plan without an explicit decision here.
+# The standalone VirtualSky/product POC spans capture, projection and pinned
+# product composers; keep its changes on the complete matrix.
 complete_matrix_projects=(
+  tools/HVO.SkyMonitor.VirtualSkyPoc
   tests/HVO.SkyMonitor.Architecture.Tests
 )
 project_directory_count=0

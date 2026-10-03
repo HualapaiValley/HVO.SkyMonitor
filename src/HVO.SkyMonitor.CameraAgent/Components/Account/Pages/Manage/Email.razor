@@ -2,10 +2,26 @@
 
 <PageTitle>Owner email</PageTitle>
 
-<PageHeader Title="Owner email" Eyebrow="Local owner" />
+<header class="ops-page-heading">
+    <div>
+        <p class="eyebrow">Local owner</p>
+        <h1 id="page-heading" tabindex="-1">Owner email</h1>
+        <p>The address that identifies the single local site owner.</p>
+    </div>
+</header>
 
-<div class="owner-email-card">
-    <label for="owner-email">Configured owner</label>
-    <input id="owner-email" type="email" value="@email" class="form-control" readonly />
-    <p>This address identifies the single local site owner and must match the installer manifest. Change it through a supported deployment lifecycle operation, not from the browser.</p>
-</div>
+<section class="ops-panel" aria-labelledby="owner-email-heading">
+    <header class="ops-panel-heading">
+        <div>
+            <h2 id="owner-email-heading">Configured owner</h2>
+            <p>Read only. It must match the installer manifest.</p>
+        </div>
+    </header>
+    <div class="account-form">
+        <div class="ops-field">
+            <label for="owner-email">Owner email</label>
+            <input id="owner-email" type="email" value="@email" readonly />
+        </div>
+        <p class="account-note">Change it through a supported deployment lifecycle operation, not from the browser.</p>
+    </div>
+</section>

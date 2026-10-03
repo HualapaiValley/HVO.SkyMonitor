@@ -2,26 +2,44 @@
 
 <PageTitle>Profile</PageTitle>
 
-<PageHeader Title="Profile" Eyebrow="Local owner" />
+<header class="ops-page-heading">
+    <div>
+        <p class="eyebrow">Local owner</p>
+        <h1 id="page-heading" tabindex="-1">Profile</h1>
+        <p>The single owner account for this CameraAgent. It signs in locally and keeps working without an internet connection.</p>
+    </div>
+</header>
 <StatusMessage />
 
-<div class="row">
-    <div class="col-xl-6">
-        <EditForm Model="Input" FormName="profile" OnValidSubmit="OnValidSubmitAsync" method="post">
-            <DataAnnotationsValidator />
-            <ValidationSummary class="text-danger" role="alert" />
-            <div class="form-floating mb-3">
-                <input type="text" value="@username" id="username" class="form-control"
-                    placeholder="Choose your username." disabled />
-                <label for="username" class="form-label">Username</label>
-            </div>
-            <div class="form-floating mb-3">
-                <InputText @bind-Value="Input.PhoneNumber" id="Input.PhoneNumber" class="form-control"
-                    placeholder="Enter your phone number" />
-                <label for="Input.PhoneNumber" class="form-label">Phone number</label>
-                <ValidationMessage For="() => Input.PhoneNumber" class="text-danger" />
-            </div>
-            <button type="submit" class="w-100 btn btn-lg btn-primary">Save</button>
-        </EditForm>
-    </div>
-</div>
+<section class="ops-panel" aria-labelledby="profile-account-heading">
+    <header class="ops-panel-heading">
+        <div>
+            <h2 id="profile-account-heading">Account</h2>
+            <p>The sign-in name is the owner email and cannot be changed here.</p>
+        </div>
+    </header>
+    <dl class="ops-facts">
+        <div class="full"><dt>Username</dt><dd id="username">@username</dd></div>
+    </dl>
+</section>
+
+<section class="ops-panel" aria-labelledby="profile-contact-heading">
+    <header class="ops-panel-heading">
+        <div>
+            <h2 id="profile-contact-heading">Contact</h2>
+            <p>Optional. Stored with the local account only.</p>
+        </div>
+    </header>
+    <EditForm Model="Input" FormName="profile" OnValidSubmit="OnValidSubmitAsync" method="post" class="account-form">
+        <DataAnnotationsValidator />
+        <ValidationSummary role="alert" />
+        <div class="ops-field">
+            <label for="Input.PhoneNumber">Phone number</label>
+            <InputText @bind-Value="Input.PhoneNumber" id="Input.PhoneNumber" type="tel" autocomplete="tel" />
+            <ValidationMessage For="() => Input.PhoneNumber" />
+        </div>
+        <div class="account-form-actions">
+            <button type="submit" class="button primary">Save</button>
+        </div>
+    </EditForm>
+</section>

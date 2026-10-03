@@ -24,9 +24,41 @@ public sealed class ArchivePagesTests
         public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
             => Handler(observingDate, cancellationToken);
     }
+
+    [TestMethod]
+    [DataRow(ObservingDayCalendar.LegacyNoonVersion)]
+    [DataRow(SunriseReportingPeriod.CurrentVersion)]
+    public void ObservingDay_CalendarReturnAndInvalidDateKeepTheSelectedInterpretation(string version)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var calendar = version == ObservingDayCalendar.LegacyNoonVersion ? Phoenix :
+            ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create("fixture", 1, "Fixture site", null,
+                DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 850, "America/Phoenix"));
+        var day = calendar.Resolve(new DateOnly(2026, 10, 12));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/archive/day/2026-10-12?calendar=" + version);
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-12"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find(".day-facts"));
+            Assert.AreEqual("/archive/calendar?month=2026-10&calendar=" + version,
+                cut.Find(".day-actions a[href^='/archive/calendar']").GetAttribute("href"));
+        });
+        navigation.NavigateTo("/archive/day/yesterday?calendar=" + version);
+        var invalid = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "yesterday"));
+        invalid.WaitForAssertion(() => Assert.AreEqual("/archive/calendar?calendar=" + version,
+            invalid.Find("a[href^='/archive/calendar']").GetAttribute("href")));
+    }
     // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
     // matched against visible text so a negated disclaimer is not mistaken for a claim.
     private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];
+    private static readonly string[] UnresolvedPhysicalQuantities = ["Ground track", "Impact location"];
 
     [TestMethod]
     public void Calendar_RendersTheMonthAsAGridOfObservingDays()
@@ -360,6 +392,61 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
+    public void Calendar_SunriseLabelAndExplicitLegacyLinksPreserveTheirInterpretation()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var site = DeploymentLocationSnapshot.Create("site", 1, "test", null,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.347, -113.878, 1000, "America/Phoenix");
+        var calendar = ObservingDayCalendar.ForDeployment(site);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar));
+        CameraAgentGalleryCalendarQuery? observed = null;
+        service.CalendarHandler = (query, _) =>
+        {
+            observed = query;
+            var selected = calendar.SelectVersion(query.CalendarVersion);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(
+                selected.TimeZoneId, false, [], selected.CalendarVersion)));
+        };
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=2026-07");
+        var sunrise = context.Render<ArchiveCalendarPage>();
+        sunrise.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(sunrise.Find(".month-nav__label").TextContent, "sunrise-to-sunrise", StringComparison.Ordinal);
+            StringAssert.Contains(sunrise.Find(".calendar-legend").TextContent, "starting sunrise", StringComparison.Ordinal);
+        });
+
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            "/archive/calendar?month=2026-07&calendar=" + ObservingDayCalendar.LegacyNoonVersion);
+        var legacy = context.Render<ArchiveCalendarPage>();
+        legacy.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, observed!.CalendarVersion);
+            StringAssert.Contains(legacy.Find(".month-nav__label").TextContent, "Legacy observing day", StringComparison.Ordinal);
+            Assert.IsTrue(legacy.FindAll(".calendar-day__link").All(link => link.GetAttribute("href")!
+                .Contains("calendar=" + ObservingDayCalendar.LegacyNoonVersion, StringComparison.Ordinal)));
+            Assert.IsTrue(legacy.FindAll(".month-nav a").All(link => link.GetAttribute("href")!
+                .Contains("calendar=" + ObservingDayCalendar.LegacyNoonVersion, StringComparison.Ordinal)));
+        });
+    }
+
+    [TestMethod]
+    public void Calendar_UnavailableSiteDoesNotInventALatestPeriod()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new DeploymentObservingDayCalendarProvider());
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Unavailable, "Sunrise period unavailable"));
+        var cut = context.Render<ArchiveCalendarPage>();
+        cut.WaitForElement(".page-state--error");
+        Assert.IsEmpty(cut.FindAll("a[href^='/archive/day/']"));
+        Assert.IsEmpty(cut.FindAll(".calendar-day--today"));
+        StringAssert.Contains(cut.Find(".month-nav__label").TextContent, "sunrise-to-sunrise", StringComparison.Ordinal);
+        Assert.IsNotNull(cut.Find("a[href*='calendar=hvo-noon-observing-day-v1']"));
+    }
+
+    [TestMethod]
     public void Calendar_ReportsUtcFallbackEmptyRangeAndErrors()
     {
         using var context = new BunitContext();
@@ -371,7 +458,7 @@ public sealed class ArchivePagesTests
         var cut = context.Render<ArchiveCalendarPage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Observing nights use UTC days", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Legacy noon view uses UTC", StringComparison.Ordinal);
             // An empty month reads as zero observed nights, and every cell says so.
             StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Nights with captures0", StringComparison.Ordinal);
             Assert.IsTrue(cut.FindAll(".calendar-day").All(cell => cell.ClassList.Contains("calendar-day--empty")));
@@ -489,13 +576,13 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(text, "Unretained artifact", StringComparison.Ordinal);
             StringAssert.Contains(text, "Completed (Produced)", StringComparison.Ordinal);
             StringAssert.Contains(text, "850 ms", StringComparison.Ordinal);
-            StringAssert.Contains(text, "Retained predecessors", StringComparison.Ordinal);
+            StringAssert.Contains(text, "Other retained outputs of this step", StringComparison.Ordinal);
             Assert.AreEqual("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000201/content",
                 cut.FindAll("a").Single(link => link.TextContent.Contains("Download content", StringComparison.Ordinal)).GetAttribute("href"));
         });
 
         var missing = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
-        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find("[role='alert']").TextContent, "was not found", StringComparison.Ordinal));
+        missing.WaitForAssertion(() => StringAssert.Contains(missing.Find(".page-state--info").TextContent, "was not found", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -504,7 +591,10 @@ public sealed class ArchivePagesTests
         using var context = new BunitContext();
         var transient = new RecordingTransientUiService();
         context.Services.AddSingleton<ICameraAgentTransientUiService>(transient);
-        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var captures = new TestOperatorUiService();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(captures);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create("America/Phoenix")));
+        context.Services.AddSingleton<ICameraAgentEventEvidenceUiService>(new CameraAgentEventEvidenceUiService(transient, captures, new ProcessingExecutionPagesTests.GraphUiService(), captures));
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         navigation.NavigateTo("/transients?from=2026-07-21T19:00:00&to=2026-07-22T18:59:59");
 
@@ -514,8 +604,8 @@ public sealed class ArchivePagesTests
         {
             Assert.AreEqual(new DateTimeOffset(2026, 7, 21, 19, 0, 0, TimeSpan.Zero), transient.LastQuery?.FromUtc);
             Assert.AreEqual(new DateTimeOffset(2026, 7, 22, 18, 59, 59, TimeSpan.Zero), transient.LastQuery?.ToUtc);
-            StringAssert.Contains(list.Find(".range-state").TextContent, "Showing candidates created between", StringComparison.Ordinal);
-            var visible = list.Find(".transient-page").TextContent;
+            StringAssert.Contains(list.Find(".range-state").TextContent, "Candidate creation range", StringComparison.Ordinal);
+            var visible = list.Find(".event-results").TextContent;
             foreach (var forbidden in ForbiddenCandidateClaims)
             {
                 Assert.IsFalse(visible.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
@@ -528,27 +618,35 @@ public sealed class ArchivePagesTests
 
         var candidateId = Guid.Parse("00000000-0000-0000-0000-000000000301");
         var sourceCapture = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var centerEvidenceId = Guid.NewGuid();
         transient.Detail = OperatorUiResult<CameraAgentTransientOperatorDetail>.Success(new(
             new(candidateId, Guid.NewGuid(), "Provisional", "pending", "candidate_persisted", OperatorUiTestData.Now, OperatorUiTestData.Now, "Available", "Absent", "Absent", "Absent"),
-            new("Available", OperatorUiTestData.Now, null, 1, null, null, []),
+            new("Available", OperatorUiTestData.Now, centerEvidenceId, 1, null, null, []),
             new("Absent"), new("Absent"), new("Absent", ReasonCodes: []), new("Absent"),
-            [new(0, Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw, sourceCapture, 41, OperatorUiTestData.Now, OperatorUiTestData.Now, OperatorUiTestData.Now.AddSeconds(2))]));
+            [new(0, centerEvidenceId, Guid.NewGuid(), FrameArtifactRole.Raw, sourceCapture, 41, OperatorUiTestData.Now, OperatorUiTestData.Now, OperatorUiTestData.Now.AddSeconds(2))]));
         var detail = context.Render<TransientDetail>(parameters => parameters.Add(page => page.CandidateId, candidateId));
         detail.WaitForAssertion(() =>
         {
-            var link = detail.Find(".source-list a");
+            var link = detail.Find(".context-frame a");
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000002", link.GetAttribute("href"));
             StringAssert.Contains(link.TextContent, "Capture #41", StringComparison.Ordinal);
             var text = detail.Find(".transient-detail").TextContent;
-            foreach (var forbidden in ForbiddenCandidateClaims)
+            foreach (var forbidden in ForbiddenCandidateClaims.Where(static forbidden => forbidden is not ("ground track" or "impact location")))
             {
                 Assert.IsFalse(text.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
+            }
+            foreach (var quantity in UnresolvedPhysicalQuantities)
+            {
+                var label = detail.FindAll(".science-facts dt").Single(element => element.TextContent.Contains(quantity, StringComparison.Ordinal));
+                Assert.AreEqual("Requires genuine correlation", label.ParentElement!.QuerySelector("dd")!.TextContent);
             }
         });
     }
 
     private static TestOperatorUiService Configure(BunitContext context)
     {
+        RetainedPreviewImageTestSupport.Configure(context);
+        ProductDetailTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

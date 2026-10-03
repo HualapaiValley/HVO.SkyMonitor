@@ -6,7 +6,7 @@
       "seed": 33101,
       "rigProfileVersion": "deployment-allsky01-virtual-asi676mc-full-v2",
       "maximumMagnitude": 6.5,
-      "maximumResults": 300,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 1000.0,
       "bortleClass": 3,
       "shotNoiseEnabled": true,

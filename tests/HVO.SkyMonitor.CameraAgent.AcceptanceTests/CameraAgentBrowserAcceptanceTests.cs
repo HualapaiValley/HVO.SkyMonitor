@@ -92,14 +92,103 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
             await WaitForFocusAsync(page, toggle).ConfigureAwait(false);
         }
-        await page.GotoAsync("/operations/unavailable/focus").ConfigureAwait(false);
+        // Focus idles until the operator starts it: nothing is measured and no preview is shown before Start.
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await page.GotoAsync("/operations/focus").ConfigureAwait(false);
+            await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+            await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus", Level = 1, Exact = true }))
+                .ConfigureAwait(false);
+            Assert.AreEqual("page", await page.Locator("nav.operations-navigation a[href='/operations/focus']")
+                .GetAttributeAsync("aria-current").ConfigureAwait(false));
+            await page.WaitForFunctionAsync(
+                "() => document.querySelector('#focus-start')?.disabled === false && document.querySelector('#focus-start').textContent.trim() === 'Start focus session'")
+                .ConfigureAwait(false);
+            Assert.IsTrue(await page.Locator("#focus-sample").IsDisabledAsync().ConfigureAwait(false));
+            Assert.AreEqual(0, await page.Locator(".operations-content img").CountAsync().ConfigureAwait(false));
+            await AssertFocusFitsAsync(page, width).ConfigureAwait(false);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"focus-{width}.png"), FullPage = true })
+                .ConfigureAwait(false);
+        }
+        // A real VirtualSky loop: start, measure the tracked star, reject an invalid setting, adjust the simulated
+        // position, end, save and export the verified record.
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        Assert.AreEqual("1.000s", await page.Locator("#focus-exposure").InputValueAsync().ConfigureAwait(false));
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#focus-start')?.textContent.trim() === 'End session'")
+            .ConfigureAwait(false);
+        // The 160x120 fixture frame barely contains the 48 px background annulus, so whether the automatically chosen star
+        // measures depends on where the render instant puts it. Either way the sample must say what it is: a width, or
+        // its explicit reason with no width. Measured evidence on a full-size frame is the native preview's.
+        await VisibleAsync(page.Locator("#focus-sample-detail")).ConfigureAwait(false);
+        var metric = (await page.Locator("#focus-metric").TextContentAsync().ConfigureAwait(false))!.Trim();
+        if (await page.Locator("#focus-sample-detail.invalid").CountAsync().ConfigureAwait(false) == 0)
+        {
+            StringAssert.EndsWith(metric, "px", StringComparison.Ordinal);
+        }
+        else
+        {
+            StringAssert.Contains(metric, "not measured", StringComparison.Ordinal);
+            Assert.IsGreaterThan(0, (await page.Locator("#focus-sample-detail").TextContentAsync().ConfigureAwait(false))!.Length);
+            // No selected target means no star crop. The real overview remains available for choosing another field.
+            if (await page.Locator(".focus-viewer img").CountAsync().ConfigureAwait(false) == 0)
+            {
+                await page.Locator("#focus-select-region").ClickAsync().ConfigureAwait(false);
+            }
+        }
+        await VisibleAsync(page.Locator(".focus-viewer img").First).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".focus-simulated")).ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await AssertFocusFitsAsync(page, width).ConfigureAwait(false);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"focus-measured-{width}.png"), FullPage = true })
+                .ConfigureAwait(false);
+        }
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        await page.Locator("#focus-exposure").FillAsync("soon").ConfigureAwait(false);
+        await page.Locator("#focus-sample").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#focus-settings-error[role='alert']")).ConfigureAwait(false);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(output, "focus-error-1440.png"), FullPage = true })
+            .ConfigureAwait(false);
+        await page.Locator("#focus-exposure").FillAsync("1s").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Move simulated focus 50 steps out" }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "() => [...document.querySelectorAll('.focus-samples-table tbody tr')].some(row => row.textContent.includes('position 250'))")
+            .ConfigureAwait(false);
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#focus-start')?.textContent.trim() === 'Save session result'")
+            .ConfigureAwait(false);
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("a#focus-export")).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".focus-history-table .state-chip.success")).ConfigureAwait(false);
+        var export = await context.APIRequest.GetAsync(
+            (await page.Locator("a#focus-export").GetAttributeAsync("href").ConfigureAwait(false))!).ConfigureAwait(false);
+        Assert.AreEqual(200, export.Status);
+        var exported = await export.BodyAsync().ConfigureAwait(false);
+        Assert.AreEqual(Convert.ToHexStringLower(SHA256.HashData(exported)), export.Headers["x-artifact-sha256"]);
+        StringAssert.Contains(Encoding.UTF8.GetString(exported), "hvo.cameraagent.manual-focus-session.v1", StringComparison.Ordinal);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(output, "focus-saved-1440.png"), FullPage = true })
+            .ConfigureAwait(false);
+        // On a phone the drawer reaches Focus by keyboard and closes on arrival.
+        await page.SetViewportSizeAsync(320, 844).ConfigureAwait(false);
+        await page.GotoAsync("/operations").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === true")
+            .ConfigureAwait(false);
+        await page.Locator("#operations-sections a[href='/operations/focus']").FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Focus", Level = 1, Exact = true }))
             .ConfigureAwait(false);
-        StringAssert.Contains(await page.Locator(".unavailable-section .ops-note-banner").InnerTextAsync().ConfigureAwait(false),
-            "Not implemented on this CameraAgent.", StringComparison.Ordinal);
-        Assert.IsEmpty(await page.Locator(".unavailable-section form, .unavailable-section button").AllAsync().ConfigureAwait(false));
-        await page.GetByRole(AriaRole.Link, new() { Name = "Back to Operations overview" }).ClickAsync()
+        await page.WaitForFunctionAsync("() => document.querySelector('#operations-sections')?.matches(':modal') === false")
             .ConfigureAwait(false);
+        await page.GotoAsync("/operations/control").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System control", Level = 1, Exact = true }))
+            .ConfigureAwait(false);
+        await VisibleAsync(page.Locator("section[aria-labelledby='control-receipts-heading']")).ConfigureAwait(false);
+        await page.GotoAsync("/operations").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Operations", Level = 1, Exact = true }))
             .ConfigureAwait(false);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
@@ -547,9 +636,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await desktopCurrentSky.FocusAsync().ConfigureAwait(false);
         await WaitForFocusAsync(page, desktopCurrentSky).ConfigureAwait(false);
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.GetByLabel("Current schedule state")).ConfigureAwait(false);
+        await VisibleAsync(page.GetByLabel("Current admission")).ConfigureAwait(false);
         Assert.AreEqual(
             "page",
             await page.GetByRole(AriaRole.Link, new() { Name = "Operations", Exact = true })
@@ -616,8 +705,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual("H1", await page.EvaluateAsync<string>("() => document.activeElement.tagName").ConfigureAwait(false));
 
         await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
-        await page.Locator("#operations-sections a[href='/operations/system']").ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'System snapshot'")
+        await page.Locator("#operations-sections a[href='/operations/health']").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.matches('h1') && document.activeElement.textContent === 'Health & diagnostics'")
             .ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.querySelector('button[aria-controls=\"operations-sections\"]')?.getAttribute('aria-expanded') === 'false'")
             .ConfigureAwait(false);
@@ -660,7 +749,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
               document.querySelector('main').append(controls);
             }
             """).ConfigureAwait(false);
-        await AssertComputedContrastAsync(page, "/operations/system", new ViewportSize { Width = 390, Height = 844 },
+        await AssertComputedContrastAsync(page, "/operations/health", new ViewportSize { Width = 390, Height = 844 },
             "#shell-contrast-regression button").ConfigureAwait(false);
 
         await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
@@ -735,12 +824,50 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var detailUrl = await AssertGalleryAsync(page, context, host).ConfigureAwait(false);
         await AssertQuarantineAsync(page).ConfigureAwait(false);
         await AssertSystemNavigationAsync(page).ConfigureAwait(false);
-        await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
-        await AssertCalibrationAsync(page).ConfigureAwait(false);
         await AssertResponsiveAndAccessibleAsync(page, detailUrl).ConfigureAwait(false);
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    [DoNotParallelize]
+    public async Task OwnerScheduleAndCalibrationAcceptanceAsync()
+    {
+        // Schedule and Calibration own their editors and apply flows, so they run apart from the gallery chain
+        // and one stale page cannot hide a regression in another. Reference acquisition needs the agent ID and the
+        // explicit native readout, so the host enables both.
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            useCalibrationLibrary: true,
+            enableCentralIntegration: true).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        context.SetDefaultTimeout(DefaultTimeoutMilliseconds);
+        context.SetDefaultNavigationTimeout(DefaultTimeoutMilliseconds);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+
+        await LoginAsync(
+            page,
+            CameraAgentKestrelFixture.OwnerEmail,
+            CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await AssertSchedulePreviewAsync(page).ConfigureAwait(false);
+        await AssertCalibrationAsync(page).ConfigureAwait(false);
+
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
@@ -842,6 +969,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Captures", Level = 1 })).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var advanced = page.Locator(".advanced-filters");
         Assert.IsFalse(await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
         var firstCard = page.Locator(".capture-card")
@@ -852,6 +980,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GetByLabel("Evidence origin").SelectOptionAsync("Simulated").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal)).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Button, new() { Name = "Older captures" })).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Older captures" }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).Query.Contains("origin=Simulated", StringComparison.Ordinal) &&
@@ -868,20 +997,185 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             new ViewportSize { Width = 1440, Height = 900 },
             new ViewportSize { Width = 390, Height = 844 },
-            new ViewportSize { Width = 844, Height = 390 }
+            new ViewportSize { Width = 844, Height = 390 },
+            new ViewportSize { Width = 320, Height = 844 }
         })
         {
             await page.SetViewportSizeAsync(viewport.Width, viewport.Height).ConfigureAwait(false);
+            foreach (var view in new[] { "grid", "compact" })
+            {
+                await page.GotoAsync($"/gallery?pageSize=24&view={view}").ConfigureAwait(false);
+                await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+                var image = page.Locator(".capture-card .capture-image img").First;
+                await VisibleAsync(image).ConfigureAwait(false);
+                await image.ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+                await image.EvaluateAsync("""
+                    async image => {
+                        await image.decode();
+                        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    }
+                    """).ConfigureAwait(false);
+                Assert.AreEqual("contain", await image.EvaluateAsync<string>(
+                    "image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+                Assert.IsTrue(await image.EvaluateAsync<bool>("""
+                    image => {
+                        const bounds = image.getBoundingClientRect();
+                        const slot = image.closest('.capture-image').getBoundingClientRect();
+                        return image.naturalWidth > 0 && image.naturalHeight > 0 &&
+                            bounds.width > 0 && bounds.height > 0 &&
+                            bounds.left >= slot.left - 1 && bounds.right <= slot.right + 1 &&
+                            bounds.top >= slot.top - 1 && bounds.bottom <= slot.bottom + 1;
+                    }
+                    """).ConfigureAwait(false),
+                    $"The complete Archive image must fit in {view} view at {viewport.Width}x{viewport.Height}.");
+                Assert.IsFalse(await page.EvaluateAsync<bool>(
+                    "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                    $"archive {view} overflowed at {viewport.Width}x{viewport.Height}");
+            }
             await page.GotoAsync("/gallery?pageSize=24").ConfigureAwait(false);
-            await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
-            Assert.IsFalse(await page.EvaluateAsync<bool>(
-                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
-                $"archive overflowed at {viewport.Width}x{viewport.Height}");
             await AssertComputedContrastAsync(page, "/gallery?pageSize=24", viewport).ConfigureAwait(false);
         }
 
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
         Assert.IsEmpty(previewFailures, string.Join(Environment.NewLine, previewFailures));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task OwnerPipelineRunPresentationAcceptanceAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => browserErrors.Add(error);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        // An older genuine capture has finished its journal before graph inspection starts.
+        var runLink = page.Locator(".capture-card .run-link").Nth(3);
+        await VisibleAsync(runLink).ConfigureAwait(false);
+        var runUrl = await runLink.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(runUrl);
+        await page.GotoAsync(runUrl).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".run-graph[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".run-diagram__node").First).ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            Assert.IsFalse(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                $"Pipeline run overflowed at {width}px.");
+            var node = page.Locator(".run-diagram__node").First;
+            await node.FocusAsync().ConfigureAwait(false);
+            await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('.run-diagram__node')?.getAttribute('aria-pressed') === 'true'")
+                .ConfigureAwait(false);
+            await page.Locator("#run-tab-stage").FocusAsync().ConfigureAwait(false);
+            await page.Keyboard.PressAsync("ArrowRight").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.querySelector('#run-tab-artifacts')?.getAttribute('aria-selected') === 'true'").ConfigureAwait(false);
+            TestContext.WriteLine(await page.EvaluateAsync<string>("() => JSON.stringify({active:document.activeElement?.id,selected:document.querySelector('#run-tab-artifacts')?.getAttribute('aria-selected')})").ConfigureAwait(false));
+            await page.WaitForFunctionAsync("() => document.activeElement?.id === 'run-tab-artifacts'").ConfigureAwait(false);
+            await VisibleAsync(page.Locator(".artifact-table-wrap")).ConfigureAwait(false);
+            await page.Keyboard.PressAsync("ArrowRight").ConfigureAwait(false);
+            await page.WaitForFunctionAsync("() => document.activeElement?.id === 'run-tab-attempts'").ConfigureAwait(false);
+            await VisibleAsync(page.Locator(".attempt-list")).ConfigureAwait(false);
+        }
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        var fullscreen = page.GetByRole(AriaRole.Button, new() { Name = "Graph fullscreen", Exact = true });
+        await fullscreen.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('.run-graph')")
+            .ConfigureAwait(false);
+        Assert.IsTrue(await page.EvaluateAsync<bool>("""
+            () => {
+                const graph = document.querySelector('.run-graph').getBoundingClientRect();
+                return Math.abs(graph.width - innerWidth) <= 1 && Math.abs(graph.height - innerHeight) <= 1;
+            }
+            """).ConfigureAwait(false), "Graph fullscreen must use the actual viewport.");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.run-diagram__zoom')?.textContent.trim() !== '50%'")
+            .ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Fit graph", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Exit graph fullscreen", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, fullscreen).ConfigureAwait(false);
+
+        Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task OwnerProductDetailPresentationAcceptanceAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForGalleryCapturesAsync(page, 24).ConfigureAwait(false);
+        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var link = page.Locator(".product-table tbody tr").Filter(new LocatorFilterOptions { HasText = "Preview" }).First.Locator("a").First;
+        await VisibleAsync(link).ConfigureAwait(false);
+        var path = await link.GetAttributeAsync("href").ConfigureAwait(false);
+        Assert.IsNotNull(path);
+        var artifactId = Guid.Parse(new Uri(host.BaseAddress, path).Segments[^1]);
+        await page.GotoAsync(path).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        await page.Locator(".generated-media[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+        var image = page.Locator(".generated-media img");
+        await image.EvaluateAsync("image => image.decode()").ConfigureAwait(false);
+        var exactSource = await image.GetAttributeAsync("src").ConfigureAwait(false);
+        Assert.IsNotNull(exactSource);
+        StringAssert.Contains(exactSource, artifactId.ToString("D"), StringComparison.Ordinal);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await WaitForResponsiveShellLayoutAsync(page, width).ConfigureAwait(false);
+            Assert.IsFalse(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
+                $"Product detail overflowed at {width}px: " + await page.EvaluateAsync<string>("""
+                    () => [...document.querySelectorAll('*')].filter(element => element.getBoundingClientRect().right > innerWidth + 1)
+                        .slice(0,8).map(element => `${element.tagName}.${element.className}:${element.getBoundingClientRect().width}`).join('; ')
+                    """).ConfigureAwait(false));
+            Assert.AreEqual("contain", await image.EvaluateAsync<string>("image => getComputedStyle(image).objectFit").ConfigureAwait(false));
+            Assert.AreEqual(exactSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
+        }
+        var trigger = page.GetByRole(AriaRole.Button, new() { Name = "Product fullscreen", Exact = true });
+        await trigger.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === document.querySelector('.generated-media')").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "100%", Exact = false }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('.generated-media')?.classList.contains('generated-media--native')").ConfigureAwait(false);
+        Assert.AreEqual(exactSource, await image.GetAttributeAsync("src").ConfigureAwait(false));
+        await page.GetByRole(AriaRole.Button, new() { Name = "Fit image", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.fullscreenElement === null").ConfigureAwait(false);
+        await WaitForFocusAsync(page, trigger).ConfigureAwait(false);
+        await image.DispatchEventAsync("error").ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Product preview unavailable", Exact = true })).ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator(".generated-media img").CountAsync().ConfigureAwait(false));
+        await VisibleAsync(page.GetByText(artifactId.ToString("D"), new() { Exact = true }).First).ConfigureAwait(false);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
@@ -940,11 +1234,11 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await firstProduct.ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/products/", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture" })).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Sources", Level = 2 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Ordered sources", Level = 2 })).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/archive/products/detail").ConfigureAwait(false);
         var missingProduct = await context.NewPageAsync().ConfigureAwait(false);
         await missingProduct.GotoAsync($"/archive/products/{Guid.NewGuid():D}").ConfigureAwait(false);
-        await VisibleAsync(missingProduct.GetByRole(AriaRole.Alert)).ConfigureAwait(false);
+        await VisibleAsync(missingProduct.GetByText("Product unavailable", new() { Exact = true })).ConfigureAwait(false);
         await missingProduct.CloseAsync().ConfigureAwait(false);
 
         // Candidates: the list accepts the calendar range and never claims event authority.
@@ -1256,15 +1550,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
             CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await page.GotoAsync("/calibration").ConfigureAwait(false);
         await VisibleAsync(page.GetByText(first.BundleId!, new() { Exact = true }).First).ConfigureAwait(false);
-        var activeBundle = page.Locator(".calibration-card--active h2");
+        var activeBundle = page.Locator("#calibration-active-bundle");
         Assert.AreEqual(first.BundleId, (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim());
-        var reviewAcquisition = page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" });
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await OpenDialogAsync(reviewAcquisition, confirmation).ConfigureAwait(false);
+        var acquireDialog = page.Locator("dialog:has(#calibration-acquire-heading)");
+        await OpenDialogAsync(page.Locator("#start-calibration-acquisition"), acquireDialog).ConfigureAwait(false);
         Assert.IsEmpty(browserErrors, string.Join(Environment.NewLine, browserErrors));
-        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
-        var resultBanner = page.Locator(".calibration-banner");
+        await WaitForContainedFocusAsync(page, acquireDialog).ConfigureAwait(false);
+        await page.Locator("#calibration-acquire-confirm").ClickAsync().ConfigureAwait(false);
+        var resultBanner = page.Locator(".calibration-message");
         try
         {
             await VisibleAsync(resultBanner, 180_000).ConfigureAwait(false);
@@ -1273,34 +1566,35 @@ public sealed class CameraAgentBrowserAcceptanceTests
         {
             Assert.Fail(string.Join(
                 Environment.NewLine,
-                [.. browserErrors, await page.Locator(".calibration-console").InnerTextAsync().ConfigureAwait(false)]));
+                [.. browserErrors, await page.Locator(".operations-content").InnerTextAsync().ConfigureAwait(false)]));
         }
         Assert.AreEqual(
             "Calibration acquisition published durably.",
             (await resultBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
 
-        var activate = page.GetByRole(AriaRole.Button, new() { Name = "Review activate" });
+        var confirmation = page.Locator("dialog:has(#calibration-activation-heading)");
+        var activate = page.GetByRole(AriaRole.Button, new() { Name = "Review activate" }).First;
         await VisibleAsync(activate).ConfigureAwait(false);
         await activate.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
+            "prior => document.querySelector('#calibration-active-bundle')?.textContent?.trim() !== prior",
             first.BundleId).ConfigureAwait(false);
         var secondBundleId = (await activeBundle.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreNotEqual(first.BundleId, secondBundleId);
         await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
             .ConfigureAwait(false);
 
-        var rollback = page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" });
+        var rollback = page.Locator("#review-calibration-rollback");
         await VisibleAsync(rollback).ConfigureAwait(false);
         await rollback.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.Locator("#calibration-activation-confirm").ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
+            "expected => document.querySelector('#calibration-active-bundle')?.textContent?.trim() === expected",
             first.BundleId).ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Calibration command completed durably.", new() { Exact = true }))
             .ConfigureAwait(false);
@@ -1362,21 +1656,19 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertCalibrationAsync(IPage page)
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
-        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Calibration library", Level = 1 });
+        var heading = page.GetByRole(AriaRole.Heading, new() { Name = "Calibration", Level = 1 });
         await VisibleAsync(heading).ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("No active bundle", new() { Exact = true })).ConfigureAwait(false);
-        Assert.AreEqual("82", await page.GetByLabel("Gain", new() { Exact = true }).InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("1", await page.GetByLabel("Effective offset").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("-10", await page.GetByLabel("Camera temperature C").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("10", await page.GetByLabel("Dark exposure seconds").InputValueAsync().ConfigureAwait(false));
-        Assert.AreEqual("5", await page.GetByLabel("Exact light exposure seconds").InputValueAsync().ConfigureAwait(false));
+        await VisibleAsync(page.GetByText("No active references", new() { Exact = true })).ConfigureAwait(false);
 
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await VisibleAsync(confirmation).ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
-            .ConfigureAwait(false);
+        var start = page.Locator("#start-calibration-acquisition");
+        var confirmation = page.Locator("dialog:has(#calibration-acquire-heading)");
+        await OpenDialogAsync(start, confirmation).ConfigureAwait(false);
+        Assert.AreEqual("82", await page.Locator("#cal-gain").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("1", await page.Locator("#cal-offset").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("-10", await page.Locator("#cal-temperature").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("10", await page.Locator("#cal-dark").InputValueAsync().ConfigureAwait(false));
+        Assert.AreEqual("5", await page.Locator("#cal-light").InputValueAsync().ConfigureAwait(false));
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync("() => document.activeElement?.id === 'start-calibration-acquisition'").ConfigureAwait(false);
     }
@@ -1384,41 +1676,42 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertSchedulePreviewAsync(IPage page)
     {
         await page.GotoAsync("/schedule").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule" })).ConfigureAwait(false);
-        var activeHash = page.Locator(".schedule-card:has-text('Active immutable profile') code");
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 })).ConfigureAwait(false);
+        var activeHash = page.Locator("section[aria-labelledby='schedule-history-heading'] tr.current-row code");
         var originalActiveHash = (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim();
-        var preview = page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Desired and effective graph" }))
+        var editorDialog = page.Locator("dialog.schedule-editor");
+        await OpenDialogAsync(page.Locator("#schedule-edit-open"), editorDialog).ConfigureAwait(false);
+
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Processing')").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(editorDialog.GetByRole(AriaRole.Heading, new() { Name = "Desired and effective graph" }))
             .ConfigureAwait(false);
-        var desiredGraph = page.Locator(".pipeline-columns article").First;
+        var desiredGraph = editorDialog.Locator(".pipeline-columns article").First;
         var telemetryToggle = desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Disable" });
-        var graphUpdated = page.GetByText(
-            "Desired graph updated in the editor. Save the immutable draft to persist it.",
-            new() { Exact = true });
-        await ClickAndWaitForVisibleAsync(telemetryToggle, graphUpdated).ConfigureAwait(false);
+        await ClickAndWaitForVisibleAsync(
+            telemetryToggle,
+            editorDialog.GetByText("Processing step updated in the draft. Save the draft to keep it.", new() { Exact = true }))
+            .ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Telemetry'))")
             .GetByRole(AriaRole.Button, new() { Name = "Enable" }).ClickAsync().ConfigureAwait(false);
         await desiredGraph.Locator("li:has(strong:text-is('Calibration'))")
             .GetByRole(AriaRole.Button, new() { Name = "Disable" }).ClickAsync().ConfigureAwait(false);
-        var graphAlert = page.Locator(".schedule-banner[role='alert']");
-        await VisibleAsync(graphAlert).ConfigureAwait(false);
+        var alert = editorDialog.Locator(".schedule-message[role='alert']");
+        await VisibleAsync(alert).ConfigureAwait(false);
         StringAssert.Contains(
-            await graphAlert.InnerTextAsync().ConfigureAwait(false),
+            await alert.InnerTextAsync().ConfigureAwait(false),
             "depends on the disabled node",
             StringComparison.OrdinalIgnoreCase);
-        await preview.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText(
-            "Schedule and desired graph previews are valid. No durable state changed.",
-            new() { Exact = true }))
-            .ConfigureAwait(false);
-        var previewTimes = page.Locator(".preview-card time");
-        Assert.IsGreaterThanOrEqualTo(2, await previewTimes.CountAsync().ConfigureAwait(false));
-        Assert.IsTrue(await previewTimes.EvaluateAllAsync<bool>(
-            "elements => elements.every(element => Boolean(element.getAttribute('datetime')))").ConfigureAwait(false));
 
-        var editor = page.GetByLabel("Local profile JSON");
-        await CollapsibleSection.EnsureOpenAsync(page.Locator("details.editor-advanced"), editor)
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Review')").ClickAsync().ConfigureAwait(false);
+        var preview = editorDialog.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" });
+        await preview.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(editorDialog.GetByText("The draft is valid. Nothing has been saved yet.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.IsGreaterThanOrEqualTo(1, await editorDialog.Locator(".schedule-preview li").CountAsync().ConfigureAwait(false));
+
+        var editor = editorDialog.GetByLabel("Local profile JSON");
+        await CollapsibleSection.EnsureOpenAsync(editorDialog.Locator("details.editor-advanced"), editor)
             .ConfigureAwait(false);
         var candidate = await editor.EvaluateAsync<string>("""
             element => {
@@ -1428,19 +1721,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             }
             """).ConfigureAwait(false);
         await editor.FillAsync(candidate).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Save immutable draft" }).ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Draft saved.", new() { Exact = true })).ConfigureAwait(false);
-        var reviewApply = page.GetByLabel("Current schedule state")
-            .GetByRole(AriaRole.Button, new() { Name = "Review apply" });
-        await reviewApply.ClickAsync().ConfigureAwait(false);
-        var confirmation = page.Locator("dialog.confirmation-panel");
-        await VisibleAsync(confirmation).ConfigureAwait(false);
-        Assert.AreEqual("Apply revision?", await confirmation.GetAttributeAsync("aria-labelledby").ConfigureAwait(false) is { } labelId
-            ? await page.Locator($"#{labelId}").InnerTextAsync().ConfigureAwait(false)
-            : null);
+        await editorDialog.GetByRole(AriaRole.Button, new() { Name = "Save draft", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await editorDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        var reviewApply = page.GetByLabel("Saved draft").GetByRole(AriaRole.Button, new() { Name = "Review apply" });
         await page.WaitForFunctionAsync(
-            "element => element.contains(document.activeElement)", await confirmation.ElementHandleAsync().ConfigureAwait(false))
+            "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
             .ConfigureAwait(false);
+        await reviewApply.ClickAsync().ConfigureAwait(false);
+        var confirmation = page.Locator("dialog:has(#apply-heading)");
+        await VisibleAsync(confirmation).ConfigureAwait(false);
+        StringAssert.StartsWith(
+            (await page.Locator("#apply-heading").InnerTextAsync().ConfigureAwait(false)).Trim(),
+            "Apply revision",
+            StringComparison.Ordinal);
+        await WaitForContainedFocusAsync(page, confirmation).ConfigureAwait(false);
         await AssertDialogCancelIsSynchronouslyGuardedAsync(confirmation).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "element => element === document.activeElement", await reviewApply.ElementHandleAsync().ConfigureAwait(false))
@@ -1449,27 +1743,26 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm apply" }).ClickAsync().ConfigureAwait(false);
         await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'schedule-heading'").ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("No draft", new() { Exact = true })).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'schedule-refresh'").ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Revision applied at the capture boundary.", new() { Exact = true }))
+            .ConfigureAwait(false);
+        Assert.AreEqual(0, await page.GetByLabel("Saved draft").CountAsync().ConfigureAwait(false));
         Assert.AreNotEqual(originalActiveHash, (await activeHash.InnerTextAsync().ConfigureAwait(false)).Trim());
 
-        var overrideStart = DateTimeOffset.UtcNow.AddMinutes(10).ToString("O", CultureInfo.InvariantCulture);
-        var overrideEnd = DateTimeOffset.UtcNow.AddMinutes(20).ToString("O", CultureInfo.InvariantCulture);
-        await page.GetByLabel("Start UTC").FillAsync(overrideStart).ConfigureAwait(false);
-        await page.GetByLabel("End UTC").FillAsync(overrideEnd).ConfigureAwait(false);
-        var scheduleBanner = page.Locator(".schedule-banner");
-        var priorMessage = await scheduleBanner.InnerTextAsync().ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Create durable override" }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync(
-            """
-            previous => {
-                const banner = document.querySelector('.schedule-banner');
-                return banner && banner.textContent.trim() !== previous.trim();
-            }
-            """,
-            priorMessage).ConfigureAwait(false);
-        Assert.AreEqual("Override created.", (await scheduleBanner.InnerTextAsync().ConfigureAwait(false)).Trim());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Clear", Exact = true }).ClickAsync().ConfigureAwait(false);
+        // The override dialog takes wall-clock times in the site timezone the page reports.
+        var timeZoneId = (await page.Locator("section[aria-label='Current admission'] div:has(> dt:text-is('Local timezone')) dd")
+            .InnerTextAsync().ConfigureAwait(false)).Trim();
+        var siteNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, TimeZoneInfo.FindSystemTimeZoneById(timeZoneId));
+        var overrideDialog = page.Locator("dialog:has(#schedule-override-heading)");
+        await OpenDialogAsync(page.Locator("#schedule-override-open"), overrideDialog).ConfigureAwait(false);
+        await overrideDialog.GetByLabel("Starts").FillAsync(
+            siteNow.AddMinutes(10).ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await overrideDialog.GetByLabel("Ends").FillAsync(
+            siteNow.AddMinutes(20).ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await overrideDialog.GetByRole(AriaRole.Button, new() { Name = "Create override" }).ClickAsync().ConfigureAwait(false);
+        await overrideDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Override created.", new() { Exact = true })).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Clear override" }).First.ClickAsync().ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Override cleared.", new() { Exact = true })).ConfigureAwait(false);
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).First.ClickAsync().ConfigureAwait(false);
@@ -1478,19 +1771,21 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await confirmation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             """
-            expected => [...document.querySelectorAll('.schedule-card')]
-                .find(card => card.textContent.includes('Active immutable profile'))
-                ?.querySelector('code')?.textContent.trim() === expected
+            expected => document.querySelector("section[aria-labelledby='schedule-history-heading'] tr.current-row code")
+                ?.textContent.trim() === expected
             """,
             originalActiveHash).ConfigureAwait(false);
         await VisibleAsync(page.GetByText("Revision applied at the capture boundary.", new() { Exact = true }))
             .ConfigureAwait(false);
 
+        await OpenDialogAsync(page.Locator("#schedule-edit-open"), editorDialog).ConfigureAwait(false);
+        await editorDialog.Locator("nav.schedule-steps button:has-text('Review')").ClickAsync().ConfigureAwait(false);
+        await CollapsibleSection.EnsureOpenAsync(editorDialog.Locator("details.editor-advanced"), editor)
+            .ConfigureAwait(false);
         await editor.FillAsync("{}").ConfigureAwait(false);
         await preview.ClickAsync().ConfigureAwait(false);
-        var alert = page.Locator(".schedule-banner[role='alert']");
         await VisibleAsync(alert).ConfigureAwait(false);
-        Assert.AreEqual(0, await page.Locator(".preview-card time").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(0, await editorDialog.Locator(".schedule-preview li").CountAsync().ConfigureAwait(false));
         Assert.IsTrue((await alert.InnerTextAsync().ConfigureAwait(false)).Contains(
             "invalid", StringComparison.OrdinalIgnoreCase));
     }
@@ -1933,23 +2228,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture details" })).ConfigureAwait(false);
 
+        // The full screen control puts the sky figure itself into browser full screen, and leaving full screen
+        // returns focus to the control.
         var trigger = page.Locator("#current-sky-view-large");
-        var dialog = page.Locator("dialog.large-viewer");
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await trigger.ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(dialog).ConfigureAwait(false);
-        Assert.IsTrue(await dialog.Locator("img").EvaluateAsync<bool>(
-            "element => element.complete && element.naturalWidth > 0").ConfigureAwait(false));
-        var nativeSize = dialog.GetByRole(AriaRole.Button, new() { Name = "100%" });
-        await nativeSize.ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
-            "element => element.getAttribute('aria-pressed') === 'true'",
-            await nativeSize.ElementHandleAsync().ConfigureAwait(false)).ConfigureAwait(false);
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(
-            "current-sky-view-large",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
+            """
+            () => document.fullscreenElement?.matches('figure.sky-figure') === true &&
+                document.fullscreenElement.querySelector('img')?.naturalWidth > 0
+            """).ConfigureAwait(false);
+        await page.EvaluateAsync("() => document.exitFullscreen()").ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "() => document.fullscreenElement === null && document.activeElement?.id === 'current-sky-view-large'")
+            .ConfigureAwait(false);
     }
 
     private static async Task<string> AssertGalleryAsync(
@@ -1959,9 +2251,10 @@ public sealed class CameraAgentBrowserAcceptanceTests
     {
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/gallery").ConfigureAwait(false);
-        var evidenceBadge = page.Locator(".capture-card .evidence").First;
-        await VisibleAsync(evidenceBadge).ConfigureAwait(false);
-        Assert.AreEqual("Simulated evidence", await evidenceBadge.InnerTextAsync().ConfigureAwait(false));
+        var productLabel = page.Locator(".capture-card-heading > div > span").First;
+        await VisibleAsync(productLabel).ConfigureAwait(false);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(await productLabel.InnerTextAsync().ConfigureAwait(false)),
+            "Every Archive card identifies its display product.");
         await VisibleAsync(page.GetByText("Older captures", new() { Exact = true })).ConfigureAwait(false);
 
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -2070,9 +2363,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task AssertSystemNavigationAsync(IPage page)
     {
         await page.GotoAsync("/system").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "System snapshot", Level = 1 }))
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Health & diagnostics", Level = 1 }))
             .ConfigureAwait(false);
-        await VisibleAsync(page.GetByText("Read-only system facts:", new() { Exact = true })).ConfigureAwait(false);
+        await VisibleAsync(page.Locator("section[aria-label='Health summary']")).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/system").ConfigureAwait(false);
     }
 
@@ -2125,13 +2418,20 @@ public sealed class CameraAgentBrowserAcceptanceTests
             ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
             ("/gallery?pageSize=24", "Archive"),
             (detailUrl, $"Capture #{capture.CaptureSequence}"),
-            ("/schedule", "Capture schedule"),
-            ("/calibration", "Calibration library"),
-            ("/system", "System snapshot"),
+            ("/schedule", "Schedule"),
+            ("/calibration", "Calibration"),
+            ("/operations/focus", "Focus"),
+            ("/operations/health", "Health & diagnostics"),
+            ("/operations/control", "System control"),
+            ("/operations/software", "Software & catalog"),
+            ("/operations/registration", "Registration"),
             ("/operations/camera", "Camera & rig"),
-            ("/operations/pipeline", "Pipeline summary"),
+            ("/operations/pipeline", "Pipeline"),
+            ("/operations/environment", "Environment"),
+            ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/data", "Data & storage"),
+            ("/operations/delivery", "Delivery"),
+            ("/operations/storage", "Storage & retention"),
             ("/operations/site", "Observatory & location"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
@@ -2205,7 +2505,8 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/data", "/operations/site",
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/delivery", "/operations/storage",
+        "/operations/site",
         "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };
 
@@ -2586,6 +2887,36 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static Task WaitForInteractiveShellAsync(IPage page)
         => page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
+
+    private static async Task AssertFocusFitsAsync(IPage page, int width)
+    {
+        Assert.IsFalse(await page.EvaluateAsync<bool>(
+            "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
+            .ConfigureAwait(false), $"Focus overflows horizontally at {width}px.");
+        var clipped = await page.EvaluateAsync<string>("""
+            () => [...document.querySelectorAll('.focus-workspace button, .focus-workspace input, .focus-workspace select, .operations-content .ops-panel-heading a, .operations-content .ops-panel-heading button')]
+                .filter(element => element.getClientRects().length)
+                .filter(element => {
+                    const bounds = element.getBoundingClientRect();
+                    return bounds.left < -1 || bounds.right > document.documentElement.clientWidth + 1;
+                })
+                .map(element => `${element.tagName}#${element.id}.${element.className} [${Math.round(element.getBoundingClientRect().left)}, ${Math.round(element.getBoundingClientRect().right)}]`)
+                .join('; ')
+            """).ConfigureAwait(false);
+        Assert.AreEqual(string.Empty, clipped, $"Focus controls are clipped at {width}px.");
+        var escaped = await page.EvaluateAsync<string>("""
+            () => [...document.querySelectorAll('.focus-inspector button, .focus-inspector input, .focus-inspector select')]
+                .filter(element => element.getClientRects().length)
+                .filter(element => {
+                    const bounds = element.getBoundingClientRect();
+                    const box = element.closest('fieldset, .focus-inspector').getBoundingClientRect();
+                    return bounds.left < box.left - 1 || bounds.right > box.right + 1;
+                })
+                .map(element => `${element.tagName}#${element.id} ${element.textContent.trim()}`)
+                .join('; ')
+            """).ConfigureAwait(false);
+        Assert.AreEqual(string.Empty, escaped, $"Focus controls leave the inspector at {width}px.");
+    }
 
     private static async Task WaitForFocusAsync(IPage page, ILocator locator)
         => await page.WaitForFunctionAsync(

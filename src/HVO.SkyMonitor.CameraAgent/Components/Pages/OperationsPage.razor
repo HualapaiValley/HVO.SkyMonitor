@@ -101,7 +101,7 @@ else if (_view is not null)
     </div>
 
     <section class="ops-panel ops-grid" aria-labelledby="lane-heading">
-        <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/system">Full diagnostics</a></header>
+        <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/health">Full diagnostics</a></header>
         <div class="ops-lane-list">
             <div class="ops-lane"><span><strong>Raw ingress</strong><small>Immutable evidence</small></span><small class="ops-lane-note">@BacklogText(summary.RawIngress.Value)</small><span>@CountText(summary.RawIngress.Value.PendingCount, "pending")</span></div>
             <div class="ops-lane"><span><strong>Frame processing</strong><small>Current graph</small></span><small class="ops-lane-note">@BacklogText(summary.CaptureProcessing.Value)</small><span>@ProcessingLaneText</span></div>

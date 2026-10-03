@@ -395,7 +395,8 @@ internal sealed class AnnotationCaptureProcessingStep(
             projection.BoresightAzimuthDegrees,
             projection.RollDegrees,
             projection.HorizontalFlip,
-            projection.EnforceSensorBounds));
+            projection.EnforceSensorBounds,
+            projection.RadialDistortionK1));
 
     private async ValueTask<MetadataCornerOverlay?> CreateMetadataOverlayAsync(
         CaptureProcessingContext context,

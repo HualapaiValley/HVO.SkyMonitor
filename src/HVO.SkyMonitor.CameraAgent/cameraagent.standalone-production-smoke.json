@@ -7,7 +7,7 @@
       "fixedSceneUtc": "2026-01-15T08:00:00Z",
       "rigProfileVersion": "virtual-asi174mm-full-standalone-synthetic-v1",
       "maximumMagnitude": 6.5,
-      "maximumResults": 2000,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 300.0,
       "bortleClass": 3,
       "shotNoiseEnabled": false,

@@ -1,6 +1,6 @@
 {
   "agentId": "replace-with-registered-device-id",
-  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 2000, "rigProfileVersion": "virtual-asi174mc-full-v1" } },
+  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 32768, "rigProfileVersion": "virtual-asi174mc-full-v1" } },
   "rig": {
     "sensor": {
       "name": "VirtualAsi174McRgb",

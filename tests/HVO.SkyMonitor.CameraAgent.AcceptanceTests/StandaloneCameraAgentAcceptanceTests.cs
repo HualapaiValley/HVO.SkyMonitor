@@ -253,6 +253,13 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionCalibrationVersion));
         Assert.IsNotNull(restartedRawManifest.Scene.Objects);
         Assert.IsNotEmpty(restartedRawManifest.Scene.Objects);
+        Assert.AreEqual(60000.0,
+            restartedConfig.Module.Options!.Value.GetProperty("magnitudeZeroElectronsPerSecond").GetDouble());
+        Assert.IsNotNull(restartedRawManifest.Scene.VirtualExposure);
+        Assert.AreEqual(VirtualExposureTimeMapping.FixedCelestialUtc,
+            restartedRawManifest.Scene.VirtualExposure.TimeMapping);
+        Assert.AreEqual(new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero),
+            restartedRawManifest.Scene.VirtualExposure.CelestialStartUtc);
         AssertNoOutboundAttempts(fixture);
     }
 
