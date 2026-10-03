@@ -1,7 +1,9 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 
-namespace HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Imaging;
+
+namespace HVO.SkyMonitor.VirtualSkyPoc.Pinned;
 
 /// <summary>One timestamped display frame sampled into a single keogram column.</summary>
 public sealed record KeogramFrame(

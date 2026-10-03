@@ -585,7 +585,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         var detail = await _store.PublishAsync(
             new NightlyProductPublication(
                 context.Kind, scope, window.ObservingDate, window.StartUtc, window.EndUtc, ordinal, recipeName, product,
-                lineage, context.Options.RenditionJpegQuality) { Occurrence = context.Occurrence },
+                lineage, context.Options.RenditionJpegQuality)
+            { Occurrence = context.Occurrence },
             cancellationToken).ConfigureAwait(false);
         context.Published++;
         return ProduceResult.Produced(detail.Summary.ProductId);
@@ -707,7 +708,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         await _store.RecordWindowAsync(
             new NightlyProductWindowStatus(
                 context.Kind, scope, window.ObservingDate, window.StartUtc, window.EndUtc, disposition, reasonCode,
-                candidateCount, admittedCount, exclusions, context.NowUtc) { Occurrence = context.Occurrence },
+                candidateCount, admittedCount, exclusions, context.NowUtc)
+            { Occurrence = context.Occurrence },
             fingerprint,
             productIds,
             cancellationToken).ConfigureAwait(false);

@@ -827,7 +827,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         }
         return new NightlyProductDetail(
             summary, outputIdentity, recipeIdentity, recipeName, variant, rig, payloadSha, payloadBytes,
-            renditionSha, renditionBytes, provenanceSha, sources) { Occurrence = occurrence };
+            renditionSha, renditionBytes, provenanceSha, sources)
+        { Occurrence = occurrence };
     }
 
     private static NightlyProductSummary ReadSummary(SqliteDataReader reader) => new(

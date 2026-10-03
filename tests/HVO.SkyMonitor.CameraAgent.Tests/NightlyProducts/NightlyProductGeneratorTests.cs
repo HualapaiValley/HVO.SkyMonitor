@@ -236,8 +236,13 @@ public sealed class NightlyProductGeneratorTests
     public async Task ChangedPresetOrUnsettledWindow_CannotSubstituteCurrentSettingsOrPublishEarly()
     {
         var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram);
-        var changed = new NightlyProductOptions { Enabled = true, SourceNodeId = "changed",
-            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe, RigProfileSha256 = NightlyProductFixture.RigProfileSha256 };
+        var changed = new NightlyProductOptions
+        {
+            Enabled = true,
+            SourceNodeId = "changed",
+            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+            RigProfileSha256 = NightlyProductFixture.RigProfileSha256
+        };
         using var first = Harness(new(), changed);
         Assert.IsFalse((await first.Generator.RunAsync(occurrence, CancellationToken.None)).Ready);
         using var early = Harness(new(), NightlyProductFixture.Options(), occurrence.SourceWindow!.EarliestFinalUtc.AddTicks(-1));

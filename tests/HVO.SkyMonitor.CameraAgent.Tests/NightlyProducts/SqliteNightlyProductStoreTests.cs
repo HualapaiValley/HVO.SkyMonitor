@@ -209,11 +209,13 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
 
     private static NightlyProductWindowStatus Status(NightlyProductWindowDisposition disposition) => new(
         NightlyProductKind.StarTrail, NightlyProductScope.Segment, NightlyProductFixture.ObservingDate, WindowStart,
-        WindowStart.AddHours(1), disposition, null, 3, 3, new Dictionary<string, int>(), WindowStart.AddHours(2)) { Occurrence = Occurrence };
+        WindowStart.AddHours(1), disposition, null, 3, 3, new Dictionary<string, int>(), WindowStart.AddHours(2))
+    { Occurrence = Occurrence };
 
     private static NightlyProductPublication Publication(ProcessingProduct product, IReadOnlyList<NightlyProductSource> lineage) =>
         new(NightlyProductKind.StarTrail, NightlyProductScope.Segment, NightlyProductFixture.ObservingDate, WindowStart,
-            WindowStart.AddHours(1), 0, BuiltInProcessingRecipes.StarTrail, product, lineage, 90) { Occurrence = Occurrence };
+            WindowStart.AddHours(1), 0, BuiltInProcessingRecipes.StarTrail, product, lineage, 90)
+        { Occurrence = Occurrence };
 
     private static async Task<(ProcessingProduct Product, IReadOnlyList<NightlyProductSource> Lineage)> StarTrail(
         params int[] indexes)

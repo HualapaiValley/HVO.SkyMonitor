@@ -58,8 +58,12 @@ public sealed class NightlyProductPlanningTests
         Assert.AreNotEqual(target, NightlyProductPreset.Target(NightlyProductKind.Keogram, new()
         { SourceNodeId = options.SourceNodeId, SourceRecipeIdentitySha256 = new('B', 64), RigProfileSha256 = options.RigProfileSha256 }));
         Assert.AreNotEqual(target, NightlyProductPreset.Target(NightlyProductKind.Keogram, new()
-        { SourceNodeId = options.SourceNodeId, SourceRecipeIdentitySha256 = options.SourceRecipeIdentitySha256, RigProfileSha256 = options.RigProfileSha256,
-            KeogramColumnSeconds = 120 }));
+        {
+            SourceNodeId = options.SourceNodeId,
+            SourceRecipeIdentitySha256 = options.SourceRecipeIdentitySha256,
+            RigProfileSha256 = options.RigProfileSha256,
+            KeogramColumnSeconds = 120
+        }));
     }
 
     [TestMethod]
@@ -68,8 +72,13 @@ public sealed class NightlyProductPlanningTests
         Assert.IsTrue(Valid(new NightlyProductOptions()));
         Assert.IsTrue(Valid(NightlyProductFixture.Options()));
         Assert.IsFalse(Valid(new NightlyProductOptions { Enabled = true, SourceNodeId = "preview" }));
-        Assert.IsFalse(Valid(new NightlyProductOptions { Enabled = true, SourceNodeId = " preview",
-            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe, RigProfileSha256 = NightlyProductFixture.RigProfileSha256 }));
+        Assert.IsFalse(Valid(new NightlyProductOptions
+        {
+            Enabled = true,
+            SourceNodeId = " preview",
+            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+            RigProfileSha256 = NightlyProductFixture.RigProfileSha256
+        }));
         Assert.IsFalse(Valid(new NightlyProductOptions { MaximumSegmentSources = 513 }));
         Assert.IsFalse(Valid(new NightlyProductOptions { KeogramColumnSeconds = 0 }));
         Assert.IsFalse(Valid(new NightlyProductOptions { KeogramMaximumGapColumnCount = 100, KeogramMaximumColumnCount = 50 }));

@@ -97,9 +97,19 @@ public sealed class FullDayStillProductQualificationTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, completed.Outcome, completed.Reason);
             await laneStore.CompleteAsync(lease, CancellationToken.None);
             var statistics = NativeStatistics(frame, projection);
-            sources.Add(new { slot, utc, setpoint, altitude, receipt.Manifest.Descriptor.Capture.CaptureId,
-                rawSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)), frame.Layout, frame.Metadata.Scene,
-                frame.Metadata.Extra, statistics });
+            sources.Add(new
+            {
+                slot,
+                utc,
+                setpoint,
+                altitude,
+                receipt.Manifest.Descriptor.Capture.CaptureId,
+                rawSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)),
+                frame.Layout,
+                frame.Metadata.Scene,
+                frame.Metadata.Extra,
+                statistics
+            });
             if (slot % 60 == 0)
             {
                 TestContext.WriteLine($"Produced actual source slot{slot} at{utc:O}.");
@@ -115,9 +125,11 @@ public sealed class FullDayStillProductQualificationTests
         Assert.IsTrue(candidates.All(static candidate => candidate.UsesFixedDisplayTransfer));
         var options = new HVO.SkyMonitor.CameraAgent.Common.Options.NightlyProductOptions
         {
-            Enabled = true, SourceNodeId = NightlyProductFixture.NodeId,
+            Enabled = true,
+            SourceNodeId = NightlyProductFixture.NodeId,
             SourceRecipeIdentitySha256 = candidates[0].RecipeIdentitySha256,
-            RigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig), MaximumSegmentsPerRun = 128
+            RigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig),
+            MaximumSegmentsPerRun = 128
         };
         var host = NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options);
         using var store = new SqliteNightlyProductStore(host, clock);
@@ -181,15 +193,24 @@ public sealed class FullDayStillProductQualificationTests
             var unchanged = await generator.RunAsync(occurrence, CancellationToken.None);
             Assert.AreEqual(0, unchanged.ProductsPublished);
             Assert.AreEqual(0, unchanged.FailedWindows);
-            products.Add(new { kind, occurrence, scheduledRun = run, unchanged, final, actualLeafCount = lineage.Count,
+            products.Add(new
+            {
+                kind,
+                occurrence,
+                scheduledRun = run,
+                unchanged,
+                final,
+                actualLeafCount = lineage.Count,
                 verificationMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                 cpuSeconds = (process.TotalProcessorTime - beforeCpu).TotalSeconds,
-                allocatedBytes = GC.GetTotalAllocatedBytes() - beforeAlloc });
+                allocatedBytes = GC.GetTotalAllocatedBytes() - beforeAlloc
+            });
         }
         // Representative source files are checksum-verified restores from the actual durable journal.
         var solarSamples = candidates.Select((candidate, index) => new
         {
-            index, utc = candidate.ExposureStartedUtc,
+            index,
+            utc = candidate.ExposureStartedUtc,
             altitude = SolarAltitudeClassifier.DirectionAt(Ephemeris, candidate.ExposureStartedUtc, Latitude, Longitude).AltitudeDegrees
         }).ToArray();
         var nadir = solarSamples.MinBy(static sample => sample.altitude)!;
@@ -218,13 +239,25 @@ public sealed class FullDayStillProductQualificationTests
         process.Refresh();
         await File.WriteAllTextAsync(Path.Combine(root, "evidence.json"), JsonSerializer.Serialize(new
         {
-            schema = "issue-993-full-day-production-still-qualification-v1", period, configuration, options,
+            schema = "issue-993-full-day-production-still-qualification-v1",
+            period,
+            configuration,
+            options,
             sourceHead = Environment.GetEnvironmentVariable("HVO_ISSUE993_SOURCE_HEAD") ?? "uncommitted-smoke-worktree",
             catalog = new { snapshot.DatabaseSha256, snapshot.SnapshotVersion, snapshot.RowCount },
-            sources, samples, products, automationState, scheduledGenerationMilliseconds, scheduledGenerationCpuSeconds,
-            scheduledGenerationAllocatedBytes, sourceStrideMinutes = stride, elapsedSeconds = timer.Elapsed.TotalSeconds,
-            cpuSeconds = (process.TotalProcessorTime - cpu).TotalSeconds, allocatedBytes = GC.GetTotalAllocatedBytes() - allocated,
-            process.PeakWorkingSet64, process.WorkingSet64,
+            sources,
+            samples,
+            products,
+            automationState,
+            scheduledGenerationMilliseconds,
+            scheduledGenerationCpuSeconds,
+            scheduledGenerationAllocatedBytes,
+            sourceStrideMinutes = stride,
+            elapsedSeconds = timer.Elapsed.TotalSeconds,
+            cpuSeconds = (process.TotalProcessorTime - cpu).TotalSeconds,
+            allocatedBytes = GC.GetTotalAllocatedBytes() - allocated,
+            process.PeakWorkingSet64,
+            process.WorkingSet64,
             assemblies = new[] { typeof(NightlyProductGenerator).Assembly, typeof(FixedDisplayTransfer).Assembly,
                 typeof(ProcessingRecipeExecutor).Assembly, typeof(VirtualSkyCameraModule).Assembly }.Distinct()
                 .Select(assembly => new { assembly.FullName, sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(assembly.Location))) }),
@@ -272,21 +305,38 @@ public sealed class FullDayStillProductQualificationTests
         await File.WriteAllBytesAsync(Path.Combine(directory, "column.rgb"), matching);
         await File.WriteAllTextAsync(Path.Combine(directory, "evidence.json"), JsonSerializer.Serialize(new
         {
-            schema = "issue-993-shared-meridian-strip-proof-v1", candidate, sourceLayout = source.Layout,
-            productId, column, rows = packed.Layout.Height, geometry,
-            sourceSha256 = ProcessingIdentity.ComputePayloadSha256(source.Payload.Span),
-            stripSha256 = ProcessingIdentity.ComputePayloadSha256(strip.PixelData.Span),
-            columnSha256 = ProcessingIdentity.ComputePayloadSha256(matching), pixelEquality = true
+            schema = "issue-993-shared-meridian-strip-proof-v1",
+            candidate,
+            sourceLayout = source.Layout,
+            productId,
+            column,
+            rows = packed.Layout.Height,
+            geometry,
+            sourceSha256 = ProcessingIdentity.ComputePayloadSha256(source.Payload),
+            stripSha256 = ProcessingIdentity.ComputePayloadSha256(strip.PixelData),
+            columnSha256 = ProcessingIdentity.ComputePayloadSha256(matching),
+            pixelEquality = true
         }, Json));
     }
 
     private static CameraModuleConfig Configuration(DateTimeOffset? celestialUtc) => new(
         new ObservatoryLocation(Latitude, Longitude, 0, "America/Phoenix"),
         new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
-        { illuminationMode = "SolarDriven", fixedSceneUtc = celestialUtc, renderSolarSystemDisks = true, seed = 1131,
-            maximumMagnitude = 6.5, maximumResults = 32768, magnitudeZeroElectronsPerSecond = 1000, bortleClass = 3,
-            asi676Sensor = new { enabled = true, blackLevelAdu = 64 }, shotNoiseEnabled = true,
-            vignettingStrength = .15, psfSigmaPixels = .85, psfRadiusPixels = 3.5 })),
+        {
+            illuminationMode = "SolarDriven",
+            fixedSceneUtc = celestialUtc,
+            renderSolarSystemDisks = true,
+            seed = 1131,
+            maximumMagnitude = 6.5,
+            maximumResults = 32768,
+            magnitudeZeroElectronsPerSecond = 1000,
+            bortleClass = 3,
+            asi676Sensor = new { enabled = true, blackLevelAdu = 64 },
+            shotNoiseEnabled = true,
+            vignettingStrength = .15,
+            psfSigmaPixels = .85,
+            psfRadiusPixels = 3.5
+        })),
         new CameraRigConfig(new SensorProfile("Qualified reduced all-sky", Size, Size, 2, SensorColorMode.Color,
                 CameraPixelFormat.BayerRggb16, SensorResponseMode.BayerRaw, SensorRecipeVersion: "issue993-native12-v1"),
             new OpticsProfile("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye, Size / 2d, Size / 2d, Size * .49,
@@ -307,8 +357,11 @@ public sealed class FullDayStillProductQualificationTests
     {
         var services = new ServiceCollection(); services.AddLogging();
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["CameraAgent:RawIngressRoot"] = root, ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false" }).Build());
+        {
+            ["CameraAgent:RawIngressRoot"] = root,
+            ["CameraAgent:RawIngressReserveBytes"] = "0",
+            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
+        }).Build());
         services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider();

@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
 
-namespace HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Imaging;
+
+namespace HVO.SkyMonitor.VirtualSkyPoc.Pinned;
 
 /// <summary>One timestamped display frame combined into a star trail.</summary>
 public sealed record StarTrailFrame(

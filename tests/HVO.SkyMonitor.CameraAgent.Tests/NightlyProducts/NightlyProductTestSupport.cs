@@ -114,7 +114,8 @@ internal static class NightlyProductFixture
             JournalNightlyProductSourceReader.PackedImageMediaType,
             exposureStartedUtc,
             rig ?? RigProfileSha256,
-            null) { UsesFixedDisplayTransfer = true, PayloadBytes = artifact.Payload.Length };
+            null)
+        { UsesFixedDisplayTransfer = true, PayloadBytes = artifact.Payload.Length };
         return new NightlyFrame(candidate, artifact);
     }
 

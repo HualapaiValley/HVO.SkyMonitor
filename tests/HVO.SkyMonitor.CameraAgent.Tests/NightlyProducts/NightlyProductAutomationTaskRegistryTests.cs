@@ -33,8 +33,11 @@ public sealed class NightlyProductAutomationTaskRegistryTests
         {
             var daily = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram).Definition;
             Assert.IsNull(registry.Validate(daily));
-            Assert.IsNotNull(registry.Validate(daily with { SourceWindow = daily.SourceWindow! with
-                { Selection = LocalAutomationSourceSelection.DarkNightActualSources } }));
+            Assert.IsNotNull(registry.Validate(daily with
+            {
+                SourceWindow = daily.SourceWindow! with
+                { Selection = LocalAutomationSourceSelection.DarkNightActualSources }
+            }));
             Assert.IsNotNull(registry.Validate(daily with { TriggerKind = LocalAutomationTriggerKind.Periodic, SourceWindow = null }));
             Assert.IsNotNull(registry.Validate(daily with { TaskTarget = "keogram" }));
             Assert.IsNotNull(registry.Validate(daily with { TaskTarget = "star-trail:" + new string('0', 64) }));

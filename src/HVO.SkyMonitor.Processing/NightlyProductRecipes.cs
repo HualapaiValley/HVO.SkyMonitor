@@ -221,7 +221,7 @@ internal sealed class KeogramRecipe : IProcessingRecipe
             var frames = NightlyProductRecipeSupport.ToKeogramFrames(sources);
             var planned = NightlyProductRecipeSupport.PlannedAxis(identity);
             var natural = planned is null ? composition : composition with
-                { MaximumColumnCount = KeogramComposer.MaximumColumnLimit, MaximumGapColumnCount = 1 };
+            { MaximumColumnCount = KeogramComposer.MaximumColumnLimit, MaximumGapColumnCount = 1 };
             result = KeogramComposer.Compose(frames, natural, cancellationToken);
             if (planned is not null)
             {

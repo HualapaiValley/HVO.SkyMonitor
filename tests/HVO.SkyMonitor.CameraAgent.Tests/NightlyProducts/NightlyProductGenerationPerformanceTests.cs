@@ -139,9 +139,16 @@ public sealed class NightlyProductGenerationPerformanceTests
                     daytimeFrames = ProducerExposures.Length - nightFrames.Length,
                     gap = "2026-10-02T05:21Z..05:39Z",
                     restartSegmentsPerRun = RestartSegmentsPerRun,
-                    options = new { sourceNodeId = NightlyProductFixture.NodeId, sourceRecipeIdentitySha256 = published[0].RecipeIdentitySha256,
-                        rigProfileSha256 = published[0].RigProfileSha256, maximumSegmentSources = 32, maximumRecipeExecutions = RestartSegmentsPerRun,
-                        fixedTransfer = new FixedDisplayTransferOptions(), keogramColumnSeconds = 60 }
+                    options = new
+                    {
+                        sourceNodeId = NightlyProductFixture.NodeId,
+                        sourceRecipeIdentitySha256 = published[0].RecipeIdentitySha256,
+                        rigProfileSha256 = published[0].RigProfileSha256,
+                        maximumSegmentSources = 32,
+                        maximumRecipeExecutions = RestartSegmentsPerRun,
+                        fixedTransfer = new FixedDisplayTransferOptions(),
+                        keogramColumnSeconds = 60
+                    }
                 },
                 production,
                 kinds,
@@ -191,9 +198,15 @@ public sealed class NightlyProductGenerationPerformanceTests
                 cadenceSeconds = 60,
                 observingDate = NightlyProductFixture.ObservingDate,
                 harnessPatternCacheBytes = (long)PatternCount * FrameBytes,
-                options = new { sourceNodeId = NightlyProductFixture.NodeId, sourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
-                    rigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(Rig), maximumSegmentSources = 32,
-                    maximumRecipeExecutions = RestartSegmentsPerRun, keogramColumnSeconds = 60 }
+                options = new
+                {
+                    sourceNodeId = NightlyProductFixture.NodeId,
+                    sourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+                    rigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(Rig),
+                    maximumSegmentSources = 32,
+                    maximumRecipeExecutions = RestartSegmentsPerRun,
+                    keogramColumnSeconds = 60
+                }
             },
             passes = new[] { first, second },
             reproducible = true,
@@ -215,12 +228,24 @@ public sealed class NightlyProductGenerationPerformanceTests
         {
             schemaVersion = "issue-993-color-product-generation-performance-v1",
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
-            trial = Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"), measuredUtc = DateTimeOffset.UtcNow,
-            workload = new { geometry = "W2 processed RGB24", width = 3096, height = 2080, frameBytes = 19319040,
-                frames = DayFrameCount, cadenceSeconds = 60, patternCacheBytes = (long)PatternCount * 19319040,
+            trial = Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"),
+            measuredUtc = DateTimeOffset.UtcNow,
+            workload = new
+            {
+                geometry = "W2 processed RGB24",
+                width = 3096,
+                height = 2080,
+                frameBytes = 19319040,
+                frames = DayFrameCount,
+                cadenceSeconds = 60,
+                patternCacheBytes = (long)PatternCount * 19319040,
                 inputMode = "Declared synthetic pattern cache, not captured sky and not a durable source-I/O measurement",
-                maximumRecipeExecutions = RestartSegmentsPerRun, maximumResidentSourceBytes = 256L * 1024 * 1024 },
-            passes = new[] { first, second }, reproducible = true, process = Process()
+                maximumRecipeExecutions = RestartSegmentsPerRun,
+                maximumResidentSourceBytes = 256L * 1024 * 1024
+            },
+            passes = new[] { first, second },
+            reproducible = true,
+            process = Process()
         });
     }
 
@@ -479,6 +504,10 @@ public sealed class NightlyProductGenerationPerformanceTests
         var ingressMilliseconds = new List<double>();
         var previewMilliseconds = new List<double>();
         var pixels = new byte[FrameBytes * 2];
+        using var measuredProcess = System.Diagnostics.Process.GetCurrentProcess();
+        var cpu = measuredProcess.TotalProcessorTime;
+        var allocated = GC.GetTotalAllocatedBytes(precise: true);
+        var batchStarted = Stopwatch.GetTimestamp();
         for (var index = 0; index < ProducerExposures.Length; index++)
         {
             FillRaw(pixels, index);
@@ -500,7 +529,12 @@ public sealed class NightlyProductGenerationPerformanceTests
             captures = ProducerExposures.Length,
             ingressMedianMilliseconds = Median(ingressMilliseconds),
             previewMedianMilliseconds = Median(previewMilliseconds),
-            totalMilliseconds = ingressMilliseconds.Sum() + previewMilliseconds.Sum()
+            ingressP95Milliseconds = ingressMilliseconds.Order().ElementAt((int)Math.Ceiling(ingressMilliseconds.Count * .95) - 1),
+            previewP95Milliseconds = previewMilliseconds.Order().ElementAt((int)Math.Ceiling(previewMilliseconds.Count * .95) - 1),
+            totalMilliseconds = ingressMilliseconds.Sum() + previewMilliseconds.Sum(),
+            batchMilliseconds = Stopwatch.GetElapsedTime(batchStarted).TotalMilliseconds,
+            cpuSeconds = (measuredProcess.TotalProcessorTime - cpu).TotalSeconds,
+            allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocated
         };
     }
 
@@ -825,7 +859,8 @@ public sealed class NightlyProductGenerationPerformanceTests
                 JournalNightlyProductSourceReader.PackedImageMediaType,
                 NightlyProductFixture.DayStartUtc.AddMinutes(index),
                 _compatibility.Rig,
-                null) { UsesFixedDisplayTransfer = true, PayloadBytes = _frameBytes };
+                null)
+            { UsesFixedDisplayTransfer = true, PayloadBytes = _frameBytes };
         }
     }
 }

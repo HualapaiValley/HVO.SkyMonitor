@@ -9,6 +9,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Imaging;
 using SkiaSharp;
+using KeogramComposer = HVO.SkyMonitor.VirtualSkyPoc.Pinned.KeogramComposer;
+using StarTrailComposer = HVO.SkyMonitor.VirtualSkyPoc.Pinned.StarTrailComposer;
 
 namespace HVO.SkyMonitor.VirtualSkyPoc;
 
