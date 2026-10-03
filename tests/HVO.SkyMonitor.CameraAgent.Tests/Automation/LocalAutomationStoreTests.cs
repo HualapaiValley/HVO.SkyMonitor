@@ -343,7 +343,7 @@ public sealed class LocalAutomationStoreTests
     }
 
     [TestMethod]
-    public async Task CompleteRunAsync_RecordsTheRealOutcomeAfterAnotherInstanceSettledTheRun()
+    public async Task InitializeAsync_RejectsACompetingAuthorityBeforeSettlingTheLiveRun()
     {
         using var owner = await CreateInitializedStoreAsync().ConfigureAwait(false);
         await owner.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
@@ -353,16 +353,64 @@ public sealed class LocalAutomationStoreTests
 
         using (var second = CreateStore())
         {
-            await second.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => second.InitializeAsync(CancellationToken.None).AsTask())
+                .ConfigureAwait(false);
         }
+        Assert.AreEqual(LocalAutomationRunOutcome.Running,
+            (await owner.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Outcome);
         await owner.CompleteRunAsync(
             "run-1", LocalAutomationRunOutcome.Succeeded, "Acquired an observation.", CancellationToken.None)
             .ConfigureAwait(false);
 
-        // A second instance settling a run this instance is still executing must not replace the real
-        // outcome: completion is authoritative for the claimant that holds the run.
         var run = (await owner.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome);
+    }
+
+    [TestMethod]
+    public async Task Dispose_RetainsAuthorityUntilTheExecutionLeaseDrains()
+    {
+        var owner = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        var lease = owner.RetainExecutionAuthority();
+        try
+        {
+            owner.Dispose();
+            using var second = CreateStore();
+            await Assert.ThrowsAsync<IOException>(() => second.InitializeAsync(CancellationToken.None).AsTask())
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Dispose();
+            owner.Dispose();
+        }
+        using var replacement = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        Assert.AreEqual(0, (await replacement.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Count);
+    }
+
+    [TestMethod]
+    public async Task TryBeginRunAsync_RejectsStaleDisabledAndOverlappingClaims()
+    {
+        using var store = await CreateInitializedStoreAsync().ConfigureAwait(false);
+        await store.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+        var stale = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+        await store.SaveAsync(SaveRequest(enabled: false, expectedVersion: 1, key: "disable"), CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.IsFalse(await store.TryBeginRunAsync(stale, "stale", Now, null, CancellationToken.None)
+            .ConfigureAwait(false));
+        await store.SaveAsync(SaveRequest(enabled: true, expectedVersion: 2, key: "enable"), CancellationToken.None)
+            .ConfigureAwait(false);
+        var current = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+        Assert.IsTrue(await store.TryBeginRunAsync(current, "first", Now, null, CancellationToken.None)
+            .ConfigureAwait(false));
+        Assert.IsFalse(await store.TryBeginRunAsync(current, "overlap", Now.AddHours(1), null, CancellationToken.None)
+            .ConfigureAwait(false));
+        await store.CompleteRunAsync("first", LocalAutomationRunOutcome.Succeeded, "original", CancellationToken.None)
+            .ConfigureAwait(false);
+        await store.CompleteRunAsync("first", LocalAutomationRunOutcome.Failed, "stale completion", CancellationToken.None)
+            .ConfigureAwait(false);
+        var run = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome);
+        Assert.AreEqual("original", run.Detail);
     }
 
     [TestMethod]

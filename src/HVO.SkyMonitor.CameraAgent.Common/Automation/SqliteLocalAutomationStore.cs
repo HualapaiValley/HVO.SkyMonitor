@@ -89,7 +89,8 @@ public interface ILocalAutomationStore
 /// rollback-to-baseline contract. A baseline image simply never opens this file.
 /// </para>
 /// </summary>
-public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposable
+public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, ILocalAutomationOccurrenceStore,
+    ILocalAutomationExecutionAuthority, IDisposable
 {
     private const string DirectoryName = ".automation";
     private const string FileName = "local-automations.db";
@@ -116,7 +117,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             revision_sha256 TEXT NOT NULL CHECK (length(revision_sha256) = 64),
             updated_unix_ms INTEGER NOT NULL,
             actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 256),
-            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512)
+            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
+            source_window_json TEXT
         ) STRICT;
 
         CREATE TABLE IF NOT EXISTS automation_definition_revisions (
@@ -150,12 +152,16 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             revision_sha256 TEXT NOT NULL CHECK (length(revision_sha256) = 64),
             trigger_kind TEXT NOT NULL CHECK (length(trigger_kind) BETWEEN 1 AND 64),
             scheduled_for_unix_ms INTEGER NOT NULL,
-            started_unix_ms INTEGER NOT NULL,
+            started_unix_ms INTEGER,
             completed_unix_ms INTEGER,
             outcome TEXT NOT NULL CHECK (length(outcome) BETWEEN 1 AND 32),
             detail TEXT NOT NULL CHECK (length(detail) <= {LocalAutomationContract.MaximumDetailLength}),
             observed_capture_sequence INTEGER,
-            claimant TEXT NOT NULL CHECK (length(claimant) BETWEEN 1 AND 64)
+            claimant TEXT NOT NULL CHECK (length(claimant) BETWEEN 1 AND 64),
+            occurrence_json TEXT,
+            occurrence_id TEXT CHECK (occurrence_id IS NULL OR length(occurrence_id) = 64),
+            attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 3),
+            preparation_json TEXT
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_automation_runs_definition
             ON automation_runs(definition_id, sequence);
@@ -163,6 +169,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         CREATE TABLE IF NOT EXISTS automation_progress (
             definition_id TEXT PRIMARY KEY CHECK (length(definition_id) BETWEEN 1 AND 64),
             last_occurrence_unix_ms INTEGER,
+            last_occurrence_utc_ticks INTEGER,
             last_capture_sequence INTEGER,
             updated_unix_ms INTEGER NOT NULL
         ) STRICT;
@@ -174,7 +181,11 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private readonly ILogger<SqliteLocalAutomationStore> _logger;
     private readonly LocalAutomationTelemetry? _telemetry;
     private readonly CameraAgentHostOptions _options;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The lifetime authority invokes _gate.Dispose only after every admitted execution lease drains.")]
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly LocalAutomationExecutionAuthority _authority;
+    private readonly LocalAutomationWindowPlanner? _windowPlanner;
     private readonly string _claimant = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
     private string? _connectionString;
     private string? _databasePath;
@@ -186,7 +197,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         ILogger<SqliteLocalAutomationStore> logger,
-        LocalAutomationTelemetry? telemetry = null)
+        LocalAutomationTelemetry? telemetry = null,
+        LocalAutomationWindowPlanner? windowPlanner = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _registry = registry;
@@ -195,10 +207,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         _timeProvider = timeProvider;
         _logger = logger;
         _telemetry = telemetry;
+        _authority = new LocalAutomationExecutionAuthority(_gate.Dispose);
+        _windowPlanner = windowPlanner;
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -222,7 +237,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         bool settleInterruptedRuns,
         CancellationToken cancellationToken)
     {
-        if (_schemaReady && !settleInterruptedRuns)
+        if (_schemaReady)
         {
             return;
         }
@@ -278,10 +293,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         var interrupted = 0;
         if (settleInterruptedRuns)
         {
-            // Restart recovery: a run claimed by a process that stopped is terminal, never re-claimed.
-            // Its occurrence progress was advanced with the claim, so the cadence does not repeat it.
-            // A restarted process and a competing second instance are indistinguishable here, so this
-            // stays a blanket settle and liveness is asserted at completion instead.
+            // The lifetime process lock was acquired before opening SQLite. A live owner cannot
+            // be mistaken for a stopped owner, including while cancellation is still draining.
             interrupted = await ExecuteAsync(
                 connection,
                 transaction,
@@ -305,6 +318,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
 
     public async ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -327,6 +341,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         LocalAutomationSaveRequest request,
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         ArgumentNullException.ThrowIfNull(request);
         using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.save");
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -356,6 +371,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         LocalAutomationRemoveRequest request,
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         ArgumentNullException.ThrowIfNull(request);
         using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.remove");
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -382,6 +398,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     public async ValueTask<IReadOnlyList<LocalAutomationRunnerEntry>> GetRunnerViewAsync(
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -422,7 +439,31 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
+        return await TryBeginOccurrenceCoreAsync(entry,
+            LocalAutomationOccurrence.Create(entry, runKey, scheduledForUtc), observedCaptureSequence,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<bool> TryBeginOccurrenceAsync(
+        LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(occurrence);
+        return await TryBeginOccurrenceCoreAsync(new(occurrence.Definition, occurrence.DefinitionVersion,
+            occurrence.RevisionSha256, null, null), occurrence, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<bool> TryBeginOccurrenceCoreAsync(
+        LocalAutomationRunnerEntry entry,
+        LocalAutomationOccurrence occurrence,
+        long? observedCaptureSequence,
+        CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        ArgumentNullException.ThrowIfNull(entry);
+        if (!occurrence.IsValid() || occurrence.SourceWindow is { } planned && !planned.IsEligibleForFinal(Now()))
+        {
+            return false;
+        }
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -431,26 +472,42 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 .ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
             var now = Now();
+            var current = await ReadDefinitionAsync(
+                connection, transaction, entry.Definition.DefinitionId, cancellationToken).ConfigureAwait(false);
+            if (current is null || !current.Definition.Enabled || current.Version != entry.Version ||
+                current.RevisionSha256 != entry.RevisionSha256 || current.Definition != entry.Definition ||
+                occurrence.SourceWindow is { } retained && !retained.IsEligibleForFinal(now) ||
+                _registry.Validate(current.Definition) is not null ||
+                await ScalarLongAsync(connection, transaction,
+                    "SELECT COUNT(*) FROM automation_runs WHERE definition_id = $id AND outcome = 'Running';",
+                    cancellationToken, ("$id", entry.Definition.DefinitionId)).ConfigureAwait(false) != 0)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return false;
+            }
             var inserted = await ExecuteAsync(
                 connection,
                 transaction,
                 """
                 INSERT INTO automation_runs(
                     definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
-                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence, claimant)
+                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence, claimant,
+                    occurrence_json, occurrence_id)
                 VALUES ($definition, $key, $revision, $trigger, $scheduled, $started, NULL, 'Running', '', $observed,
-                        $claimant)
+                        $claimant, $occurrence, $occurrenceId)
                 ON CONFLICT(run_key) DO NOTHING;
                 """,
                 cancellationToken,
                 ("$definition", entry.Definition.DefinitionId),
-                ("$key", runKey),
+                ("$key", occurrence.RunKey),
                 ("$revision", entry.RevisionSha256),
                 ("$trigger", entry.Definition.TriggerKind.ToString()),
-                ("$scheduled", ToUnixMilliseconds(scheduledForUtc)),
+                ("$scheduled", ToUnixMilliseconds(occurrence.ScheduledForUtc)),
                 ("$started", ToUnixMilliseconds(now)),
                 ("$observed", observedCaptureSequence is { } sequence ? sequence : (object)DBNull.Value),
-                ("$claimant", _claimant)).ConfigureAwait(false);
+                ("$claimant", _claimant),
+                ("$occurrence", JsonSerializer.Serialize(occurrence, SerializerOptions)),
+                ("$occurrenceId", occurrence.IdentitySha256)).ConfigureAwait(false);
             if (inserted == 0)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -462,7 +519,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 connection,
                 transaction,
                 entry.Definition.DefinitionId,
-                entry.Definition.TriggerKind == LocalAutomationTriggerKind.Periodic ? scheduledForUtc : null,
+                entry.Definition.TriggerKind != LocalAutomationTriggerKind.CaptureRelative ? occurrence.ScheduledForUtc : null,
                 entry.Definition.TriggerKind == LocalAutomationTriggerKind.CaptureRelative
                     ? observedCaptureSequence
                     : null,
@@ -483,8 +540,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         string detail,
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority(allowDrainingCompletion: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         ArgumentNullException.ThrowIfNull(detail);
+        if (outcome is LocalAutomationRunOutcome.Running or LocalAutomationRunOutcome.Queued || !Enum.IsDefined(outcome))
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome));
+        }
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -498,7 +560,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 """
                 UPDATE automation_runs
                 SET outcome = $outcome, detail = $detail, completed_unix_ms = $now
-                WHERE run_key = $key AND (outcome = 'Running' OR claimant = $claimant);
+                WHERE run_key = $key AND outcome = 'Running' AND claimant = $claimant;
                 """,
                 cancellationToken,
                 ("$outcome", outcome.ToString()),
@@ -508,8 +570,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 ("$claimant", _claimant)).ConfigureAwait(false);
             if (settled == 0)
             {
-                // The claimed row is neither still running nor ours: retention removed it, or another
-                // instance settled it and a third claimed it. Losing a real outcome must never pass silently.
+                // A stale completion has no authority to change a terminal or differently owned run.
                 RunCompletionLost(_logger, runKey, outcome.ToString(), null);
             }
             var definitionId = await ScalarStringAsync(
@@ -539,6 +600,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         long? observedCaptureSequence,
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         ArgumentNullException.ThrowIfNull(entry);
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         ArgumentNullException.ThrowIfNull(detail);
@@ -549,6 +611,14 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var current = await ReadDefinitionAsync(connection, transaction, entry.Definition.DefinitionId, cancellationToken)
+                .ConfigureAwait(false);
+            if (current is null || !current.Definition.Enabled || current.Version != entry.Version ||
+                current.RevisionSha256 != entry.RevisionSha256)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
             var now = ToUnixMilliseconds(Now());
             await ExecuteAsync(
                 connection,
@@ -557,7 +627,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 INSERT INTO automation_runs(
                     definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
                     started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence, claimant)
-                VALUES ($definition, $key, $revision, $trigger, $scheduled, $now, $now, $outcome, $detail, $observed,
+                VALUES ($definition, $key, $revision, $trigger, $scheduled, NULL, $now, $outcome, $detail, $observed,
                         $claimant)
                 ON CONFLICT(run_key) DO NOTHING;
                 """,
@@ -587,6 +657,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         long captureSequence,
         CancellationToken cancellationToken)
     {
+        using var operation = RetainOperationAuthority();
         ArgumentException.ThrowIfNullOrWhiteSpace(definitionId);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -606,7 +677,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         }
     }
 
-    public void Dispose() => _gate.Dispose();
+    public IDisposable RetainExecutionAuthority() => _authority.Retain();
+
+    public void Dispose() => _authority.Dispose();
 
     private async ValueTask<LocalAutomationCommandResult> SaveCoreAsync(
         SqliteConnection connection,
@@ -638,7 +711,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             request.TaskTarget,
             request.TriggerKind,
             request.TriggerInterval,
-            epoch);
+            epoch,
+            request.SourceWindow);
         if (LocalAutomationDefinitionValidator.Validate(definition) is { } invalid)
         {
             return await RejectAsync(
@@ -714,15 +788,16 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             """
             INSERT INTO automation_definitions(
                 definition_id, name, enabled, task_kind, task_target, trigger_kind, trigger_interval,
-                trigger_epoch_unix_ms, version, revision_sha256, updated_unix_ms, actor, reason)
+                trigger_epoch_unix_ms, version, revision_sha256, updated_unix_ms, actor, reason, source_window_json)
             VALUES ($id, $name, $enabled, $taskKind, $target, $triggerKind, $interval, $epoch, $version,
-                    $revision, $now, $actor, $reason)
+                    $revision, $now, $actor, $reason, $sourceWindow)
             ON CONFLICT(definition_id) DO UPDATE SET
                 name = excluded.name, enabled = excluded.enabled, task_kind = excluded.task_kind,
                 task_target = excluded.task_target, trigger_kind = excluded.trigger_kind,
                 trigger_interval = excluded.trigger_interval, trigger_epoch_unix_ms = excluded.trigger_epoch_unix_ms,
                 version = excluded.version, revision_sha256 = excluded.revision_sha256,
-                updated_unix_ms = excluded.updated_unix_ms, actor = excluded.actor, reason = excluded.reason;
+                updated_unix_ms = excluded.updated_unix_ms, actor = excluded.actor, reason = excluded.reason,
+                source_window_json = excluded.source_window_json;
             """,
             cancellationToken,
             ("$id", definition.DefinitionId),
@@ -737,7 +812,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             ("$revision", revisionSha256),
             ("$now", now),
             ("$actor", request.Actor),
-            ("$reason", request.Reason is { } saveReason ? saveReason : (object)DBNull.Value)).ConfigureAwait(false);
+            ("$reason", request.Reason is { } saveReason ? saveReason : (object)DBNull.Value),
+            ("$sourceWindow", definition.SourceWindow is { } policy
+                ? JsonSerializer.Serialize(policy, SerializerOptions) : (object)DBNull.Value)).ConfigureAwait(false);
         await InsertRevisionAsync(
             connection, transaction, definition, version, revisionSha256, removed: false, now, request.Actor,
             request.Reason, cancellationToken).ConfigureAwait(false);
@@ -746,6 +823,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         // simply cleared: clearing would make every boundary since the epoch look like a missed occurrence.
         if (existing is not null &&
             (existing.Definition.TriggerKind != definition.TriggerKind ||
+             existing.Definition.SourceWindow != definition.SourceWindow ||
              (!existing.Definition.Enabled && definition.Enabled)))
         {
             await AnchorProgressAsync(connection, transaction, definition, Now(), cancellationToken)
@@ -813,6 +891,18 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         }
         var version = existing.Version + 1;
         var now = ToUnixMilliseconds(Now());
+        if (await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM automation_runs WHERE definition_id = $id AND outcome = 'Running';",
+                cancellationToken, ("$id", request.DefinitionId)).ConfigureAwait(false) != 0)
+        {
+            return await RejectAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                "automation.execution-still-running", "command", observedCaptureSequence, cancellationToken).ConfigureAwait(false);
+        }
+        await ExecuteAsync(connection, transaction, """
+            UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now,
+                detail = 'The definition was removed before this prepared occurrence started.'
+            WHERE definition_id = $id AND outcome = 'Queued';
+            """, cancellationToken, ("$now", now), ("$id", request.DefinitionId)).ConfigureAwait(false);
         await ExecuteAsync(
             connection, transaction, "DELETE FROM automation_definitions WHERE definition_id = $id;",
             cancellationToken, ("$id", request.DefinitionId)).ConfigureAwait(false);
@@ -985,9 +1075,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             transaction,
             """
             DELETE FROM automation_runs
-            WHERE definition_id = $id AND sequence NOT IN (
+            WHERE definition_id = $id AND outcome NOT IN ('Queued', 'Running') AND sequence NOT IN (
                 SELECT sequence FROM automation_runs
-                WHERE definition_id = $id ORDER BY sequence DESC LIMIT $keep);
+                WHERE definition_id = $id AND outcome NOT IN ('Queued', 'Running') ORDER BY sequence DESC LIMIT $keep);
             """,
             cancellationToken,
             ("$id", definitionId),
@@ -1005,25 +1095,30 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var occurrence = definition.TriggerKind == LocalAutomationTriggerKind.Periodic
-            ? ToUnixMilliseconds(LocalAutomationSchedule.LatestPeriodicBoundary(
-                definition.TriggerEpochUtc, definition.TriggerInterval, now))
-            : (object)DBNull.Value;
+        DateTimeOffset? occurrenceUtc = definition.TriggerKind switch
+        {
+            LocalAutomationTriggerKind.Periodic => LocalAutomationSchedule.LatestPeriodicBoundary(
+                definition.TriggerEpochUtc, definition.TriggerInterval, now),
+            LocalAutomationTriggerKind.SourceWindowClosed => now,
+            _ => null
+        };
         await ExecuteAsync(
             connection,
             transaction,
             """
             INSERT INTO automation_progress(
-                definition_id, last_occurrence_unix_ms, last_capture_sequence, updated_unix_ms)
-            VALUES ($id, $occurrence, NULL, $now)
+                definition_id, last_occurrence_unix_ms, last_occurrence_utc_ticks, last_capture_sequence, updated_unix_ms)
+            VALUES ($id, $occurrence, $ticks, NULL, $now)
             ON CONFLICT(definition_id) DO UPDATE SET
                 last_occurrence_unix_ms = excluded.last_occurrence_unix_ms,
+                last_occurrence_utc_ticks = excluded.last_occurrence_utc_ticks,
                 last_capture_sequence = NULL,
                 updated_unix_ms = excluded.updated_unix_ms;
             """,
             cancellationToken,
             ("$id", definition.DefinitionId),
-            ("$occurrence", occurrence),
+            ("$occurrence", occurrenceUtc is { } occurrence ? ToUnixMilliseconds(occurrence) : (object)DBNull.Value),
+            ("$ticks", occurrenceUtc is { } exact ? exact.UtcTicks : (object)DBNull.Value),
             ("$now", ToUnixMilliseconds(now))).ConfigureAwait(false);
     }
 
@@ -1040,16 +1135,18 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             transaction,
             """
             INSERT INTO automation_progress(
-                definition_id, last_occurrence_unix_ms, last_capture_sequence, updated_unix_ms)
-            VALUES ($id, $occurrence, $capture, $now)
+                definition_id, last_occurrence_unix_ms, last_occurrence_utc_ticks, last_capture_sequence, updated_unix_ms)
+            VALUES ($id, $occurrence, $ticks, $capture, $now)
             ON CONFLICT(definition_id) DO UPDATE SET
                 last_occurrence_unix_ms = COALESCE(excluded.last_occurrence_unix_ms, last_occurrence_unix_ms),
+                last_occurrence_utc_ticks = COALESCE(excluded.last_occurrence_utc_ticks, last_occurrence_utc_ticks),
                 last_capture_sequence = COALESCE(excluded.last_capture_sequence, last_capture_sequence),
                 updated_unix_ms = excluded.updated_unix_ms;
             """,
             cancellationToken,
             ("$id", definitionId),
             ("$occurrence", occurrenceUtc is { } value ? ToUnixMilliseconds(value) : (object)DBNull.Value),
+            ("$ticks", occurrenceUtc is { } exact ? exact.UtcTicks : (object)DBNull.Value),
             ("$capture", captureSequence is { } capture ? capture : (object)DBNull.Value),
             ("$now", ToUnixMilliseconds(now))).ConfigureAwait(false);
 
@@ -1106,11 +1203,14 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         {
             progress.TryGetValue(record.Definition.DefinitionId, out var value);
             var periodic = record.Definition.TriggerKind == LocalAutomationTriggerKind.Periodic;
+            var windowPlan = record.Definition.Enabled && record.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed
+                ? _windowPlanner?.Resolve(new(record.Definition, record.Version, record.RevisionSha256,
+                    value.LastOccurrenceUtc, value.LastCaptureSequence), Now()) : null;
             var nextRunUtc = periodic && record.Definition.Enabled
                 ? LocalAutomationSchedule.NextPeriodicDueUtc(
                     record.Definition.TriggerEpochUtc, record.Definition.TriggerInterval, value.LastOccurrenceUtc)
-                : (DateTimeOffset?)null;
-            var nextCapture = !periodic && record.Definition.Enabled
+                : windowPlan?.NextOccurrence?.ScheduledForUtc;
+            var nextCapture = record.Definition.TriggerKind == LocalAutomationTriggerKind.CaptureRelative && record.Definition.Enabled
                 ? LocalAutomationSchedule.NextCaptureSequence(
                     record.Definition.TriggerInterval, value.LastCaptureSequence)
                 : null;
@@ -1126,7 +1226,12 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                 nextRunUtc,
                 nextCapture,
                 lastRun,
-                history ?? []));
+                history ?? [])
+            {
+                NextOccurrence = windowPlan?.NextOccurrence,
+                WindowUnavailableReasonCode = windowPlan?.UnavailableReasonCode ??
+                    (record.Definition.SourceWindow is not null && _windowPlanner is null ? "automation.window-planner-unavailable" : null)
+            });
             if (nextRunUtc is { } due)
             {
                 calendar.Add(new LocalAutomationCalendarEntry(
@@ -1134,7 +1239,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                     record.Definition.Name,
                     record.Definition.TaskKind,
                     record.Definition.TaskTarget,
-                    due));
+                    due)
+                { Occurrence = windowPlan?.NextOccurrence });
             }
         }
         return new LocalAutomationOperatorState(
@@ -1145,7 +1251,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             states,
             [.. calendar.OrderBy(static entry => entry.DueUtc)
                 .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)],
-            runs);
+            runs)
+        {
+            RunningRunCount = checked((int)await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM automation_runs WHERE outcome = 'Running';", cancellationToken).ConfigureAwait(false)),
+            QueuedRunCount = checked((int)await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM automation_runs WHERE outcome = 'Queued';", cancellationToken).ConfigureAwait(false))
+        };
     }
 
     private sealed record DefinitionRecord(
@@ -1165,7 +1277,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         command.Transaction = transaction;
         command.CommandText = """
             SELECT definition_id, name, enabled, task_kind, task_target, trigger_kind, trigger_interval,
-                   trigger_epoch_unix_ms, version, revision_sha256, updated_unix_ms, actor, reason
+                   trigger_epoch_unix_ms, version, revision_sha256, updated_unix_ms, actor, reason, source_window_json
             FROM automation_definitions
             ORDER BY definition_id;
             """;
@@ -1182,7 +1294,9 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
                     reader.GetString(4),
                     ParseEnum<LocalAutomationTriggerKind>(reader.GetString(5)),
                     ReadInterval(reader.GetInt64(6)),
-                    FromUnixMilliseconds(reader.GetInt64(7))),
+                    FromUnixMilliseconds(reader.GetInt64(7)),
+                    await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false) ? null :
+                        JsonSerializer.Deserialize<LocalAutomationSourceWindowPolicy>(reader.GetString(13), SerializerOptions)),
                 reader.GetInt64(8),
                 reader.GetString(9),
                 FromUnixMilliseconds(reader.GetInt64(10)),
@@ -1212,13 +1326,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "SELECT definition_id, last_occurrence_unix_ms, last_capture_sequence FROM automation_progress;";
+            "SELECT definition_id, last_occurrence_utc_ticks, last_capture_sequence FROM automation_progress;";
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, (DateTimeOffset?, long?)>(StringComparer.Ordinal);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             results[reader.GetString(0)] = (
-                await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : FromUnixMilliseconds(reader.GetInt64(1)),
+                await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : new DateTimeOffset(reader.GetInt64(1), TimeSpan.Zero),
                 await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(2));
         }
         return results;
@@ -1234,7 +1348,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         command.Transaction = transaction;
         command.CommandText = """
             SELECT sequence, definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
-                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence
+                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
+                   occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
             ORDER BY sequence DESC
             LIMIT $limit;
@@ -1299,20 +1414,44 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private static async ValueTask<LocalAutomationRun> ReadRunAsync(
         SqliteDataReader reader,
         CancellationToken cancellationToken)
-        => new(
+    {
+        var occurrence = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null :
+            JsonSerializer.Deserialize<LocalAutomationOccurrence>(reader.GetString(11), SerializerOptions);
+        var run = new LocalAutomationRun(
             reader.GetInt64(0),
             reader.GetString(1),
             reader.GetString(2),
             reader.GetString(3),
             ParseEnum<LocalAutomationTriggerKind>(reader.GetString(4)),
-            FromUnixMilliseconds(reader.GetInt64(5)),
-            FromUnixMilliseconds(reader.GetInt64(6)),
+            occurrence?.ScheduledForUtc ?? FromUnixMilliseconds(reader.GetInt64(5)),
+            await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+                ? null : FromUnixMilliseconds(reader.GetInt64(6)),
             await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
                 ? null
                 : FromUnixMilliseconds(reader.GetInt64(7)),
             ParseEnum<LocalAutomationRunOutcome>(reader.GetString(8)),
             reader.GetString(9),
-            await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10));
+            await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10))
+        {
+            Occurrence = occurrence,
+            Attempt = checked((int)reader.GetInt64(12)),
+            Preparation = await reader.IsDBNullAsync(14, cancellationToken).ConfigureAwait(false) ? null :
+                JsonSerializer.Deserialize<LocalAutomationRunPreparation>(reader.GetString(14), SerializerOptions)
+        };
+        if (occurrence is null
+            ? run.Outcome is LocalAutomationRunOutcome.Running or LocalAutomationRunOutcome.Queued
+            : !occurrence.IsValid() || occurrence.Definition.DefinitionId != run.DefinitionId ||
+              occurrence.RevisionSha256 != run.RevisionSha256 || occurrence.Definition.TriggerKind != run.TriggerKind ||
+              occurrence.IdentitySha256 != reader.GetString(13) ||
+              ToUnixMilliseconds(occurrence.ScheduledForUtc) != reader.GetInt64(5) ||
+              run.RunKey != AttemptRunKey(occurrence.RunKey, run.Attempt) ||
+              run.Preparation is { } preparation && !preparation.IsValid() ||
+              run.Outcome == LocalAutomationRunOutcome.Queued && (run.StartedAtUtc is not null || run.Preparation is null))
+        {
+            throw new InvalidDataException("A retained automation occurrence does not match its journal identity.");
+        }
+        return run;
+    }
 
     /// <summary>Reads the newest run of every definition, independent of the projected run page.</summary>
     private static async ValueTask<Dictionary<string, LocalAutomationRun>> ReadLatestRunsAsync(
@@ -1324,7 +1463,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
         command.Transaction = transaction;
         command.CommandText = """
             SELECT sequence, definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
-                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence
+                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
+                   occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
             WHERE sequence IN (SELECT MAX(sequence) FROM automation_runs GROUP BY definition_id);
             """;
@@ -1376,21 +1516,7 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
 
     /// <summary>The revision hash covers the schema label and every definition field, and nothing else.</summary>
     internal static string ComputeRevisionSha256(LocalAutomationDefinition definition)
-    {
-        ArgumentNullException.ThrowIfNull(definition);
-        return CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            Schema = LocalAutomationContract.SchemaLabel,
-            definition.DefinitionId,
-            definition.Name,
-            definition.Enabled,
-            TaskKind = definition.TaskKind.ToString(),
-            definition.TaskTarget,
-            TriggerKind = definition.TriggerKind.ToString(),
-            definition.TriggerInterval,
-            TriggerEpochUnixMs = ToUnixMilliseconds(definition.TriggerEpochUtc)
-        });
-    }
+        => LocalAutomationContract.ComputeRevisionSha256(definition);
 
     private void Record(Activity? activity, string operation, LocalAutomationCommandStatus status)
     {
@@ -1414,6 +1540,8 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var path = ResolveDatabasePath();
+        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, path);
+        _authority.Acquire(_options.RawIngressRoot, Path.Combine(Path.GetDirectoryName(path)!, "local-automations.lock"));
         // Re-checked on every open rather than once per process: a sidecar can be replaced with a link
         // between opens, and the WAL and shared-memory files carry committed data just as the database does.
         EnsureDatabaseFilesArePhysical(path);
@@ -1440,6 +1568,13 @@ public sealed class SqliteLocalAutomationStore : ILocalAutomationStore, IDisposa
             }
         }, cancellationToken).ConfigureAwait(false);
         return connection;
+    }
+
+    private IDisposable RetainOperationAuthority(bool allowDrainingCompletion = false)
+    {
+        var path = ResolveDatabasePath();
+        _authority.Acquire(_options.RawIngressRoot, Path.Combine(Path.GetDirectoryName(path)!, "local-automations.lock"));
+        return _authority.Retain(allowDrainingCompletion);
     }
 
     /// <summary>Rejects a database or sidecar that is a symbolic link rather than a real file.</summary>
