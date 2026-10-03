@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 - "$repo_root" <<'PY'
+import json
+import itertools
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+import textwrap
+
+root = pathlib.Path(sys.argv[1])
+short = (root / ".github/workflows/development-v1.yml").read_text()
+full = (root / ".github/workflows/ci.yml").read_text()
+promotion = (root / ".github/workflows/promote-main.yml").read_text()
+
+
+def job(workflow, name):
+    # This guard binds the checked-in job/command shape; actionlint validates YAML.
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:\n|\Z)",
+        workflow, re.M | re.S,
+    )
+    return match.group(1) if match else ""
+
+
+def violations(short, full):
+    errors = []
+    preflight = job(short, "preflight")
+    build = job(short, "build-unit")
+    quality = job(full, "quality")
+    qualification_build = job(full, "build")
+
+    def require(condition, message):
+        if not condition:
+            errors.append(message)
+
+    require("name: Development v1 / Preflight" in preflight, "required Preflight name")
+    require("name: Development v1 / Build and Unit" in build, "required Build and Unit name")
+    require("needs: preflight" in build, "preflight dependency")
+    require(
+        "if: github.event_name == 'push' || github.event.pull_request.draft == false" in build,
+        "draft exclusion",
+    )
+    require(short.count("branches: [development/v1]") == 2, "v1 PR and push triggers")
+    require("cancel-in-progress: true" in short, "stale-run cancellation")
+    require("continue-on-error:" not in short, "required checks must fail closed")
+    for command in (
+        "ci:shell-syntax", "test:ci-classification", "test:coordination-guard",
+        "test:pr-review-tools", "test:development-v1-ci",
+    ):
+        require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    require(
+        re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
+        == ["restore", "build", "test"],
+        "one restore/build/Unit execution",
+    )
+    require("dotnet build HVO.SkyMonitor.v9.slnx" in build, "complete solution build")
+    require("--configuration Release" in build and "-warnaserror" in build, "Release warnings")
+    require("dotnet test HVO.SkyMonitor.v9.slnx" in build, "complete solution Unit selection")
+    require('--filter "TestCategory=Unit"' in build, "positive Unit filter")
+    require("--no-build" in build, "reuse this job's Release build")
+    require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
+    require(build.count("((remaining > 0)) || exit 124") == 3, "cumulative deadline guards")
+    require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 3,
+            "bounded commands")
+    require("720" in build and "timeout-minutes: 15" in build, "bounded workload and job")
+    require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
+    require(build.count("if: always()") == 2, "failure evidence summary and upload")
+    require("hvo-development-v1-ci-v4" in build, "versioned short-profile evidence")
+    for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
+                  "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
+                  '--collect:', "TestCategory=Integration", "gh workflow run ci.yml"):
+        require(heavy not in short, f"qualification work in short run: {heavy}")
+    for command in ("ci:shellcheck", "test:ci-shellcheck"):
+        require(f"          ./scripts/{command}\n" in quality, f"full Quality retains {command}")
+    require(
+        "run: dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj"
+        " --configuration Release" in qualification_build,
+        "full Build retains exhaustive category discovery",
+    )
+    require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
+            "category audit belongs to full qualification")
+    return errors
+
+
+errors = violations(short, full)
+if errors:
+    raise SystemExit("Development v1 CI contracts failed:\n- " + "\n- ".join(errors))
+
+# Mutation controls prove the checks reject costly creep and silent loss of gates.
+mutations = (
+    ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
+    ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
+    ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
+    ("warnings tolerated", short.replace("-warnaserror", ""), full),
+    ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
+    ("deadline removed", short.replace("((remaining > 0)) || exit 124", ":"), full),
+    ("errors tolerated", short + "\n    continue-on-error: true\n", full),
+    ("heavy lint returned", short + "\n          ./scripts/ci:shellcheck\n", full),
+    ("audit destination removed", short, full.replace(
+        "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj", "missing.csproj")),
+    ("lint destination removed", short, full.replace("./scripts/ci:shellcheck", ":")),
+    ("control guard removed", short.replace("./scripts/test:ci-classification", ":"), full),
+    ("evidence lost on failure", short.replace("if: always()", "if: success()"), full),
+)
+for name, candidate, qualification in mutations:
+    if not violations(candidate, qualification):
+        raise SystemExit(f"Mutation was not rejected: {name}")
+# Exercise the real final promotion step with an offline gh substitute. Creating
+# a PR must be draft; refreshing one must preserve its state; API errors must fail.
+promotion_step = promotion.split("      - name: Open or refresh the promotion pull request\n", 1)[1]
+promotion_script = textwrap.dedent(promotion_step.split("        run: |\n", 1)[1])
+promotion_settings = promotion_step.split("        run: |\n", 1)[0]
+shell_match = re.search(r"^        shell: (.+)$", promotion_settings, re.M)
+if shell_match and shell_match.group(1) != "bash":
+    raise SystemExit("Update the promotion regression for the configured shell")
+# Match Actions: unspecified Linux shell is bash -e; explicit bash also enables
+# pipefail. Removing shell: bash must therefore make the API-failure cases fail.
+promotion_shell = (["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c"]
+                   if shell_match else ["bash", "-e", "-c"])
+with tempfile.TemporaryDirectory(prefix="hvo-v1-ci-") as directory:
+    fixture = pathlib.Path(directory)
+    gh = fixture / "gh"
+    gh.write_text("""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["HVO_V1_TEST_CALLS"], "a") as output:
+    output.write(json.dumps(args) + "\\n")
+if args[:3] in (["api", "-X", "POST"], ["api", "-X", "PATCH"]):
+    if os.environ["HVO_V1_TEST_FAIL"] == "1":
+        sys.exit(23)
+    print("https://github.com/example/repo/pull/42")
+elif args[0] == "api" and "/compare/" in args[1]:
+    print("- aaaaaaaa fixture" + (" (#1142)" if os.environ["HVO_V1_TEST_REFERENCES"] == "1" else ""))
+elif args[0] == "api" and "/pulls?" in args[1]:
+    print(os.environ["HVO_V1_TEST_EXISTING"])
+else:
+    sys.exit(24)
+""")
+    gh.chmod(0o700)
+    for existing, failure, references in itertools.product(("", "42"), (False, True), (False, True)):
+        calls = fixture / "calls.jsonl"
+        calls.write_text("")
+        environment = dict(
+            os.environ, PATH=f"{fixture}:{os.environ['PATH']}",
+            REPOSITORY="example/repo", SOURCE="development/v1", TARGET="main",
+            SOURCE_SHA="a" * 40, TARGET_SHA="b" * 40, AHEAD="1",
+            RUN_URL="https://github.com/example/repo/actions/runs/1", TRIGGER="schedule",
+            GITHUB_STEP_SUMMARY=str(fixture / "summary.md"),
+            HVO_V1_TEST_CALLS=str(calls), HVO_V1_TEST_EXISTING=existing,
+            HVO_V1_TEST_FAIL="1" if failure else "0",
+            HVO_V1_TEST_REFERENCES="1" if references else "0",
+        )
+        result = subprocess.run(
+            [*promotion_shell, promotion_script],
+            env=environment, capture_output=True, text=True,
+        )
+        if (result.returncode != 0) != failure:
+            raise SystemExit(f"Promotion result was not fail-closed: {result.stderr}")
+        requests = [json.loads(line) for line in calls.read_text().splitlines()
+                     if json.loads(line)[:2] == ["api", "-X"]]
+        if len(requests) != 1:
+            raise SystemExit(f"Unexpected promotion mutations: {requests}")
+        request = requests[0]
+        if existing:
+            if request[:3] != ["api", "-X", "PATCH"] or any("draft=" in arg for arg in request):
+                raise SystemExit("Refreshing a promotion changed its draft/ready state")
+        elif request[:3] != ["api", "-X", "POST"] or "draft=true" not in request:
+            raise SystemExit("New promotion was not created as draft")
+print("Development v1 CI contracts passed; 12 mutation controls and 8 offline promotion cases passed.")
+PY
