@@ -150,7 +150,7 @@ public sealed class SunriseReportingCalendarTests
         {
             var period = calendar.Resolve(date.AddDays(day)).Period!;
             var again = calendar.Resolve(date.AddDays(day)).Period!;
-            Assert.AreEqual(period, again);
+            Assert.AreSame(period, again, "Immutable resolved periods are reused without rehashing their site and boundaries.");
         }
         Assert.AreEqual(SunriseReportingCalendar.MaximumCachedDates + 4, calculator.Calls);
         calendar.Resolve(date);

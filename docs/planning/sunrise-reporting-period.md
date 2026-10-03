@@ -7,7 +7,9 @@ closure, settle allowance and publication time remain separate facts.
 `SunriseReportingCalendar` binds an immutable deployment-location snapshot and the installed IANA time-zone rule
 identity. It resolves each local civil date through the existing `CaptureScheduleTimeZone` contract and asks
 Astronomy's `ISolarEventCalculator` for sunrise within that interval. It never uses a fixed sunrise or adds 24 hours.
-Neighbouring periods use the same resolved event. A period persists exact UTC `[start,end)` endpoints, both event
+Neighbouring periods use the same resolved event. Event and immutable resolved-period caches each retain at most
+256 dates; repeated attribution reuses the period identity without rehashing its site and endpoints. A period persists
+exact UTC `[start,end)` endpoints, both event
 algorithm identities, the complete site snapshot, time-zone rules hash and canonical period identity. A retry consumes
 that value without consulting the current site or wall clock. Changed configuration creates a different calendar.
 

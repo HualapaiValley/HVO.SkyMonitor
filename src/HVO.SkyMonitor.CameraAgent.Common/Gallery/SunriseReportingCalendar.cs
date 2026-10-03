@@ -19,6 +19,8 @@ public sealed class SunriseReportingCalendar
     private readonly ISolarEventCalculator _solar;
     private readonly Dictionary<DateOnly, SolarEventResult> _events = [];
     private readonly Queue<DateOnly> _cacheOrder = new();
+    private readonly Dictionary<DateOnly, SunriseReportingPeriodResolution> _periods = [];
+    private readonly Queue<DateOnly> _periodOrder = new();
     private readonly object _sync = new();
 
     public SunriseReportingCalendar(DeploymentLocationSnapshot site, ISolarEventCalculator? solar = null)
@@ -41,6 +43,25 @@ public sealed class SunriseReportingCalendar
     public string TimeZoneRulesSha256 { get; }
 
     public SunriseReportingPeriodResolution Resolve(DateOnly date)
+    {
+        lock (_sync)
+        {
+            if (_periods.TryGetValue(date, out var cached))
+            {
+                return cached;
+            }
+            var result = ResolveUncached(date);
+            if (_periods.Count == MaximumCachedDates)
+            {
+                _periods.Remove(_periodOrder.Dequeue());
+            }
+            _periods.Add(date, result);
+            _periodOrder.Enqueue(date);
+            return result;
+        }
+    }
+
+    private SunriseReportingPeriodResolution ResolveUncached(DateOnly date)
     {
         if (date == DateOnly.MaxValue)
         {
