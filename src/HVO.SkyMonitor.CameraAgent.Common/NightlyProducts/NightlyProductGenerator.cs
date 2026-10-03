@@ -6,6 +6,8 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
@@ -22,7 +24,7 @@ internal sealed record NightlyProductRunReport(
     int ProductsReused,
     int PendingWindows,
     int FailedWindows,
-    int NightsRecorded,
+    int FinalsRecorded,
     string? Note)
 {
     /// <summary>A bounded operator-facing summary of the run.</summary>
@@ -36,7 +38,7 @@ internal sealed record NightlyProductRunReport(
         builder.Append(CultureInfo.InvariantCulture, $"{NightlyProductContract.TargetFor(Kind)}: ")
             .Append(CultureInfo.InvariantCulture, $"{WindowsEvaluated} windows evaluated, {WindowsUnchanged} unchanged, ")
             .Append(CultureInfo.InvariantCulture, $"{ProductsPublished} products published, {ProductsReused} reused, ")
-            .Append(CultureInfo.InvariantCulture, $"{NightsRecorded} nights recorded, {PendingWindows} pending, ")
+            .Append(CultureInfo.InvariantCulture, $"{FinalsRecorded} final windows recorded, {PendingWindows} pending, ")
             .Append(CultureInfo.InvariantCulture, $"{FailedWindows} failed.");
         if (Note is not null)
         {
@@ -57,18 +59,17 @@ internal sealed record NightlyProductRunReport(
 /// </summary>
 internal sealed class NightlyProductGenerator : IDisposable
 {
-    internal const string KeogramSegmentVariant = "nightly-keogram-segment-v1";
-    internal const string KeogramNightVariant = "nightly-keogram-night-v1";
-    internal const string StarTrailSegmentVariant = "nightly-star-trail-segment-v1";
-    internal const string StarTrailRollupVariant = "nightly-star-trail-rollup-v1";
-    internal const string StarTrailNightVariant = "nightly-star-trail-night-v1";
+    internal const string KeogramSegmentVariant = "still-keogram-part-v2";
+    internal const string KeogramFinalVariant = "still-keogram-final-v2";
+    internal const string StarTrailSegmentVariant = "still-star-trail-part-v2";
+    internal const string StarTrailRollupVariant = "still-star-trail-rollup-v2";
+    internal const string StarTrailFinalVariant = "still-star-trail-final-v2";
     internal const string MixedSegmentRecipesReasonCode = "nightly.mixed-segment-recipes";
     internal const string RecipeFailedReasonCode = "nightly.recipe-failed";
-    private const string FingerprintSchemaVersion = "hvo-nightly-window-fingerprint-v1";
+    private const string FingerprintSchemaVersion = "hvo-still-window-fingerprint-v2";
 
     private readonly CameraAgentHostOptions _options;
     private readonly ICameraAgentConfigurationAccessor _configuration;
-    private readonly IObservingDayCalendarProvider _calendars;
     private readonly INightlyProductSourceReader _sources;
     private readonly SqliteNightlyProductStore _store;
     private readonly IPlanetEphemeris _ephemeris;
@@ -80,7 +81,6 @@ internal sealed class NightlyProductGenerator : IDisposable
     public NightlyProductGenerator(
         IOptions<CameraAgentHostOptions> options,
         ICameraAgentConfigurationAccessor configuration,
-        IObservingDayCalendarProvider calendars,
         INightlyProductSourceReader sources,
         SqliteNightlyProductStore store,
         IPlanetEphemeris ephemeris,
@@ -90,7 +90,6 @@ internal sealed class NightlyProductGenerator : IDisposable
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _configuration = configuration;
-        _calendars = calendars;
         _sources = sources;
         _store = store;
         _ephemeris = ephemeris;
@@ -101,12 +100,12 @@ internal sealed class NightlyProductGenerator : IDisposable
     public void Dispose() => _run.Dispose();
 
     /// <summary>Runs one scheduled occurrence. Runs of either kind are serialized within the process.</summary>
-    internal async ValueTask<NightlyProductRunReport> RunAsync(NightlyProductKind kind, CancellationToken cancellationToken)
+    internal async ValueTask<NightlyProductRunReport> RunAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
     {
         await _run.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await RunCoreAsync(kind, cancellationToken).ConfigureAwait(false);
+            return await RunCoreAsync(occurrence, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -114,41 +113,46 @@ internal sealed class NightlyProductGenerator : IDisposable
         }
     }
 
-    private async ValueTask<NightlyProductRunReport> RunCoreAsync(NightlyProductKind kind, CancellationToken cancellationToken)
+    private async ValueTask<NightlyProductRunReport> RunCoreAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
     {
-        var options = _options.NightlyProducts;
-        if (!options.Enabled || string.IsNullOrWhiteSpace(options.SourceNodeId))
+        ArgumentNullException.ThrowIfNull(occurrence);
+        if (!occurrence.IsValid() || occurrence.SourceWindow is not { } sourceWindow ||
+            !NightlyProductPreset.TryParseTarget(occurrence.Definition.TaskTarget, out var kind))
         {
-            return NotReady(kind, "Nightly product generation is disabled in this CameraAgent's startup configuration.");
+            throw new ArgumentException("A still producer requires a valid retained source-window occurrence.", nameof(occurrence));
+        }
+        var expectedSelection = kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
+            : LocalAutomationSourceSelection.DarkNightActualSources;
+        if (sourceWindow.Policy.Selection != expectedSelection)
+            throw new ArgumentException("The source selection does not match the still product kind.", nameof(occurrence));
+        var options = _options.NightlyProducts;
+        if (!options.Enabled || !NightlyProductPreset.Matches(occurrence.Definition.TaskTarget, kind, options))
+        {
+            return NotReady(kind, "The retained producer preset is unavailable; current settings cannot replace it.");
+        }
+        if (!sourceWindow.IsEligibleForFinal(_timeProvider.GetUtcNow()))
+        {
+            return NotReady(kind, "The retained source window has not settled.");
         }
         if (!_configuration.IsConfigured)
         {
             return NotReady(kind, "The camera configuration has not been loaded yet.");
         }
         var configuration = await _configuration.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
-        var context = new RunContext(kind, options, configuration, _timeProvider.GetUtcNow().ToUniversalTime());
-        var settle = TimeSpan.FromSeconds(options.SettleSeconds);
-        foreach (var day in NightlyProductWindowPlanner.ResolveDays(_calendars.Current, context.NowUtc))
+        if (!string.Equals(options.RigProfileSha256, RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig),
+                StringComparison.OrdinalIgnoreCase))
         {
-            var windows = NightlyProductWindowPlanner.SegmentWindows(day, options.SegmentMinutes);
-            var complete = true;
-            foreach (var window in windows)
-            {
-                if (!NightlyProductWindowPlanner.IsDue(window.EndUtc, settle, context.NowUtc))
-                {
-                    complete = false;
-                    break;
-                }
-                complete &= await EvaluateSegmentAsync(context, window, cancellationToken).ConfigureAwait(false);
-            }
-            if (complete && NightlyProductWindowPlanner.IsDue(day.EndUtc, settle, context.NowUtc))
-            {
-                await EvaluateNightAsync(context, day, windows, cancellationToken).ConfigureAwait(false);
-            }
+            return NotReady(kind, "The retained producer rig is unavailable; current geometry cannot replace it.");
+        }
+        var context = new RunContext(kind, options, configuration, _timeProvider.GetUtcNow().ToUniversalTime(), occurrence);
+        var window = new NightlyProductWindow(sourceWindow.ReportingPeriod.ReportDate, sourceWindow.StartUtc, sourceWindow.EndUtc);
+        if (await EvaluateSegmentAsync(context, window, cancellationToken).ConfigureAwait(false))
+        {
+            await EvaluateNightAsync(context, window, [window], cancellationToken).ConfigureAwait(false);
         }
         return new NightlyProductRunReport(
             kind, Ready: true, context.WindowsEvaluated, context.WindowsUnchanged, context.Published, context.Reused,
-            context.PendingWindows, context.FailedWindows, context.NightsRecorded,
+            context.PendingWindows, context.FailedWindows, context.FinalsRecorded,
             context.GeometryUnavailable ? "The rig projection could not produce keogram geometry." : null);
     }
 
@@ -170,7 +174,7 @@ internal sealed class NightlyProductGenerator : IDisposable
                 reason => unsupported[reason] = unsupported.GetValueOrDefault(reason) + 1,
                 cancellationToken).ConfigureAwait(false);
             var candidateCount = candidates.Count + unsupported.Values.Sum();
-            if (candidates.Count > NightlyProductContract.MaximumWindowCandidates)
+            if (candidateCount > NightlyProductContract.MaximumWindowCandidates)
             {
                 // Never truncated: the window is rejected and names the bound it exceeded.
                 return await RecordUnlessUnchangedAsync(
@@ -189,10 +193,18 @@ internal sealed class NightlyProductGenerator : IDisposable
             var admission = NightlyProductAdmission.Admit(
                 candidates,
                 context.RigProfileSha256,
-                context.MaximumSolarAltitudeDegrees,
+                context.Occurrence.SourceWindow!,
+                context.Options.SourceRecipeIdentitySha256!,
                 candidate => Locate(candidate, context.Configuration),
                 _ephemeris,
                 unsupported);
+            if (admission.Admitted.Any(static candidate => candidate.PayloadBytes <= 0 ||
+                    candidate.PayloadBytes > NightlyProductRecipeLimits.MaximumSourceBytes))
+            {
+                return await RecordUnlessUnchangedAsync(context, NightlyProductScope.Segment, window,
+                    NightlyProductWindowDisposition.Rejected, "nightly.source-byte-bound", candidateCount, [],
+                    admission.Exclusions, cancellationToken).ConfigureAwait(false);
+            }
             if (admission.Admitted.Count == 0)
             {
                 return await RecordUnlessUnchangedAsync(
@@ -212,6 +224,26 @@ internal sealed class NightlyProductGenerator : IDisposable
             var byArtifact = admission.Admitted.ToDictionary(static candidate => candidate.ArtifactId);
             var productIds = new List<Guid>();
             var parts = Partition(admission.Admitted, context.Options.MaximumSegmentSources);
+            var requiredExecutions = parts.Count + 1;
+            if (context.Kind == NightlyProductKind.StarTrail)
+            {
+                var count = parts.Count;
+                var fanIn = Math.Max(2, Math.Min(context.Options.MaximumSegmentSources,
+                    (int)(NightlyProductRecipeLimits.MaximumSourceBytes / admission.Admitted.Max(static source => source.PayloadBytes))));
+                while (count > fanIn)
+                {
+                    count = (count + fanIn - 1) / fanIn;
+                    requiredExecutions += count;
+                }
+            }
+            if (requiredExecutions > context.Options.MaximumSegmentsPerRun)
+            {
+                context.FailedWindows = 1;
+                return await RecordAsync(context, NightlyProductScope.Segment, window,
+                    NightlyProductWindowDisposition.Rejected, NightlyProductContract.ExecutionBoundReasonCode,
+                    candidateCount, admission.Admitted.Count, admission.Exclusions, fingerprint, [], cancellationToken)
+                    .ConfigureAwait(false);
+            }
             for (var ordinal = 0; ordinal < parts.Count; ordinal++)
             {
                 var part = parts[ordinal];
@@ -221,7 +253,7 @@ internal sealed class NightlyProductGenerator : IDisposable
                     window,
                     ordinal,
                     context.SegmentRecipe,
-                    context.RecipeOptions,
+                    context.SegmentRecipeOptions,
                     context.SegmentVariant,
                     ProcessingInputSelector.RecipeResult(
                         FrameArtifactRole.Preview, part[0].Variant, part[0].RecipeIdentitySha256),
@@ -237,6 +269,7 @@ internal sealed class NightlyProductGenerator : IDisposable
                 }
                 if (result.RejectionReasonCode is { } reason)
                 {
+                    context.FailedWindows = 1;
                     return await RecordAsync(
                         context, NightlyProductScope.Segment, window, NightlyProductWindowDisposition.Rejected, reason,
                         candidateCount, admission.Admitted.Count, admission.Exclusions, fingerprint, [],
@@ -253,7 +286,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         {
             // A source that cannot be verified fails this window only. It stays unrecorded, so the next run retries
             // it and the night waits for it rather than composing around it.
-            context.FailedWindows++;
+            context.FailedWindows = 1;
             return false;
         }
     }
@@ -261,20 +294,29 @@ internal sealed class NightlyProductGenerator : IDisposable
     /// <summary>Composes a settled observing day from the current products of its segment windows.</summary>
     private async ValueTask EvaluateNightAsync(
         RunContext context,
-        ObservingDay day,
+        NightlyProductWindow day,
         IReadOnlyList<NightlyProductWindow> windows,
         CancellationToken cancellationToken)
     {
-        var night = new NightlyProductWindow(day.Date, day.StartUtc, day.EndUtc);
+        var night = new NightlyProductWindow(day.ObservingDate, day.StartUtc, day.EndUtc);
         try
         {
             var segments = new List<NightlyProductDetail>();
             foreach (var window in windows)
             {
                 var state = await _store.ReadWindowAsync(
-                    context.Kind, NightlyProductScope.Segment, window.StartUtc, cancellationToken).ConfigureAwait(false);
+                    context.Kind, NightlyProductScope.Segment, window.StartUtc, cancellationToken, context.Occurrence.IdentitySha256).ConfigureAwait(false);
                 if (state is null)
                 {
+                    return;
+                }
+                if (state.Status.Disposition == NightlyProductWindowDisposition.Rejected)
+                {
+                    await RecordUnlessUnchangedAsync(context, NightlyProductScope.Final, night,
+                        NightlyProductWindowDisposition.Rejected, state.Status.ReasonCode, state.Status.CandidateCount,
+                        [state.FingerprintSha256], state.Status.Exclusions, cancellationToken).ConfigureAwait(false);
+                    context.FailedWindows = 1;
+                    context.FinalsRecorded++;
                     return;
                 }
                 foreach (var productId in state.ProductIds)
@@ -288,9 +330,9 @@ internal sealed class NightlyProductGenerator : IDisposable
             if (segments.Count == 0)
             {
                 await RecordUnlessUnchangedAsync(
-                    context, NightlyProductScope.Night, night, NightlyProductWindowDisposition.NoSources, null, 0, [],
+                    context, NightlyProductScope.Final, night, NightlyProductWindowDisposition.NoSources, null, 0, [],
                     empty, cancellationToken).ConfigureAwait(false);
-                context.NightsRecorded++;
+                context.FinalsRecorded++;
                 return;
             }
             if (context.Kind == NightlyProductKind.Keogram && context.Geometry is null)
@@ -299,7 +341,7 @@ internal sealed class NightlyProductGenerator : IDisposable
             }
             else if (context.Kind == NightlyProductKind.Keogram && segments.Count > NightlyProductRecipeLimits.MaximumSourceCount)
             {
-                reason = NightlyProductContract.NightSegmentBoundReasonCode;
+                reason = NightlyProductContract.FinalSegmentBoundReasonCode;
             }
             else if (segments.Select(static segment => (segment.Variant, segment.RecipeIdentitySha256)).Distinct().Count() > 1)
             {
@@ -308,15 +350,16 @@ internal sealed class NightlyProductGenerator : IDisposable
             var identities = segments.Select(static segment => segment.OutputIdentitySha256).ToArray();
             if (reason is not null)
             {
+                context.FailedWindows = 1;
                 await RecordUnlessUnchangedAsync(
-                    context, NightlyProductScope.Night, night, NightlyProductWindowDisposition.Rejected, reason,
+                    context, NightlyProductScope.Final, night, NightlyProductWindowDisposition.Rejected, reason,
                     segments.Count, identities, empty, cancellationToken).ConfigureAwait(false);
-                context.NightsRecorded++;
+                context.FinalsRecorded++;
                 return;
             }
 
-            var fingerprint = Fingerprint(context, NightlyProductScope.Night, identities, segments.Count, empty, null);
-            if (await IsUnchangedAsync(context, NightlyProductScope.Night, night.StartUtc, fingerprint, cancellationToken)
+            var fingerprint = Fingerprint(context, NightlyProductScope.Final, identities, segments.Count, empty, null);
+            if (await IsUnchangedAsync(context, NightlyProductScope.Final, night.StartUtc, fingerprint, cancellationToken)
                     .ConfigureAwait(false))
             {
                 return;
@@ -331,7 +374,7 @@ internal sealed class NightlyProductGenerator : IDisposable
             }
             await RecordAsync(
                 context,
-                NightlyProductScope.Night,
+                NightlyProductScope.Final,
                 night,
                 outcome.RejectionReasonCode is null
                     ? NightlyProductWindowDisposition.Produced
@@ -343,11 +386,11 @@ internal sealed class NightlyProductGenerator : IDisposable
                 fingerprint,
                 outcome.RejectionReasonCode is null ? outcome.ProductIds : [],
                 cancellationToken).ConfigureAwait(false);
-            context.NightsRecorded++;
+            context.FinalsRecorded++;
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException)
         {
-            context.FailedWindows++;
+            context.FailedWindows = 1;
         }
     }
 
@@ -367,11 +410,11 @@ internal sealed class NightlyProductGenerator : IDisposable
                 context.KeogramOptions))]);
         var result = await ProduceFromProductsAsync(
             context,
-            NightlyProductScope.Night,
+            NightlyProductScope.Final,
             night,
             0,
             BuiltInProcessingRecipes.KeogramAssembly,
-            KeogramNightVariant,
+            KeogramFinalVariant,
             [KeogramGeometryJson.CreateAuxiliaryInput(context.Geometry!), KeogramSegmentAxesJson.CreateAuxiliaryInput(axes)],
             segments,
             cancellationToken).ConfigureAwait(false);
@@ -388,7 +431,8 @@ internal sealed class NightlyProductGenerator : IDisposable
     {
         // Lighten is associative, so reducing in bounded rollups yields the pixels of one direct reduction while
         // every intermediate keeps its own published lineage.
-        var fanIn = Math.Max(2, context.Options.MaximumSegmentSources);
+        var fanIn = Math.Max(2, Math.Min(context.Options.MaximumSegmentSources,
+            (int)(NightlyProductRecipeLimits.MaximumSourceBytes / segments.Max(static product => product.PayloadBytes))));
         var products = new List<Guid>();
         IReadOnlyList<NightlyProductDetail> level = segments;
         var rollupOrdinal = 0;
@@ -415,7 +459,7 @@ internal sealed class NightlyProductGenerator : IDisposable
             level = next;
         }
         var final = await ProduceFromProductsAsync(
-            context, NightlyProductScope.Night, night, 0, BuiltInProcessingRecipes.StarTrail, StarTrailNightVariant,
+            context, NightlyProductScope.Final, night, 0, BuiltInProcessingRecipes.StarTrail, StarTrailFinalVariant,
             null, level, cancellationToken).ConfigureAwait(false);
         if (final.Pending)
         {
@@ -440,6 +484,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         IReadOnlyList<NightlyProductDetail> inputs,
         CancellationToken cancellationToken)
     {
+        if (inputs.Sum(static input => input.PayloadBytes) > NightlyProductRecipeLimits.MaximumSourceBytes)
+            return ValueTask.FromResult(ProduceResult.Rejected("nightly.source-byte-bound"));
         var byId = inputs.ToDictionary(static input => input.Summary.ProductId);
         return ProduceAsync(
             context,
@@ -486,6 +532,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         Func<Guid, (NightlyProductSourceKind Kind, string OutputIdentitySha256, Guid? CaptureId)> describe,
         CancellationToken cancellationToken)
     {
+        auxiliaryInputs = [.. auxiliaryInputs ?? [], NightlyProductPreset.BindOccurrence(context.Occurrence)];
         var recipeIdentity = BuiltInProcessingRecipes.CreateExecutionIdentity(
             recipeName, recipeOptions, selector, annotation: null, auxiliaryInputs).IdentitySha256;
         // The recipes order sources by observation start then artifact identity; the same order predicts the identity.
@@ -496,6 +543,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         var predicted = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Preview, variant, recipeIdentity, orderedIds);
         if (await _store.FindByOutputIdentityAsync(predicted, cancellationToken).ConfigureAwait(false) is { } existing)
         {
+            await _store.VerifyPublicationAsync(existing.Summary.ProductId, cancellationToken).ConfigureAwait(false);
             context.Reused++;
             return ProduceResult.Produced(existing.Summary.ProductId);
         }
@@ -530,7 +578,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         var detail = await _store.PublishAsync(
             new NightlyProductPublication(
                 context.Kind, scope, window.ObservingDate, window.StartUtc, window.EndUtc, ordinal, recipeName, product,
-                lineage, context.Options.RenditionJpegQuality),
+                lineage, context.Options.RenditionJpegQuality) { Occurrence = context.Occurrence },
             cancellationToken).ConfigureAwait(false);
         context.Published++;
         return ProduceResult.Produced(detail.Summary.ProductId);
@@ -547,19 +595,22 @@ internal sealed class NightlyProductGenerator : IDisposable
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumSources, 1);
         var parts = new List<IReadOnlyList<NightlyProductCandidate>>();
         var current = new List<NightlyProductCandidate>();
+        long currentBytes = 0;
         foreach (var candidate in admitted
             .OrderBy(static candidate => candidate.ExposureStartedUtc)
             .ThenBy(static candidate => candidate.ArtifactId))
         {
-            if (current.Count == maximumSources ||
+            if (current.Count == maximumSources || currentBytes + candidate.PayloadBytes > NightlyProductRecipeLimits.MaximumSourceBytes ||
                 current.Count > 0 &&
                 (!string.Equals(current[0].Variant, candidate.Variant, StringComparison.Ordinal) ||
                  !string.Equals(current[0].RecipeIdentitySha256, candidate.RecipeIdentitySha256, StringComparison.OrdinalIgnoreCase)))
             {
                 parts.Add(current);
                 current = [];
+                currentBytes = 0;
             }
             current.Add(candidate);
+            currentBytes += candidate.PayloadBytes;
         }
         if (current.Count > 0)
         {
@@ -599,10 +650,12 @@ internal sealed class NightlyProductGenerator : IDisposable
         string fingerprint,
         CancellationToken cancellationToken)
     {
-        var existing = await _store.ReadWindowAsync(context.Kind, scope, windowStartUtc, cancellationToken)
+        var existing = await _store.ReadWindowAsync(context.Kind, scope, windowStartUtc, cancellationToken, context.Occurrence.IdentitySha256)
             .ConfigureAwait(false);
         if (existing is not null && string.Equals(existing.FingerprintSha256, fingerprint, StringComparison.Ordinal))
         {
+            foreach (var productId in existing.ProductIds)
+                await _store.VerifyPublicationAsync(productId, cancellationToken).ConfigureAwait(false);
             context.WindowsUnchanged++;
             return true;
         }
@@ -643,10 +696,11 @@ internal sealed class NightlyProductGenerator : IDisposable
         IReadOnlyList<Guid> productIds,
         CancellationToken cancellationToken)
     {
+        if (disposition == NightlyProductWindowDisposition.Rejected) context.FailedWindows = 1;
         await _store.RecordWindowAsync(
             new NightlyProductWindowStatus(
                 context.Kind, scope, window.ObservingDate, window.StartUtc, window.EndUtc, disposition, reasonCode,
-                candidateCount, admittedCount, exclusions, context.NowUtc),
+                candidateCount, admittedCount, exclusions, context.NowUtc) { Occurrence = context.Occurrence },
             fingerprint,
             productIds,
             cancellationToken).ConfigureAwait(false);
@@ -676,7 +730,7 @@ internal sealed class NightlyProductGenerator : IDisposable
                 : null,
             recipeOptions = context.RecipeOptions,
             maximumSegmentSources = context.Options.MaximumSegmentSources,
-            maximumSolarAltitudeDegrees = context.MaximumSolarAltitudeDegrees,
+            occurrenceIdentitySha256 = context.Occurrence.IdentitySha256,
             renditionJpegQuality = context.Options.RenditionJpegQuality,
             inputs,
             candidateCount,
@@ -721,8 +775,10 @@ internal sealed class NightlyProductGenerator : IDisposable
             NightlyProductKind kind,
             NightlyProductOptions options,
             CameraModuleConfig configuration,
-            DateTimeOffset nowUtc)
+            DateTimeOffset nowUtc,
+            LocalAutomationOccurrence occurrence)
         {
+            Occurrence = occurrence;
             Kind = kind;
             Options = options;
             Configuration = configuration;
@@ -735,10 +791,14 @@ internal sealed class NightlyProductGenerator : IDisposable
                 new StarTrailRecipeOptions(NightlyProductRecipeLimits.MaximumSourceCount));
             if (kind == NightlyProductKind.Keogram)
             {
-                MaximumSolarAltitudeDegrees = options.KeogramMaximumSolarAltitudeDegrees;
                 SegmentRecipe = BuiltInProcessingRecipes.Keogram;
                 SegmentVariant = KeogramSegmentVariant;
-                RecipeOptions = JsonSerializer.SerializeToElement(KeogramOptions);
+                SegmentRecipeOptions = JsonSerializer.SerializeToElement(KeogramOptions);
+                RecipeOptions = JsonSerializer.SerializeToElement(KeogramOptions with
+                {
+                    PlannedAxis = new PlannedKeogramAxis(occurrence.SourceWindow!.StartUtc, occurrence.SourceWindow.EndUtc,
+                        TimeSpan.FromSeconds(options.KeogramColumnSeconds))
+                });
                 try
                 {
                     Geometry = KeogramGeometryV1.Create(RigProjectionContextFactory.Create(configuration.Rig), RigProfileSha256);
@@ -751,9 +811,9 @@ internal sealed class NightlyProductGenerator : IDisposable
             }
             else
             {
-                MaximumSolarAltitudeDegrees = options.StarTrailMaximumSolarAltitudeDegrees;
                 SegmentRecipe = BuiltInProcessingRecipes.StarTrail;
                 SegmentVariant = StarTrailSegmentVariant;
+                SegmentRecipeOptions = StarTrailRecipeOptions;
                 RecipeOptions = StarTrailRecipeOptions;
             }
         }
@@ -763,7 +823,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         internal CameraModuleConfig Configuration { get; }
         internal DateTimeOffset NowUtc { get; }
         internal string RigProfileSha256 { get; }
-        internal double MaximumSolarAltitudeDegrees { get; }
+        internal LocalAutomationOccurrence Occurrence { get; }
+        internal JsonElement SegmentRecipeOptions { get; }
         internal KeogramRecipeOptions KeogramOptions { get; }
         internal JsonElement StarTrailRecipeOptions { get; }
         internal JsonElement RecipeOptions { get; }
@@ -779,6 +840,6 @@ internal sealed class NightlyProductGenerator : IDisposable
         internal int Reused { get; set; }
         internal int PendingWindows { get; set; }
         internal int FailedWindows { get; set; }
-        internal int NightsRecorded { get; set; }
+        internal int FinalsRecorded { get; set; }
     }
 }

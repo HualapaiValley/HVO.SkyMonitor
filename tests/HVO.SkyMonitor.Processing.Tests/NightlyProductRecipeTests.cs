@@ -317,6 +317,37 @@ public sealed class NightlyProductRecipeTests
     }
 
     [TestMethod]
+    public async Task PlannedKeogramAssemblyMatchesDirectCompositionAcrossPartBoundariesAndMissingCoverage()
+    {
+        var frames = Enumerable.Range(0, 7).Select(index => Preview(
+            Guid.Parse($"40000000-0000-0000-0000-0000000008{index:D2}"),
+            [(byte)(index * 4), (byte)(index * 4 + 1), (byte)(index * 4 + 2), (byte)(index * 4 + 3)],
+            Origin.AddMinutes(index is < 3 ? index : index + 30))).ToArray();
+        var partOptions = new KeogramRecipeOptions(MaximumGapSeconds: 90);
+        var planned = partOptions with { PlannedAxis = new(Origin.AddMinutes(-10), Origin.AddHours(1), TimeSpan.FromMinutes(1)) };
+        var directOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(KeogramRequest(frames, planned)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, directOutcome.Status, directOutcome.ReasonCode);
+        var parts = new List<ProcessingArtifact>();
+        var axes = new List<KeogramSegmentAxisV1>();
+        foreach (var chunk in new[] { frames[..2], frames[2..5], frames[5..] })
+        {
+            var (part, axis) = await ComposeSegmentAsync(chunk, partOptions).ConfigureAwait(false);
+            parts.Add(part);
+            axes.Add(axis);
+        }
+        var request = AssemblyRequest([parts[2], parts[0], parts[1]], planned,
+            new KeogramSegmentAxesV1(KeogramSegmentAxesV1.CurrentSchemaVersion, axes));
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        Assert.AreEqual(70, outcome.Products.Single().Layout!.Width);
+        Assert.AreEqual(directOutcome.Products.Single().Layout, outcome.Products.Single().Layout);
+        CollectionAssert.AreEqual(directOutcome.Products.Single().Payload.ToArray(), outcome.Products.Single().Payload.ToArray());
+        ProcessingRecipeTests.AssertProductMatchesContract(request, outcome.Products.Single());
+    }
+
+    [TestMethod]
     public async Task KeogramAssemblyRequiresBoundSegmentAxesAndMatchingGeometry()
     {
         var frames = new[]

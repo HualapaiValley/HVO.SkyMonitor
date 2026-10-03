@@ -70,11 +70,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.CommandText = PublishedOutputsByExposureSql;
         command.Parameters.AddWithValue("$node_id", nodeId);
         command.Parameters.AddWithValue("$role", role.ToString());
-        command.Parameters.AddWithValue("$start_unix_ms", startUtc.ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$end_unix_ms", endUtc.ToUnixTimeMilliseconds());
+        // Capture contracts retain millisecond exposure facts. Both half-open boundaries must round upward:
+        // flooring the start includes an earlier capture, and flooring the end excludes a valid last capture.
+        command.Parameters.AddWithValue("$start_unix_ms", CeilingUnixMilliseconds(startUtc));
+        command.Parameters.AddWithValue("$end_unix_ms", CeilingUnixMilliseconds(endUtc));
         command.Parameters.AddWithValue("$maximum_count_plus_one", (long)maximumCount + 1);
         return (await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false))
             .Select(static row => row.Output)
             .ToList();
     }
+
+    private static long CeilingUnixMilliseconds(DateTimeOffset value) =>
+        value.ToUnixTimeMilliseconds() + (value.UtcTicks % TimeSpan.TicksPerMillisecond == 0 ? 0 : 1);
 }

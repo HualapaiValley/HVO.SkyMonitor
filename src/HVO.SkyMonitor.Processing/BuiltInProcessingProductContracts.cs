@@ -22,7 +22,7 @@ internal static class BuiltInProcessingProductContracts
         var role = request.RecipeName switch
         {
             LinearNormalization or ReferenceCalibration => FrameArtifactRole.Calibrated,
-            EncodedPreview => FrameArtifactRole.Preview,
+            EncodedPreview or FixedPreview => FrameArtifactRole.Preview,
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
@@ -205,20 +205,22 @@ internal static class BuiltInProcessingProductContracts
         {
             var plan = NightlyProductRecipeSupport.ResolveKeogramAssembly(request, identity, out _)
                 ?? throw new InvalidOperationException("The keogram assembly source contract is unavailable.");
-            var axis = KeogramComposer.ComputeAssemblyTimeAxis(plan.Segments, plan.Composition);
+            var planned = NightlyProductRecipeSupport.PlannedAxis(identity);
+            var width = planned?.Width(plan.Composition.MaximumColumnCount)
+                ?? KeogramComposer.ComputeAssemblyTimeAxis(plan.Segments, plan.Composition).Width;
             return new ProcessingProductContract(
                 FrameArtifactRole.Preview,
                 plan.Sources.Select(static source => source.ArtifactId).ToArray(),
                 "application/x-hvo-packed-image",
                 true,
                 ProcessingRecipeSupport.CreatePackedLayout(
-                    axis.Width, plan.Geometry.SampleCount, plan.Sources[0].Layout!.PixelFormat),
+                    width, plan.Geometry.SampleCount, plan.Sources[0].Layout!.PixelFormat),
                 null,
                 ProcessingProductKind.PixelData,
                 null,
                 false,
                 null,
-                NightlyProductRecipeSupport.KeogramAssemblyAlgorithms,
+                NightlyProductRecipeSupport.AssemblyAlgorithms(identity),
                 plan.TotalIntegration,
                 plan.Sources[0].Compatibility,
                 null);
@@ -237,8 +239,8 @@ internal static class BuiltInProcessingProductContracts
             var geometry = NightlyProductRecipeSupport.ResolveKeogramGeometry(request, sources, out _)
                 ?? throw new InvalidOperationException("The keogram geometry contract is unavailable.");
             var composition = NightlyProductRecipeSupport.CreateKeogramComposition(identity, geometry);
-            var width = KeogramComposer.ComputeOutputWidth(
-                NightlyProductRecipeSupport.ToKeogramFrames(sources), composition);
+            var width = NightlyProductRecipeSupport.PlannedAxis(identity)?.Width(composition.MaximumColumnCount)
+                ?? KeogramComposer.ComputeOutputWidth(NightlyProductRecipeSupport.ToKeogramFrames(sources), composition);
             return new ProcessingProductContract(
                 FrameArtifactRole.Preview,
                 sourceIds,
@@ -250,7 +252,7 @@ internal static class BuiltInProcessingProductContracts
                 null,
                 false,
                 null,
-                NightlyProductRecipeSupport.KeogramAlgorithms,
+                NightlyProductRecipeSupport.FrameAlgorithms(identity),
                 totalIntegration,
                 first.Compatibility,
                 null);
@@ -290,6 +292,10 @@ internal static class BuiltInProcessingProductContracts
                 primary.Compatibility,
                 null,
                 null),
+            FixedPreview => PixelDetails("application/x-hvo-packed-image", true,
+                ProcessingRecipeSupport.CreatePackedLayout(primary.Layout!.Width, primary.Layout.Height,
+                    primary.Layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.Mono8 ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24),
+                FixedPreviewRecipe.Algorithms(primary.Layout.PixelFormat), primary),
             EncodedPreview => CreateEncodedPreviewDetails(identity, primary),
             JpegEncoding => CreateJpegDetails(identity, primary),
             Annotation => CreateAnnotationDetails(identity, primary),

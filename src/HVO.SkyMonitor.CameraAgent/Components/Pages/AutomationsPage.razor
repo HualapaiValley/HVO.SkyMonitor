@@ -125,13 +125,17 @@ else
                                     {
                                         <span><strong>Periodic.</strong> A fixed wall-clock interval of @minimum to @maximum seconds, counted from the definition's epoch.</span>
                                     }
+                                    else if (trigger == LocalAutomationTriggerKind.SourceWindowClosed)
+                                    {
+                                        <span><strong>Source window.</strong> Runs after its planned source period closes and the retained processing allowance expires.</span>
+                                    }
                                     else
                                     {
                                         <span><strong>Capture relative.</strong> After every @minimum to @maximum durable captures, counted from the capture observed when the definition was enabled.</span>
                                     }
                                 </div>
                             }
-                            <div class="ops-validation-item neutral"><i aria-hidden="true">-</i><span>Missed occurrences are recorded as missed, never replayed.</span></div>
+                            <div class="ops-validation-item neutral"><i aria-hidden="true">-</i><span>Automatic runs cover the latest eligible occurrence. Earlier source windows require an explicit backfill.</span></div>
                         </div>
                     </section>
                     <section class="ops-panel" aria-labelledby="automation-ownership-heading">

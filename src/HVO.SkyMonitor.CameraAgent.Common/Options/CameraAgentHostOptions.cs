@@ -792,13 +792,17 @@ public sealed class NightlyProductOptions : IValidatableObject
     [StringLength(128)]
     public string? SourceNodeId { get; init; }
 
-    /// <summary>The duration of one hourly working segment.</summary>
-    [Range(15, 240)]
-    public int SegmentMinutes { get; init; } = 60;
+    /// <summary>The exact fixed-preview recipe identity permitted as source; changed transfers require a new preset.</summary>
+    [StringLength(64, MinimumLength = 64)]
+    public string? SourceRecipeIdentitySha256 { get; init; }
 
-    /// <summary>How long a window must have been closed before it is composed, so late processing can land.</summary>
-    [Range(0, 3_600)]
-    public int SettleSeconds { get; init; } = 300;
+    /// <summary>The configured rig fingerprint whose geometry and captures this preset owns.</summary>
+    [StringLength(64, MinimumLength = 64)]
+    public string? RigProfileSha256 { get; init; }
+
+    /// <summary>The full planned keogram axis uses fixed UTC bins; the earliest actual frame in each bin is shown.</summary>
+    [Range(1, 3600)]
+    public int KeogramColumnSeconds { get; init; } = 60;
 
     /// <summary>
     /// The most sources one segment part composes, and the fan-in of star-trail rollups. A busier window is split
@@ -809,15 +813,7 @@ public sealed class NightlyProductOptions : IValidatableObject
 
     /// <summary>The most segment parts one scheduled run composes before reporting the remainder as pending.</summary>
     [Range(1, 256)]
-    public int MaximumSegmentsPerRun { get; init; } = 32;
-
-    /// <summary>Star trails admit only frames exposed with the Sun at or below this altitude.</summary>
-    [Range(-90, 0)]
-    public double StarTrailMaximumSolarAltitudeDegrees { get; init; } = -18;
-
-    /// <summary>Keograms admit only frames exposed with the Sun at or below this altitude.</summary>
-    [Range(-90, 90)]
-    public double KeogramMaximumSolarAltitudeDegrees { get; init; } = 0;
+    public int MaximumSegmentsPerRun { get; init; } = 256;
 
     /// <summary>The longest interval between consecutive keogram frames that is not rendered as a gap.</summary>
     [Range(1, 86_400)]
@@ -837,6 +833,12 @@ public sealed class NightlyProductOptions : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Enabled && (SourceRecipeIdentitySha256 is not { Length: 64 } recipe || !recipe.All(Uri.IsHexDigit) ||
+                        RigProfileSha256 is not { Length: 64 } rig || !rig.All(Uri.IsHexDigit)))
+        {
+            yield return new ValidationResult("Enabled still products require exact source-recipe and rig SHA-256 identities.",
+                [nameof(SourceRecipeIdentitySha256), nameof(RigProfileSha256)]);
+        }
         if (Enabled && (string.IsNullOrWhiteSpace(SourceNodeId) ||
                         !string.Equals(SourceNodeId, SourceNodeId.Trim(), StringComparison.Ordinal) ||
                         SourceNodeId.Any(char.IsControl)))

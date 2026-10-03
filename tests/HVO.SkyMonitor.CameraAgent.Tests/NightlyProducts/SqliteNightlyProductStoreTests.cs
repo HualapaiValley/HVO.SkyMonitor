@@ -14,6 +14,9 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
 {
     private static readonly string FingerprintOne = new('1', 64);
     private static readonly string FingerprintTwo = new('2', 64);
+    private static readonly HVO.SkyMonitor.CameraAgent.Common.Automation.LocalAutomationOccurrence Occurrence =
+        NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail, windowKind: HVO.SkyMonitor.CameraAgent.Common.Automation.LocalAutomationSourceWindowKind.CompletedCivilHour,
+            hourStart: new DateTimeOffset(2026, 10, 2, 4, 0, 0, TimeSpan.Zero));
     private static readonly DateTimeOffset WindowStart = new(2026, 10, 2, 4, 0, 0, TimeSpan.Zero);
 
     private string _root = null!;
@@ -206,11 +209,11 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
 
     private static NightlyProductWindowStatus Status(NightlyProductWindowDisposition disposition) => new(
         NightlyProductKind.StarTrail, NightlyProductScope.Segment, NightlyProductFixture.ObservingDate, WindowStart,
-        WindowStart.AddHours(1), disposition, null, 3, 3, new Dictionary<string, int>(), WindowStart.AddHours(2));
+        WindowStart.AddHours(1), disposition, null, 3, 3, new Dictionary<string, int>(), WindowStart.AddHours(2)) { Occurrence = Occurrence };
 
     private static NightlyProductPublication Publication(ProcessingProduct product, IReadOnlyList<NightlyProductSource> lineage) =>
         new(NightlyProductKind.StarTrail, NightlyProductScope.Segment, NightlyProductFixture.ObservingDate, WindowStart,
-            WindowStart.AddHours(1), 0, BuiltInProcessingRecipes.StarTrail, product, lineage, 90);
+            WindowStart.AddHours(1), 0, BuiltInProcessingRecipes.StarTrail, product, lineage, 90) { Occurrence = Occurrence };
 
     private static async Task<(ProcessingProduct Product, IReadOnlyList<NightlyProductSource> Lineage)> StarTrail(
         params int[] indexes)
@@ -223,7 +226,7 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
                 ProcessingInputSelector.RecipeResult(
                     FrameArtifactRole.Preview, NightlyProductFixture.PreviewVariant, NightlyProductFixture.PreviewRecipe),
                 [.. frames.Select(static frame => frame.Artifact)],
-                NightlyProductGenerator.StarTrailSegmentVariant),
+                NightlyProductGenerator.StarTrailSegmentVariant, AuxiliaryInputs: [NightlyProductPreset.BindOccurrence(Occurrence)]),
             CancellationToken.None);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         var product = outcome.Products[0];

@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
@@ -25,7 +26,7 @@ public enum NightlyProductScope
     Rollup,
 
     /// <summary>The observing-day product, composed from that day's current segments.</summary>
-    Night
+    Final
 }
 
 /// <summary>The recorded disposition of one evaluated window.</summary>
@@ -46,10 +47,10 @@ public enum NightlyProductWindowDisposition
 public static class NightlyProductContract
 {
     /// <summary>The durable schema version of the nightly product store.</summary>
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>The schema label of the immutable provenance document written beside every product.</summary>
-    public const string ProvenanceSchemaVersion = "hvo-nightly-product-provenance-v1";
+    public const string ProvenanceSchemaVersion = "hvo-still-product-provenance-v2";
 
     /// <summary>
     /// The most published preview candidates one window reads. A window above the bound is rejected with
@@ -71,7 +72,9 @@ public static class NightlyProductContract
     public const string ExcludedLocationReasonCode = "nightly.location-unresolved";
     public const string ExcludedUnsupportedSourceReasonCode = "nightly.unsupported-source";
     public const string WindowSourceBoundReasonCode = "nightly.window-source-bound";
-    public const string NightSegmentBoundReasonCode = "nightly.night-segment-bound";
+    public const string FinalSegmentBoundReasonCode = "nightly.night-segment-bound";
+    public const string ExcludedTransferReasonCode = "nightly.source-transfer-mismatch";
+    public const string ExecutionBoundReasonCode = "nightly.execution-bound";
     public const string GeometryUnavailableReasonCode = "nightly.geometry-unavailable";
 
     /// <summary>The automation target of a product kind.</summary>
@@ -152,7 +155,10 @@ public sealed record NightlyProductDetail(
     string RenditionSha256,
     long RenditionBytes,
     string ProvenanceSha256,
-    IReadOnlyList<NightlyProductSource> Sources);
+    IReadOnlyList<NightlyProductSource> Sources)
+{
+    public LocalAutomationOccurrence Occurrence { get; init; } = null!;
+}
 
 /// <summary>The recorded evaluation of one segment window or observing night.</summary>
 public sealed record NightlyProductWindowStatus(
@@ -166,10 +172,16 @@ public sealed record NightlyProductWindowStatus(
     int CandidateCount,
     int AdmittedCount,
     IReadOnlyDictionary<string, int> Exclusions,
-    DateTimeOffset EvaluatedUtc);
+    DateTimeOffset EvaluatedUtc)
+{
+    public LocalAutomationOccurrence Occurrence { get; init; } = null!;
+}
 
 /// <summary>A verified JPEG rendition of one product.</summary>
 public sealed record NightlyProductRendition(Guid ProductId, string MediaType, ReadOnlyMemory<byte> Content);
+
+/// <summary>A checksum-verified canonical provenance document.</summary>
+public sealed record NightlyProductProvenance(Guid ProductId, ReadOnlyMemory<byte> Content);
 
 /// <summary>The read model of generated nightly products. Library and Product Detail pages consume it.</summary>
 public interface INightlyProductCatalog
@@ -184,6 +196,8 @@ public interface INightlyProductCatalog
 
     /// <summary>Returns a product's provenance and ordered lineage, or null when it does not exist.</summary>
     ValueTask<NightlyProductDetail?> GetAsync(Guid productId, CancellationToken cancellationToken);
+
+    ValueTask<NightlyProductProvenance?> OpenProvenanceAsync(Guid productId, CancellationToken cancellationToken);
 
     /// <summary>Returns the checksum-verified JPEG rendition, or null when the product does not exist.</summary>
     ValueTask<NightlyProductRendition?> OpenRenditionAsync(Guid productId, CancellationToken cancellationToken);

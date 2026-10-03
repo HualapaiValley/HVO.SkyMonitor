@@ -11,7 +11,8 @@ namespace HVO.SkyMonitor.Processing;
 public sealed record KeogramRecipeOptions(
     double MaximumGapSeconds = KeogramComposer.DefaultMaximumGapSeconds,
     int MaximumGapColumnCount = KeogramComposer.DefaultMaximumGapColumnCount,
-    int MaximumColumnCount = KeogramComposer.DefaultMaximumColumnCount);
+    int MaximumColumnCount = KeogramComposer.DefaultMaximumColumnCount,
+    PlannedKeogramAxis? PlannedAxis = null);
 
 /// <summary>Bounds shared by every nightly product recipe.</summary>
 public static class NightlyProductRecipeLimits
@@ -21,6 +22,9 @@ public static class NightlyProductRecipeLimits
     /// ordered segments and assembled, never truncated.
     /// </summary>
     public const int MaximumSourceCount = 512;
+
+    /// <summary>The aggregate packed input byte bound of one recipe execution.</summary>
+    public const long MaximumSourceBytes = 256L * 1024 * 1024;
 }
 
 /// <summary>
@@ -172,7 +176,7 @@ public sealed record StarTrailRecipeOptions(int MaximumFrameCount = 512);
 internal sealed class KeogramRecipe : IProcessingRecipe
 {
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Keogram, "1.0.0", "keogram-recipe-v1",
+        BuiltInProcessingRecipes.Keogram, "2.0.0", "keogram-recipe-v2",
         ProcessingOperationKind.Window);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -185,6 +189,7 @@ internal sealed class KeogramRecipe : IProcessingRecipe
         {
             throw new ArgumentOutOfRangeException(nameof(options));
         }
+        if (parsed.PlannedAxis is not null) _ = parsed.PlannedAxis.Width(parsed.MaximumColumnCount);
         return ProcessingRecipeSupport.Normalize(parsed);
     }
 
@@ -213,8 +218,18 @@ internal sealed class KeogramRecipe : IProcessingRecipe
         KeogramResult result;
         try
         {
-            result = KeogramComposer.Compose(
-                NightlyProductRecipeSupport.ToKeogramFrames(sources), composition, cancellationToken);
+            var frames = NightlyProductRecipeSupport.ToKeogramFrames(sources);
+            var planned = NightlyProductRecipeSupport.PlannedAxis(identity);
+            var natural = planned is null ? composition : composition with
+                { MaximumColumnCount = KeogramComposer.MaximumColumnLimit, MaximumGapColumnCount = 1 };
+            result = KeogramComposer.Compose(frames, natural, cancellationToken);
+            if (planned is not null)
+            {
+                var columns = KeogramComposer.ComputeFrameColumns(KeogramComposer.ComputeTimeAxis(frames, natural));
+                var segment = new KeogramSegment(result.Width, result.Height, result.StrideBytes, result.PixelFormat,
+                    result.PixelData, [.. columns.Select((column, index) => new KeogramSegmentColumn(column, frames[index].TimestampUtc))]);
+                result = PlannedKeogramComposer.Assemble([segment], composition, planned, cancellationToken);
+            }
         }
         catch (ArgumentException)
         {
@@ -232,7 +247,7 @@ internal sealed class KeogramRecipe : IProcessingRecipe
             layout,
             result.PixelData,
             identity,
-            NightlyProductRecipeSupport.KeogramAlgorithms,
+            NightlyProductRecipeSupport.FrameAlgorithms(identity),
             sources,
             totalIntegration,
             sources[0].Compatibility);
@@ -319,7 +334,7 @@ internal sealed class StarTrailRecipe : IProcessingRecipe
 internal sealed class KeogramAssemblyRecipe : IProcessingRecipe
 {
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.KeogramAssembly, "1.0.0", "keogram-assembly-recipe-v1",
+        BuiltInProcessingRecipes.KeogramAssembly, "2.0.0", "keogram-assembly-recipe-v2",
         ProcessingOperationKind.Window);
 
     public JsonElement NormalizeOptions(JsonElement options) => new KeogramRecipe().NormalizeOptions(options);
@@ -338,7 +353,9 @@ internal sealed class KeogramAssemblyRecipe : IProcessingRecipe
         KeogramResult result;
         try
         {
-            result = KeogramComposer.Assemble(plan.Segments, plan.Composition, cancellationToken);
+            result = NightlyProductRecipeSupport.PlannedAxis(identity) is { } axis
+                ? PlannedKeogramComposer.Assemble(plan.Segments, plan.Composition, axis, cancellationToken)
+                : KeogramComposer.Assemble(plan.Segments, plan.Composition, cancellationToken);
         }
         catch (ArgumentException)
         {
@@ -355,7 +372,7 @@ internal sealed class KeogramAssemblyRecipe : IProcessingRecipe
             layout,
             result.PixelData,
             identity,
-            NightlyProductRecipeSupport.KeogramAssemblyAlgorithms,
+            NightlyProductRecipeSupport.AssemblyAlgorithms(identity),
             plan.Sources,
             plan.TotalIntegration,
             plan.Sources[0].Compatibility);
@@ -395,6 +412,17 @@ internal static class NightlyProductRecipeSupport
         new("keogram-segment-assembly", "keogram-segment-assembly-v1")
     ];
 
+    internal static PlannedKeogramAxis? PlannedAxis(ProcessingRecipeIdentity identity) =>
+        ProcessingRecipeSupport.ParseOptions<KeogramRecipeOptions>(identity.Descriptor.Options.GetProperty("parameters")).PlannedAxis;
+
+    internal static IReadOnlyList<ProcessingAlgorithmIdentity> FrameAlgorithms(ProcessingRecipeIdentity identity) =>
+        PlannedAxis(identity) is null ? KeogramAlgorithms
+            : [.. KeogramAlgorithms, new("planned-time-axis", PlannedKeogramComposer.AlgorithmVersion)];
+
+    internal static IReadOnlyList<ProcessingAlgorithmIdentity> AssemblyAlgorithms(ProcessingRecipeIdentity identity) =>
+        PlannedAxis(identity) is null ? KeogramAssemblyAlgorithms
+            : [.. KeogramAssemblyAlgorithms, new("planned-time-axis", PlannedKeogramComposer.AlgorithmVersion)];
+
     internal static List<ProcessingArtifact> ResolveOrderedFrames(
         ProcessingExecutionRequest request,
         out ProcessingOutcome? failure)
@@ -404,7 +432,7 @@ internal static class NightlyProductRecipeSupport
         {
             return [];
         }
-        if (candidates.Count > MaximumSourceFrameCount)
+        if (candidates.Count > MaximumSourceFrameCount || candidates.Sum(static source => (long)source.Payload.Length) > NightlyProductRecipeLimits.MaximumSourceBytes)
         {
             failure = ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidLineage,

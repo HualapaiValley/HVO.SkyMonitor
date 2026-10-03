@@ -66,6 +66,21 @@ public sealed class JournalNightlyProductSourceReaderTests
     }
 
     [TestMethod]
+    public async Task ReadCandidates_RespectsFractionalMillisecondHalfOpenWindowBeforeApplyingBound()
+    {
+        using var provider = CreateProvider();
+        var receipts = await CaptureAsync(provider);
+        var reader = provider.GetRequiredService<INightlyProductSourceReader>();
+
+        var candidates = await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId,
+            Exposure(0).AddTicks(1), Exposure(2).AddTicks(1), 1, static _ => Assert.Fail("Unsupported source."), CancellationToken.None);
+
+        CollectionAssert.AreEqual(receipts.Skip(1).Take(2).Select(static receipt => receipt.Manifest.Descriptor.Capture.CaptureId).ToArray(),
+            candidates.Select(static candidate => candidate.CaptureId).ToArray());
+        Assert.HasCount(2, candidates, "Exact selection precedes the maximum + 1 bound.");
+    }
+
+    [TestMethod]
     public async Task ReadCandidates_ReturnsOneRowPastTheBoundSoTheCallerCanReject()
     {
         using var provider = CreateProvider();

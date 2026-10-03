@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.Processing;
 public static class BuiltInProcessingRecipes
 {
     public const string LinearNormalization = "linear-normalization";
+    public const string FixedPreview = "fixed-preview";
     public const string EncodedPreview = "encoded-preview";
     public const string JpegEncoding = "jpeg-encoding";
     public const string Annotation = "annotation";
@@ -99,6 +100,7 @@ public static class BuiltInProcessingRecipes
     [
         new LinearNormalizationRecipe(),
         new EncodedPreviewRecipe(),
+        new FixedPreviewRecipe(),
         new JpegEncodingRecipe(),
         new AnnotationRecipe(),
         new RollingMeanRecipe(),

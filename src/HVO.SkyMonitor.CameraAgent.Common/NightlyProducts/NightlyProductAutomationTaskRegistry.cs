@@ -1,104 +1,55 @@
-using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel.DataAnnotations;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
-/// <summary>
-/// Registers nightly keogram and star-trail generation as a periodic automation task. A definition names a product
-/// kind as its target; each occurrence evaluates every settled window, so the interval sets how promptly hourly
-/// segments and the observing-day rollover are published. Generation is idempotent by output identity, so a retried
-/// occurrence reuses rather than republishes.
-/// </summary>
+/// <summary>Offers real still-image presets through the delivered durable source-window runner.</summary>
 internal sealed class NightlyProductAutomationTaskRegistry(
-    NightlyProductGenerator generator,
-    IOptions<CameraAgentHostOptions> options) : ILocalAutomationTaskRegistry
+    NightlyProductGenerator generator, IOptions<CameraAgentHostOptions> options) : ILocalAutomationWindowTaskAdapter
 {
-    private static readonly LocalAutomationTriggerKind[] Triggers = [LocalAutomationTriggerKind.Periodic];
-
-    private static readonly string[] Targets =
-        [NightlyProductContract.KeogramTarget, NightlyProductContract.StarTrailTarget];
-
-    public IReadOnlyList<LocalAutomationTaskDescriptor> Describe()
+    public LocalAutomationTaskDescriptor Describe()
     {
-        var nightly = options.Value.NightlyProducts;
-        var enabled = nightly.Enabled && !string.IsNullOrWhiteSpace(nightly.SourceNodeId);
-        return
-        [
-            new LocalAutomationTaskDescriptor(
-                LocalAutomationTaskKind.NightlyProductGeneration,
-                "Generates hourly keogram or star-trail segments from published preview frames and composes each "
-                + "observing night once it has settled.",
-                Triggers,
-                enabled ? Targets : [],
-                Available: enabled,
-                UnavailableReason: enabled
-                    ? null
-                    : "Nightly product generation is disabled in this CameraAgent's startup configuration.")
-        ];
+        var preset = options.Value.NightlyProducts;
+        var enabled = preset.Enabled && Validator.TryValidateObject(preset, new ValidationContext(preset), [], true);
+        return new(LocalAutomationTaskKind.StillImageGeneration,
+            "Generates a full planned-window meridian keogram or a dark-night lighten trail from fixed-transfer sources.",
+            [LocalAutomationTriggerKind.SourceWindowClosed],
+            enabled ? [NightlyProductPreset.Target(NightlyProductKind.Keogram, preset),
+                NightlyProductPreset.Target(NightlyProductKind.StarTrail, preset)] : [],
+            Available: enabled, UnavailableReason: enabled ? null : "Still generation requires an enabled, pinned source recipe and rig.")
+        {
+            SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay]
+        };
     }
 
     public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        var descriptor = Describe()[0];
-        if (definition.TaskKind != descriptor.TaskKind || !descriptor.CompatibleTriggers.Contains(definition.TriggerKind))
-        {
-            return new LocalAutomationRegistryRejection(
-                LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.triggerKind");
-        }
-        return descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal)
-            ? null
-            : new LocalAutomationRegistryRejection(
-                LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget");
+        var descriptor = Describe();
+        if (!descriptor.Available || definition.TaskKind != descriptor.TaskKind ||
+            !descriptor.CompatibleTriggers.Contains(definition.TriggerKind) || definition.SourceWindow is null ||
+            !descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal) ||
+            !NightlyProductPreset.TryParseTarget(definition.TaskTarget, out var kind))
+            return new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget");
+        var expected = kind == NightlyProductKind.Keogram
+            ? LocalAutomationSourceSelection.AllActualSources : LocalAutomationSourceSelection.DarkNightActualSources;
+        return definition.SourceWindow.Selection == expected ? null
+            : new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.selection");
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "One failing automation run is recorded as a failure; it must not stop the runner.")]
-    public async ValueTask<LocalAutomationExecution> ExecuteAsync(
-        LocalAutomationDefinition definition,
-        string runKey,
+    public async ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(definition);
-        ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
-        if (definition.TaskKind != LocalAutomationTaskKind.NightlyProductGeneration)
-        {
-            return new LocalAutomationExecution(
-                LocalAutomationRunOutcome.Failed, "The task kind is not registered on this CameraAgent.");
-        }
-        if (Validate(definition) is { } rejection ||
-            !NightlyProductContract.TryParseTarget(definition.TaskTarget, out var kind))
-        {
-            return new LocalAutomationExecution(
-                LocalAutomationRunOutcome.Skipped,
-                "The registered task is currently unavailable: nightly product generation is disabled or the target "
-                + "is not a nightly product kind.");
-        }
-        try
-        {
-            var report = await generator.RunAsync(kind, cancellationToken).ConfigureAwait(false);
-            return new LocalAutomationExecution(Outcome(report), report.Describe());
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            return new LocalAutomationExecution(
-                LocalAutomationRunOutcome.Failed,
-                string.Concat("The registered task failed: ", exception.GetType().Name, "."));
-        }
+        ArgumentNullException.ThrowIfNull(occurrence);
+        if (!occurrence.IsValid() || Validate(occurrence.Definition) is not null)
+            return new(LocalAutomationRunOutcome.Failed, "The retained still-product preset is unavailable or invalid.");
+        var report = await generator.RunAsync(occurrence, cancellationToken).ConfigureAwait(false);
+        return new(Outcome(report), report.Describe());
     }
 
-    /// <summary>
-    /// A run that verified nothing is skipped, a run that left a window unverifiable failed, and every other run
-    /// succeeded, including one that left budgeted work pending for the next occurrence.
-    /// </summary>
     internal static LocalAutomationRunOutcome Outcome(NightlyProductRunReport report) =>
-        !report.Ready ? LocalAutomationRunOutcome.Skipped
-        : report.FailedWindows > 0 ? LocalAutomationRunOutcome.Failed
-        : LocalAutomationRunOutcome.Succeeded;
+        !report.Ready || report.FailedWindows > 0 || report.PendingWindows > 0
+            ? LocalAutomationRunOutcome.Failed : LocalAutomationRunOutcome.Succeeded;
 }

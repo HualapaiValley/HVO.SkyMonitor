@@ -293,13 +293,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(static provider => new NightlyProductGenerator(
             provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            provider.GetRequiredService<IObservingDayCalendarProvider>(),
             provider.GetRequiredService<INightlyProductSourceReader>(),
             provider.GetRequiredService<SqliteNightlyProductStore>(),
             provider.GetRequiredService<IPlanetEphemeris>(),
             () => provider.GetService<IDeploymentLocationStore>(),
             provider.GetRequiredService<TimeProvider>()));
-        services.AddSingleton<NightlyProductAutomationTaskRegistry>();
+        services.AddSingleton<ILocalAutomationWindowTaskAdapter, NightlyProductAutomationTaskRegistry>();
         services.AddSingleton<ICameraAgentPresentationMaterializer, CameraAgentPresentationMaterializer>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();

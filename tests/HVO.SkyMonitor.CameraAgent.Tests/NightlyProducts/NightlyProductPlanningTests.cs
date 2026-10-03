@@ -1,7 +1,6 @@
 using System.ComponentModel.DataAnnotations;
-using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 
@@ -12,106 +11,69 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 public sealed class NightlyProductPlanningTests
 {
     [TestMethod]
-    public void SegmentWindows_TileTheObservingDayFromLocalNoon()
-    {
-        var day = NightlyProductFixture.Calendar.Resolve(NightlyProductFixture.ObservingDate);
-
-        var hourly = NightlyProductWindowPlanner.SegmentWindows(day, 60);
-        var odd = NightlyProductWindowPlanner.SegmentWindows(day, 100);
-
-        Assert.HasCount(24, hourly);
-        Assert.AreEqual(NightlyProductFixture.DayStartUtc, hourly[0].StartUtc);
-        Assert.AreEqual(NightlyProductFixture.DayEndUtc, hourly[^1].EndUtc);
-        Assert.IsTrue(hourly.Zip(hourly.Skip(1)).All(static pair => pair.First.EndUtc == pair.Second.StartUtc));
-        Assert.HasCount(15, odd);
-        Assert.AreEqual(TimeSpan.FromMinutes(40), odd[^1].EndUtc - odd[^1].StartUtc, "The last window is clipped.");
-        Assert.IsTrue(odd.All(static window => window.ObservingDate == NightlyProductFixture.ObservingDate));
-    }
-
-    [TestMethod]
-    public void SegmentWindows_FollowDaylightSavingDayLengths()
-    {
-        var calendar = ObservingDayCalendar.Create("America/Denver");
-
-        var spring = NightlyProductWindowPlanner.SegmentWindows(calendar.Resolve(new DateOnly(2026, 3, 7)), 60);
-        var fall = NightlyProductWindowPlanner.SegmentWindows(calendar.Resolve(new DateOnly(2026, 10, 31)), 60);
-
-        Assert.HasCount(23, spring);
-        Assert.HasCount(25, fall);
-    }
-
-    [TestMethod]
-    public void ResolveDays_ReturnsThePreviousAndCurrentDay_AndIsDueHonoursTheSettleInterval()
-    {
-        var days = NightlyProductWindowPlanner.ResolveDays(
-            NightlyProductFixture.Calendar, NightlyProductFixture.DayEndUtc.AddMinutes(1));
-
-        CollectionAssert.AreEqual(
-            new[] { NightlyProductFixture.ObservingDate, NightlyProductFixture.ObservingDate.AddDays(1) },
-            days.Select(static day => day.Date).ToArray());
-        var end = NightlyProductFixture.DayEndUtc;
-        Assert.IsFalse(NightlyProductWindowPlanner.IsDue(end, TimeSpan.FromMinutes(5), end.AddMinutes(4)));
-        Assert.IsTrue(NightlyProductWindowPlanner.IsDue(end, TimeSpan.FromMinutes(5), end.AddMinutes(5)));
-    }
-
-    [TestMethod]
-    public void Admission_UsesEachFramesOwnClockLocationAndRig()
+    public void Admission_UsesActualTimeCapturedLocationRigAndPinnedFixedTransfer()
     {
         var ephemeris = new AstronomyEnginePlanetEphemeris();
-        var night = NightlyProductFixture.Frame(1, new DateTimeOffset(2026, 10, 2, 5, 0, 0, TimeSpan.Zero)).Candidate;
-        var dusk = NightlyProductFixture.Frame(2, new DateTimeOffset(2026, 10, 2, 1, 50, 0, TimeSpan.Zero)).Candidate;
-        var day = NightlyProductFixture.Frame(3, new DateTimeOffset(2026, 10, 1, 21, 0, 0, TimeSpan.Zero)).Candidate;
-        var otherRig = NightlyProductFixture.Frame(4, night.ExposureStartedUtc, new string('C', 64)).Candidate;
+        var night = NightlyProductFixture.Frame(1, new(2026, 10, 2, 5, 0, 0, TimeSpan.Zero)).Candidate;
+        var twilight = NightlyProductFixture.Frame(2, new(2026, 10, 2, 1, 50, 0, TimeSpan.Zero)).Candidate;
+        var day = NightlyProductFixture.Frame(3, new(2026, 10, 1, 21, 0, 0, TimeSpan.Zero)).Candidate;
+        var wrongRig = NightlyProductFixture.Frame(4, night.ExposureStartedUtc, new string('C', 64)).Candidate;
         var unlocated = NightlyProductFixture.Frame(5, night.ExposureStartedUtc).Candidate;
-        ObservatoryLocation? Locate(NightlyProductCandidate candidate) =>
-            candidate == unlocated ? null : NightlyProductFixture.Observatory;
-
-        var keogram = NightlyProductAdmission.Admit(
-            [night, dusk, day, otherRig, unlocated], NightlyProductFixture.RigProfileSha256, 0, Locate, ephemeris);
-        var starTrail = NightlyProductAdmission.Admit(
-            [night, dusk, day], NightlyProductFixture.RigProfileSha256, -18, Locate, ephemeris,
-            new Dictionary<string, int> { [NightlyProductContract.ExcludedUnsupportedSourceReasonCode] = 2 });
-
-        CollectionAssert.AreEqual(new[] { night, dusk }, keogram.Admitted.ToArray(), "Civil dusk is below the horizon.");
-        Assert.AreEqual(1, keogram.Exclusions[NightlyProductContract.ExcludedSolarAltitudeReasonCode]);
+        var stretched = NightlyProductFixture.Frame(6, night.ExposureStartedUtc).Candidate with { UsesFixedDisplayTransfer = false };
+        var changedRecipe = NightlyProductFixture.Frame(7, night.ExposureStartedUtc).Candidate with { RecipeIdentitySha256 = new('D', 64) };
+        ObservatoryLocation? Locate(NightlyProductCandidate candidate) => candidate == unlocated ? null : NightlyProductFixture.Observatory;
+        var keogram = NightlyProductAdmission.Admit([night, twilight, day, wrongRig, unlocated, stretched, changedRecipe],
+            NightlyProductFixture.RigProfileSha256, NightlyProductFixture.Occurrence(NightlyProductKind.Keogram).SourceWindow!,
+            NightlyProductFixture.PreviewRecipe, Locate, ephemeris);
+        var trail = NightlyProductAdmission.Admit([night, twilight, day], NightlyProductFixture.RigProfileSha256,
+            NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail).SourceWindow!, NightlyProductFixture.PreviewRecipe, Locate, ephemeris);
+        CollectionAssert.AreEqual(new[] { night, twilight, day }, keogram.Admitted.ToArray());
         Assert.AreEqual(1, keogram.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
         Assert.AreEqual(1, keogram.Exclusions[NightlyProductContract.ExcludedLocationReasonCode]);
-        CollectionAssert.AreEqual(new[] { night }, starTrail.Admitted.ToArray(), "Twilight is excluded from star trails.");
-        Assert.AreEqual(2, starTrail.Exclusions[NightlyProductContract.ExcludedSolarAltitudeReasonCode]);
-        Assert.AreEqual(2, starTrail.Exclusions[NightlyProductContract.ExcludedUnsupportedSourceReasonCode]);
+        Assert.AreEqual(2, keogram.Exclusions[NightlyProductContract.ExcludedTransferReasonCode]);
+        CollectionAssert.AreEqual(new[] { night }, trail.Admitted.ToArray());
+        Assert.AreEqual(2, trail.Exclusions[NightlyProductContract.ExcludedSolarAltitudeReasonCode]);
     }
 
     [TestMethod]
-    public void Contract_TargetsRoundTripAndUnknownTargetsAreRejected()
+    public void Admission_RejectsCaptureAtAnotherSiteEvenForADaytimeKeogram()
     {
-        foreach (var kind in Enum.GetValues<NightlyProductKind>())
-        {
-            Assert.IsTrue(NightlyProductContract.TryParseTarget(NightlyProductContract.TargetFor(kind), out var parsed));
-            Assert.AreEqual(kind, parsed);
-        }
-        Assert.IsFalse(NightlyProductContract.TryParseTarget("time-lapse", out _));
-        Assert.IsFalse(NightlyProductContract.TryParseTarget(null, out _));
+        var candidate = NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(1)).Candidate;
+        var admission = NightlyProductAdmission.Admit([candidate], NightlyProductFixture.RigProfileSha256,
+            NightlyProductFixture.Occurrence(NightlyProductKind.Keogram).SourceWindow!, NightlyProductFixture.PreviewRecipe,
+            static _ => new(34, -114, 520, "America/Phoenix"), new AstronomyEnginePlanetEphemeris());
+        Assert.IsEmpty(admission.Admitted);
+        Assert.AreEqual(1, admission.Exclusions[NightlyProductContract.ExcludedLocationReasonCode]);
     }
 
     [TestMethod]
-    public void Options_DefaultsAreValidAndEnabledRequiresASourceNodeAndConsistentKeogramBounds()
+    public void Preset_ChangesForSourceRecipeRigSamplingAndBoundsAndRejectsBareTargets()
     {
-        Assert.IsTrue(IsValid(new NightlyProductOptions()));
-        Assert.IsTrue(IsValid(NightlyProductFixture.Options()));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { Enabled = true }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { Enabled = true, SourceNodeId = " preview" }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { Enabled = true, SourceNodeId = "pre\nview" }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { KeogramMaximumGapColumnCount = 100, KeogramMaximumColumnCount = 50 }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { MaximumSegmentSources = 513 }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { SegmentMinutes = 10 }));
-        Assert.IsFalse(IsValid(new NightlyProductOptions { StarTrailMaximumSolarAltitudeDegrees = 1 }));
-        Assert.IsFalse(IsValid(new CameraAgentHostOptions
-        {
-            RawIngressRoot = "/tmp/x",
-            NightlyProducts = new NightlyProductOptions { Enabled = true }
-        }));
+        var options = NightlyProductFixture.Options();
+        var target = NightlyProductPreset.Target(NightlyProductKind.Keogram, options);
+        Assert.IsTrue(NightlyProductPreset.TryParseTarget(target, out var kind));
+        Assert.AreEqual(NightlyProductKind.Keogram, kind);
+        Assert.IsFalse(NightlyProductPreset.TryParseTarget("keogram", out _));
+        Assert.IsFalse(NightlyProductPreset.TryParseTarget("keogram:" + new string('Z', 64), out _));
+        Assert.AreNotEqual(target, NightlyProductPreset.Target(NightlyProductKind.Keogram, new()
+        { SourceNodeId = options.SourceNodeId, SourceRecipeIdentitySha256 = new('B', 64), RigProfileSha256 = options.RigProfileSha256 }));
+        Assert.AreNotEqual(target, NightlyProductPreset.Target(NightlyProductKind.Keogram, new()
+        { SourceNodeId = options.SourceNodeId, SourceRecipeIdentitySha256 = options.SourceRecipeIdentitySha256, RigProfileSha256 = options.RigProfileSha256,
+            KeogramColumnSeconds = 120 }));
     }
 
-    private static bool IsValid(object options) =>
-        Validator.TryValidateObject(options, new ValidationContext(options), [], validateAllProperties: true);
+    [TestMethod]
+    public void Options_EnabledRequiresPinnedInputsAndFiniteBoundedParameters()
+    {
+        Assert.IsTrue(Valid(new NightlyProductOptions()));
+        Assert.IsTrue(Valid(NightlyProductFixture.Options()));
+        Assert.IsFalse(Valid(new NightlyProductOptions { Enabled = true, SourceNodeId = "preview" }));
+        Assert.IsFalse(Valid(new NightlyProductOptions { Enabled = true, SourceNodeId = " preview",
+            SourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe, RigProfileSha256 = NightlyProductFixture.RigProfileSha256 }));
+        Assert.IsFalse(Valid(new NightlyProductOptions { MaximumSegmentSources = 513 }));
+        Assert.IsFalse(Valid(new NightlyProductOptions { KeogramColumnSeconds = 0 }));
+        Assert.IsFalse(Valid(new NightlyProductOptions { KeogramMaximumGapColumnCount = 100, KeogramMaximumColumnCount = 50 }));
+    }
+
+    private static bool Valid(object options) => Validator.TryValidateObject(options, new(options), [], true);
 }

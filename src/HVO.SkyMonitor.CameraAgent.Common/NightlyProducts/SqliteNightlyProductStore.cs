@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
@@ -25,7 +26,10 @@ internal sealed record NightlyProductPublication(
     string RecipeName,
     ProcessingProduct Product,
     IReadOnlyList<NightlyProductSource> Sources,
-    int RenditionJpegQuality);
+    int RenditionJpegQuality)
+{
+    internal LocalAutomationOccurrence Occurrence { get; init; } = null!;
+}
 
 /// <summary>A published product restored as a verified recipe input, with the ordered lineage it was composed from.</summary>
 internal sealed record NightlyStoredProduct(
@@ -63,11 +67,12 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         CREATE TABLE nightly_products (
             product_id TEXT PRIMARY KEY CHECK (length(product_id) = 32),
             output_identity_sha256 TEXT NOT NULL UNIQUE CHECK (length(output_identity_sha256) = 64),
+            occurrence_json TEXT NOT NULL,
             kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail')),
-            scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Rollup', 'Night')),
+            scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Rollup', 'Final')),
             observing_date TEXT NOT NULL CHECK (length(observing_date) = 10),
-            window_start_unix_ms INTEGER NOT NULL,
-            window_end_unix_ms INTEGER NOT NULL CHECK (window_end_unix_ms > window_start_unix_ms),
+            window_start_utc_ticks INTEGER NOT NULL,
+            window_end_utc_ticks INTEGER NOT NULL CHECK (window_end_utc_ticks > window_start_utc_ticks),
             part_ordinal INTEGER NOT NULL CHECK (part_ordinal >= 0),
             recipe_name TEXT NOT NULL CHECK (length(recipe_name) BETWEEN 1 AND 128),
             recipe_identity_sha256 TEXT NOT NULL CHECK (length(recipe_identity_sha256) = 64),
@@ -88,14 +93,15 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             rendition_bytes INTEGER NOT NULL CHECK (rendition_bytes > 0),
             provenance_relative_path TEXT NOT NULL UNIQUE,
             provenance_sha256 TEXT NOT NULL CHECK (length(provenance_sha256) = 64),
+            provenance_bytes INTEGER NOT NULL CHECK (provenance_bytes BETWEEN 1 AND 8388608),
             source_count INTEGER NOT NULL CHECK (source_count > 0),
-            first_observation_unix_ms INTEGER NOT NULL,
-            last_observation_unix_ms INTEGER NOT NULL CHECK (last_observation_unix_ms >= first_observation_unix_ms),
+            first_observation_utc_ticks INTEGER NOT NULL,
+            last_observation_utc_ticks INTEGER NOT NULL CHECK (last_observation_utc_ticks >= first_observation_utc_ticks),
             total_integration_ticks INTEGER NOT NULL CHECK (total_integration_ticks >= 0),
             created_unix_ms INTEGER NOT NULL
         ) STRICT;
 
-        CREATE INDEX nightly_products_by_date ON nightly_products (observing_date, window_start_unix_ms);
+        CREATE INDEX nightly_products_by_date ON nightly_products (observing_date, window_start_utc_ticks);
 
         CREATE TABLE nightly_product_sources (
             product_id TEXT NOT NULL REFERENCES nightly_products (product_id),
@@ -109,10 +115,11 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         ) STRICT;
 
         CREATE TABLE nightly_windows (
-            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail')),
-            scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Night')),
-            window_start_unix_ms INTEGER NOT NULL,
-            window_end_unix_ms INTEGER NOT NULL CHECK (window_end_unix_ms > window_start_unix_ms),
+            occurrence_identity_sha256 TEXT NOT NULL CHECK (length(occurrence_identity_sha256) = 64),
+            occurrence_json TEXT NOT NULL,            kind TEXT NOT NULL CHECK (kind IN ('Keogram', 'StarTrail')),
+            scope TEXT NOT NULL CHECK (scope IN ('Segment', 'Final')),
+            window_start_utc_ticks INTEGER NOT NULL,
+            window_end_utc_ticks INTEGER NOT NULL CHECK (window_end_utc_ticks > window_start_utc_ticks),
             observing_date TEXT NOT NULL CHECK (length(observing_date) = 10),
             fingerprint_sha256 TEXT NOT NULL CHECK (length(fingerprint_sha256) = 64),
             disposition TEXT NOT NULL CHECK (disposition IN ('Produced', 'NoSources', 'Rejected')),
@@ -121,20 +128,20 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             admitted_count INTEGER NOT NULL CHECK (admitted_count >= 0 AND admitted_count <= candidate_count),
             exclusions_json TEXT NOT NULL,
             evaluated_unix_ms INTEGER NOT NULL,
-            PRIMARY KEY (kind, scope, window_start_unix_ms)
+            PRIMARY KEY (occurrence_identity_sha256, kind, scope, window_start_utc_ticks)
         ) STRICT;
 
-        CREATE INDEX nightly_windows_by_date ON nightly_windows (observing_date, window_start_unix_ms);
+        CREATE INDEX nightly_windows_by_date ON nightly_windows (observing_date, window_start_utc_ticks);
 
         CREATE TABLE nightly_window_products (
-            kind TEXT NOT NULL,
+            occurrence_identity_sha256 TEXT NOT NULL,            kind TEXT NOT NULL,
             scope TEXT NOT NULL,
-            window_start_unix_ms INTEGER NOT NULL,
+            window_start_utc_ticks INTEGER NOT NULL,
             part_ordinal INTEGER NOT NULL CHECK (part_ordinal >= 0),
             product_id TEXT NOT NULL REFERENCES nightly_products (product_id),
-            PRIMARY KEY (kind, scope, window_start_unix_ms, part_ordinal),
-            FOREIGN KEY (kind, scope, window_start_unix_ms)
-                REFERENCES nightly_windows (kind, scope, window_start_unix_ms) ON DELETE CASCADE
+            PRIMARY KEY (occurrence_identity_sha256, kind, scope, window_start_utc_ticks, part_ordinal),
+            FOREIGN KEY (occurrence_identity_sha256, kind, scope, window_start_utc_ticks)
+                REFERENCES nightly_windows (occurrence_identity_sha256, kind, scope, window_start_utc_ticks) ON DELETE CASCADE
         ) STRICT;
 
         CREATE INDEX nightly_window_products_by_product ON nightly_window_products (product_id);
@@ -154,13 +161,14 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
 
     private const string ProductColumns = """
         product.product_id, product.output_identity_sha256, product.kind, product.scope, product.observing_date,
-        product.window_start_unix_ms, product.window_end_unix_ms, product.part_ordinal, product.recipe_name,
+        product.window_start_utc_ticks, product.window_end_utc_ticks, product.part_ordinal, product.recipe_name,
         product.recipe_identity_sha256, product.variant, product.rig_profile_sha256, product.compatibility_json,
         product.layout_json, product.pixel_format, product.width, product.height, product.payload_relative_path,
         product.payload_sha256, product.payload_bytes, product.rendition_relative_path, product.rendition_sha256,
-        product.rendition_bytes, product.provenance_sha256, product.source_count, product.first_observation_unix_ms,
-        product.last_observation_unix_ms, product.total_integration_ticks, product.created_unix_ms,
-        EXISTS (SELECT 1 FROM nightly_window_products AS pointer WHERE pointer.product_id = product.product_id)
+        product.rendition_bytes, product.provenance_sha256, product.source_count, product.first_observation_utc_ticks,
+        product.last_observation_utc_ticks, product.total_integration_ticks, product.created_unix_ms,
+        EXISTS (SELECT 1 FROM nightly_window_products AS pointer WHERE pointer.product_id = product.product_id),
+        product.occurrence_json
         """;
 
     private readonly CameraAgentHostOptions _options;
@@ -229,6 +237,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             var provenancePath = Path.Combine(relativeDirectory, stem + ".provenance.json");
             var provenance = CreateProvenance(
                 publication, productId, payloadSha256, renditionSha256, rendition.LongLength, first, last);
+            if (provenance.Length > 8 * 1024 * 1024) throw new InvalidDataException("Still product provenance exceeds its byte bound.");
             var provenanceSha256 = ProcessingIdentity.ComputePayloadSha256(provenance);
 
             var root = ResolveRoot();
@@ -245,26 +254,27 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             {
                 await ExecuteAsync(connection, transaction, """
                     INSERT INTO nightly_products (
-                        product_id, output_identity_sha256, kind, scope, observing_date, window_start_unix_ms,
-                        window_end_unix_ms, part_ordinal, recipe_name, recipe_identity_sha256, recipe_json,
+                        product_id, output_identity_sha256, occurrence_json, kind, scope, observing_date, window_start_utc_ticks,
+                        window_end_utc_ticks, part_ordinal, recipe_name, recipe_identity_sha256, recipe_json,
                         algorithms_json, variant, rig_profile_sha256, compatibility_json, layout_json, pixel_format,
                         width, height, payload_relative_path, payload_sha256, payload_bytes, rendition_relative_path,
-                        rendition_sha256, rendition_bytes, provenance_relative_path, provenance_sha256, source_count,
-                        first_observation_unix_ms, last_observation_unix_ms, total_integration_ticks, created_unix_ms)
+                        rendition_sha256, rendition_bytes, provenance_relative_path, provenance_sha256, provenance_bytes, source_count,
+                        first_observation_utc_ticks, last_observation_utc_ticks, total_integration_ticks, created_unix_ms)
                     VALUES (
-                        $product_id, $output_identity, $kind, $scope, $observing_date, $window_start, $window_end,
+                        $product_id, $output_identity, $occurrence_json, $kind, $scope, $observing_date, $window_start, $window_end,
                         $part_ordinal, $recipe_name, $recipe_identity, $recipe_json, $algorithms_json, $variant,
                         $rig, $compatibility_json, $layout_json, $pixel_format, $width, $height, $payload_path,
                         $payload_sha256, $payload_bytes, $rendition_path, $rendition_sha256, $rendition_bytes,
-                        $provenance_path, $provenance_sha256, $source_count, $first, $last, $integration, $created);
+                        $provenance_path, $provenance_sha256, $provenance_bytes, $source_count, $first, $last, $integration, $created);
                     """, cancellationToken,
                     ("$product_id", stem),
                     ("$output_identity", product.OutputIdentitySha256),
+                    ("$occurrence_json", Serialize(publication.Occurrence)),
                     ("$kind", publication.Kind.ToString()),
                     ("$scope", publication.Scope.ToString()),
                     ("$observing_date", FormatDate(publication.ObservingDate)),
-                    ("$window_start", publication.WindowStartUtc.ToUnixTimeMilliseconds()),
-                    ("$window_end", publication.WindowEndUtc.ToUnixTimeMilliseconds()),
+                    ("$window_start", publication.WindowStartUtc.UtcTicks),
+                    ("$window_end", publication.WindowEndUtc.UtcTicks),
                     ("$part_ordinal", publication.PartOrdinal),
                     ("$recipe_name", publication.RecipeName),
                     ("$recipe_identity", product.Recipe.IdentitySha256),
@@ -285,9 +295,10 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                     ("$rendition_bytes", rendition.LongLength),
                     ("$provenance_path", ToStoredPath(provenancePath)),
                     ("$provenance_sha256", provenanceSha256),
+                    ("$provenance_bytes", provenance.LongLength),
                     ("$source_count", publication.Sources.Count),
-                    ("$first", first.ToUnixTimeMilliseconds()),
-                    ("$last", last.ToUnixTimeMilliseconds()),
+                    ("$first", first.UtcTicks),
+                    ("$last", last.UtcTicks),
                     ("$integration", product.TotalIntegration.Ticks),
                     ("$created", createdUtc.ToUnixTimeMilliseconds())).ConfigureAwait(false);
                 foreach (var source in publication.Sources)
@@ -378,7 +389,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         NightlyProductKind kind,
         NightlyProductScope scope,
         DateTimeOffset windowStartUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? occurrenceIdentitySha256 = null)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -386,11 +398,13 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             var windows = await ReadWindowsAsync(connection, """
-                WHERE state.kind = $kind AND state.scope = $scope AND state.window_start_unix_ms = $window_start
+                WHERE state.kind = $kind AND state.scope = $scope AND state.window_start_utc_ticks = $window_start
+                  AND ($occurrence IS NULL OR state.occurrence_identity_sha256 = $occurrence)
                 """, cancellationToken,
                 ("$kind", kind.ToString()),
                 ("$scope", scope.ToString()),
-                ("$window_start", windowStartUtc.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                ("$window_start", windowStartUtc.UtcTicks), ("$occurrence", (object?)occurrenceIdentitySha256 ?? DBNull.Value)).ConfigureAwait(false);
+            if (windows.Count > 1) throw new InvalidDataException("A product window requires its occurrence identity.");
             return windows.Count == 0 ? null : windows[0];
         }
         finally
@@ -411,6 +425,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
     {
         ArgumentNullException.ThrowIfNull(status);
         ArgumentNullException.ThrowIfNull(productIds);
+        ValidateOccurrence(status.Occurrence, status.ObservingDate, status.WindowStartUtc, status.WindowEndUtc);
         if (status.Scope == NightlyProductScope.Rollup)
         {
             throw new ArgumentException("Only segment and night windows are recorded.", nameof(status));
@@ -427,22 +442,23 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             using var transaction = BeginImmediate(connection);
             var key = new (string, object)[]
             {
+                ("$occurrence", status.Occurrence.IdentitySha256),
                 ("$kind", status.Kind.ToString()),
                 ("$scope", status.Scope.ToString()),
-                ("$window_start", status.WindowStartUtc.ToUnixTimeMilliseconds())
+                ("$window_start", status.WindowStartUtc.UtcTicks)
             };
             await ExecuteAsync(connection, transaction, """
                 DELETE FROM nightly_window_products
-                WHERE kind = $kind AND scope = $scope AND window_start_unix_ms = $window_start;
+                WHERE occurrence_identity_sha256 = $occurrence AND kind = $kind AND scope = $scope AND window_start_utc_ticks = $window_start;
                 """, cancellationToken, key).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, """
                 INSERT INTO nightly_windows (
-                    kind, scope, window_start_unix_ms, window_end_unix_ms, observing_date, fingerprint_sha256,
+                    occurrence_identity_sha256, occurrence_json, kind, scope, window_start_utc_ticks, window_end_utc_ticks, observing_date, fingerprint_sha256,
                     disposition, reason_code, candidate_count, admitted_count, exclusions_json, evaluated_unix_ms)
-                VALUES ($kind, $scope, $window_start, $window_end, $observing_date, $fingerprint, $disposition,
+                VALUES ($occurrence, $occurrence_json, $kind, $scope, $window_start, $window_end, $observing_date, $fingerprint, $disposition,
                         $reason_code, $candidate_count, $admitted_count, $exclusions_json, $evaluated)
-                ON CONFLICT (kind, scope, window_start_unix_ms) DO UPDATE SET
-                    window_end_unix_ms = excluded.window_end_unix_ms,
+                ON CONFLICT (occurrence_identity_sha256, kind, scope, window_start_utc_ticks) DO UPDATE SET
+                    window_end_utc_ticks = excluded.window_end_utc_ticks,
                     observing_date = excluded.observing_date,
                     fingerprint_sha256 = excluded.fingerprint_sha256,
                     disposition = excluded.disposition,
@@ -453,7 +469,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                     evaluated_unix_ms = excluded.evaluated_unix_ms;
                 """, cancellationToken,
                 [.. key,
-                    ("$window_end", status.WindowEndUtc.ToUnixTimeMilliseconds()),
+                    ("$occurrence_json", Serialize(status.Occurrence)),
+                    ("$window_end", status.WindowEndUtc.UtcTicks),
                     ("$observing_date", FormatDate(status.ObservingDate)),
                     ("$fingerprint", fingerprintSha256),
                     ("$disposition", status.Disposition.ToString()),
@@ -465,9 +482,15 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                     ("$evaluated", Truncate(status.EvaluatedUtc).ToUnixTimeMilliseconds())]).ConfigureAwait(false);
             for (var ordinal = 0; ordinal < productIds.Count; ordinal++)
             {
+                var referenced = await ReadDetailAsync(connection, transaction, productIds[ordinal], cancellationToken).ConfigureAwait(false);
+                if (referenced is null || referenced.Occurrence.IdentitySha256 != status.Occurrence.IdentitySha256 ||
+                    referenced.Summary.Kind != status.Kind || referenced.Summary.WindowStartUtc != status.WindowStartUtc ||
+                    referenced.Summary.WindowEndUtc != status.WindowEndUtc ||
+                    (status.Scope == NightlyProductScope.Segment && referenced.Summary.Scope != NightlyProductScope.Segment))
+                    throw new InvalidDataException("A current pointer must reference a product of the same retained occurrence and span.");
                 await ExecuteAsync(connection, transaction, """
-                    INSERT INTO nightly_window_products (kind, scope, window_start_unix_ms, part_ordinal, product_id)
-                    VALUES ($kind, $scope, $window_start, $part_ordinal, $product_id);
+                    INSERT INTO nightly_window_products (occurrence_identity_sha256, kind, scope, window_start_utc_ticks, part_ordinal, product_id)
+                    VALUES ($occurrence, $kind, $scope, $window_start, $part_ordinal, $product_id);
                     """, cancellationToken,
                     [.. key,
                         ("$part_ordinal", ordinal),
@@ -496,18 +519,20 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                 SELECT {ProductColumns}
                 FROM nightly_products AS product
                 WHERE product.observing_date = $observing_date
-                ORDER BY product.window_start_unix_ms, product.kind, product.scope, product.part_ordinal,
+                ORDER BY product.window_start_utc_ticks, product.kind, product.scope, product.part_ordinal,
                          product.created_unix_ms, product.product_id
                 LIMIT $limit;
                 """;
             command.Parameters.AddWithValue("$observing_date", FormatDate(observingDate));
-            command.Parameters.AddWithValue("$limit", NightlyProductContract.MaximumListedProducts);
+            command.Parameters.AddWithValue("$limit", NightlyProductContract.MaximumListedProducts + 1);
             var summaries = new List<NightlyProductSummary>();
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 summaries.Add(ReadSummary(reader));
             }
+            if (summaries.Count > NightlyProductContract.MaximumListedProducts)
+                throw new InvalidDataException("The product listing exceeds its declared bound; it cannot represent full coverage.");
             return summaries;
         }
         finally
@@ -580,8 +605,39 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         }
     }
 
-    private static void Validate(NightlyProductPublication publication)
+    public async ValueTask<NightlyProductProvenance?> OpenProvenanceAsync(Guid productId, CancellationToken cancellationToken)
     {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT provenance_relative_path, provenance_bytes, provenance_sha256 FROM nightly_products WHERE product_id = $id;";
+            command.Parameters.AddWithValue("$id", productId.ToString("N", CultureInfo.InvariantCulture));
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+            var content = await ReadVerifiedAsync(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
+                .ConfigureAwait(false);
+            return new(productId, content);
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal async ValueTask VerifyPublicationAsync(Guid productId, CancellationToken cancellationToken)
+    {
+        _ = await ReadStoredProductAsync(productId, cancellationToken).ConfigureAwait(false);
+        if (await OpenRenditionAsync(productId, cancellationToken).ConfigureAwait(false) is null ||
+            await OpenProvenanceAsync(productId, cancellationToken).ConfigureAwait(false) is null)
+            throw new InvalidDataException("A reused product is no longer a verified publication.");
+    }
+
+    private void Validate(NightlyProductPublication publication)
+    {
+        ValidateOccurrence(publication.Occurrence, publication.ObservingDate, publication.WindowStartUtc, publication.WindowEndUtc);
+        if (!publication.Occurrence.SourceWindow!.IsEligibleForFinal(_timeProvider.GetUtcNow()) ||
+            !NightlyProductPreset.IsBound(publication.Product.Recipe, publication.Occurrence))
+            throw new ArgumentException("A published still product must bind its eligible retained occurrence.", nameof(publication));
         var product = publication.Product;
         if (product.Role != FrameArtifactRole.Preview || product.Kind != ProcessingProductKind.PixelData ||
             product.Layout is not { PixelFormat: CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24 } ||
@@ -604,6 +660,15 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         {
             throw new ArgumentException("A nightly product window is invalid.", nameof(publication));
         }
+    }
+
+    private static void ValidateOccurrence(LocalAutomationOccurrence? occurrence, DateOnly date,
+        DateTimeOffset startUtc, DateTimeOffset endUtc)
+    {
+        if (occurrence is null || !occurrence.IsValid() || occurrence.SourceWindow is not { } window ||
+            occurrence.Definition.TaskKind != LocalAutomationTaskKind.StillImageGeneration ||
+            date != window.ReportingPeriod.ReportDate || startUtc != window.StartUtc || endUtc != window.EndUtc)
+            throw new InvalidDataException("A still product must retain its exact task, source span and starting-sunrise date.");
     }
 
     /// <summary>
@@ -663,6 +728,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             windowStartUtc = publication.WindowStartUtc.ToUniversalTime(),
             windowEndUtc = publication.WindowEndUtc.ToUniversalTime(),
             partOrdinal = publication.PartOrdinal,
+            occurrence = publication.Occurrence,
             recipe = new { name = publication.RecipeName, identitySha256 = product.Recipe.IdentitySha256, descriptor = product.Recipe.Descriptor },
             algorithms = product.Algorithms,
             variant = product.Variant,
@@ -711,6 +777,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         NightlyProductSummary summary;
         string outputIdentity, recipeName, recipeIdentity, variant, rig, payloadSha, renditionSha, provenanceSha;
         long payloadBytes, renditionBytes;
+        LocalAutomationOccurrence occurrence;
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -728,6 +795,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             renditionSha = reader.GetString(21);
             renditionBytes = reader.GetInt64(22);
             provenanceSha = reader.GetString(23);
+            occurrence = Deserialize<LocalAutomationOccurrence>(reader.GetString(30));
+            ValidateOccurrence(occurrence, summary.ObservingDate, summary.WindowStartUtc, summary.WindowEndUtc);
         }
 
         using var sourcesCommand = connection.CreateCommand();
@@ -757,7 +826,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         }
         return new NightlyProductDetail(
             summary, outputIdentity, recipeIdentity, recipeName, variant, rig, payloadSha, payloadBytes,
-            renditionSha, renditionBytes, provenanceSha, sources);
+            renditionSha, renditionBytes, provenanceSha, sources) { Occurrence = occurrence };
     }
 
     private static NightlyProductSummary ReadSummary(SqliteDataReader reader) => new(
@@ -765,16 +834,16 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         ParseEnum<NightlyProductKind>(reader.GetString(2)),
         ParseEnum<NightlyProductScope>(reader.GetString(3)),
         DateOnly.ParseExact(reader.GetString(4), "yyyy-MM-dd", CultureInfo.InvariantCulture),
-        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
-        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+        new DateTimeOffset(reader.GetInt64(5), TimeSpan.Zero),
+        new DateTimeOffset(reader.GetInt64(6), TimeSpan.Zero),
         reader.GetInt32(7),
         reader.GetInt64(29) != 0,
         reader.GetInt32(15),
         reader.GetInt32(16),
         ParseEnum<CameraPixelFormat>(reader.GetString(14)),
         reader.GetInt32(24),
-        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(25)),
-        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(26)),
+        new DateTimeOffset(reader.GetInt64(25), TimeSpan.Zero),
+        new DateTimeOffset(reader.GetInt64(26), TimeSpan.Zero),
         TimeSpan.FromTicks(reader.GetInt64(27)),
         DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(28)));
 
@@ -788,16 +857,19 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
     {
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT state.kind, state.scope, state.window_start_unix_ms, state.window_end_unix_ms,
+            SELECT state.kind, state.scope, state.window_start_utc_ticks, state.window_end_utc_ticks,
                    state.observing_date, state.fingerprint_sha256, state.disposition, state.reason_code,
                    state.candidate_count, state.admitted_count, state.exclusions_json, state.evaluated_unix_ms,
                    (SELECT group_concat(pointer.part_ordinal || ':' || pointer.product_id, ',')
                     FROM nightly_window_products AS pointer
                     WHERE pointer.kind = state.kind AND pointer.scope = state.scope
-                      AND pointer.window_start_unix_ms = state.window_start_unix_ms)
+                      AND pointer.window_start_utc_ticks = state.window_start_utc_ticks
+                      AND pointer.occurrence_identity_sha256 = state.occurrence_identity_sha256),
+                   state.occurrence_json
             FROM nightly_windows AS state
             {filter}
-            ORDER BY state.window_start_unix_ms, state.kind, state.scope;
+            ORDER BY state.window_start_utc_ticks, state.kind, state.scope
+            LIMIT 1025;
             """;
         foreach (var (name, value) in parameters)
         {
@@ -811,15 +883,17 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                 ParseEnum<NightlyProductKind>(reader.GetString(0)),
                 ParseEnum<NightlyProductScope>(reader.GetString(1)),
                 DateOnly.ParseExact(reader.GetString(4), "yyyy-MM-dd", CultureInfo.InvariantCulture),
-                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
-                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                new DateTimeOffset(reader.GetInt64(2), TimeSpan.Zero),
+                new DateTimeOffset(reader.GetInt64(3), TimeSpan.Zero),
                 ParseEnum<NightlyProductWindowDisposition>(reader.GetString(6)),
                 await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7),
                 reader.GetInt32(8),
                 reader.GetInt32(9),
                 new SortedDictionary<string, int>(
                     Deserialize<Dictionary<string, int>>(reader.GetString(10)), StringComparer.Ordinal),
-                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11)));
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11)))
+            { Occurrence = Deserialize<LocalAutomationOccurrence>(reader.GetString(13)) };
+            ValidateOccurrence(status.Occurrence, status.ObservingDate, status.WindowStartUtc, status.WindowEndUtc);
             // Pointers are ordered by part explicitly; group_concat order is not part of SQLite's contract.
             var products = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
                 ? []
@@ -830,6 +904,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
                     .ToArray();
             windows.Add(new NightlyWindowState(status, reader.GetString(5), products));
         }
+        if (windows.Count > NightlyProductContract.MaximumListedProducts)
+            throw new InvalidDataException("The window listing exceeds its declared bound; it cannot represent full coverage.");
         return windows;
     }
 

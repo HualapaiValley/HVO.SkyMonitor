@@ -5,6 +5,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -49,7 +50,7 @@ public sealed class NightlyProductGenerationPerformanceTests
     private const int DayFrameCount = 1440;
     private const int PatternCount = 16;
     private const int MaximumRunsToConverge = 64;
-    private const int RestartSegmentsPerRun = 2;
+    private const int RestartSegmentsPerRun = 64;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly NightlyProductKind[] Kinds = [NightlyProductKind.Keogram, NightlyProductKind.StarTrail];
 
@@ -112,7 +113,7 @@ public sealed class NightlyProductGenerationPerformanceTests
                     restarted[kind].ProductsRecorded,
                     restarted[kind].ProductsPublished,
                     $"{kind} recomputed a product after a restart.");
-                CollectionAssert.AreEqual(nightFrames, restarted[kind].NightFrameLineage.ToArray(), $"{kind} lineage is not the journal's night frames.");
+                CollectionAssert.AreEqual(kind == NightlyProductKind.Keogram ? published.Select(static item => item.ArtifactId).ToArray() : nightFrames, restarted[kind].NightFrameLineage.ToArray(), $"{kind} lineage is not the journal's night frames.");
                 Assert.AreEqual(
                     ProducerExposures.Length - nightFrames.Length,
                     restarted[kind].Exclusions.GetValueOrDefault(NightlyProductContract.ExcludedSolarAltitudeReasonCode));
@@ -247,7 +248,10 @@ public sealed class NightlyProductGenerationPerformanceTests
         {
             Enabled = true,
             SourceNodeId = NightlyProductFixture.NodeId,
-            MaximumSegmentsPerRun = restartEveryRun ? RestartSegmentsPerRun : new NightlyProductOptions().MaximumSegmentsPerRun
+            SourceRecipeIdentitySha256 = (await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId,
+                NightlyProductFixture.DayStartUtc, NightlyProductFixture.DayEndUtc, 4096, static _ => { }, CancellationToken.None))[0].RecipeIdentitySha256,
+            RigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig),
+            MaximumSegmentsPerRun = 64
         };
         var options = NightlyProductFixture.HostOptions(root, nightly);
         var clock = new NightlyClock(AfterRollover);
@@ -271,14 +275,19 @@ public sealed class NightlyProductGenerationPerformanceTests
                         store = new SqliteNightlyProductStore(options, clock);
                         generator = Generator(store);
                     }
-                    (report, var run) = await MeasureRunAsync(generator, reader, kind);
+                    (report, var run) = await MeasureRunAsync(generator, reader, kind, NightlyProductFixture.Occurrence(kind, nightly));
                     runs.Add(run);
                     Assert.IsTrue(report.Ready, report.Note);
                     Assert.AreEqual(0, report.FailedWindows, report.Describe());
                 }
                 while (report.PendingWindows > 0);
 
-                var (unchanged, unchangedRun) = await MeasureRunAsync(generator, reader, kind);
+                if (restartEveryRun)
+                {
+                    generator.Dispose(); store.Dispose(); SqliteConnection.ClearAllPools();
+                    store = new SqliteNightlyProductStore(options, clock); generator = Generator(store);
+                }
+                var (unchanged, unchangedRun) = await MeasureRunAsync(generator, reader, kind, NightlyProductFixture.Occurrence(kind, nightly));
                 Assert.AreEqual(0, unchanged.ProductsPublished, unchanged.Describe());
                 Assert.AreEqual(0, unchangedRun.Restores, "An unchanged re-run restored source payloads.");
                 result[kind] = await DescribeAsync(root, store, kind, runs, unchangedRun);
@@ -294,7 +303,6 @@ public sealed class NightlyProductGenerationPerformanceTests
         NightlyProductGenerator Generator(SqliteNightlyProductStore current) => new(
             options,
             new FixedConfigurationAccessor(configuration),
-            new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar),
             reader,
             current,
             new AstronomyEnginePlanetEphemeris(),
@@ -310,14 +318,14 @@ public sealed class NightlyProductGenerationPerformanceTests
         RunEvidence unchanged)
     {
         var nightWindow = await store.ReadWindowAsync(
-            kind, NightlyProductScope.Night, NightlyProductFixture.DayStartUtc, CancellationToken.None);
+            kind, NightlyProductScope.Final, NightlyProductFixture.DayStartUtc, CancellationToken.None);
         Assert.IsNotNull(nightWindow);
         Assert.AreEqual(NightlyProductWindowDisposition.Produced, nightWindow.Status.Disposition);
         var night = await store.GetAsync(nightWindow.ProductIds.Single(), CancellationToken.None);
         Assert.IsNotNull(night);
         var directory = Path.Combine(
             root, SqliteNightlyProductStore.ProductDirectoryName, "2026", "10", "01", NightlyProductContract.TargetFor(kind));
-        var stem = Path.Combine(directory, night.Summary.ProductId.ToString("D"));
+        var stem = Path.Combine(directory, night.Summary.ProductId.ToString("N"));
         Assert.AreEqual(night.PayloadSha256, await FileSha256Async(stem + ".bin"), "The night payload file does not match its record.");
         Assert.AreEqual(night.RenditionSha256, await FileSha256Async(stem + ".jpg"), "The night rendition file does not match its record.");
         Assert.AreEqual(night.ProvenanceSha256, await FileSha256Async(stem + ".provenance.json"), "The night provenance file does not match its record.");
@@ -377,7 +385,8 @@ public sealed class NightlyProductGenerationPerformanceTests
     private static async Task<(NightlyProductRunReport Report, RunEvidence Run)> MeasureRunAsync(
         NightlyProductGenerator generator,
         CountingSourceReader reader,
-        NightlyProductKind kind)
+        NightlyProductKind kind,
+        LocalAutomationOccurrence occurrence)
     {
         var (queries, restores, frames) = (reader.Queries, reader.Restores, reader.RestoredFrames);
         reader.LargestRestore = 0;
@@ -388,7 +397,7 @@ public sealed class NightlyProductGenerationPerformanceTests
         var allocated = GC.GetTotalAllocatedBytes(precise: true);
         await using var sampler = WorkingSetSampler.Start();
         var started = Stopwatch.GetTimestamp();
-        var report = await generator.RunAsync(kind, CancellationToken.None);
+        var report = await generator.RunAsync(occurrence, CancellationToken.None);
         var milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         var (baseline, peak, peakHeap) = await sampler.StopAsync();
         var run = new RunEvidence(
@@ -404,7 +413,7 @@ public sealed class NightlyProductGenerationPerformanceTests
             report.ProductsPublished,
             report.ProductsReused,
             report.PendingWindows,
-            report.NightsRecorded,
+            report.FinalsRecorded,
             reader.Queries - queries,
             reader.Restores - restores,
             reader.RestoredFrames - frames,
@@ -517,7 +526,8 @@ public sealed class NightlyProductGenerationPerformanceTests
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { })),
             Rig,
             new CapturePipelineConfig(
-                [new CaptureProcessingStepConfig("Preview", NightlyProductFixture.NodeId, DependsOn: ["$raw"])],
+                [new CaptureProcessingStepConfig("Preview", NightlyProductFixture.NodeId,
+                    Options: JsonSerializer.SerializeToElement(new { fixedTransfer = new FixedDisplayTransferOptions(), recipeVersion = "fixed-native-gamma-v1" }), DependsOn: ["$raw"])],
                 CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),
             "issue-993-performance");
@@ -563,7 +573,7 @@ public sealed class NightlyProductGenerationPerformanceTests
         int ProductsPublished,
         int ProductsReused,
         int PendingWindows,
-        int NightsRecorded,
+        int FinalsRecorded,
         int Queries,
         int Restores,
         int RestoredFrames,
@@ -766,7 +776,7 @@ public sealed class NightlyProductGenerationPerformanceTests
                 JournalNightlyProductSourceReader.PackedImageMediaType,
                 NightlyProductFixture.DayStartUtc.AddMinutes(index),
                 Compatibility.Rig,
-                null);
+                null) { UsesFixedDisplayTransfer = true, PayloadBytes = FrameBytes };
         }
     }
 }

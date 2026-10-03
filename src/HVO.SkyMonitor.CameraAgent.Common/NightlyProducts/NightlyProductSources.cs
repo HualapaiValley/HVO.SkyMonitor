@@ -2,6 +2,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
@@ -18,7 +20,11 @@ internal sealed record NightlyProductCandidate(
     string MediaType,
     DateTimeOffset ExposureStartedUtc,
     string RigProfileSha256,
-    CaptureLocationProvenance? Location);
+    CaptureLocationProvenance? Location)
+{
+    internal bool UsesFixedDisplayTransfer { get; init; }
+    internal long PayloadBytes { get; init; }
+}
 
 /// <summary>Reads nightly candidates and restores admitted ones as verified recipe inputs.</summary>
 internal interface INightlyProductSourceReader
@@ -77,7 +83,12 @@ internal sealed class JournalNightlyProductSourceReader(
                 descriptor.Artifact.MediaType,
                 descriptor.Timing.ExposureStartedUtc.ToUniversalTime(),
                 output.Compatibility.Rig,
-                descriptor.Location));
+                descriptor.Location)
+            {
+                PayloadBytes = descriptor.Layout.ByteLength,
+                UsesFixedDisplayTransfer = output.Algorithms.Any(static algorithm =>
+                    algorithm.Name == "fixed-display-transfer" && algorithm.Version == FixedDisplayTransfer.AlgorithmVersion)
+            });
         }
         return candidates;
     }
@@ -121,7 +132,8 @@ internal static class NightlyProductAdmission
     internal static NightlyProductAdmissionResult Admit(
         IReadOnlyList<NightlyProductCandidate> candidates,
         string currentRigProfileSha256,
-        double maximumSolarAltitudeDegrees,
+        LocalAutomationSourceWindow window,
+        string sourceRecipeIdentitySha256,
         Func<NightlyProductCandidate, ObservatoryLocation?> locate,
         IPlanetEphemeris ephemeris,
         IReadOnlyDictionary<string, int>? priorExclusions = null)
@@ -137,7 +149,7 @@ internal static class NightlyProductAdmission
         var admitted = new List<NightlyProductCandidate>(candidates.Count);
         foreach (var candidate in candidates)
         {
-            var reason = Classify(candidate, currentRigProfileSha256, maximumSolarAltitudeDegrees, locate, ephemeris);
+            var reason = Classify(candidate, currentRigProfileSha256, window, sourceRecipeIdentitySha256, locate, ephemeris);
             if (reason is null)
             {
                 admitted.Add(candidate);
@@ -153,7 +165,8 @@ internal static class NightlyProductAdmission
     private static string? Classify(
         NightlyProductCandidate candidate,
         string currentRigProfileSha256,
-        double maximumSolarAltitudeDegrees,
+        LocalAutomationSourceWindow window,
+        string sourceRecipeIdentitySha256,
         Func<NightlyProductCandidate, ObservatoryLocation?> locate,
         IPlanetEphemeris ephemeris)
     {
@@ -161,20 +174,21 @@ internal static class NightlyProductAdmission
         {
             return NightlyProductContract.ExcludedRigReasonCode;
         }
+        if (!candidate.UsesFixedDisplayTransfer ||
+            !string.Equals(candidate.RecipeIdentitySha256, sourceRecipeIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            return NightlyProductContract.ExcludedTransferReasonCode;
+        }
         if (locate(candidate) is not { } location)
         {
             return NightlyProductContract.ExcludedLocationReasonCode;
         }
-        // Thresholds are the classifier's full range: only the computed altitude is used here.
-        var altitude = SolarAltitudeClassifier.Classify(
-            ephemeris,
-            candidate.ExposureStartedUtc,
-            location.LatitudeDegrees,
-            location.LongitudeDegrees,
-            dayAltitudeThresholdDegrees: 90,
-            nightAltitudeThresholdDegrees: -90).AltitudeDegrees;
-        return altitude <= maximumSolarAltitudeDegrees
-            ? null
-            : NightlyProductContract.ExcludedSolarAltitudeReasonCode;
+        if (Math.Abs(location.LatitudeDegrees - window.ReportingPeriod.Site.LatitudeDegrees) > 1e-8 ||
+            Math.Abs(location.LongitudeDegrees - window.ReportingPeriod.Site.LongitudeDegrees) > 1e-8)
+        {
+            return NightlyProductContract.ExcludedLocationReasonCode;
+        }
+        return window.AcceptsSource(candidate.ExposureStartedUtc, ephemeris)
+            ? null : NightlyProductContract.ExcludedSolarAltitudeReasonCode;
     }
 }

@@ -144,10 +144,7 @@ public enum LocalAutomationTaskKind
     EnvironmentalOnDemandAcquisition,
 
     /// <summary>A still-image producer supplied by an explicitly registered window task adapter.</summary>
-    StillImageGeneration,
-
-    /// <summary>Legacy checkpoint kind; no current adapter registers its old periodic behavior.</summary>
-    NightlyProductGeneration
+    StillImageGeneration
 }
 
 /// <summary>

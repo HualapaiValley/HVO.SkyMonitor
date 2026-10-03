@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -23,13 +24,16 @@ internal static class NightlyProductFixture
 
     internal static readonly ObservatoryLocation Observatory = new(35.5599378, -113.9119818, 520, "America/Phoenix");
 
-    internal static readonly ObservingDayCalendar Calendar = ObservingDayCalendar.Create("America/Phoenix");
+    internal static readonly DeploymentLocationSnapshot Site = DeploymentLocationSnapshot.Create("nightly-fixture", 1, "test", null,
+        new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.5599378, -113.9119818, 520, "America/Phoenix");
+
+    internal static readonly ObservingDayCalendar Calendar = ObservingDayCalendar.ForDeployment(Site);
 
     internal static readonly DateOnly ObservingDate = new(2026, 10, 1);
 
-    internal static readonly DateTimeOffset DayStartUtc = new(2026, 10, 1, 19, 0, 0, TimeSpan.Zero);
+    internal static readonly DateTimeOffset DayStartUtc = Calendar.Resolve(ObservingDate).StartUtc;
 
-    internal static readonly DateTimeOffset DayEndUtc = DayStartUtc.AddDays(1);
+    internal static readonly DateTimeOffset DayEndUtc = Calendar.Resolve(ObservingDate).EndUtc;
 
     internal static readonly CameraRigConfig Rig = new(
         new SensorProfile("NightlyFixture", Size, Size, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16,
@@ -63,8 +67,8 @@ internal static class NightlyProductFixture
         {
             Enabled = enabled,
             SourceNodeId = NodeId,
-            SegmentMinutes = 60,
-            SettleSeconds = 300,
+            SourceRecipeIdentitySha256 = PreviewRecipe,
+            RigProfileSha256 = RigProfileSha256,
             MaximumSegmentSources = maximumSegmentSources,
             MaximumSegmentsPerRun = maximumSegmentsPerRun,
             KeogramMaximumGapSeconds = 300,
@@ -110,8 +114,26 @@ internal static class NightlyProductFixture
             JournalNightlyProductSourceReader.PackedImageMediaType,
             exposureStartedUtc,
             rig ?? RigProfileSha256,
-            null);
+            null) { UsesFixedDisplayTransfer = true, PayloadBytes = artifact.Payload.Length };
         return new NightlyFrame(candidate, artifact);
+    }
+
+    internal static LocalAutomationOccurrence Occurrence(NightlyProductKind kind, NightlyProductOptions? options = null,
+        LocalAutomationSourceWindowKind windowKind = LocalAutomationSourceWindowKind.SunriseDay,
+        DateTimeOffset? hourStart = null, string? definitionId = null, long version = 1)
+    {
+        var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion, windowKind,
+            kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
+                : LocalAutomationSourceSelection.DarkNightActualSources, TimeSpan.FromMinutes(5));
+        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(Calendar));
+        var windows = planner.ResolveWindows(ObservingDate, policy);
+        var window = hourStart is { } start ? windows.Single(item => item.StartUtc == start) : windows[0];
+        var id = definitionId ?? $"fixture-{NightlyProductContract.TargetFor(kind)}";
+        var definition = new LocalAutomationDefinition(id, id, true, LocalAutomationTaskKind.StillImageGeneration,
+            NightlyProductPreset.Target(kind, options ?? Options()), LocalAutomationTriggerKind.SourceWindowClosed, 1,
+            DayStartUtc, policy);
+        return LocalAutomationWindowPlanner.CreateOccurrence(new(definition, version,
+            LocalAutomationContract.ComputeRevisionSha256(definition), null, null), window);
     }
 
     internal static FrameLayoutDescriptor Layout() => new(
