@@ -155,7 +155,8 @@ public sealed partial class LocalAutomationRunnerService(
             }
             var recorded = await windowStore.GetRecordedOccurrenceIdentitiesAsync(entry, cancellationToken)
                 .ConfigureAwait(false);
-            var missed = plan.EarlierDueOccurrences.Count(occurrence => !recorded.Contains(occurrence.IdentitySha256));
+            var missed = plan.EarlierDueWindows.Count(window =>
+                !recorded.Contains(LocalAutomationWindowPlanner.CreateOccurrenceIdentity(entry, window)));
             if (missed > 0 || plan.EarlierOccurrencesOutsideLookback)
             {
                 await store.RecordTerminalRunAsync(entry, due.RunKey + ":missed", due.ScheduledForUtc,

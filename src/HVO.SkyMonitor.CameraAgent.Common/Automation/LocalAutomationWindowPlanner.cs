@@ -14,7 +14,7 @@ public sealed record LocalAutomationWindowPlan(
     IReadOnlyList<SunriseReportingPeriodResolution> UnavailableDates)
 {
     /// <summary>Potentially missed windows; the runner reconciles their exact identities with retained runs.</summary>
-    public IReadOnlyList<LocalAutomationOccurrence> EarlierDueOccurrences { get; init; } = [];
+    public IReadOnlyList<LocalAutomationSourceWindow> EarlierDueWindows { get; init; } = [];
 }
 
 /// <summary>Shared preview/runner arithmetic over the configured site's delivered sunrise calendar.</summary>
@@ -85,8 +85,7 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
             next is null ? unavailable.LastOrDefault()?.UnavailableReasonCode ?? ObservingDayCalendar.SiteUnavailable : null,
             unavailable)
         {
-            EarlierDueOccurrences = due.Take(Math.Max(0, due.Length - 1))
-                .Select(window => CreateOccurrence(entry, window)).ToArray()
+            EarlierDueWindows = due.Take(Math.Max(0, due.Length - 1)).ToArray()
         };
     }
 
@@ -131,6 +130,13 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
 
     internal static LocalAutomationOccurrence CreateOccurrence(
         LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
+        => LocalAutomationOccurrence.Create(entry, CreateRunKey(entry, window), window.EarliestFinalUtc, window);
+
+    internal static string CreateOccurrenceIdentity(
+        LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
+        => LocalAutomationOccurrence.ComputeIdentity(entry, CreateRunKey(entry, window), window.EarliestFinalUtc, window);
+
+    private static string CreateRunKey(LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
     {
         var runIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
@@ -139,7 +145,7 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
             entry.RevisionSha256,
             SourceWindowIdentity = window.IdentitySha256
         });
-        return LocalAutomationOccurrence.Create(entry, "w:" + runIdentity, window.EarliestFinalUtc, window);
+        return "w:" + runIdentity;
     }
 
     internal static DateTimeOffset LookbackStart(DateTimeOffset nowUtc)

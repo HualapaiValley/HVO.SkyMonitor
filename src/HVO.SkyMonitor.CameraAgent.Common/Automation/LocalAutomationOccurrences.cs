@@ -136,6 +136,11 @@ public sealed record LocalAutomationOccurrence(
         return value.IsValid() ? value : throw new ArgumentException("The automation occurrence is invalid.");
     }
 
+    internal static string ComputeIdentity(LocalAutomationRunnerEntry entry, string runKey,
+        DateTimeOffset scheduledForUtc, LocalAutomationSourceWindow sourceWindow)
+        => ComputeIdentity(new LocalAutomationOccurrence(CurrentVersion, entry.Definition, entry.Version,
+            entry.RevisionSha256, runKey, scheduledForUtc, sourceWindow, string.Empty));
+
     private static string ComputeIdentity(LocalAutomationOccurrence value) =>
         CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
