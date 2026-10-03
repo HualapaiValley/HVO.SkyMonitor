@@ -34,7 +34,6 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
     public void Dispose()
     {
         _store.Dispose();
-        SqliteConnection.ClearAllPools();
         Directory.Delete(_root, recursive: true);
     }
 

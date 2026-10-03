@@ -4,7 +4,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Imaging;
-using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 
@@ -18,7 +17,6 @@ public sealed class NightlyProductGeneratorTests
     [TestCleanup]
     public void Cleanup()
     {
-        SqliteConnection.ClearAllPools();
         foreach (var root in _roots.Where(Directory.Exists)) Directory.Delete(root, true);
     }
 

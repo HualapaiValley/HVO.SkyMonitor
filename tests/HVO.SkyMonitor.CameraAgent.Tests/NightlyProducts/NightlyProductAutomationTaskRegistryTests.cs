@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
-using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 
@@ -64,7 +63,7 @@ public sealed class NightlyProductAutomationTaskRegistryTests
             var failure = await registry.ExecuteAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail), CancellationToken.None);
             Assert.AreEqual(LocalAutomationRunOutcome.Failed, failure.Outcome);
         }
-        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+        finally { Directory.Delete(root, true); }
     }
 
     private static void WithRegistry(Action<NightlyProductAutomationTaskRegistry, SqliteNightlyProductStore, InMemoryNightlySourceReader> action)
@@ -80,6 +79,6 @@ public sealed class NightlyProductAutomationTaskRegistryTests
                 reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
             action(new(generator, options), store, reader);
         }
-        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+        finally { Directory.Delete(root, true); }
     }
 }

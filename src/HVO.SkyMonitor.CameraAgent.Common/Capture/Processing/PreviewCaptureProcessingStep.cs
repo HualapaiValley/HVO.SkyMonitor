@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Processing;
@@ -134,6 +135,7 @@ public class PreviewProcessingStepOptions : IValidatableObject
     public bool Enabled { get; init; } = true;
 
     /// <summary>When present, use fixed native black/white levels and gamma instead of per-frame percentiles.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FixedDisplayTransferOptions? FixedTransfer { get; init; }
 
     [Required(AllowEmptyStrings = false)]
