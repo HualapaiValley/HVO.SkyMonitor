@@ -28,7 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// <item><description>
 /// The producer-backed measurement commits real W1 Mono16 captures through raw ingress and the standard-lane Preview
 /// node, then generates from the journal through <see cref="JournalNightlyProductSourceReader"/>: admission, gaps,
-/// lineage back to the journal, durable files, and a restart after every run against an uninterrupted control.
+/// lineage back to the journal, durable files, and a reopened-store unchanged retry against an uninterrupted control.
 /// </description></item>
 /// <item><description>
 /// The whole-day measurement scales that to 1440 frames at a 60 second cadence. Its source payloads are copied from a
@@ -50,7 +50,7 @@ public sealed class NightlyProductGenerationPerformanceTests
     private const int DayFrameCount = 1440;
     private const int PatternCount = 16;
     private const int MaximumRunsToConverge = 64;
-    private const int RestartSegmentsPerRun = 64;
+    private const int RestartSegmentsPerRun = 256;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly NightlyProductKind[] Kinds = [NightlyProductKind.Keogram, NightlyProductKind.StarTrail];
 
@@ -115,16 +115,12 @@ public sealed class NightlyProductGenerationPerformanceTests
                     $"{kind} recomputed a product after a restart.");
                 CollectionAssert.AreEqual(kind == NightlyProductKind.Keogram ? published.Select(static item => item.ArtifactId).ToArray() : nightFrames, restarted[kind].NightFrameLineage.ToArray(), $"{kind} lineage is not the journal's night frames.");
                 Assert.AreEqual(
-                    ProducerExposures.Length - nightFrames.Length,
+                    kind == NightlyProductKind.StarTrail ? ProducerExposures.Length - nightFrames.Length : 0,
                     restarted[kind].Exclusions.GetValueOrDefault(NightlyProductContract.ExcludedSolarAltitudeReasonCode));
                 kinds[kind] = new { control = control[kind], restarted = restarted[kind] };
             }
-            // The 20 minute step across the gap is drawn as its 19 missing columns, so the night is one column a minute.
-            Assert.AreEqual(
-                nightFrames.Length + KeogramComposer.ComputeGapColumnCount(
-                    1200, 60, new NightlyProductOptions().KeogramMaximumGapColumnCount),
-                restarted[NightlyProductKind.Keogram].Night.Width);
-            Assert.AreEqual(180, restarted[NightlyProductKind.Keogram].Night.Width);
+            Assert.AreEqual((int)Math.Ceiling((NightlyProductFixture.DayEndUtc - NightlyProductFixture.DayStartUtc).TotalMinutes),
+                restarted[NightlyProductKind.Keogram].Night.Width, "Missing coverage retains the complete planned axis.");
 
             await WriteEvidenceAsync("issue-993-nightly-product-producer-performance.json", new
             {
@@ -143,7 +139,9 @@ public sealed class NightlyProductGenerationPerformanceTests
                     daytimeFrames = ProducerExposures.Length - nightFrames.Length,
                     gap = "2026-10-02T05:21Z..05:39Z",
                     restartSegmentsPerRun = RestartSegmentsPerRun,
-                    options = new NightlyProductOptions { Enabled = true, SourceNodeId = NightlyProductFixture.NodeId }
+                    options = new { sourceNodeId = NightlyProductFixture.NodeId, sourceRecipeIdentitySha256 = published[0].RecipeIdentitySha256,
+                        rigProfileSha256 = published[0].RigProfileSha256, maximumSegmentSources = 32, maximumRecipeExecutions = RestartSegmentsPerRun,
+                        fixedTransfer = new FixedDisplayTransferOptions(), keogramColumnSeconds = 60 }
                 },
                 production,
                 kinds,
@@ -193,11 +191,36 @@ public sealed class NightlyProductGenerationPerformanceTests
                 cadenceSeconds = 60,
                 observingDate = NightlyProductFixture.ObservingDate,
                 harnessPatternCacheBytes = (long)PatternCount * FrameBytes,
-                options = new NightlyProductOptions { Enabled = true, SourceNodeId = NightlyProductFixture.NodeId }
+                options = new { sourceNodeId = NightlyProductFixture.NodeId, sourceRecipeIdentitySha256 = NightlyProductFixture.PreviewRecipe,
+                    rigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(Rig), maximumSegmentSources = 32,
+                    maximumRecipeExecutions = RestartSegmentsPerRun, keogramColumnSeconds = 60 }
             },
             passes = new[] { first, second },
             reproducible = true,
             process = Process()
+        });
+    }
+
+    [TestMethod]
+    public async Task Issue993WholeColorObservingDayGenerationEvidence()
+    {
+        var first = await MeasureWholeDayAsync(color: true);
+        var second = await MeasureWholeDayAsync(color: true);
+        foreach (var kind in Kinds)
+        {
+            Assert.AreEqual(first[kind].Night.PayloadSha256, second[kind].Night.PayloadSha256);
+            Assert.AreEqual(first[kind].Night.ProvenanceSha256, second[kind].Night.ProvenanceSha256);
+        }
+        await WriteEvidenceAsync("issue-993-color-product-generation-performance.json", new
+        {
+            schemaVersion = "issue-993-color-product-generation-performance-v1",
+            revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
+            trial = Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"), measuredUtc = DateTimeOffset.UtcNow,
+            workload = new { geometry = "W2 processed RGB24", width = 3096, height = 2080, frameBytes = 19319040,
+                frames = DayFrameCount, cadenceSeconds = 60, patternCacheBytes = (long)PatternCount * 19319040,
+                inputMode = "Declared synthetic pattern cache, not captured sky and not a durable source-I/O measurement",
+                maximumRecipeExecutions = RestartSegmentsPerRun, maximumResidentSourceBytes = 256L * 1024 * 1024 },
+            passes = new[] { first, second }, reproducible = true, process = Process()
         });
     }
 
@@ -218,13 +241,22 @@ public sealed class NightlyProductGenerationPerformanceTests
         await File.WriteAllTextAsync(Path.Combine(directory, fileName), json);
     }
 
-    private static async Task<Dictionary<NightlyProductKind, KindEvidence>> MeasureWholeDayAsync()
+    private static async Task<Dictionary<NightlyProductKind, KindEvidence>> MeasureWholeDayAsync(bool color = false)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-nightly-performance");
         try
         {
-            var reader = new CountingSourceReader(new SyntheticW1SourceReader());
-            return await GenerateAsync(root, reader, Configuration(), restartEveryRun: false);
+            var rig = color ? Rig with
+            {
+                Sensor = new SensorProfile("W2", 3096, 2080, 2.4, SensorColorMode.Color, CameraPixelFormat.BayerRggb16,
+                    SensorResponseMode.BayerRaw, StrideBytes: 6192, ByteOrder: SampleByteOrder.LittleEndian),
+                Optics = new OpticsProfile("EquidistantFisheye", 2.5, 180, 0, LensKind.Fisheye,
+                    1548, 1040, 1030, FocalLengthXPixels: 1030 * 2 / Math.PI, FocalLengthYPixels: 1030 * 2 / Math.PI,
+                    CalibrationVersion: "issue-993-w2-calibration-v1")
+            } : Rig;
+            var reader = new CountingSourceReader(new SyntheticSourceReader(rig.Sensor.WidthPixels, rig.Sensor.HeightPixels,
+                color ? 3 : 1, RigProjectionContextFactory.CreateProfileHashSha256(rig)));
+            return await GenerateAsync(root, reader, Configuration() with { Rig = rig }, restartEveryRun: false);
         }
         finally
         {
@@ -235,8 +267,8 @@ public sealed class NightlyProductGenerationPerformanceTests
 
     /// <summary>
     /// Runs each kind to convergence and once more unchanged. With <paramref name="restartEveryRun"/> the store and
-    /// generator are rebuilt between runs, as after a process restart, and each run is capped at
-    /// <see cref="RestartSegmentsPerRun"/> recipe executions so that every restart lands mid-day.
+    /// generator are rebuilt before the unchanged retry, as after a process restart. An occurrence must fit the
+    /// <see cref="RestartSegmentsPerRun"/> recipe-execution budget before any sources are restored.
     /// </summary>
     private static async Task<Dictionary<NightlyProductKind, KindEvidence>> GenerateAsync(
         string root,
@@ -251,7 +283,7 @@ public sealed class NightlyProductGenerationPerformanceTests
             SourceRecipeIdentitySha256 = (await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId,
                 NightlyProductFixture.DayStartUtc, NightlyProductFixture.DayEndUtc, 4096, static _ => { }, CancellationToken.None))[0].RecipeIdentitySha256,
             RigProfileSha256 = RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig),
-            MaximumSegmentsPerRun = 64
+            MaximumSegmentsPerRun = RestartSegmentsPerRun
         };
         var options = NightlyProductFixture.HostOptions(root, nightly);
         var clock = new NightlyClock(AfterRollover);
@@ -390,18 +422,22 @@ public sealed class NightlyProductGenerationPerformanceTests
     {
         var (queries, restores, frames) = (reader.Queries, reader.Restores, reader.RestoredFrames);
         reader.LargestRestore = 0;
+        reader.LargestRestoreBytes = 0;
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
         var gen2 = GC.CollectionCount(2);
         var allocated = GC.GetTotalAllocatedBytes(precise: true);
         await using var sampler = WorkingSetSampler.Start();
+        using var measuredProcess = System.Diagnostics.Process.GetCurrentProcess();
+        var cpu = measuredProcess.TotalProcessorTime;
         var started = Stopwatch.GetTimestamp();
         var report = await generator.RunAsync(occurrence, CancellationToken.None);
         var milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         var (baseline, peak, peakHeap) = await sampler.StopAsync();
         var run = new RunEvidence(
             milliseconds,
+            (measuredProcess.TotalProcessorTime - cpu).TotalSeconds,
             GC.GetTotalAllocatedBytes(precise: true) - allocated,
             GC.CollectionCount(2) - gen2,
             baseline,
@@ -417,11 +453,13 @@ public sealed class NightlyProductGenerationPerformanceTests
             reader.Queries - queries,
             reader.Restores - restores,
             reader.RestoredFrames - frames,
-            reader.LargestRestore);
+            reader.LargestRestore,
+            reader.LargestRestoreBytes);
         Assert.IsLessThanOrEqualTo(
             new NightlyProductOptions().MaximumSegmentSources,
             reader.LargestRestore,
             "A restore exceeded the per-part source bound.");
+        Assert.IsLessThanOrEqualTo(256L * 1024 * 1024, reader.LargestRestoreBytes, "Resident source bytes exceeded the recipe bound.");
         return (report, run);
     }
 
@@ -562,6 +600,7 @@ public sealed class NightlyProductGenerationPerformanceTests
 
     private sealed record RunEvidence(
         double Milliseconds,
+        double CpuSeconds,
         long AllocatedBytes,
         int Gen2Collections,
         long BaselineWorkingSetBytes,
@@ -577,7 +616,8 @@ public sealed class NightlyProductGenerationPerformanceTests
         int Queries,
         int Restores,
         int RestoredFrames,
-        int LargestRestore);
+        int LargestRestore,
+        long LargestRestoreBytes);
 
     private sealed record NightEvidence(
         int Width,
@@ -672,6 +712,8 @@ public sealed class NightlyProductGenerationPerformanceTests
 
         internal int LargestRestore { get; set; }
 
+        internal long LargestRestoreBytes { get; set; }
+
         public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(
             string nodeId,
             DateTimeOffset startUtc,
@@ -691,6 +733,7 @@ public sealed class NightlyProductGenerationPerformanceTests
             Restores++;
             RestoredFrames += candidates.Count;
             LargestRestore = Math.Max(LargestRestore, candidates.Count);
+            LargestRestoreBytes = Math.Max(LargestRestoreBytes, candidates.Sum(static candidate => candidate.PayloadBytes));
             return inner.RestoreAsync(candidates, cancellationToken);
         }
     }
@@ -699,18 +742,24 @@ public sealed class NightlyProductGenerationPerformanceTests
     /// A whole observing day of W1 previews. Pixels come from <see cref="PatternCount"/> precomputed patterns copied
     /// into a fresh buffer on every restore, as a durable read would allocate, so only a restored part is resident.
     /// </summary>
-    private sealed class SyntheticW1SourceReader : INightlyProductSourceReader
+    private sealed class SyntheticSourceReader : INightlyProductSourceReader
     {
-        private static readonly ProcessingCompatibilityIdentity Compatibility = new(
-            RigProjectionContextFactory.CreateProfileHashSha256(Rig),
-            "zenith-v1", "none-v1", "full-v1", "sensor-v1", "night-v1", "pipeline-v1");
+        private readonly ProcessingCompatibilityIdentity _compatibility;
+        private readonly FrameLayoutDescriptor _layout;
+        private readonly int _frameBytes;
+        private readonly byte[][] _patterns;
+        private readonly NightlyProductCandidate[] _candidates;
 
-        private static readonly FrameLayoutDescriptor Layout = new(
-            Width, Height, Width, CameraPixelFormat.Mono8, FrameByteOrder.NotApplicable, 8, 8,
-            FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, null, byte.MaxValue, FrameBytes);
-
-        private readonly byte[][] _patterns = [.. Enumerable.Range(0, PatternCount).Select(Pattern)];
-        private readonly NightlyProductCandidate[] _candidates = [.. Enumerable.Range(0, DayFrameCount).Select(Candidate)];
+        internal SyntheticSourceReader(int width, int height, int channels, string rigHash)
+        {
+            _frameBytes = checked(width * height * channels);
+            _layout = new(width, height, width * channels, channels == 3 ? CameraPixelFormat.Rgb24 : CameraPixelFormat.Mono8,
+                FrameByteOrder.NotApplicable, 8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None,
+                null, byte.MaxValue, _frameBytes);
+            _compatibility = new(rigHash, "zenith-v1", "none-v1", "full-v1", "sensor-v1", "night-v1", "pipeline-v1");
+            _patterns = [.. Enumerable.Range(0, PatternCount).Select(Pattern)];
+            _candidates = [.. Enumerable.Range(0, DayFrameCount).Select(Candidate)];
+        }
 
         public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(
             string nodeId,
@@ -735,7 +784,7 @@ public sealed class NightlyProductGenerationPerformanceTests
         {
             var index = Array.FindIndex(_candidates, other => other.ArtifactId == candidate.ArtifactId);
             Assert.IsGreaterThanOrEqualTo(0, index);
-            var pixels = new byte[FrameBytes];
+            var pixels = new byte[_frameBytes];
             _patterns[index % PatternCount].CopyTo(pixels, 0);
             return new ProcessingArtifact(
                 candidate.ArtifactId,
@@ -743,17 +792,17 @@ public sealed class NightlyProductGenerationPerformanceTests
                 candidate.Variant,
                 candidate.RecipeIdentitySha256,
                 candidate.MediaType,
-                Layout,
+                _layout,
                 pixels,
                 candidate.ExposureStartedUtc.AddSeconds(61),
                 TimeSpan.FromSeconds(60),
-                Compatibility,
+                _compatibility,
                 ObservationStartedUtc: candidate.ExposureStartedUtc);
         }
 
-        private static byte[] Pattern(int pattern)
+        private byte[] Pattern(int pattern)
         {
-            var pixels = new byte[FrameBytes];
+            var pixels = new byte[_frameBytes];
             for (var i = 0; i < pixels.Length; i++)
             {
                 pixels[i] = (byte)((i * 7 + pattern * 31) % 251);
@@ -761,7 +810,7 @@ public sealed class NightlyProductGenerationPerformanceTests
             return pixels;
         }
 
-        private static NightlyProductCandidate Candidate(int index)
+        private NightlyProductCandidate Candidate(int index)
         {
             var artifactId = Guid.Parse($"99300000-0000-0000-0000-{index:D12}");
             var captureId = Guid.Parse($"99310000-0000-0000-0000-{index:D12}");
@@ -775,8 +824,8 @@ public sealed class NightlyProductGenerationPerformanceTests
                 NightlyProductFixture.PreviewRecipe,
                 JournalNightlyProductSourceReader.PackedImageMediaType,
                 NightlyProductFixture.DayStartUtc.AddMinutes(index),
-                Compatibility.Rig,
-                null) { UsesFixedDisplayTransfer = true, PayloadBytes = FrameBytes };
+                _compatibility.Rig,
+                null) { UsesFixedDisplayTransfer = true, PayloadBytes = _frameBytes };
         }
     }
 }

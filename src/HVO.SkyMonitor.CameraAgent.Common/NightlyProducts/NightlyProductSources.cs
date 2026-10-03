@@ -122,10 +122,9 @@ internal sealed record NightlyProductAdmissionResult(
     IReadOnlyDictionary<string, int> Exclusions);
 
 /// <summary>
-/// Quality admission of nightly candidates from captured facts alone. A candidate is admitted only when it was
-/// captured through the current rig profile and the Sun, at the candidate's own exposure start and capture location,
-/// was at or below the kind's altitude limit. A candidate whose location cannot be established is excluded, never
-/// assumed.
+/// Admission from captured facts alone: pinned fixed transfer and rig, retained site and exact half-open window.
+/// Keograms admit all actual sources; star trails additionally require a geometric Sun altitude at or below −18°
+/// at each source's own exposure start. An unresolved capture location is excluded.
 /// </summary>
 internal static class NightlyProductAdmission
 {

@@ -134,7 +134,8 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         CREATE INDEX nightly_windows_by_date ON nightly_windows (observing_date, window_start_utc_ticks);
 
         CREATE TABLE nightly_window_products (
-            occurrence_identity_sha256 TEXT NOT NULL,            kind TEXT NOT NULL,
+            occurrence_identity_sha256 TEXT NOT NULL,
+            kind TEXT NOT NULL,
             scope TEXT NOT NULL,
             window_start_utc_ticks INTEGER NOT NULL,
             part_ordinal INTEGER NOT NULL CHECK (part_ordinal >= 0),

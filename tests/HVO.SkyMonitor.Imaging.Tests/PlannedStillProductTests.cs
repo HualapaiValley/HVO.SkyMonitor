@@ -25,6 +25,19 @@ public sealed class PlannedStillProductTests
     }
 
     [TestMethod]
+    public void FixedEightBitTransfer_PreservesMonoRgbNativeValuesAndIgnoresStridePadding()
+    {
+        var mono = new FrameLayoutDescriptor(2, 2, 3, CameraPixelFormat.Mono8, FrameByteOrder.NotApplicable,
+            8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, null, 255, 6);
+        CollectionAssert.AreEqual(new byte[] { 0, 128, 254, 255 },
+            FixedDisplayTransfer.Apply(mono, new byte[] { 0, 128, 99, 254, 255, 99 }, new(0, 255, 1)));
+        var rgb = new FrameLayoutDescriptor(1, 2, 4, CameraPixelFormat.Rgb24, FrameByteOrder.NotApplicable,
+            8, 8, FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, null, 255, 8);
+        CollectionAssert.AreEqual(new byte[] { 0, 128, 255, 254, 1, 127 },
+            FixedDisplayTransfer.Apply(rgb, new byte[] { 0, 128, 255, 99, 254, 1, 127, 99 }, new(0, 255, 1)));
+    }
+
+    [TestMethod]
     public void FixedBayer_ReconstructsLinearChannelsBeforeGammaAndKeepsTheUnreconstructableBorderBlack()
     {
         var pixels = Samples(Enumerable.Repeat((ushort)2048, 25).ToArray());

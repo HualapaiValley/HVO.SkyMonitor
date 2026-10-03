@@ -25,7 +25,7 @@ public enum NightlyProductScope
     /// <summary>An intermediate star-trail lighten over at most one recipe execution's worth of segments.</summary>
     Rollup,
 
-    /// <summary>The observing-day product, composed from that day's current segments.</summary>
+    /// <summary>The final product of the exact retained hourly or sunrise-day occurrence.</summary>
     Final
 }
 
@@ -58,7 +58,7 @@ public static class NightlyProductContract
     /// </summary>
     public const int MaximumWindowCandidates = 4096;
 
-    /// <summary>The most products one catalog listing returns.</summary>
+    /// <summary>The most products one catalog listing returns; larger listings fail rather than truncate.</summary>
     public const int MaximumListedProducts = 1024;
 
     /// <summary>The automation target that generates keograms.</summary>

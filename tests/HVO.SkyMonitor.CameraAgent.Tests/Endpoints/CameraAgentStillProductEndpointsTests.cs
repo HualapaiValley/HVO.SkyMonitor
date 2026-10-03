@@ -25,10 +25,13 @@ public sealed class CameraAgentStillProductEndpointsTests
     }
 
     [TestMethod]
-    [DataRow("GetCameraAgentStillProduct")]
-    [DataRow("GetCameraAgentStillProductPreview")]
-    [DataRow("GetCameraAgentStillProductProvenance")]
-    public async Task UnknownProduct_IsNotFoundAndStorageFailureDoesNotExposePrivateDetails(string name)
+    [DataRow("GetCameraAgentStillProduct", false)]
+    [DataRow("GetCameraAgentStillProductPreview", false)]
+    [DataRow("GetCameraAgentStillProductProvenance", false)]
+    [DataRow("GetCameraAgentStillProduct", true)]
+    [DataRow("GetCameraAgentStillProductPreview", true)]
+    [DataRow("GetCameraAgentStillProductProvenance", true)]
+    public async Task UnknownProduct_IsNotFoundAndStorageFailureDoesNotExposePrivateDetails(string name, bool denied)
     {
         var catalog = new ProbeCatalog();
         using var app = App(catalog);
@@ -37,7 +40,7 @@ public sealed class CameraAgentStillProductEndpointsTests
         var missing = Context(app);
         await endpoint.RequestDelegate!(missing).ConfigureAwait(false);
         Assert.AreEqual(StatusCodes.Status404NotFound, missing.Response.StatusCode);
-        catalog.Fail = true;
+        catalog.Failure = denied ? new UnauthorizedAccessException("PRIVATE root or credentials") : new IOException("PRIVATE root or credentials");
         var failed = Context(app);
         await endpoint.RequestDelegate!(failed).ConfigureAwait(false);
         Assert.AreEqual(StatusCodes.Status503ServiceUnavailable, failed.Response.StatusCode);
@@ -64,7 +67,7 @@ public sealed class CameraAgentStillProductEndpointsTests
 
     private sealed class ProbeCatalog : INightlyProductCatalog
     {
-        internal bool Fail { get; set; }
+        internal Exception? Failure { get; set; }
         public ValueTask<IReadOnlyList<NightlyProductSummary>> ListAsync(DateOnly observingDate, CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<NightlyProductSummary>>([]);
         public ValueTask<IReadOnlyList<NightlyProductWindowStatus>> ListWindowsAsync(DateOnly observingDate, CancellationToken cancellationToken)
@@ -75,6 +78,6 @@ public sealed class CameraAgentStillProductEndpointsTests
             => Read<NightlyProductRendition>();
         public ValueTask<NightlyProductProvenance?> OpenProvenanceAsync(Guid productId, CancellationToken cancellationToken)
             => Read<NightlyProductProvenance>();
-        private ValueTask<T?> Read<T>() where T : class => Fail ? throw new IOException("PRIVATE root or credentials") : ValueTask.FromResult<T?>(null);
+        private ValueTask<T?> Read<T>() where T : class => Failure is { } failure ? throw failure : ValueTask.FromResult<T?>(null);
     }
 }

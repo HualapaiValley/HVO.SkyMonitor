@@ -235,6 +235,51 @@ public sealed class FullDayStillProductQualificationTests
         TestContext.WriteLine($"Qualified{sources.Count} actual captures and{products.Count} final products at{root}.");
     }
 
+    [TestMethod]
+    public async Task RetainedQualification_ExportsVerifiedSourceStripAndMatchingFinalColumn()
+    {
+        var root = Required("HVO_ISSUE993_RETAINED_FULL_DAY_ROOT");
+        using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, "evidence.json")));
+        var document = evidence.RootElement;
+        var options = document.GetProperty("options").Deserialize<HVO.SkyMonitor.CameraAgent.Common.Options.NightlyProductOptions>(Json)!;
+        var configuration = Configuration(null);
+        Assert.AreEqual(options.RigProfileSha256, RigProjectionContextFactory.CreateProfileHashSha256(configuration.Rig));
+        var productId = document.GetProperty("products").EnumerateArray().Single(static item => item.GetProperty("kind").GetString() == "Keogram")
+            .GetProperty("final").GetProperty("summary").GetProperty("productId").GetGuid();
+        var candidate = document.GetProperty("samples").EnumerateArray().Single(static item => item.GetProperty("label").GetString() == "civil-twilight")
+            .GetProperty("candidate").Deserialize<NightlyProductCandidate>(Json)!;
+        var clock = new NightlyClock(document.GetProperty("period").GetProperty("endUtc").GetDateTimeOffset().AddMinutes(10));
+        using var provider = Provider(Path.Combine(root, "runtime"), clock);
+        var reader = provider.GetRequiredService<INightlyProductSourceReader>();
+        var source = (await reader.RestoreAsync([candidate], CancellationToken.None)).Single();
+        using var store = new SqliteNightlyProductStore(NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options), clock);
+        var final = await store.GetAsync(productId, CancellationToken.None);
+        Assert.IsNotNull(final);
+        var packed = await store.ReadStoredProductAsync(productId, CancellationToken.None);
+        var geometry = MeridianSamplePath.Create(RigProjectionContextFactory.Create(configuration.Rig), packed.Layout.Height);
+        var strip = KeogramComposer.Compose([new(source.Layout!.Width, source.Layout.Height, source.Layout.StrideBytes,
+            source.Layout.PixelFormat, source.Payload, candidate.ExposureStartedUtc)], new(geometry.Select(static point => point.Pixel).ToArray()));
+        var column = (int)((candidate.ExposureStartedUtc - final.Occurrence.SourceWindow!.StartUtc).Ticks /
+            TimeSpan.FromSeconds(options.KeogramColumnSeconds).Ticks);
+        var matching = new byte[strip.PixelData.Length];
+        for (var row = 0; row < packed.Layout.Height; row++)
+            packed.Payload.Span.Slice(row * packed.Layout.StrideBytes + column * 3, 3).CopyTo(matching.AsSpan(row * 3, 3));
+        CollectionAssert.AreEqual(strip.PixelData.ToArray(), matching, "Every source strip pixel must equal its retained final column.");
+        var directory = Path.Combine(root, "strip-proof");
+        Directory.CreateDirectory(directory);
+        await File.WriteAllBytesAsync(Path.Combine(directory, "source.rgb"), source.Payload.ToArray());
+        await File.WriteAllBytesAsync(Path.Combine(directory, "strip.rgb"), strip.PixelData.ToArray());
+        await File.WriteAllBytesAsync(Path.Combine(directory, "column.rgb"), matching);
+        await File.WriteAllTextAsync(Path.Combine(directory, "evidence.json"), JsonSerializer.Serialize(new
+        {
+            schema = "issue-993-shared-meridian-strip-proof-v1", candidate, sourceLayout = source.Layout,
+            productId, column, rows = packed.Layout.Height, geometry,
+            sourceSha256 = ProcessingIdentity.ComputePayloadSha256(source.Payload.Span),
+            stripSha256 = ProcessingIdentity.ComputePayloadSha256(strip.PixelData.Span),
+            columnSha256 = ProcessingIdentity.ComputePayloadSha256(matching), pixelEquality = true
+        }, Json));
+    }
+
     private static CameraModuleConfig Configuration(DateTimeOffset? celestialUtc) => new(
         new ObservatoryLocation(Latitude, Longitude, 0, "America/Phoenix"),
         new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new

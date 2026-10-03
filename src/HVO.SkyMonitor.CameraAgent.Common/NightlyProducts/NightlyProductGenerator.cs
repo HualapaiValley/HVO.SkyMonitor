@@ -49,13 +49,11 @@ internal sealed record NightlyProductRunReport(
 }
 
 /// <summary>
-/// Generates keograms and star trails from published preview frames on the automation runner's schedule. Each run
-/// evaluates the settled segment windows of the previous and current observing day, admits sources from captured
-/// facts, and composes each window in bounded ordered parts. A night is composed from its segments once its whole
-/// observing day has settled: a keogram night is assembled byte-identically to direct composition, and a star-trail
-/// night is reduced through a lineage tree of rollups. Product identity is the recipe's output identity, so a re-run
-/// over unchanged inputs reuses rather than recomputes, and a run is bounded by
-/// <see cref="NightlyProductOptions.MaximumSegmentsPerRun"/> recipe executions, leaving the remainder pending.
+/// Generates one retained, settled hourly or sunrise-day occurrence from published fixed previews. Admission uses
+/// captured exposure, recipe, rig and location facts. Keograms cover the complete planned UTC period; star trails
+/// reduce only actual dark-night frames through ordered parts and bounded rollups. The immutable occurrence binds
+/// recipe identity and publication, so unchanged retries verify and reuse the same output files. A window exceeding
+/// <see cref="NightlyProductOptions.MaximumSegmentsPerRun"/> recipe executions is rejected before source restoration.
 /// </summary>
 internal sealed class NightlyProductGenerator : IDisposable
 {
@@ -210,6 +208,15 @@ internal sealed class NightlyProductGenerator : IDisposable
                 return await RecordUnlessUnchangedAsync(
                     context, NightlyProductScope.Segment, window, NightlyProductWindowDisposition.NoSources,
                     null, candidateCount, [], admission.Exclusions, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (context.Kind == NightlyProductKind.StarTrail && admission.Admitted.Count > 1 &&
+                (context.Options.MaximumSegmentSources < 2 ||
+                 admission.Admitted.Max(static source => source.PayloadBytes) > NightlyProductRecipeLimits.MaximumSourceBytes / 2))
+            {
+                return await RecordUnlessUnchangedAsync(context, NightlyProductScope.Segment, window,
+                    NightlyProductWindowDisposition.Rejected, "nightly.rollup-bound", candidateCount, [],
+                    admission.Exclusions, cancellationToken).ConfigureAwait(false);
             }
 
             var admittedIdentities = admission.Admitted.Select(static candidate => candidate.OutputIdentitySha256).ToArray();

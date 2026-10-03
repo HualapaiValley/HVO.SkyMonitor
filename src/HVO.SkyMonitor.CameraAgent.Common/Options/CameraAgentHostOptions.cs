@@ -811,7 +811,8 @@ public sealed class NightlyProductOptions : IValidatableObject
     [Range(1, NightlyProductLimits.MaximumRecipeSources)]
     public int MaximumSegmentSources { get; init; } = 32;
 
-    /// <summary>The most segment parts one scheduled run composes before reporting the remainder as pending.</summary>
+    /// <summary>The maximum recipe executions for one occurrence, including parts, rollups and final assembly.
+    /// A larger occurrence is rejected before restoring sources or publishing partial results.</summary>
     [Range(1, 256)]
     public int MaximumSegmentsPerRun { get; init; } = 256;
 
@@ -823,7 +824,7 @@ public sealed class NightlyProductOptions : IValidatableObject
     [Range(1, 65_536)]
     public int KeogramMaximumGapColumnCount { get; init; } = 64;
 
-    /// <summary>The widest keogram, segment or night, a run may produce.</summary>
+    /// <summary>The widest keogram part or full planned final axis a run may produce.</summary>
     [Range(2, 65_536)]
     public int KeogramMaximumColumnCount { get; init; } = 16_384;
 

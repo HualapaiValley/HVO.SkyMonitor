@@ -150,6 +150,52 @@ public sealed class NightlyProductGeneratorTests
     }
 
     [TestMethod]
+    public async Task SourceByteBound_RejectsTheWholeOccurrenceBeforeRestorationAndRemainsFailedOnRetry()
+    {
+        var reader = new InMemoryNightlySourceReader();
+        var frame = NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16));
+        reader.Add(frame with { Candidate = frame.Candidate with { PayloadBytes = 256L * 1024 * 1024 + 1 } });
+        var options = NightlyProductFixture.Options();
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram, options);
+        using var harness = Harness(reader, options);
+
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FailedWindows, $"Attempt {attempt} must remain failed.");
+            Assert.AreEqual(LocalAutomationRunOutcome.Failed, NightlyProductAutomationTaskRegistry.Outcome(report));
+        }
+        Assert.AreEqual(0, reader.Restores);
+        Assert.IsEmpty(await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+        var status = await harness.Store.ReadWindowAsync(NightlyProductKind.Keogram, NightlyProductScope.Final,
+            occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrence.IdentitySha256);
+        Assert.AreEqual(NightlyProductWindowDisposition.Rejected, status!.Status.Disposition);
+        Assert.AreEqual("nightly.source-byte-bound", status.Status.ReasonCode);
+    }
+
+    [TestMethod]
+    [DataRow(1, 4L)]
+    [DataRow(32, 200L * 1024 * 1024)]
+    public async Task ImpossibleStarTrailRollup_RejectsBeforePublishingParts(int countBound, long frameBytes)
+    {
+        var reader = new InMemoryNightlySourceReader();
+        var time = new DateTimeOffset(2026, 10, 2, 5, 0, 0, TimeSpan.Zero);
+        foreach (var index in Enumerable.Range(1, 2))
+        {
+            var frame = NightlyProductFixture.Frame(index, time.AddMinutes(index));
+            reader.Add(frame with { Candidate = frame.Candidate with { PayloadBytes = frameBytes } });
+        }
+        var options = NightlyProductFixture.Options(maximumSegmentSources: countBound);
+        using var harness = Harness(reader, options);
+
+        var report = await harness.Generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail, options), CancellationToken.None);
+
+        Assert.AreEqual(1, report.FailedWindows);
+        Assert.AreEqual(0, reader.Restores);
+        Assert.IsEmpty(await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task ExecutionBudget_RejectsBeforeRestoringOrPublishingPartialProducts()
     {
         var reader = new InMemoryNightlySourceReader();
