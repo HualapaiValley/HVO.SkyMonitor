@@ -262,7 +262,7 @@ internal static class BuiltInProcessingProductContracts
             sourceIds,
             "application/x-hvo-packed-image",
             true,
-            ProcessingRecipeSupport.CreatePackedLayout(firstLayout),
+            ProcessingRecipeSupport.CreatePackedLayout(firstLayout.Width, firstLayout.Height, firstLayout.PixelFormat),
             null,
             ProcessingProductKind.PixelData,
             null,

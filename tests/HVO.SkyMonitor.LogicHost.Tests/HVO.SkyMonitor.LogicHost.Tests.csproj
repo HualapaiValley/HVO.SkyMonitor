@@ -25,6 +25,7 @@
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Reconstruction.cs" Link="Services\HostRecipeContractConformanceTests.Reconstruction.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Calibration.cs" Link="Services\HostRecipeContractConformanceTests.Calibration.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Scene.cs" Link="Services\HostRecipeContractConformanceTests.Scene.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Still.cs" Link="Services\HostRecipeContractConformanceTests.Still.cs" />
     <!-- Central and combined host lanes use the canonical analytic/mask/noise Imaging conformance suite. -->
     <Compile Include="..\HVO.SkyMonitor.Imaging.Tests\FocusStarMeasurerTests.cs" Link="Imaging\FocusStarMeasurerTests.cs" />
   </ItemGroup>
