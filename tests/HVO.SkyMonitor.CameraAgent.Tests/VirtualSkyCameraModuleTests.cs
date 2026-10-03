@@ -25,6 +25,62 @@ public sealed class VirtualSkyCameraModuleTests
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16, "SolarDriven")]
+    [DataRow(CameraPixelFormat.Rgb24, "SolarDriven")]
+    [DataRow(CameraPixelFormat.BayerRggb16, "SolarDriven")]
+    [DataRow(CameraPixelFormat.Mono16, "ControlledNight")]
+    [DataRow(CameraPixelFormat.Rgb24, "ControlledNight")]
+    [DataRow(CameraPixelFormat.BayerRggb16, "ControlledNight")]
+    public async Task FocusPreview_PreservesSolarProvenanceAndOrdinaryCaptures(CameraPixelFormat format, string mode)
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var previewed = CreateModule(noon);
+        await using var previewedLifetime = previewed.ConfigureAwait(false);
+        var untouched = CreateModule(noon);
+        await using var untouchedLifetime = untouched.ConfigureAwait(false);
+        var config = CreateConfig(format, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                illuminationMode = mode,
+                renderSolarSystemDisks = true,
+                asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
+                fixedSequenceStartUtc = noon,
+                seed = 1017
+            }))
+        };
+        await previewed.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        await untouched.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(noon, TimeSpan.FromMinutes(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(1), 1, null, null));
+        var first = (await previewed.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var preview = (await previewed.CaptureFocusPreviewAsync(new(request, 300), CancellationToken.None)
+            .ConfigureAwait(false)).Frame!;
+        var second = (await previewed.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var firstControl = (await untouched.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+        var secondControl = (await untouched.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        CollectionAssert.AreEqual(firstControl.PixelData.ToArray(), first.PixelData.ToArray());
+        CollectionAssert.AreEqual(secondControl.PixelData.ToArray(), second.PixelData.ToArray(),
+            "A focus preview must not consume the capture timeline or noise sequence in either illumination mode.");
+        Assert.AreEqual(format, preview.Layout!.PixelFormat);
+        Assert.AreEqual(mode, preview.Metadata.Extra!["skyIlluminationMode"]);
+        Assert.AreEqual("true", preview.Metadata.Extra["focusPreview"]);
+        Assert.AreEqual("300", preview.Metadata.Extra["simulatedFocusPosition"]);
+        Assert.IsFalse(second.Metadata.Extra!.ContainsKey("focusPreview"));
+        var exposure = preview.Metadata.Scene!.VirtualExposure!;
+        Assert.AreEqual(noon, preview.TimestampUtc);
+        Assert.AreEqual(noon.AddMinutes(1), exposure.CelestialStartUtc);
+        Assert.AreEqual(exposure.CelestialStartUtc, second.Metadata.Scene!.VirtualExposure!.CelestialStartUtc);
+        var disks = JsonSerializer.Deserialize<SolarDiskAppearance[]>(preview.Metadata.Extra["solarDiskAppearance"])!;
+        Assert.AreEqual(2, disks.Length);
+        Assert.AreEqual(exposure.CelestialMidpointUtc, disks[0].Utc);
+        Assert.IsTrue(disks[0].Direction.AltitudeDegrees > 0,
+            "Controlled night background must retain the actual daytime solar geometry.");
+        StringAssert.Contains(preview.Metadata.Extra["renderAlgorithm"], SolarDiskRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     [DataRow(CameraPixelFormat.Mono16)]
     [DataRow(CameraPixelFormat.Rgb24)]
     [DataRow(CameraPixelFormat.BayerRggb16)]

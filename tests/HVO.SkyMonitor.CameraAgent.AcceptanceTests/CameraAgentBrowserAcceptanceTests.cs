@@ -92,7 +92,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
             await WaitForFocusAsync(page, toggle).ConfigureAwait(false);
         }
-        // Focus is routable but has no session capability: every control is disabled and nothing is measured.
+        // Focus idles until the operator starts it: nothing is measured and no preview is shown before Start.
         foreach (var width in new[] { 1440, 390, 320 })
         {
             await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
@@ -102,20 +102,77 @@ public sealed class CameraAgentBrowserAcceptanceTests
                 .ConfigureAwait(false);
             Assert.AreEqual("page", await page.Locator("nav.operations-navigation a[href='/operations/focus']")
                 .GetAttributeAsync("aria-current").ConfigureAwait(false));
-            Assert.IsTrue(await page.EvaluateAsync<bool>(
-                "() => [...document.querySelectorAll('.operations-content button, .operations-content input, .operations-content select')].every(control => control.disabled)")
-                .ConfigureAwait(false));
+            await page.WaitForFunctionAsync(
+                "() => document.querySelector('#focus-start')?.disabled === false && document.querySelector('#focus-start').textContent.trim() === 'Start focus session'")
+                .ConfigureAwait(false);
+            Assert.IsTrue(await page.Locator("#focus-sample").IsDisabledAsync().ConfigureAwait(false));
             Assert.AreEqual(0, await page.Locator(".operations-content img").CountAsync().ConfigureAwait(false));
-            Assert.IsFalse(await page.EvaluateAsync<bool>(
-                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
-                .ConfigureAwait(false), $"Focus overflows horizontally at {width}px.");
-            Assert.IsTrue(await page.Locator(".focus-history-table").EvaluateAsync<bool>(
-                "table => table.parentElement.scrollWidth <= table.parentElement.clientWidth + 1")
-                .ConfigureAwait(false), $"The empty focus history scrolls at {width}px.");
+            await AssertFocusFitsAsync(page, width).ConfigureAwait(false);
             await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"focus-{width}.png"), FullPage = true })
                 .ConfigureAwait(false);
         }
+        // A real VirtualSky loop: start, measure the tracked star, reject an invalid setting, adjust the simulated
+        // position, end, save and export the verified record.
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        Assert.AreEqual("1.000s", await page.Locator("#focus-exposure").InputValueAsync().ConfigureAwait(false));
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#focus-start')?.textContent.trim() === 'End session'")
+            .ConfigureAwait(false);
+        // The 160x120 fixture frame barely contains the 48 px background annulus, so whether the automatically chosen star
+        // measures depends on where the render instant puts it. Either way the sample must say what it is: a width, or
+        // its explicit reason with no width. Measured evidence on a full-size frame is the native preview's.
+        await VisibleAsync(page.Locator("#focus-sample-detail")).ConfigureAwait(false);
+        var metric = (await page.Locator("#focus-metric").TextContentAsync().ConfigureAwait(false))!.Trim();
+        if (await page.Locator("#focus-sample-detail.invalid").CountAsync().ConfigureAwait(false) == 0)
+        {
+            StringAssert.EndsWith(metric, "px", StringComparison.Ordinal);
+        }
+        else
+        {
+            StringAssert.Contains(metric, "not measured", StringComparison.Ordinal);
+            Assert.IsGreaterThan(0, (await page.Locator("#focus-sample-detail").TextContentAsync().ConfigureAwait(false))!.Length);
+            // No selected target means no star crop. The real overview remains available for choosing another field.
+            if (await page.Locator(".focus-viewer img").CountAsync().ConfigureAwait(false) == 0)
+            {
+                await page.Locator("#focus-select-region").ClickAsync().ConfigureAwait(false);
+            }
+        }
+        await VisibleAsync(page.Locator(".focus-viewer img").First).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".focus-simulated")).ConfigureAwait(false);
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            await AssertFocusFitsAsync(page, width).ConfigureAwait(false);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(output, $"focus-measured-{width}.png"), FullPage = true })
+                .ConfigureAwait(false);
+        }
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
+        await page.Locator("#focus-exposure").FillAsync("soon").ConfigureAwait(false);
+        await page.Locator("#focus-sample").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#focus-settings-error[role='alert']")).ConfigureAwait(false);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(output, "focus-error-1440.png"), FullPage = true })
+            .ConfigureAwait(false);
+        await page.Locator("#focus-exposure").FillAsync("1s").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Move simulated focus 50 steps out" }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "() => [...document.querySelectorAll('.focus-samples-table tbody tr')].some(row => row.textContent.includes('position 250'))")
+            .ConfigureAwait(false);
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelector('#focus-start')?.textContent.trim() === 'Save session result'")
+            .ConfigureAwait(false);
+        await page.Locator("#focus-start").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("a#focus-export")).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".focus-history-table .state-chip.success")).ConfigureAwait(false);
+        var export = await context.APIRequest.GetAsync(
+            (await page.Locator("a#focus-export").GetAttributeAsync("href").ConfigureAwait(false))!).ConfigureAwait(false);
+        Assert.AreEqual(200, export.Status);
+        var exported = await export.BodyAsync().ConfigureAwait(false);
+        Assert.AreEqual(Convert.ToHexStringLower(SHA256.HashData(exported)), export.Headers["x-artifact-sha256"]);
+        StringAssert.Contains(Encoding.UTF8.GetString(exported), "hvo.cameraagent.manual-focus-session.v1", StringComparison.Ordinal);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(output, "focus-saved-1440.png"), FullPage = true })
+            .ConfigureAwait(false);
         // On a phone the drawer reaches Focus by keyboard and closes on arrival.
+        await page.SetViewportSizeAsync(320, 844).ConfigureAwait(false);
         await page.GotoAsync("/operations").ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator("button[aria-controls='operations-sections']").ClickAsync().ConfigureAwait(false);
@@ -2830,6 +2887,36 @@ public sealed class CameraAgentBrowserAcceptanceTests
 
     private static Task WaitForInteractiveShellAsync(IPage page)
         => page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
+
+    private static async Task AssertFocusFitsAsync(IPage page, int width)
+    {
+        Assert.IsFalse(await page.EvaluateAsync<bool>(
+            "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
+            .ConfigureAwait(false), $"Focus overflows horizontally at {width}px.");
+        var clipped = await page.EvaluateAsync<string>("""
+            () => [...document.querySelectorAll('.focus-workspace button, .focus-workspace input, .focus-workspace select, .operations-content .ops-panel-heading a, .operations-content .ops-panel-heading button')]
+                .filter(element => element.getClientRects().length)
+                .filter(element => {
+                    const bounds = element.getBoundingClientRect();
+                    return bounds.left < -1 || bounds.right > document.documentElement.clientWidth + 1;
+                })
+                .map(element => `${element.tagName}#${element.id}.${element.className} [${Math.round(element.getBoundingClientRect().left)}, ${Math.round(element.getBoundingClientRect().right)}]`)
+                .join('; ')
+            """).ConfigureAwait(false);
+        Assert.AreEqual(string.Empty, clipped, $"Focus controls are clipped at {width}px.");
+        var escaped = await page.EvaluateAsync<string>("""
+            () => [...document.querySelectorAll('.focus-inspector button, .focus-inspector input, .focus-inspector select')]
+                .filter(element => element.getClientRects().length)
+                .filter(element => {
+                    const bounds = element.getBoundingClientRect();
+                    const box = element.closest('fieldset, .focus-inspector').getBoundingClientRect();
+                    return bounds.left < box.left - 1 || bounds.right > box.right + 1;
+                })
+                .map(element => `${element.tagName}#${element.id} ${element.textContent.trim()}`)
+                .join('; ')
+            """).ConfigureAwait(false);
+        Assert.AreEqual(string.Empty, escaped, $"Focus controls leave the inspector at {width}px.");
+    }
 
     private static async Task WaitForFocusAsync(IPage page, ILocator locator)
         => await page.WaitForFunctionAsync(
