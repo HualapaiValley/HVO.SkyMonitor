@@ -1407,12 +1407,13 @@ public sealed class ArtifactIngestTests
         await db.CentralArtifacts.Where(item => item.Id == stored.Id)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.ReconstructionState, CentralReconstructionState.Quarantined)
-                .SetProperty(item => item.StateReasonCode, "lineage.source-identity-mismatch"))
+                .SetProperty(item => item.StateReasonCode, "lineage.source-identity-mismatch")
+                .SetProperty(item => item.RecoveryGeneration, long.MaxValue))
             .ConfigureAwait(false);
-        // Explicitly queue this dependent for verification. A single inventory cycle
-        // visits only 25 artifacts, so shared-fixture GUID ordering cannot guarantee
-        // that this artifact is included in the next inventory batch.
-        await db.CentralArtifacts.Where(item => item.Id == dependentId)
+        // Explicitly verify both the quarantined parent and its dependent. Verifying
+        // a complete dependent alone does not visit its parent's invalidation path.
+        // Exclude the parent from inventory above so this cannot pass by GUID order.
+        await db.CentralArtifacts.Where(item => item.Id == stored.Id || item.Id == dependentId)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
                 .SetProperty(item => item.ObjectVerificationToken, Guid.NewGuid())
