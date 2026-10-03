@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-09-22
+Status date: 2026-10-03
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -49,17 +49,19 @@ integration and release qualification, not conditional on coordinator enrollment
 
 ## Current
 
-| ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
-| --- | --- | --- | --- | --- |
-| `RM-016` | Provider-neutral LogicHost object storage | Replace the archived MinIO local baseline with an HVO-owned durable filesystem provider behind `IObjectStore`, while retaining optional S3 portability and qualifying one exact same-host Linux topology. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); required children [#584](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/584), [#592](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/592), [#585](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/585), [#586](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/586), and [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | The technical chain #584 -> #592 -> #585 -> #586 -> #506 is delivered; #499 closes once its disposition is recorded. Production scope is LogicHost plus narrow host-neutral filesystem primitives. No legacy MinIO migration, CameraAgent production/state change, remote filesystem certification, bundled replacement S3 server, or cloud dependency is included. |
+`RM-016` is delivered; its final storage disposition and evidence are recorded
+under Delivered. This closeout does not promote another initiative's horizon or
+authorize new implementation or publication. The approved `RM-018` preparation
+and remaining product outcomes retain their scope under Next.
 
 Standalone CameraAgent completion (`RM-017`) is Delivered. Its retained follow-ups
 are ordinary component issues, not an initiative: the real Phase 14 import at the
 pinned head ([#971](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/971),
-blocked by [#968](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/968)),
-replay-evidence projection of publication and execution route
-([#973](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/973)), and the
-#197 summary schema bump ([#974](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/974)).
+dependency-ready after [#981](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/981)),
+with the closed replay-evidence projection
+([#973](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/973)) and #197 summary
+schema bump ([#974](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/974))
+retained as delivered history.
 Shared CI, architecture-test, or combined-fixture changes still require affected
 regression evidence, but that evidence does not transfer product ownership between
 hosts. The detailed provider decision and support envelope are recorded in
@@ -69,7 +71,7 @@ hosts. The detailed provider decision and support envelope are recorded in
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-018` | LogicHost network operations and distribution | Complete LogicHost as an independently validated and released central multi-observatory product, including immutable CameraAgent execution-evidence import, protected observatory and logical-camera workspaces, signed LogicHost lifecycle distribution, and exact-digest optional two-host acceptance. | [Epic #531](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/531) | The standalone qualification gate (`RM-017`) is satisfied. #847 authorizes #538 importer work consuming delivered #537, independent #855 API/UI discovery for #539 separate from imported views, and independent #856 packaging preparation for #540 only. It consumes stable CameraAgent and shared contracts without reopening CameraAgent features or making LogicHost part of acquisition correctness. Production release remains blocked on completion of the `RM-016` disposition with #499 closed; `RM-016` is not absorbed into this initiative. |
+| `RM-018` | LogicHost network operations and distribution | Complete LogicHost as an independently validated and released central multi-observatory product, including immutable CameraAgent execution-evidence import, protected observatory and logical-camera workspaces, signed LogicHost lifecycle distribution, and exact-digest optional two-host acceptance. | [Epic #531](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/531) | The standalone qualification gate (`RM-017`) is satisfied. #847 authorizes #538 importer work consuming delivered #537, independent #855 API/UI discovery for #539 separate from imported views, and independent #856 packaging preparation for #540 only. It consumes stable CameraAgent and shared contracts without reopening CameraAgent features or making LogicHost part of acquisition correctness. The final `RM-016` storage disposition is recorded below; #499 closes after its reviewed documentation closeout. That satisfies the storage release gate while #538–#541 retain their own implementation and exact-artifact acceptance. `RM-016` is not absorbed into this initiative. |
 
 The deferred CameraAgent storage/upload naming cleanup
 [#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) inherits
@@ -135,6 +137,7 @@ virtual work cannot be deferred there to close #1098.
 
 | ID | Initiative | Delivered outcome | Owning epic or issues |
 | --- | --- | --- | --- |
+| `RM-016` | Provider-neutral LogicHost object storage | Delivered the provider-neutral `IObjectStore` boundary, host-neutral filesystem primitives, qualified one-writer native Linux same-host ext4 profile and supported filesystem deployment/fixture adoption without MinIO server/control-plane ownership. The [final qualification disposition](validation/logichost-filesystem-qualification-586.md#final-disposition) preserves exact measurement/image identities and topology limits. Optional #587 and future RM-019 profiles are separate. | [Epic #499](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/499); #584, #592, #585, #586 and #506 are closed. |
 | `RM-001` | Virtual-first SkyMonitor platform | Standalone CameraAgent plus optional reconstructable LogicHost processing, weather/cloud/transient workflows, UI, recovery, and production-readiness foundations. | [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89). Nested epics #59, #60, #62, #64, #65, #109, #205, and #243 inherit this ID. |
 | `RM-002` | Deferred Phase 14 evidence campaign | Imported, executed, aggregated, and dispositioned exhaustive evidence without reopening virtual-first completion. | [#305](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/305); children #318-#322 inherit this ID. |
 | `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414), [#415](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/415), [#416](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/416), and [#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) |
@@ -170,7 +173,8 @@ RM-005 #426-#427 delivered central graph execution, hardened by #547 and #549
     +-> RM-005 #429 delivered fair scheduling and entitlements, and #430 delivered the elastic provider boundaries with the local-process adapter
 
 RM-017 standalone CameraAgent product completion: delivered (#535 generation 1)
-  +-> retained follow-ups #971 (blocked by #968), #973, #974
+  +-> retained import #971: dependency-ready after delivered #981; import remains undone
+  +-> closed follow-ups #973 and #974: delivered history
   +-> optional #587 CameraAgent adoption of the shared filesystem primitives
 
 #847 approved independent starts
@@ -179,14 +183,16 @@ RM-017 standalone CameraAgent product completion: delivered (#535 generation 1)
     +-> #592 host-neutral filesystem durability primitives
       +-> #585 LogicHost filesystem provider
         +-> #586 same-host Linux ext4 qualification
-          +-> #506 adoption and MinIO removal -> close epic #499
+          +-> #506 adoption and MinIO removal: delivered
+            +-> epic #499 final disposition: reviewed documentation closeout
   +-> RM-018 #538 importer work <- delivered #537 export contracts
   +-> RM-018 #855 independent API/UI discovery for #539, separate from imported views
   +-> RM-018 #856 independent packaging preparation for #540 only
 
 Integration and release gates (not global start gates)
   #538 importer contracts and evidence -> #539 imported views integration
-  #499 closure -> #540 production release (RM-017 qualification is satisfied)
+  #499 final storage disposition -> #540 storage release gate
+    (#499 closes after reviewed closeout; RM-017 qualification is satisfied)
   Qualified standalone CameraAgent + LogicHost release artifacts
     -> RM-018 exact-digest combined two-host acceptance
   RM-016 stable application contract and local topology -> RM-019 future profiles
@@ -198,15 +204,16 @@ reopens them.
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.
 RM-015 follows the RM-003 deployment foundation but remains separate.
-RM-016's remaining production changes are LogicHost or host-neutral
-infrastructure work and must not change CameraAgent behavior, state, or
-contracts. Shared CI, architecture tests, and combined fixtures still require
-affected CameraAgent/combined regression evidence without becoming active
-CameraAgent dependencies.
+RM-016 is delivered. Its product scope is LogicHost and narrow host-neutral
+filesystem mechanisms; later work retains the independent CameraAgent behavior,
+state and storage contracts. Shared CI, architecture tests and combined fixtures
+still require affected CameraAgent/combined regression evidence without becoming
+active CameraAgent product dependencies.
 Optional #587 is no longer gated; it may adopt the shared filesystem primitives
 without replacing CameraAgent's storage contract when scheduled.
-RM-016 epic #499 blocks #540 production release, not #856 packaging preparation;
-RM-019 does not block that release. Research and Deferred work remain unactivated.
+The final RM-016 disposition satisfies #540's storage gate when #499 closes;
+#856 packaging preparation was already independent. RM-019 does not block that
+release. Research and Deferred work retain their separate activation gates.
 ```
 
 Formal issue dependencies retain technical start, integration, and release gates
