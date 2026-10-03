@@ -17,7 +17,9 @@ public sealed record LocalAutomationWindowPlan(
 public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider calendarProvider)
 {
     public const int MaximumLookbackDays = 7;
-    public const int MaximumCachedWindowSets = 64;
+    // The maximum 32 definitions can each use a distinct policy over ten local dates.
+    // Keep that working set bounded without rebuilding every hourly partition on each sweep.
+    public const int MaximumCachedWindowSets = 512;
     private readonly object _sync = new();
     private readonly Dictionary<string, ImmutableArray<LocalAutomationSourceWindow>> _cache = [];
     private readonly Queue<string> _cacheOrder = new();
