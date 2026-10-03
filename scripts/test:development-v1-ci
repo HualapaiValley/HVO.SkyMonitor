@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "$repo_root" <<'PY'
 import json
+import itertools
 import os
 import pathlib
 import re
@@ -135,14 +136,14 @@ if args[:3] in (["api", "-X", "POST"], ["api", "-X", "PATCH"]):
         sys.exit(23)
     print("https://github.com/example/repo/pull/42")
 elif args[0] == "api" and "/compare/" in args[1]:
-    print("- aaaaaaaa fixture (#1142)")
+    print("- aaaaaaaa fixture" + (" (#1142)" if os.environ["HVO_V1_TEST_REFERENCES"] == "1" else ""))
 elif args[0] == "api" and "/pulls?" in args[1]:
     print(os.environ["HVO_V1_TEST_EXISTING"])
 else:
     sys.exit(24)
 """)
     gh.chmod(0o700)
-    for existing, failure in (("", False), ("42", False), ("", True), ("42", True)):
+    for existing, failure, references in itertools.product(("", "42"), (False, True), (False, True)):
         calls = fixture / "calls.jsonl"
         calls.write_text("")
         environment = dict(
@@ -153,6 +154,7 @@ else:
             GITHUB_STEP_SUMMARY=str(fixture / "summary.md"),
             HVO_V1_TEST_CALLS=str(calls), HVO_V1_TEST_EXISTING=existing,
             HVO_V1_TEST_FAIL="1" if failure else "0",
+            HVO_V1_TEST_REFERENCES="1" if references else "0",
         )
         result = subprocess.run(
             [*promotion_shell, promotion_script],
@@ -170,5 +172,5 @@ else:
                 raise SystemExit("Refreshing a promotion changed its draft/ready state")
         elif request[:3] != ["api", "-X", "POST"] or "draft=true" not in request:
             raise SystemExit("New promotion was not created as draft")
-print("Development v1 CI contracts passed; 12 mutation controls and 4 offline promotion cases passed.")
+print("Development v1 CI contracts passed; 12 mutation controls and 8 offline promotion cases passed.")
 PY

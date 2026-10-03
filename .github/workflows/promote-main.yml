@@ -147,7 +147,9 @@ jobs:
           title="Promote $SOURCE to $TARGET ($today)"
           commits="$(gh api "repos/$REPOSITORY/compare/$TARGET_SHA...$SOURCE_SHA" --paginate \
             --jq '.commits[]|"- \(.sha[0:8]) \(.commit.message|split("\n")[0])"')"
-          issues="$(printf '%s\n' "$commits" | grep -oE '#[0-9]+' | sort -u | tr '\n' ' ')"
+          # No issue references is valid; only grep's no-match status is tolerated.
+          issues="$(printf '%s\n' "$commits" |
+            { grep -oE '#[0-9]+' || [[ "$?" == 1 ]]; } | sort -u | tr '\n' ' ')"
           body="$(cat <<BODY
           ## Promotion
 
