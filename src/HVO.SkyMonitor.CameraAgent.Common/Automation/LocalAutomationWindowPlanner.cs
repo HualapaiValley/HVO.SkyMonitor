@@ -17,8 +17,8 @@ public sealed record LocalAutomationWindowPlan(
 public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider calendarProvider)
 {
     public const int MaximumLookbackDays = 7;
-    // The maximum 32 definitions can each use a distinct policy over ten local dates.
-    // Keep that working set bounded without rebuilding every hourly partition on each sweep.
+    // Retain the supported 32-definition lookback, settle and civil-date boundary working set
+    // without rebuilding every hourly partition on each sweep.
     public const int MaximumCachedWindowSets = 512;
     private readonly object _sync = new();
     private readonly Dictionary<string, ImmutableArray<LocalAutomationSourceWindow>> _cache = [];
@@ -40,9 +40,16 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
         }
         var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(nowUtc, calendar.TimeZone).DateTime);
         var cursor = entry.LastOccurrenceUtc ?? entry.Definition.TriggerEpochUtc;
-        var cursorDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(cursor, calendar.TimeZone).DateTime);
+        var lookback = LookbackStart(nowUtc);
+        var earliestFinalUtc = cursor > lookback ? cursor : lookback;
+        var earliestSourceEndUtc = new DateTimeOffset(Math.Max(DateTimeOffset.MinValue.UtcTicks,
+            earliestFinalUtc.UtcTicks - policy.ProcessingSettleAllowance.Ticks), TimeSpan.Zero);
+        var earliestEndDate = DateOnly.FromDateTime(
+            TimeZoneInfo.ConvertTime(earliestSourceEndUtc, calendar.TimeZone).DateTime);
+        // A qualifying end can precede its final run by the settle allowance, and its sunrise
+        // report date can precede the end's civil date. Convert the UTC bound with its own offset.
         var earliestDate = DateOnly.FromDayNumber(Math.Max(DateOnly.MinValue.DayNumber,
-            Math.Max(localDate.DayNumber - MaximumLookbackDays, cursorDate.DayNumber - 2)));
+            earliestEndDate.DayNumber - 2));
         var latestDate = DateOnly.FromDayNumber(Math.Min(DateOnly.MaxValue.DayNumber, localDate.DayNumber + 2));
         var windows = new List<LocalAutomationSourceWindow>();
         var unavailable = new List<SunriseReportingPeriodResolution>();
@@ -63,7 +70,6 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
                 unavailable.Add(new(date, null, exception.ReasonCode));
             }
         }
-        var lookback = LookbackStart(nowUtc);
         var due = windows.Where(window => window.EarliestFinalUtc > cursor && window.EarliestFinalUtc <= nowUtc &&
             window.EarliestFinalUtc >= lookback)
             .OrderBy(static window => window.EarliestFinalUtc).ToArray();

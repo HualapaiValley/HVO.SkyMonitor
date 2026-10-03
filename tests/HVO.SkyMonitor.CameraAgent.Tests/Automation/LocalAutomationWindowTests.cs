@@ -95,6 +95,42 @@ public sealed class LocalAutomationWindowTests
     }
 
     [TestMethod]
+    [DataRow("America/Phoenix", 10, 20, LocalAutomationSourceWindowKind.CompletedCivilHour, 0)]
+    [DataRow("America/Phoenix", 10, 20, LocalAutomationSourceWindowKind.SunriseDay, 0)]
+    [DataRow("America/Phoenix", 10, 20, LocalAutomationSourceWindowKind.CompletedCivilHour, 1440)]
+    [DataRow("America/Phoenix", 10, 20, LocalAutomationSourceWindowKind.SunriseDay, 1440)]
+    [DataRow("America/Denver", 3, 15, LocalAutomationSourceWindowKind.CompletedCivilHour, 0)]
+    [DataRow("America/Denver", 3, 15, LocalAutomationSourceWindowKind.SunriseDay, 0)]
+    [DataRow("America/Denver", 3, 15, LocalAutomationSourceWindowKind.CompletedCivilHour, 1440)]
+    [DataRow("America/Denver", 3, 15, LocalAutomationSourceWindowKind.SunriseDay, 1440)]
+    public void Lookback_CountsEveryEligibleWindowAcrossSunriseSettleAndDstBoundaries(
+        string zone, int month, int day, LocalAutomationSourceWindowKind kind, int settleMinutes)
+    {
+        var now = new DateTimeOffset(2026, month, day, 10, 0, 0, TimeSpan.Zero);
+        var calendar = ObservingDayCalendar.ForDeployment(Site(zone));
+        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
+        var policy = Policy(kind) with { ProcessingSettleAllowance = TimeSpan.FromMinutes(settleMinutes) };
+        var definition = Definition("lookback", policy) with { TriggerEpochUtc = now.AddDays(-30) };
+        var entry = new LocalAutomationRunnerEntry(definition, 1,
+            LocalAutomationContract.ComputeRevisionSha256(definition), null, null);
+        var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, calendar.TimeZone).DateTime);
+        // Enumerate independently beyond the contract's seven UTC days. Eligibility, rather than
+        // the report date or current clock's offset, determines which occurrence belongs inside it.
+        var expected = Enumerable.Range(-12, 14)
+            .SelectMany(offset => planner.ResolveWindows(localDate.AddDays(offset), policy))
+            .Where(window => window.EarliestFinalUtc >= now.AddDays(-7) && window.EarliestFinalUtc <= now)
+            .OrderBy(static window => window.EarliestFinalUtc).ToArray();
+        var plan = planner.Resolve(entry, now);
+        Assert.AreEqual(expected.Length, plan.MissedOccurrencesInLookback + 1);
+        Assert.AreEqual(expected[^1].IdentitySha256, plan.DueOccurrence!.SourceWindow!.IdentitySha256);
+        Assert.IsTrue(plan.EarlierOccurrencesOutsideLookback);
+        Assert.IsTrue(plan.NextOccurrence!.ScheduledForUtc > now);
+        var advanced = planner.Resolve(entry with { LastOccurrenceUtc = expected[0].EarliestFinalUtc }, now);
+        Assert.AreEqual(expected.Length - 1, advanced.MissedOccurrencesInLookback + 1);
+        Assert.AreEqual(expected[^1].IdentitySha256, advanced.DueOccurrence!.SourceWindow!.IdentitySha256);
+    }
+
+    [TestMethod]
     public void PolarNoEvent_HasNoInventedUpcomingWindow()
     {
         var calendar = ObservingDayCalendar.ForDeployment(Site("Arctic/Longyearbyen", 78.2232, 15.6469));

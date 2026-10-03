@@ -154,8 +154,10 @@ pixels or interpolate trails. The product adapter owns actual output/provenance 
 The preview and runner share one planner. `definitions[].nextOccurrence`, calendar
 entries' `occurrence`, and `windowUnavailableReasonCode` expose exact upcoming spans
 and eligibility. A late automatic sweep runs only the latest eligible window, records
-the number missed within a bounded seven-day UTC lookback, and identifies earlier
-coverage as unresolved. It does not launch a catch-up burst.
+the number missed within a bounded seven-day UTC lookback of final-run eligibility,
+and identifies earlier coverage as unresolved. The date search includes periods that
+start before that UTC bound but close and settle inside it, using each bound's actual
+site-local offset. It does not launch a catch-up burst.
 
 Explicit backfill names a report date and, for an hour, its exact UTC start. It requires
 finality, current enablement/version and a window ending within seven days. Explicit
