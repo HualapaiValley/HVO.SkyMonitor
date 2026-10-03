@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
@@ -183,7 +182,6 @@ internal sealed class FocusOwnerFixture : IAsyncDisposable
         }
         Admission.Dispose();
         _telemetry.Dispose();
-        SqliteConnection.ClearAllPools();
         if (Directory.Exists(Root))
         {
             Directory.Delete(Root, true);
