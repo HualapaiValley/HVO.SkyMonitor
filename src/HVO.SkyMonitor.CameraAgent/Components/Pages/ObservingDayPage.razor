@@ -15,7 +15,7 @@
     @if (_invalidDate)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd within the calendar range.">
-            <a class="btn btn-outline-light btn-sm" href="/archive/calendar">Back to calendar</a>
+            <a class="btn btn-outline-light btn-sm" href="@CalendarUrl">Back to calendar</a>
         </PageStateNotice>
     }
     else
@@ -39,7 +39,7 @@
                 {
                     <a class="btn btn-outline-light" href="@CandidatesUrl">View events</a>
                 }
-                <a class="btn btn-outline-light" href="/archive/calendar?month=@Date.ToString("yyyy-MM")">Calendar</a>
+                <a class="btn btn-outline-light" href="@CalendarUrl">Calendar</a>
             </div>
         </header>
 
@@ -90,7 +90,7 @@
             </section>
 
             <section class="night-timeline" aria-label="Night timeline">
-                <header><div><p class="eyebrow">Noon to noon</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
+                <header><div><p class="eyebrow">@(view.Day.Day.SunrisePeriod is null ? "Legacy noon to noon" : "Sunrise to following sunrise")</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
                 <div class="timeline-tracks" style="--night-hours: @NightHours(view).ToString(System.Globalization.CultureInfo.InvariantCulture)">
                     <span class="timeline-track-label">Schedule</span>
                     <div class="timeline-track" aria-label="Scheduled windows from the active schedule definition">

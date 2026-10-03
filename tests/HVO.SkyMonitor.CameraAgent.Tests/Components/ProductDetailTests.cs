@@ -48,6 +48,9 @@ public sealed class ProductDetailTests
         cut.WaitForAssertion(() => Assert.AreEqual($"/api/v1/operations/artifacts/{ArtifactId:D}/content?inline=true", cut.Find(".generated-media img").GetAttribute("src")));
         StringAssert.Contains(cut.Find(".generated-media img").GetAttribute("alt")!, ArtifactId.ToString("D"), StringComparison.Ordinal);
         Assert.IsNotNull(cut.Find("button[aria-label='Product fullscreen']"));
+        StringAssert.Contains(cut.Find("a[href^='/archive/day/']").GetAttribute("href"),
+            "calendar=" + ObservingDayCalendar.LegacyNoonVersion, StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "legacy noon association", StringComparison.Ordinal);
         cut.FindAll("button").Single(static button => button.TextContent.Contains("100%", StringComparison.Ordinal)).Click();
         Assert.IsTrue(cut.Find(".generated-media").ClassList.Contains("generated-media--native"));
         Assert.IsNotNull(cut.Find("button[disabled][title='No authorized successor-generation action is exposed']"));

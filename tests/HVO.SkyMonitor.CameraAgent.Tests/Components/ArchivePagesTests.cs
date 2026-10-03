@@ -24,6 +24,37 @@ public sealed class ArchivePagesTests
         public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
             => Handler(observingDate, cancellationToken);
     }
+
+    [TestMethod]
+    [DataRow(ObservingDayCalendar.LegacyNoonVersion)]
+    [DataRow(SunriseReportingPeriod.CurrentVersion)]
+    public void ObservingDay_CalendarReturnAndInvalidDateKeepTheSelectedInterpretation(string version)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var calendar = version == ObservingDayCalendar.LegacyNoonVersion ? Phoenix :
+            ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create("fixture", 1, "Fixture site", null,
+                DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 850, "America/Phoenix"));
+        var day = calendar.Resolve(new DateOnly(2026, 10, 12));
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
+        });
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/archive/day/2026-10-12?calendar=" + version);
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-12"));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(cut.Find(".day-facts"));
+            Assert.AreEqual("/archive/calendar?month=2026-10&calendar=" + version,
+                cut.Find(".day-actions a[href^='/archive/calendar']").GetAttribute("href"));
+        });
+        navigation.NavigateTo("/archive/day/yesterday?calendar=" + version);
+        var invalid = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "yesterday"));
+        invalid.WaitForAssertion(() => Assert.AreEqual("/archive/calendar?calendar=" + version,
+            invalid.Find("a[href^='/archive/calendar']").GetAttribute("href")));
+    }
     // Affirmative claims that would imply authority CameraAgent does not have over local candidates,
     // matched against visible text so a negated disclaimer is not mistaken for a claim.
     private static readonly string[] ForbiddenCandidateClaims = ["fireball", "ground track", "impact location", "reconstructed event", "validated event", "correlated event", "published event", "multi-site", "entry speed", "peak altitude"];
@@ -361,6 +392,61 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
+    public void Calendar_SunriseLabelAndExplicitLegacyLinksPreserveTheirInterpretation()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var site = DeploymentLocationSnapshot.Create("site", 1, "test", null,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.347, -113.878, 1000, "America/Phoenix");
+        var calendar = ObservingDayCalendar.ForDeployment(site);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar));
+        CameraAgentGalleryCalendarQuery? observed = null;
+        service.CalendarHandler = (query, _) =>
+        {
+            observed = query;
+            var selected = calendar.SelectVersion(query.CalendarVersion);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(
+                selected.TimeZoneId, false, [], selected.CalendarVersion)));
+        };
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=2026-07");
+        var sunrise = context.Render<ArchiveCalendarPage>();
+        sunrise.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(sunrise.Find(".month-nav__label").TextContent, "sunrise-to-sunrise", StringComparison.Ordinal);
+            StringAssert.Contains(sunrise.Find(".calendar-legend").TextContent, "starting sunrise", StringComparison.Ordinal);
+        });
+
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            "/archive/calendar?month=2026-07&calendar=" + ObservingDayCalendar.LegacyNoonVersion);
+        var legacy = context.Render<ArchiveCalendarPage>();
+        legacy.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(ObservingDayCalendar.LegacyNoonVersion, observed!.CalendarVersion);
+            StringAssert.Contains(legacy.Find(".month-nav__label").TextContent, "Legacy observing day", StringComparison.Ordinal);
+            Assert.IsTrue(legacy.FindAll(".calendar-day__link").All(link => link.GetAttribute("href")!
+                .Contains("calendar=" + ObservingDayCalendar.LegacyNoonVersion, StringComparison.Ordinal)));
+            Assert.IsTrue(legacy.FindAll(".month-nav a").All(link => link.GetAttribute("href")!
+                .Contains("calendar=" + ObservingDayCalendar.LegacyNoonVersion, StringComparison.Ordinal)));
+        });
+    }
+
+    [TestMethod]
+    public void Calendar_UnavailableSiteDoesNotInventALatestPeriod()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new DeploymentObservingDayCalendarProvider());
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Unavailable, "Sunrise period unavailable"));
+        var cut = context.Render<ArchiveCalendarPage>();
+        cut.WaitForElement(".page-state--error");
+        Assert.IsEmpty(cut.FindAll("a[href^='/archive/day/']"));
+        Assert.IsEmpty(cut.FindAll(".calendar-day--today"));
+        StringAssert.Contains(cut.Find(".month-nav__label").TextContent, "sunrise-to-sunrise", StringComparison.Ordinal);
+        Assert.IsNotNull(cut.Find("a[href*='calendar=hvo-noon-observing-day-v1']"));
+    }
+
+    [TestMethod]
     public void Calendar_ReportsUtcFallbackEmptyRangeAndErrors()
     {
         using var context = new BunitContext();
@@ -372,7 +458,7 @@ public sealed class ArchivePagesTests
         var cut = context.Render<ArchiveCalendarPage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Observing nights use UTC days", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Legacy noon view uses UTC", StringComparison.Ordinal);
             // An empty month reads as zero observed nights, and every cell says so.
             StringAssert.Contains(cut.Find(".calendar-summary").TextContent, "Nights with captures0", StringComparison.Ordinal);
             Assert.IsTrue(cut.FindAll(".calendar-day").All(cell => cell.ClassList.Contains("calendar-day--empty")));

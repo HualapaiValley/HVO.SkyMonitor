@@ -879,6 +879,16 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return OperatorUiResult<CameraAgentGalleryCalendar>.Success(await archive.GetCalendarAsync(query, cancellationToken).ConfigureAwait(false));
         }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return Unavailable<CameraAgentGalleryCalendar>(
+                "A complete sunrise-to-sunrise period is unavailable for this site and date range. No substitute period is used.");
+        }
+        catch (ArgumentException)
+        {
+            return OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Invalid,
+                "The requested reporting-calendar interpretation is unsupported.");
+        }
         catch (CameraAgentGalleryQueryException exception)
         {
             return OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Invalid, exception.Message);

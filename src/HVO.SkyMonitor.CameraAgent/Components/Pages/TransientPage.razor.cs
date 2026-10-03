@@ -17,7 +17,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     private long _generation;
     private Dictionary<Guid, CameraAgentEventEvidenceView> _evidence = [];
     private HashSet<Guid> _failedPreviews = [];
-    private ObservingDayCalendar _calendar = ObservingDayCalendar.Create(null);
+    private ObservingDayCalendar _calendar = ObservingDayCalendar.ForDeployment(null);
 
     [Inject] internal ICameraAgentEventEvidenceUiService EventEvidence { get; set; } = default!;
     [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
@@ -32,6 +32,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     private string TimeZoneLabel => _calendar.TimeZoneFallback ? "UTC (site time zone unavailable)" : _calendar.TimeZoneId;
     private CameraAgentEventEvidenceView? Evidence(Guid id) => _evidence.GetValueOrDefault(id);
     private int UnavailableEvidenceCount => (_page?.Items.Count ?? 0) - _evidence.Count;
+    private int UnassignedReportingDateCount => VisibleItems.Count(candidate => ObservingDate(candidate) is null);
     private int OtherMonthCount
     {
         get
@@ -40,14 +41,16 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
             return VisibleItems.Count(candidate =>
             {
                 var date = ObservingDate(candidate);
-                return date.Year != month.Year || date.Month != month.Month;
+                return date is { } assigned && (assigned.Year != month.Year || assigned.Month != month.Month);
             });
         }
     }
     private DateTimeOffset RecordedUtc(CameraAgentTransientOperatorCandidate candidate)
         => Evidence(candidate.CandidateId)?.RecordedUtc ?? candidate.CreatedUtc;
-    private DateOnly ObservingDate(CameraAgentTransientOperatorCandidate candidate)
-        => _calendar.Resolve(RecordedUtc(candidate)).Date;
+    private DateOnly? ObservingDate(CameraAgentTransientOperatorCandidate candidate)
+        => _calendar.TryResolve(RecordedUtc(candidate), out var day) ? day.Date : null;
+    private string ObservingDateLabel(CameraAgentTransientOperatorCandidate candidate)
+        => ObservingDate(candidate)?.ToString("d MMM yyyy", CultureInfo.InvariantCulture) ?? "Reporting date unavailable";
     private string LocalTime(DateTimeOffset value)
         => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss", CultureInfo.InvariantCulture);
     private static string UtcTime(DateTimeOffset value) => value.UtcDateTime.ToString("d MMM yyyy HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
@@ -65,7 +68,8 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
             }
             var visible = VisibleItems;
             var date = DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var selected)
-                ? selected : visible.Count > 0 ? ObservingDate(visible[0]) : _calendar.Resolve(DateTimeOffset.UtcNow).Date;
+                ? selected : visible.Count > 0 && ObservingDate(visible[0]) is { } assigned ? assigned
+                : DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, _calendar.TimeZone).DateTime);
             return new DateOnly(date.Year, date.Month, 1);
         }
     }

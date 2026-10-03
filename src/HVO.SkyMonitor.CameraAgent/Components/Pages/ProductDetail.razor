@@ -25,7 +25,7 @@
         var detail = _detail;
         var product = detail.Product;
         <header class="product-detail-heading">
-            <div><p class="eyebrow">Archive / @ProductType / retained local evidence</p><h1>@ProductTitle</h1><p>@detail.ObservingDay.Date.ToString("yyyy-MM-dd") (@ZoneLabel) observing day / committed artifact / stored @FormatTime(product.CommittedUtc)</p></div>
+            <div><p class="eyebrow">Archive / @ProductType / retained local evidence</p><h1>@ProductTitle</h1><p>@detail.ObservingDay.Date.ToString("yyyy-MM-dd") (@ZoneLabel) @PeriodLabel / @PeriodSpan / committed artifact / stored @FormatTime(product.CommittedUtc)</p></div>
             <div class="detail-heading-actions"><a class="btn btn-outline-light" href="@DayUrl">Observing day</a><button type="button" class="btn btn-outline-light" disabled aria-label="Regenerate unavailable: no authorized successor-generation action is exposed" title="No authorized successor-generation action is exposed">Regenerate unavailable</button></div>
         </header>
 
