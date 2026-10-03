@@ -346,6 +346,66 @@ public sealed class StellarExposureRenderPlanTests
         Assert.AreEqual(expectedVariance, variance, expectedVariance * .2);
     }
 
+    [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    [DataRow(CameraPixelFormat.Rgb24)]
+    public async Task DiskChargeContributesToStellarNoiseAndClippingWithTransmissionOnly(CameraPixelFormat format)
+    {
+        var (geometry, scene) = await Scene(1).ConfigureAwait(false);
+        LinearSceneRenderOptions options = format switch
+        {
+            CameraPixelFormat.Rgb24 => new Rgb24CompatibilityRenderOptions(),
+            CameraPixelFormat.BayerRggb16 => new BayerRggb16RenderOptions { ChannelResponse = new(1, 1, 1) },
+            _ => new Mono16SceneRenderOptions()
+        };
+        options = options with { ExposureSeconds = .1, MagnitudeZeroElectronsPerSecond = 1000, BackgroundElectronsPerSecond = 20 };
+        var disk = new SolarDiskAppearance(SolarSystemBody.Moon, Utc, new(90, 0), .25, -7.5, 1, 0, 384400);
+        var disks = new SolarDiskRenderPlan(Projection, [disk], 1000);
+        StellarExposureRenderPlan Prepare(LinearSceneRenderOptions configured) =>
+            StellarExposureRenderPlan.Prepare(geometry, configured, new(MinimumSignalToNoise: 1));
+        var clear = Prepare(options);
+        var illuminated = Prepare(options with { SolarDisks = disks });
+        Assert.IsTrue(clear.Predictions[0].Admitted);
+        Assert.IsFalse(illuminated.Predictions[0].Admitted, "Disk shot noise must suppress a marginal star.");
+        Assert.AreEqual(clear.Predictions[0].Signal.SourceElectrons, illuminated.Predictions[0].Signal.SourceElectrons, 1e-8);
+        var diskVariance = illuminated.Predictions[0].Signal.NoiseVariance - clear.Predictions[0].Signal.NoiseVariance;
+        Assert.IsTrue(diskVariance > 1000);
+        if (format == CameraPixelFormat.Mono16) Assert.AreEqual(100000, diskVariance, 1e-5);
+        foreach (var opacity in new[] { .5, 1 })
+        {
+            var cloud = new VirtualCloudRenderContext(new VirtualCloudField(new VirtualCloudScenarioDefinition
+            {
+                ScenarioId = "stellar-disk-transmission",
+                EpochUtc = Utc,
+                EdgeSoftness = 1e-9,
+                HorizonFadeDegrees = 0,
+                TemporalSampleCount = 2,
+                Keyframes = [new() { Coverage = 1, MaximumOpacity = opacity, ScatterFraction = 1 }]
+            }), Utc.AddSeconds(-.05), TimeSpan.FromSeconds(.1));
+            var cloudOnly = Prepare(options with { Cloud = cloud });
+            var cloudAndDisk = Prepare(options with { Cloud = cloud, SolarDisks = disks });
+            var actual = cloudAndDisk.Predictions[0].Signal.NoiseVariance - cloudOnly.Predictions[0].Signal.NoiseVariance;
+            Assert.AreEqual(diskVariance * (1 - opacity), actual, 1e-5,
+                "Resolved disk charge receives transmission only; background scatter cannot restore it.");
+        }
+        var bright = options with { SolarDisks = new SolarDiskRenderPlan(Projection, [disk with { VisualMagnitude = -15 }], 1000) };
+        var saturated = Prepare(bright);
+        Assert.IsFalse(clear.Predictions[0].ExpectedSaturation);
+        Assert.IsTrue(saturated.Predictions[0].ExpectedSaturation);
+        var layout = new ImageLayout(32, 32, format, 32 * ImageLayout.BytesPerPixel(format));
+        var rendered = format switch
+        {
+            CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(scene, layout,
+                (Mono16SceneRenderOptions)bright with { StellarExposure = saturated }),
+            CameraPixelFormat.BayerRggb16 => BayerRggb16Renderer.Render(scene, layout,
+                (BayerRggb16RenderOptions)bright with { StellarExposure = saturated }),
+            _ => Rgb24CompatibilityRenderer.Render(scene, layout,
+                (Rgb24CompatibilityRenderOptions)bright with { StellarExposure = saturated })
+        };
+        Assert.IsTrue(rendered.Statistics.ClippedHigh > 0, "Predicted disk saturation must also reach the real sensor path.");
+    }
+
     private static Mono16SceneRenderOptions Options() => new()
     {
         ExposureSeconds = .1,

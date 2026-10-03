@@ -44,6 +44,7 @@
         <Project Path="tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj" />
     </Folder>
     <Folder Name="/Tools/">
+        <Project Path="tools/HVO.SkyMonitor.VirtualSkyPoc/HVO.SkyMonitor.VirtualSkyPoc.csproj" />
         <Project Path="tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj" />
     </Folder>
 </Solution>

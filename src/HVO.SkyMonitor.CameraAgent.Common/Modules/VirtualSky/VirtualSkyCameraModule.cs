@@ -269,11 +269,20 @@ public sealed class VirtualSkyCameraModule(
         }
         var solarBackground = SolarAltitudeClassifier.Classify(SolarBackgroundEphemeris, sceneUtc,
             observatory.LatitudeDegrees, observatory.LongitudeDegrees, 0, -18);
+        var sunDirection = SolarAltitudeClassifier.DirectionAt(SolarBackgroundEphemeris, sceneUtc,
+            observatory.LatitudeDegrees, observatory.LongitudeDegrees);
+        var diskSite = new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees, observatory.ElevationMeters);
         initialRenderOptions = initialRenderOptions with
         {
             BackgroundElectronsPerSecond = StellarSkyBackgroundModel.Resolve(
-                initialRenderOptions.BackgroundElectronsPerSecond, solarBackground.AltitudeDegrees,
-                _options.BackgroundElectronsPerSecond)
+                initialRenderOptions.BackgroundElectronsPerSecond,
+                _options.IlluminationMode == VirtualSkyIlluminationMode.ControlledNight ? -90 : solarBackground.AltitudeDegrees,
+                _options.BackgroundElectronsPerSecond),
+            SkyIllumination = _options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
+                !_options.BackgroundElectronsPerSecond.HasValue ? new SolarSkyIllumination(renderProjection, sunDirection) : null,
+            SolarDisks = _options.RenderSolarSystemDisks ? new SolarDiskRenderPlan(renderProjection,
+                [SolarDiskEphemeris.Get(SolarSystemBody.Sun, sceneUtc, diskSite), SolarDiskEphemeris.Get(SolarSystemBody.Moon, sceneUtc, diskSite)],
+                _options.MagnitudeZeroElectronsPerSecond, cancellationToken) : null
         };
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
@@ -526,6 +535,13 @@ public sealed class VirtualSkyCameraModule(
             ["stellarSolarAltitudeDegrees"] = solarBackground.AltitudeDegrees.ToString("R", CultureInfo.InvariantCulture),
             ["stellarSolarRegime"] = solarBackground.Regime.ToString(),
             ["stellarBackgroundExplicit"] = _options.BackgroundElectronsPerSecond.HasValue.ToString(),
+            ["skyIlluminationMode"] = _options.IlluminationMode.ToString(),
+            ["skyIlluminationAlgorithm"] = initialRenderOptions.SkyIllumination is null
+                ? StellarSkyBackgroundModel.AlgorithmVersion : SolarSkyIllumination.AlgorithmVersion,
+            ["skyIlluminationEffective"] = _options.BackgroundElectronsPerSecond.HasValue
+                ? "ExplicitUniformElectronRate" : _options.IlluminationMode.ToString(),
+            ["skyExplicitBackgroundElectronsPerSecond"] = _options.BackgroundElectronsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "none",
+            ["skySolarAzimuthDegrees"] = sunDirection.AzimuthDegrees.ToString("R", CultureInfo.InvariantCulture),
             ["visibleObjectCount"] = scene.Objects.Count.ToString(CultureInfo.InvariantCulture),
             ["constellationStrokeCount"] = scene.Segments.Count.ToString(CultureInfo.InvariantCulture),
             ["renderAlgorithm"] = render.AlgorithmVersion,
@@ -549,6 +565,12 @@ public sealed class VirtualSkyCameraModule(
             extra["simulatedFocusSigmaPixelsPerStep"] = focusModel.DefocusSigmaPixelsPerStep.ToString("R", CultureInfo.InvariantCulture);
             extra["simulatedFocusMaximumSigmaPixels"] = focusModel.MaximumSigmaPixels.ToString("R", CultureInfo.InvariantCulture);
             extra["simulatedFocusParametersSha256"] = focusModel.ParametersSha256(_options.PsfSigmaPixels);
+        }
+        if (initialRenderOptions.SolarDisks is { } diskPlan)
+        {
+            extra["solarDiskEphemeris"] = SolarDiskEphemeris.AlgorithmVersion;
+            extra["solarDiskAlgorithm"] = SolarDiskRenderPlan.AlgorithmVersion;
+            extra["solarDiskAppearance"] = JsonSerializer.Serialize(diskPlan.Disks);
         }
         if (cloudProvenance is not null)
         {
@@ -1234,7 +1256,12 @@ public sealed class VirtualSkyCameraModule(
             StellarRasterModel = TemporalPointSpreadRaster.AlgorithmVersion,
             StellarVisibilityModel = HVO.SkyMonitor.Imaging.StellarVisibilityModel.AlgorithmVersion,
             StellarRenderModel = StellarExposureRenderPlan.AlgorithmVersion,
-            StellarSkyModel = StellarSkyBackgroundModel.AlgorithmVersion,
+            StellarSkyModel = options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
+                !options.BackgroundElectronsPerSecond.HasValue
+                ? SolarSkyIllumination.AlgorithmVersion + (options.RenderSolarSystemDisks
+                    ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : "")
+                : StellarSkyBackgroundModel.AlgorithmVersion + (options.RenderSolarSystemDisks
+                    ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : ""),
             SolarBackgroundEphemerisModel = SolarBackgroundEphemeris.ModelVersion,
             Setpoint = setpoint,
             Options = options,
@@ -1306,9 +1333,24 @@ public sealed class VirtualSkyCameraModule(
         => names.Select(name => Enum.Parse<SolarSystemBody>(name, true)).Distinct().ToArray();
 }
 
+/// <summary>Illumination affects incident sky only; celestial and acquisition clocks remain independent.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<VirtualSkyIlluminationMode>))]
+public enum VirtualSkyIlluminationMode
+{
+    LegacyScalarSolar,
+    SolarDriven,
+    ControlledNight
+}
+
 /// <summary>Validated deterministic scene and simulated sensor parameters.</summary>
 public sealed class VirtualSkyCameraModuleOptions
 {
+    /// <summary>Omitted default preserves existing serialized scene identities and scalar rendering.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public VirtualSkyIlluminationMode IlluminationMode { get; init; }
+    /// <summary>Opt-in resolved Sun/Moon disks with topocentric size/position and lunar phase.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RenderSolarSystemDisks { get; init; }
     public int Seed { get; init; } = 2025;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? FixedSceneUtc { get; init; }
@@ -1364,9 +1406,9 @@ public sealed class VirtualSkyCameraModuleOptions
         SimulatedFocus?.Validate(PsfSigmaPixels);
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();
-        if (!double.IsFinite(MaximumMagnitude) || MaximumResults is < 1 or > 100000 || BortleClass is < 1 or > 9 ||
+        if (!Enum.IsDefined(IlluminationMode) || !double.IsFinite(MaximumMagnitude) || MaximumResults is < 1 or > 100000 || BortleClass is < 1 or > 9 ||
             PsfSigmaPixels > 64 || PsfRadiusPixels < .75 ||
-            BackgroundElectronsPerSecond is { } background && (!double.IsFinite(background) || background < 0) ||
+            BackgroundElectronsPerSecond is { } background && (!double.IsFinite(background) || background is < 0 or > 1e12) ||
             !double.IsFinite(BortleThreeBackgroundElectronsPerSecond) || BortleThreeBackgroundElectronsPerSecond < 0 ||
             CatalogSourceUrl is null || !CatalogSourceUrl.IsAbsoluteUri || CatalogChecksumSha256.Length != 64 ||
             FixedSceneUtc is { Offset: var sceneOffset } && sceneOffset != TimeSpan.Zero ||

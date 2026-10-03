@@ -1,0 +1,3 @@
+# Preserve the exact #993 source copies; their public API is intentional in the owning library.
+[*.cs]
+dotnet_diagnostic.CA1515.severity = none
