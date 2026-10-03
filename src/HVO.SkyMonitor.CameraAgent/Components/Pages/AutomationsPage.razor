@@ -233,11 +233,15 @@ else
                                 <span class="state-chip @(item.Enabled ? "success" : "pending")">@(item.Enabled ? "Enabled" : "Disabled")</span>
                             </header>
                             <dl>
-                                <div><dt>Trigger</dt><dd>@DescribeTrigger(item.TriggerKind, item.TriggerInterval)</dd></div>
+                                <div><dt>Trigger</dt><dd>@DescribeTrigger(item)</dd></div>
                                 <div><dt>Target</dt><dd>@item.TaskTarget</dd></div>
                                 <div><dt>Last run</dt><dd>@DescribeLastRun(definition.LastRun)</dd></div>
                                 <div><dt>Next run</dt><dd>@DescribeNextRun(definition)</dd></div>
                             </dl>
+                            @if (item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+                            {
+                                <p class="automation-field-hint">Source-window settings are read-only in this editor.</p>
+                            }
                             @if (definition.History.Count > 0)
                             {
                                 <details class="revision-history">
@@ -260,7 +264,7 @@ else
                             <footer>
                                 <span>@Split(item.TaskKind.ToString()) / revision @definition.Version</span>
                                 <div class="automation-card-actions">
-                                    <button type="button" id="@EditTriggerId(definition)" class="button secondary small" aria-label="@($"Edit {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginEdit(definition)">Edit</button>
+                                    <button type="button" id="@EditTriggerId(definition)" class="button secondary small" aria-label="@($"Edit {item.DefinitionId}")" disabled="@(_busy || _loading || item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)" @onclick="() => BeginEdit(definition)">Edit</button>
                                     <button type="button" id="@ToggleTriggerId(definition)" class="button secondary small" aria-label="@($"{(item.Enabled ? "Disable" : "Enable")} {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginToggle(definition)">@(item.Enabled ? "Disable" : "Enable")</button>
                                     <button type="button" id="@RemoveTriggerId(definition)" class="button secondary small" aria-label="@($"Remove {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginRemove(definition)">Remove</button>
                                 </div>
@@ -316,7 +320,7 @@ else
                         </label>
                         <label class="ops-field">Registered task
                             <select id="automation-task" @bind="_taskKindInput" @bind:after="TaskChanged">
-                                @foreach (var descriptor in automation.Registry)
+                                @foreach (var descriptor in EditorTasks)
                                 {
                                     <option value="@descriptor.TaskKind" disabled="@(!descriptor.Available)">@Split(descriptor.TaskKind.ToString())</option>
                                 }

@@ -32,6 +32,18 @@ public interface ILocalAutomationTaskRegistry
         LocalAutomationDefinition definition,
         string runKey,
         CancellationToken cancellationToken);
+
+    /// <summary>Consumes the durable immutable occurrence; legacy environmental tasks have no source window.</summary>
+    ValueTask<LocalAutomationExecution> ExecuteAsync(
+        LocalAutomationOccurrence occurrence,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(occurrence);
+        return occurrence.IsValid() && occurrence.SourceWindow is null
+            ? ExecuteAsync(occurrence.Definition, occurrence.RunKey, cancellationToken)
+            : ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Skipped,
+                "This registry has no registered source-window task adapter."));
+    }
 }
 
 /// <summary>
@@ -220,11 +232,19 @@ public static class LocalAutomationDefinitionValidator
             return new LocalAutomationRegistryRejection(
                 LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.triggerKind");
         }
+        if (definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed
+            ? definition.SourceWindow is null || !definition.SourceWindow.IsValid()
+            : definition.SourceWindow is not null)
+        {
+            return new LocalAutomationRegistryRejection(
+                LocalAutomationContract.InvalidCommandReasonCode, "definition.sourceWindow");
+        }
         var (minimum, maximum) = definition.TriggerKind switch
         {
             LocalAutomationTriggerKind.Periodic => (
                 LocalAutomationContract.MinimumPeriodicIntervalSeconds,
                 LocalAutomationContract.MaximumPeriodicIntervalSeconds),
+            LocalAutomationTriggerKind.SourceWindowClosed => (1, 1),
             _ => (
                 LocalAutomationContract.MinimumCaptureInterval,
                 LocalAutomationContract.MaximumCaptureInterval)

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using Microsoft.AspNetCore.Antiforgery;
@@ -48,6 +49,24 @@ internal static class CameraAgentAutomationOperationsEndpoints
             .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
+
+        group.MapPost("/definitions/{definitionId}/backfill", BackfillAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("BackfillCameraAgentAutomation")
+            .Produces<LocalAutomationCommandResult>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
+
+        group.MapPost("/definitions/{definitionId}/retry", RetryAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("RetryCameraAgentAutomation")
+            .Produces<LocalAutomationCommandResult>()
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 
         return endpoints;
     }
@@ -110,9 +129,50 @@ internal static class CameraAgentAutomationOperationsEndpoints
                     expectedVersion,
                     ReadIdempotencyKey(context),
                     actor,
-                    body.Reason),
+                    body.Reason,
+                    body.SourceWindow),
                 cancellationToken),
             cancellationToken);
+    }
+
+    private static Task<IResult> BackfillAsync(HttpContext context, string definitionId,
+        [FromBody] AutomationBackfillRequestBody body, ILocalAutomationStore store,
+        ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        if (body.ExpectedVersion is not { } version || body.ReportDate is not { } date)
+        {
+            return Task.FromResult(Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "The reporting date and expected automation version are required."));
+        }
+        if (store is not ILocalAutomationOccurrenceStore occurrenceStore)
+        {
+            return Task.FromResult(Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "Source-window preparation is unavailable."));
+        }
+        return ExecuteAsync(context, loggerFactory, actor => occurrenceStore.BackfillAsync(
+            new(definitionId, date, body.HourStartUtc, version, ReadIdempotencyKey(context), actor,
+                body.Reason ?? string.Empty), cancellationToken), cancellationToken);
+    }
+
+    private static Task<IResult> RetryAsync(HttpContext context, string definitionId,
+        [FromBody] AutomationRetryRequestBody body, ILocalAutomationStore store,
+        ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        if (body.ExpectedVersion is not { } version || string.IsNullOrWhiteSpace(body.PreviousRunKey))
+        {
+            return Task.FromResult(Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "The previous run key and expected automation version are required."));
+        }
+        if (store is not ILocalAutomationOccurrenceStore occurrenceStore)
+        {
+            return Task.FromResult(Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "Occurrence retry is unavailable."));
+        }
+        return ExecuteAsync(context, loggerFactory, actor => occurrenceStore.RetryAsync(
+            new(definitionId, body.PreviousRunKey, version, ReadIdempotencyKey(context), actor,
+                body.Reason ?? string.Empty), cancellationToken), cancellationToken);
     }
 
     private static Task<IResult> RemoveAsync(
@@ -210,7 +270,17 @@ internal static class CameraAgentAutomationOperationsEndpoints
         LocalAutomationTriggerKind? TriggerKind = null,
         int? TriggerInterval = null,
         long? ExpectedVersion = null,
-        string? Reason = null);
+        string? Reason = null,
+        LocalAutomationSourceWindowPolicy? SourceWindow = null);
+
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record AutomationBackfillRequestBody(
+        DateOnly? ReportDate = null, DateTimeOffset? HourStartUtc = null,
+        long? ExpectedVersion = null, string? Reason = null);
+
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record AutomationRetryRequestBody(
+        string? PreviousRunKey = null, long? ExpectedVersion = null, string? Reason = null);
 
     private sealed record AutomationRemovalRequestBody(
         long? ExpectedVersion = null,

@@ -13,6 +13,41 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class AutomationsPageTests
 {
+    [TestMethod]
+    public void SourceWindowDefinition_IsTruthfullyReadOnlyHereAndTogglePreservesItsPolicy()
+    {
+        using var context = CreateContext();
+        var initial = Automation();
+        var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion,
+            LocalAutomationSourceWindowKind.SunriseDay, LocalAutomationSourceSelection.DarkNightActualSources, TimeSpan.FromMinutes(15));
+        var definition = initial.Definitions.Single().Definition with
+        {
+            TaskKind = LocalAutomationTaskKind.StillImageGeneration,
+            TriggerKind = LocalAutomationTriggerKind.SourceWindowClosed,
+            TriggerInterval = 1,
+            SourceWindow = policy
+        };
+        var state = initial with
+        {
+            Definitions = [initial.Definitions.Single() with { Definition = definition }],
+            Registry = [new(LocalAutomationTaskKind.StillImageGeneration, "Installed producer",
+                [LocalAutomationTriggerKind.SourceWindowClosed], [definition.TaskTarget], true, null)
+                { SupportedSourceWindows = [LocalAutomationSourceWindowKind.SunriseDay] }],
+            RunningRunCount = 3
+        };
+        var service = Register(context, state);
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement(".automation-card");
+        Assert.Contains("Sunrise to sunrise / dark-night sources", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Source-window settings are read-only", cut.Markup, StringComparison.Ordinal);
+        Assert.IsTrue(cut.Find("#automation-create").HasAttribute("disabled"));
+        Assert.IsTrue(cut.Find("#automation-edit-sky-temperature").HasAttribute("disabled"));
+        Assert.AreEqual("3", cut.FindAll(".ops-status-rail > div")[2].QuerySelector("strong")!.TextContent.Trim());
+        cut.Find("#automation-toggle-sky-temperature").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        Assert.AreEqual(policy, service.SaveRequests.Single().SourceWindow);
+    }
+
     /// <summary>20:00 on 4 September in America/Phoenix, which has no daylight saving.</summary>
     private static readonly DateTimeOffset Instant = new(2026, 9, 5, 3, 0, 0, TimeSpan.Zero);
 

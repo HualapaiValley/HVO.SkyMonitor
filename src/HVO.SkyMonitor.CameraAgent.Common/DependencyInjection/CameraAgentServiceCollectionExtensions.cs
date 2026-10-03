@@ -228,7 +228,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAssociationService>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
-        services.AddSingleton<ILocalAutomationTaskRegistry, EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
+        services.AddSingleton<ILocalAutomationTaskRegistry, LocalAutomationTaskRegistry>();
+        services.AddSingleton<LocalAutomationWindowPlanner>();
         services.AddSingleton<SqliteLocalAutomationStore>();
         services.AddSingleton<ILocalAutomationStore>(provider =>
             provider.GetRequiredService<SqliteLocalAutomationStore>());
