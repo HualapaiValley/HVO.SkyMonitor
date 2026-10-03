@@ -81,6 +81,45 @@ public sealed class ManualFocusProvenanceTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FullHistoryWithRealPreviewProvenance_StaysWithinTheByteBoundAndReadsBack(bool nativeReadout)
+    {
+        var (single, _) = await SavePreviewAsync(VirtualSkyIlluminationMode.ControlledNight, false,
+            nativeReadout: nativeReadout).ConfigureAwait(false);
+        var sample = single.Record.Session.History.Single();
+        var history = Enumerable.Range(21, 100).Select(sequence => sample with { Sequence = sequence }).ToArray();
+        var record = ManualFocusSessionRecord.Create(single.Record.Session with
+        {
+            TotalSamples = 120,
+            HistoryCapacity = 100,
+            History = history
+        }, "alice", single.Record.SavedUtc);
+        var root = Path.Combine(Path.GetTempPath(), "hvo-focus-full-history-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var store = new ManualFocusSessionStore(root);
+            var summary = await store.SaveAsync(record, CancellationToken.None).ConfigureAwait(false);
+            var retained = await store.ReadAsync(record.RecordId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(retained);
+            Assert.IsTrue(summary.Verified);
+            Assert.IsLessThanOrEqualTo(ManualFocusSessionStore.MaximumRecordBytes, summary.Bytes);
+            Assert.AreEqual(120L, retained.Record.Session.TotalSamples);
+            Assert.HasCount(100, retained.Record.Session.History);
+            CollectionAssert.AreEqual(history, retained.Record.Session.History.ToArray(),
+                "Compact persistence must preserve every sample and its complete scene, layout and PSF provenance.");
+            Assert.IsNotNull(retained.Record.Session.History[0].Provenance.Scene);
+            Assert.IsNotNull(retained.Record.Session.History[0].Provenance.SensorLayout);
+            Assert.IsNotNull(retained.Record.Session.History[0].Provenance.PointSpreadFunction);
+            Assert.AreEqual(Convert.ToHexStringLower(SHA256.HashData(retained.Utf8Json.Span)), summary.Sha256);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task MissingSceneMetadata_RemainsUnknownWhileAcquisitionClocksAreRetained()
     {
         var (content, _) = await SavePreviewAsync(VirtualSkyIlluminationMode.ControlledNight, false,
@@ -110,7 +149,7 @@ public sealed class ManualFocusProvenanceTests
             RemoveNewFacts(best["provenance"]!.AsObject());
             best.AsObject().Remove("comparisonGroupId");
         }
-        var bytes = Encoding.UTF8.GetBytes(document.ToJsonString());
+        var bytes = Encoding.UTF8.GetBytes(document.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         var checksum = Convert.ToHexStringLower(SHA256.HashData(bytes));
         var root = Path.Combine(Path.GetTempPath(), "hvo-focus-legacy-" + Guid.NewGuid().ToString("N"));
         var directory = Path.Combine(root, ManualFocusSessionStore.DirectoryName);

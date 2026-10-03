@@ -86,7 +86,8 @@ public sealed class ManualFocusSessionStore : IManualFocusSessionStore, IDisposa
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() },
-        WriteIndented = true
+        // Keep complete per-sample provenance inside the fixed record budget without retaining display whitespace.
+        WriteIndented = false
     };
 
     private readonly string _rootPath;
