@@ -37,7 +37,7 @@ public sealed partial class LargeImageViewer : ComponentBase, IAsyncDisposable
     /// <summary>Raised when the browser cannot read <see cref="Source"/>.</summary>
     [Parameter] public EventCallback OnImageError { get; set; }
 
-    private bool ShowsImage => Source is not null || Media is null;
+    private bool ShowsImage => Source is not null;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

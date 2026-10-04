@@ -60,6 +60,19 @@ public sealed class LargeImageViewerTests
     }
 
     [TestMethod]
+    public void AnOpenViewerWithoutAnImageOffersNoSizeModes()
+    {
+        using var context = new BunitContext();
+        LargeImageViewerTestSupport.Configure(context);
+
+        var cut = context.Render<LargeImageViewer>(parameters => parameters.Add(viewer => viewer.Open, true));
+
+        Assert.IsEmpty(cut.FindAll(".large-viewer__canvas *"));
+        Assert.IsEmpty(cut.FindAll(".large-viewer__modes"));
+        Assert.AreEqual("Escape closes this viewer.", cut.Find("footer span").TextContent);
+    }
+
+    [TestMethod]
     public void SourceTakesPrecedenceOverMediaAndReportsItsFailure()
     {
         using var context = new BunitContext();

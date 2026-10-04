@@ -165,8 +165,11 @@ retained.
   - `ObservingDay_AFailedPreviewIsStatedInTheTileAndTheViewer`;
   - `ObservingDay_HoursWithoutANightlyProductOpenTheirListWithoutSubstitutingAnImage`;
   - `MediaAndDetailsAreShownBesideTheCanvasOnlyWhileOpen`;
+  - `AnOpenViewerWithoutAnImageOffersNoSizeModes`, added for initial-review
+    finding F1. It fails against the earlier `ShowsImage` expression, which
+    offered the size modes when neither `Source` nor `Media` was set;
   - `SourceTakesPrecedenceOverMediaAndReportsItsFailure`.
 
-  The CameraAgent component namespace passes 804 of 804.
-- The test-category audit passes with `Unit=5753`. CameraAgent Unit is 3289,
-  which adds the 4 new cases.
+  The CameraAgent component namespace passes 805 of 805.
+- The test-category audit passes with `Unit=5754`. CameraAgent Unit is 3290,
+  which adds the 5 new cases.
