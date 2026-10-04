@@ -419,6 +419,7 @@ public class Program
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentStillProductEndpoints();
+        app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();

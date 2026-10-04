@@ -106,6 +106,9 @@ lighten composition of actual eligible frames, preserving any missing interval.
 | Keogram assembly inputs | Predicted total part bytes at most 256 MiB; reject before publishing parts |
 | Provenance document | 8 MiB |
 | Products or windows in one date listing | 1,024; larger listings fail explicitly |
+| Calendar date summary | At most 62 dates and 8,192 evaluated windows; a reversed or wider range is a 400, excess windows fail explicitly |
+| Presentation lineage | Distinct preview frames, at most the 4,096 window-candidate bound; excess fails explicitly |
+| Other outputs for one span | 1,024; larger listings fail explicitly |
 
 The still store has schema version 2. Earlier, newer or corrupt stores fail
 closed; installed-state migration is outside this change. Packed payload,
@@ -131,14 +134,56 @@ Authenticated `OperationsReadV1` endpoints under
 
 | Suffix | Result |
 | --- | --- |
+| `/dates?from={yyyy-MM-dd}&to={yyyy-MM-dd}` | Per-date, per-kind calendar summary: the preferred daily evaluation and the produced and unproduced hourly counts |
 | `/dates/{yyyy-MM-dd}` | Bounded product and evaluated-window listing |
+| `/days/{yyyy-MM-dd}` | Every recorded evaluation for the date joined to its current products |
 | `/{productId}` | Detail, retained occurrence and ordered lineage |
-| `/{productId}/preview` | Checksum-verified JPEG |
-| `/{productId}/provenance` | Checksum-verified canonical JSON |
+| `/{productId}/presentation` | Detail, recorded algorithms, lineage frame count, the keogram time axis and gaps rebuilt from retained recipe options, and other current outputs for the same span |
+| `/{productId}/preview` | Checksum-verified JPEG (`GET` or `HEAD`) |
+| `/{productId}/provenance` | Checksum-verified canonical JSON (`GET` or `HEAD`) |
+
+A calendar summary prefers a produced evaluation, then the latest evaluated
+one, so a date with a product never reports an older rejection. A planned
+(final) keogram's axis is the retained planned axis; a segment keogram's axis is
+recomputed from its retained gap options and lineage. Star trails have no axis.
+Other outputs are other definitions or revisions current for the same span;
+they are not predecessors, and no predecessor or successor is inferred.
 
 Unknown IDs return 404; unavailable or invalid storage returns a sanitized 503.
-Content responses are private and are not cached. Broader archive page and
-historical archive compatibility adoption remain separate work.
+Content responses are `private, no-cache` with `Vary: Cookie` and
+`X-Content-Type-Options: nosniff`. Their strong ETag is the published SHA-256,
+also returned in `X-Content-SHA256`, so a browser revalidates each use and an
+unchanged product answers `If-None-Match` with 304. Byte ranges are supported.
+`?download=1` returns `Content-Disposition: attachment`; otherwise content is
+`inline`.
+
+## Time-lapse sample
+
+No time-lapse product exists yet. Until it does, the observing-day page always
+reports the time-lapse as not generated and the calendar never lights its
+badge. For player development an operator may configure a stand-in file:
+
+```json
+"CameraAgent": {
+  "TimeLapseSample": {
+    "Enabled": true,
+    "FilePath": "/absolute/path/to/sample.mp4",
+    "MediaType": "video/mp4",
+    "Width": 1280,
+    "Height": 1280
+  }
+}
+```
+
+The sample is off by default. `FilePath` must be fully qualified when enabled.
+`MediaType` is one of `video/mp4`, `video/webm`, `image/gif`, `image/webp` or
+`video/x-ms-wmv`; `Width` and `Height` (1–8,192) reserve the player's aspect
+ratio before metadata loads. The file is served by an authenticated
+`OperationsReadV1` `GET`/`HEAD` at `/api/v1/operations/time-lapse-sample`
+with byte ranges, a length-and-write-time ETag and the same private headers.
+It returns 404 when disabled or absent. The page labels it as a sample not
+generated from the selected night, and it is never a product, never counted
+and never cached as one. Large samples are not committed to the repository.
 
 ## Reproducible qualification
 

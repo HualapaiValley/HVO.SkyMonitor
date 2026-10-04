@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
@@ -25,7 +26,7 @@ public sealed class CameraAgentStillProductEndpointsTests
     {
         using var app = App(new());
         var endpoints = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints).ToArray();
-        Assert.HasCount(4, endpoints);
+        Assert.HasCount(7, endpoints);
         Assert.IsTrue(endpoints.All(static endpoint => endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>()
             .Any(static item => item.Policy == CameraAgentAuthorizationPolicyNames.OperationsReadV1)));
     }
@@ -34,9 +35,11 @@ public sealed class CameraAgentStillProductEndpointsTests
     [DataRow("GetCameraAgentStillProduct", false)]
     [DataRow("GetCameraAgentStillProductPreview", false)]
     [DataRow("GetCameraAgentStillProductProvenance", false)]
+    [DataRow("GetCameraAgentStillProductPresentation", false)]
     [DataRow("GetCameraAgentStillProduct", true)]
     [DataRow("GetCameraAgentStillProductPreview", true)]
     [DataRow("GetCameraAgentStillProductProvenance", true)]
+    [DataRow("GetCameraAgentStillProductPresentation", true)]
     public async Task UnknownProduct_IsNotFoundAndStorageFailureDoesNotExposePrivateDetails(string name, bool denied)
     {
         var catalog = new ProbeCatalog();
@@ -64,24 +67,8 @@ public sealed class CameraAgentStillProductEndpointsTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-corruption");
         try
         {
-            using var store = new SqliteNightlyProductStore(NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options()),
-                new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
-            var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
-            var frame = NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16));
-            var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
-                BuiltInProcessingRecipes.StarTrail, JsonSerializer.SerializeToElement(new StarTrailRecipeOptions()),
-                ProcessingInputSelector.RecipeResult(frame.Artifact.Role, frame.Artifact.Variant, frame.Artifact.RecipeIdentitySha256),
-                [frame.Artifact], NightlyProductGenerator.StarTrailSegmentVariant,
-                AuxiliaryInputs: [NightlyProductPreset.BindOccurrence(occurrence)])).ConfigureAwait(false);
-            Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
-            var product = outcome.Products.Single();
-            var publication = new NightlyProductPublication(NightlyProductKind.StarTrail, NightlyProductScope.Segment,
-                NightlyProductFixture.ObservingDate, occurrence.SourceWindow!.StartUtc, occurrence.SourceWindow.EndUtc, 0,
-                BuiltInProcessingRecipes.StarTrail, product, [new(0, NightlyProductSourceKind.PreviewFrame,
-                    frame.Candidate.ArtifactId, frame.Candidate.OutputIdentitySha256, frame.Candidate.CaptureId,
-                    frame.Candidate.ExposureStartedUtc)], 90)
-            { Occurrence = occurrence };
-            var detail = await store.PublishAsync(publication, CancellationToken.None).ConfigureAwait(false);
+            using var store = Store(root);
+            var detail = await PublishAsync(store).ConfigureAwait(false);
             var file = Directory.GetFiles(Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName), pattern,
                 SearchOption.AllDirectories).Single();
             if (missing) File.Delete(file);
@@ -126,6 +113,96 @@ public sealed class CameraAgentStillProductEndpointsTests
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    public async Task PublishedMedia_IsPrivateChecksumTaggedConditionalRangedAndDownloadable()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-media");
+        try
+        {
+            using var store = Store(root);
+            var detail = await PublishAsync(store).ConfigureAwait(false);
+            using var app = CatalogApp(store);
+            var etag = $"\"{detail.RenditionSha256.ToUpperInvariant()}\"";
+
+            var preview = await Send(app, "GetCameraAgentStillProductPreview", detail.Summary.ProductId).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, preview.Response.StatusCode);
+            Assert.AreEqual("image/jpeg", preview.Response.ContentType);
+            Assert.AreEqual(etag, preview.Response.Headers.ETag.ToString());
+            Assert.AreEqual(detail.RenditionSha256, preview.Response.Headers["X-Content-SHA256"].ToString());
+            Assert.AreEqual("private, no-cache", preview.Response.Headers.CacheControl.ToString());
+            Assert.AreEqual("nosniff", preview.Response.Headers.XContentTypeOptions.ToString());
+            Assert.AreEqual("bytes", preview.Response.Headers.AcceptRanges.ToString());
+            StringAssert.StartsWith(preview.Response.Headers.ContentDisposition.ToString(), "inline;", StringComparison.Ordinal);
+            var bytes = Body(preview);
+            Assert.AreEqual(detail.RenditionBytes, bytes.Length);
+            Assert.AreEqual(detail.RenditionSha256, Convert.ToHexStringLower(SHA256.HashData(bytes)), ignoreCase: true);
+
+            var notModified = await Send(app, "GetCameraAgentStillProductPreview", detail.Summary.ProductId,
+                configure: request => request.Headers.IfNoneMatch = etag).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status304NotModified, notModified.Response.StatusCode);
+            Assert.IsEmpty(Body(notModified));
+
+            var head = await Send(app, "GetCameraAgentStillProductPreview", detail.Summary.ProductId,
+                configure: request => request.Method = HttpMethods.Head).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, head.Response.StatusCode);
+            Assert.AreEqual(detail.RenditionBytes, head.Response.ContentLength);
+            Assert.IsEmpty(Body(head));
+
+            var range = await Send(app, "GetCameraAgentStillProductPreview", detail.Summary.ProductId,
+                configure: request => request.Headers.Range = "bytes=0-9").ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status206PartialContent, range.Response.StatusCode);
+            CollectionAssert.AreEqual(bytes[..10], Body(range));
+            Assert.AreEqual($"bytes 0-9/{bytes.Length}", range.Response.Headers.ContentRange.ToString());
+
+            var download = await Send(app, "GetCameraAgentStillProductProvenance", detail.Summary.ProductId,
+                configure: request => request.QueryString = new QueryString("?download=1")).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, download.Response.StatusCode);
+            Assert.AreEqual("application/json", download.Response.ContentType);
+            Assert.AreEqual($"\"{detail.ProvenanceSha256.ToUpperInvariant()}\"", download.Response.Headers.ETag.ToString());
+            StringAssert.StartsWith(download.Response.Headers.ContentDisposition.ToString(),
+                $"attachment; filename=\"{detail.Summary.ProductId:D}.provenance.json\"", StringComparison.Ordinal);
+        }
+        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task Projections_ReturnBoundedDayMonthAndPresentationReads()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-projections");
+        try
+        {
+            using var store = Store(root);
+            var detail = await PublishAsync(store).ConfigureAwait(false);
+            using var app = CatalogApp(store);
+
+            var presentation = await Send(app, "GetCameraAgentStillProductPresentation", detail.Summary.ProductId).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, presentation.Response.StatusCode);
+            using (var json = JsonDocument.Parse(Body(presentation)))
+            {
+                Assert.AreEqual(1, json.RootElement.GetProperty("lineageFrameCount").GetInt32());
+                Assert.AreEqual(detail.Summary.ProductId, json.RootElement.GetProperty("detail").GetProperty("summary")
+                    .GetProperty("productId").GetGuid());
+            }
+
+            var day = await Send(app, "GetCameraAgentStillProductDay", configure: request => request.RouteValues["date"] = "2026-10-01")
+                .ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, day.Response.StatusCode);
+            using (var json = JsonDocument.Parse(Body(day)))
+                Assert.AreEqual(1, json.RootElement.GetProperty("products").GetArrayLength());
+
+            var month = await Send(app, "SummarizeCameraAgentStillProductDates",
+                configure: request => request.QueryString = new QueryString("?from=2026-09-28&to=2026-11-08")).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, month.Response.StatusCode);
+            foreach (var query in new[] { "?from=2026-10-02&to=2026-10-01", "?from=2026-10-01&to=2026-12-02" })
+            {
+                var rejected = await Send(app, "SummarizeCameraAgentStillProductDates",
+                    configure: request => request.QueryString = new QueryString(query)).ConfigureAwait(false);
+                Assert.AreEqual(StatusCodes.Status400BadRequest, rejected.Response.StatusCode, query);
+            }
+        }
+        finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+    }
+
     private static async Task Unavailable(WebApplication app, string name, HttpContext context)
     {
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
@@ -139,9 +216,48 @@ public sealed class CameraAgentStillProductEndpointsTests
         Assert.IsFalse(body.Contains("checksum", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static SqliteNightlyProductStore Store(string root) =>
+        new(NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options()),
+            new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
+
+    private static async Task<NightlyProductDetail> PublishAsync(SqliteNightlyProductStore store)
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        var frame = NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16));
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.StarTrail, JsonSerializer.SerializeToElement(new StarTrailRecipeOptions()),
+            ProcessingInputSelector.RecipeResult(frame.Artifact.Role, frame.Artifact.Variant, frame.Artifact.RecipeIdentitySha256),
+            [frame.Artifact], NightlyProductGenerator.StarTrailSegmentVariant,
+            AuxiliaryInputs: [NightlyProductPreset.BindOccurrence(occurrence)])).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
+        var product = outcome.Products.Single();
+        var publication = new NightlyProductPublication(NightlyProductKind.StarTrail, NightlyProductScope.Segment,
+            NightlyProductFixture.ObservingDate, occurrence.SourceWindow!.StartUtc, occurrence.SourceWindow.EndUtc, 0,
+            BuiltInProcessingRecipes.StarTrail, product, [new(0, NightlyProductSourceKind.PreviewFrame,
+                frame.Candidate.ArtifactId, frame.Candidate.OutputIdentitySha256, frame.Candidate.CaptureId,
+                frame.Candidate.ExposureStartedUtc)], 90)
+        { Occurrence = occurrence };
+        return await store.PublishAsync(publication, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private static async Task<DefaultHttpContext> Send(WebApplication app, string name, Guid? productId = null,
+        Action<HttpRequest>? configure = null)
+    {
+        var context = Context(app);
+        if (productId is { } id) context.Request.RouteValues["productId"] = id.ToString("D");
+        configure?.Invoke(context.Request);
+        var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
+            .Single(endpoint => endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName == name);
+        await endpoint.RequestDelegate!(context).ConfigureAwait(false);
+        return context;
+    }
+
+    private static byte[] Body(HttpContext context) => ((MemoryStream)context.Response.Body).ToArray();
+
     private static DefaultHttpContext Context(WebApplication app)
     {
         var context = new DefaultHttpContext { RequestServices = app.Services };
+        context.Request.Method = HttpMethods.Get;
         context.Request.RouteValues["productId"] = Guid.NewGuid().ToString("D");
         context.Response.Body = new MemoryStream();
         return context;

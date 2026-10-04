@@ -177,11 +177,11 @@ public sealed record NightlyProductWindowStatus(
     public LocalAutomationOccurrence Occurrence { get; init; } = null!;
 }
 
-/// <summary>A verified JPEG rendition of one product.</summary>
-public sealed record NightlyProductRendition(Guid ProductId, string MediaType, ReadOnlyMemory<byte> Content);
+/// <summary>A verified JPEG rendition of one product and the published SHA-256 it was verified against.</summary>
+public sealed record NightlyProductRendition(Guid ProductId, string MediaType, ReadOnlyMemory<byte> Content, string ChecksumSha256);
 
-/// <summary>A checksum-verified canonical provenance document.</summary>
-public sealed record NightlyProductProvenance(Guid ProductId, ReadOnlyMemory<byte> Content);
+/// <summary>A checksum-verified canonical provenance document and its published SHA-256.</summary>
+public sealed record NightlyProductProvenance(Guid ProductId, ReadOnlyMemory<byte> Content, string ChecksumSha256);
 
 /// <summary>The read model of generated nightly products. Library and Product Detail pages consume it.</summary>
 public interface INightlyProductCatalog

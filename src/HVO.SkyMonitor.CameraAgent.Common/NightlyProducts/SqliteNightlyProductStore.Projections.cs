@@ -202,8 +202,9 @@ internal sealed partial class SqliteNightlyProductStore
     }
 
     /// <summary>
-    /// The exposure starts of every preview frame in a product's full lineage, oldest first. Nightly-product sources
-    /// are followed to their own sources; published rows only reference earlier rows, so the walk terminates.
+    /// The exposure starts of every distinct preview frame in a product's full lineage, oldest first. Nightly-product
+    /// sources are followed to their own sources; published rows only reference earlier rows, so the walk terminates,
+    /// and a frame reached through both a rollup and its parent counts once.
     /// </summary>
     private static async ValueTask<List<DateTimeOffset>> ReadLineageFramesAsync(
         SqliteConnection connection,
@@ -219,11 +220,11 @@ internal sealed partial class SqliteNightlyProductStore
                 FROM nightly_product_sources AS source
                 JOIN lineage ON source.product_id = lineage.product_id
                 WHERE source.source_kind = 'NightlyProduct')
-            SELECT source.observation_started_utc_ticks
+            SELECT DISTINCT source.artifact_id, source.observation_started_utc_ticks
             FROM nightly_product_sources AS source
             JOIN lineage ON source.product_id = lineage.product_id
             WHERE source.source_kind = 'PreviewFrame'
-            ORDER BY source.observation_started_utc_ticks
+            ORDER BY source.observation_started_utc_ticks, source.artifact_id
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$product_id", productId.ToString("N", CultureInfo.InvariantCulture));
@@ -232,7 +233,7 @@ internal sealed partial class SqliteNightlyProductStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            frames.Add(new DateTimeOffset(reader.GetInt64(0), TimeSpan.Zero));
+            frames.Add(new DateTimeOffset(reader.GetInt64(1), TimeSpan.Zero));
         }
         if (frames.Count > NightlyProductProjectionContract.MaximumLineageFrames)
             throw new InvalidDataException("The product lineage exceeds its declared frame bound.");

@@ -606,7 +606,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             }
             var content = await ReadVerifiedAsync(
                 reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken).ConfigureAwait(false);
-            return new NightlyProductRendition(productId, RenditionMediaType, content);
+            return new NightlyProductRendition(productId, RenditionMediaType, content, reader.GetString(2));
         }
         finally
         {
@@ -628,7 +628,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
             var content = await ReadVerifiedAsync(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
                 .ConfigureAwait(false);
-            return new(productId, content);
+            return new(productId, content, reader.GetString(2));
         }
         finally { _gate.Release(); }
     }
