@@ -1,0 +1,35 @@
+@namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
+
+<figure class="time-lapse-player" style="@FrameStyle" data-player-state="@StateName">
+    <div class="time-lapse-player__frame">
+        @switch (_state)
+        {
+            case PlayerState.Video:
+                <video controls preload="metadata" playsinline width="@Width" height="@Height" aria-label="@Label">
+                    <source src="@Source" type="@MediaType" @onerror="PlaybackFailed" />
+                </video>
+                break;
+            case PlayerState.AnimatedImage when _revealed:
+                <img src="@Source" alt="@Label" width="@Width" height="@Height" decoding="async" />
+                break;
+            case PlayerState.AnimatedImage:
+                <button type="button" class="time-lapse-player__reveal" @onclick="Reveal">
+                    <i class="bi bi-play-circle" aria-hidden="true"></i><span>Show the animation</span>
+                </button>
+                break;
+            case PlayerState.Unsupported or PlayerState.Failed:
+                <p class="time-lapse-player__fallback" role="status">
+                    <i class="bi bi-film" aria-hidden="true"></i>
+                    <span>@(_state == PlayerState.Failed ? "This browser could not play this file." : $"This browser cannot play {MediaType}.") Download it to view it in another player.</span>
+                </p>
+                break;
+            default:
+                <p class="time-lapse-player__fallback" role="status"><i class="bi bi-film" aria-hidden="true"></i><span>Preparing the player…</span></p>
+                break;
+        }
+    </div>
+    <figcaption>
+        <span>@Caption</span>
+        <a href="@Source" download>Download</a>
+    </figcaption>
+</figure>

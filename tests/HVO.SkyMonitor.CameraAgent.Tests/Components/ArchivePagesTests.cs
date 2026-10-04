@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -135,6 +136,7 @@ public sealed class ArchivePagesTests
 
     private static readonly int[] SunriseNights = [19, 20, 21, 22];
     private static readonly int[] BadgeCells = [12, 21, 22, 23, 24];
+    private static readonly string[] NightlyKindNames = ["star trail", "keogram"];
 
     [TestMethod]
     public void Calendar_SunriseViewShowsOnlyRecordedNightlyProductStates()
@@ -271,7 +273,7 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
-    public void ObservingDay_RendersFactsTimelineAndHonestProductSlots()
+    public void ObservingDay_RendersFactsTimelineAndHidesNightlyProductsOnTheLegacyView()
     {
         using var context = new BunitContext();
         Configure(context);
@@ -323,14 +325,120 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "21 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "22 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".timeline-key").TextContent, "Cloud/usable intervals: unavailable", StringComparison.Ordinal);
-            var slots = cut.FindAll(".product-slot");
-            Assert.HasCount(3, slots);
-            Assert.IsTrue(slots.All(slot => slot.TextContent.Contains("Not yet produced", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".product-slot"));
+            StringAssert.Contains(cut.Find(".daily-products__note").TextContent, "belong to sunrise report dates", StringComparison.Ordinal);
+            Assert.AreEqual("/archive/day/2026-07-21?calendar=" + SunriseReportingPeriod.CurrentVersion,
+                cut.Find(".daily-products__note a").GetAttribute("href"));
             StringAssert.Contains(cut.Find(".day-events").TextContent, "Extracted", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".day-events").TextContent, "not confirmed meteors", StringComparison.Ordinal);
             Assert.AreEqual("/archive/day/2026-07-20", cut.FindAll(".day-title__step")[0].GetAttribute("href"));
             Assert.AreEqual("/archive/day/2026-07-22", cut.FindAll(".day-title__step")[1].GetAttribute("href"));
             Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", cut.Find(".day-actions a").GetAttribute("href"));
+        });
+        Assert.IsEmpty(Nightly(context).Days);
+    }
+
+    [TestMethod]
+    public void ObservingDay_SunrisePeriodShowsRecordedNightlyProductsAndALabelledSample()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        var dailyOccurrence = NightlyDayFixture.Daily(NightlyProductKind.StarTrail);
+        var daily = NightlyDayFixture.Product(dailyOccurrence, NightlyProductKind.StarTrail);
+        var producedHour = NightlyDayFixture.Hour(NightlyProductKind.StarTrail, NightlyDayFixture.FirstHourUtc);
+        var hourly = NightlyDayFixture.Product(producedHour, NightlyProductKind.StarTrail, sources: 5);
+        var emptyHour = NightlyDayFixture.Hour(NightlyProductKind.StarTrail, NightlyDayFixture.FirstHourUtc.AddHours(1));
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Produced(dailyOccurrence, daily, candidates: 14, admitted: 12),
+            NightlyDayFixture.Produced(producedHour, hourly, candidates: 5, admitted: 5),
+            NightlyDayFixture.Without(emptyHour, NightlyProductKind.StarTrail, NightlyProductWindowDisposition.NoSources, candidates: 3),
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
+                NightlyProductWindowDisposition.NoSources, candidates: 0)
+        ], [daily, hourly]), new CameraAgentTimeLapseSampleView("/api/v1/operations/time-lapse-sample", "video/mp4", 1280, 1280)));
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            var starTrail = cut.Find("[data-product-kind='star trail']");
+            Assert.AreEqual("available", starTrail.GetAttribute("data-nightly-state"));
+            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", starTrail.QuerySelector("img")!.GetAttribute("src"));
+            Assert.AreEqual($"/archive/products/nightly/{daily.ProductId:D}", starTrail.QuerySelector(".product-slot__link")!.GetAttribute("href"));
+            StringAssert.Contains(starTrail.TextContent, "12 of 14 frames admitted", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.TextContent, "640 × 480", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.QuerySelector(".hvo-chip")!.TextContent, "Produced", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.TextContent, "Hourly: 1 of 2 completed hours produced", StringComparison.Ordinal);
+            var hours = starTrail.QuerySelectorAll(".product-hours li");
+            Assert.HasCount(2, hours);
+            Assert.AreEqual($"/archive/products/nightly/{hourly.ProductId:D}", hours[0].QuerySelector("a")!.GetAttribute("href"));
+            Assert.IsNull(hours[1].QuerySelector("a"));
+            StringAssert.Contains(hours[1].QuerySelector("span")!.GetAttribute("title"), "not produced, none of 3 retained frames was admitted",
+                StringComparison.Ordinal);
+
+            var keogram = cut.Find("[data-product-kind='keogram']");
+            Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
+            Assert.IsNull(keogram.QuerySelector("img"));
+            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no frames were retained in the window.", StringComparison.Ordinal);
+            StringAssert.Contains(keogram.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
+            Assert.IsNull(keogram.QuerySelector(".product-hours"));
+
+            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
+            StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.QuerySelector("figcaption")!.TextContent, "Sample, not generated from this night", StringComparison.Ordinal);
+            Assert.AreEqual("/api/v1/operations/time-lapse-sample", timeLapse.QuerySelector("video source")!.GetAttribute("src"));
+        });
+        CollectionAssert.AreEqual(new[] { NightlyDayFixture.Date }, Nightly(context).Days);
+    }
+
+    [TestMethod]
+    public void ObservingDay_OpenPeriodIsPendingAndAnUnavailableCatalogIsStated()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(NightlyDayFixture.FirstHourUtc));
+        ConfigureFixtureDay(context);
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            foreach (var kind in NightlyKindNames)
+            {
+                var card = cut.Find($"[data-product-kind='{kind}']");
+                Assert.AreEqual("unavailable", card.GetAttribute("data-nightly-state"));
+                StringAssert.Contains(card.QuerySelector(".hvo-chip")!.TextContent, "Pending", StringComparison.Ordinal);
+                StringAssert.Contains(card.TextContent, "pending; the period has not ended", StringComparison.Ordinal);
+            }
+            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
+            StringAssert.Contains(timeLapse.ClassName, "product-slot--pending", StringComparison.Ordinal);
+            Assert.IsNull(timeLapse.QuerySelector(".time-lapse-player"));
+            StringAssert.Contains(timeLapse.TextContent, "Nothing is substituted for it.", StringComparison.Ordinal);
+        });
+
+        Nightly(context).DayHandler = static _ => OperatorUiResult<CameraAgentNightlyDayView>.Failure(
+            OperatorUiResultKind.Unavailable, "Nightly products are temporarily unavailable.");
+        var unavailable = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+        unavailable.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(unavailable.FindAll(".product-slot"));
+            StringAssert.Contains(unavailable.Find(".daily-products__note--warning").TextContent,
+                "Nightly product status unavailable. Nightly products are temporarily unavailable.", StringComparison.Ordinal);
+            Assert.IsNotNull(unavailable.Find(".day-facts"));
+        });
+    }
+
+    private static void ConfigureFixtureDay(BunitContext context)
+    {
+        var day = NightlyProductFixture.Calendar.Resolve(NightlyDayFixture.Date);
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
         });
     }
 
@@ -732,6 +840,7 @@ public sealed class ArchivePagesTests
     {
         RetainedPreviewImageTestSupport.Configure(context);
         ProductDetailTestSupport.Configure(context);
+        TimeLapsePlayerTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));

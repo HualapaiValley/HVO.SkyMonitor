@@ -204,6 +204,18 @@ public sealed class NightlyProductProjectionTests
         Assert.AreEqual(NightlyProductWindowDisposition.Produced, summary.DailyDisposition);
         Assert.AreEqual(1, summary.HourlyProduced);
         Assert.AreEqual(1, summary.HourlyWithoutProduct);
+        // The day page chooses among the same evaluations exactly as the calendar summary does.
+        var day = await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
+        Assert.AreEqual(daily, day.Daily(NightlyProductKind.Keogram)!.FinalProduct!.ProductId);
+        var hours = day.Hours(NightlyProductKind.Keogram);
+        Assert.HasCount(2, hours);
+        Assert.AreEqual(produced, hours[0].Status.WindowStartUtc);
+        Assert.IsNotNull(hours[0].FinalProduct);
+        Assert.AreEqual(empty, hours[1].Status.WindowStartUtc);
+        Assert.IsNull(hours[1].FinalProduct);
+        Assert.AreEqual("beta", hours[1].Status.Occurrence.Definition.DefinitionId);
+        Assert.IsNull(day.Daily(NightlyProductKind.StarTrail));
+        Assert.IsEmpty(day.Hours(NightlyProductKind.StarTrail));
     }
 
     [TestMethod]
@@ -220,6 +232,9 @@ public sealed class NightlyProductProjectionTests
         Assert.IsNull(summary.DailyProductId);
         Assert.AreEqual(NightlyProductWindowDisposition.NoSources, summary.DailyDisposition);
         Assert.AreEqual(0, summary.HourlyProduced + summary.HourlyWithoutProduct);
+        var daily = (await harness.Store.GetDayAsync(date, CancellationToken.None)).Daily(NightlyProductKind.StarTrail)!;
+        Assert.AreEqual("beta", daily.Status.Occurrence.Definition.DefinitionId);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, daily.Status.Disposition);
         Assert.IsEmpty(await harness.Store.SummarizeDatesAsync(date.AddDays(1), date.AddDays(61), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
             await harness.Store.SummarizeDatesAsync(date, date.AddDays(62), CancellationToken.None));

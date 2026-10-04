@@ -50,7 +50,30 @@ public sealed record NightlyProductWindowRecord(
 public sealed record NightlyProductDay(
     DateOnly ObservingDate,
     IReadOnlyList<NightlyProductWindowRecord> Windows,
-    IReadOnlyList<NightlyProductSummary> Products);
+    IReadOnlyList<NightlyProductSummary> Products)
+{
+    /// <summary>The final evaluation of the whole sunrise period, chosen as <see cref="NightlyProductDateSummary"/> chooses it.</summary>
+    public NightlyProductWindowRecord? Daily(NightlyProductKind kind)
+        => Preferred(Finals(kind, LocalAutomationSourceWindowKind.SunriseDay));
+
+    /// <summary>One final evaluation per completed civil hour, in hour order, chosen as the date summary chooses it.</summary>
+    public IReadOnlyList<NightlyProductWindowRecord> Hours(NightlyProductKind kind)
+        => [.. Finals(kind, LocalAutomationSourceWindowKind.CompletedCivilHour)
+            .GroupBy(static window => window.Status.WindowStartUtc)
+            .OrderBy(static hour => hour.Key)
+            .Select(static hour => Preferred(hour)!)];
+
+    private IEnumerable<NightlyProductWindowRecord> Finals(NightlyProductKind kind, LocalAutomationSourceWindowKind windowKind)
+        => Windows.Where(window => window.Status.Kind == kind && window.Status.Scope == NightlyProductScope.Final &&
+            window.WindowKind == windowKind);
+
+    // A produced evaluation first, then the latest evaluated; the product ID only makes the choice stable.
+    private static NightlyProductWindowRecord? Preferred(IEnumerable<NightlyProductWindowRecord> windows) => windows
+        .OrderByDescending(static window => window.FinalProduct is not null)
+        .ThenByDescending(static window => window.Status.EvaluatedUtc)
+        .ThenBy(static window => window.FinalProduct?.ProductId)
+        .FirstOrDefault();
+}
 
 /// <summary>
 /// The time axis of a keogram as it was composed. A planned axis has fixed UTC bins over the whole retained window; an
