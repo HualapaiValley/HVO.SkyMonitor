@@ -142,14 +142,20 @@ Results by product and mode:
 
 ### Capture note
 
-In the before capture, the narrow keogram card screenshot is blank, although
-the image had loaded. A probe (SHA-256 `c9db322f…afd6`) found the cause:
-- The image had loaded, and its pixel mean was non-zero.
-- After a scroll into view and a short settle, the tile rendered correctly
-  (`probe-keogram-390.png`).
+An earlier capture pass, taken by a previous version of the tool, produced a
+blank narrow keogram screenshot. A probe (SHA-256 `c9db322f…afd6`) checked
+the narrow keogram tile on an after build:
+- The image was complete at its natural 1,441 × 629, and its pixel mean was
+  non-zero.
+- A tile screenshot taken after a scroll into view and a 3-second settle
+  rendered correctly.
 
 The blank was therefore the screenshot racing a lazily loaded image's paint.
-The after capture re-decodes and settles after scrolling.
+The capture tool now re-decodes and settles after scrolling, and every index
+above was retaken with it. The narrow keogram is painted in every 390 and 320
+tiles screenshot whose previews were served (before, after and corrupt-mp4).
+The failed-preview mode aborts them by design. The probe's screenshot was not
+retained.
 
 ## Validation
 
