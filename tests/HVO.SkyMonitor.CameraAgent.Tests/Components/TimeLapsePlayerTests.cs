@@ -1,6 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Components.Presentation;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.RenderTree;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using Moq;
 
@@ -85,6 +91,37 @@ public sealed class TimeLapsePlayerTests
     }
 
     [TestMethod]
+    [DataRow("/old.mp4", "video/mp4", false, DisplayName = "An error from a replaced video")]
+    [DataRow("/old.gif", "image/gif", true, DisplayName = "An error from a replaced animation")]
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Every renderer call must resume on the renderer's own dispatcher.")]
+    public async Task ErrorFromReplacedMedia_LeavesTheNewPresentationAlone(string oldSource, string oldType, bool reveal)
+    {
+        using var context = new BunitContext();
+        TimeLapsePlayerTestSupport.Configure(context);
+        await using var renderer = new UnacknowledgedRenderer(context.Services);
+        await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var player = renderer.Attach();
+            await renderer.Present(player, oldSource, oldType);
+            if (reveal) await renderer.Raise(renderer.Handlers(player, "onclick").Single(), new MouseEventArgs());
+            Assert.AreEqual(reveal ? "animated-image" : "video", renderer.State(player));
+            var oldHandlers = renderer.Handlers(player, "onerror");
+            Assert.IsNotEmpty(oldHandlers);
+
+            // The browser has not yet applied the render that replaced the old media, so its handlers are still live.
+            renderer.HoldAcknowledgements();
+            var replacement = renderer.Present(player, "/new.webp", "image/webp");
+            foreach (var handler in oldHandlers)
+                await renderer.Raise(handler, new Microsoft.AspNetCore.Components.Web.ErrorEventArgs());
+
+            Assert.AreEqual("animated-image", renderer.State(player));
+            renderer.Acknowledge();
+            await replacement;
+            Assert.AreEqual("animated-image", renderer.State(player));
+        });
+    }
+
+    [TestMethod]
     [DataRow("image/gif")]
     [DataRow("image/webp")]
     public void AnimatedImage_MovesOnlyAfterAnExplicitRequest(string mediaType)
@@ -123,6 +160,53 @@ public sealed class TimeLapsePlayerTests
             .Add(component => component.Label, "Sample label")
             .Add(component => component.Caption, "Sample caption"));
 }
+
+// Blazor keeps the handlers of removed elements until the browser acknowledges the render that removed them, so an
+// error the old media raised can still arrive afterwards. bUnit acknowledges every render at once, so this renderer
+// holds the acknowledgement and addresses handlers by ID, as the browser does; only the render tree exposes those IDs.
+#pragma warning disable BL0006
+internal sealed class UnacknowledgedRenderer(IServiceProvider services) : Renderer(services, NullLoggerFactory.Instance)
+{
+    private TaskCompletionSource? _acknowledgement;
+
+    public override Dispatcher Dispatcher { get; } = Dispatcher.CreateDefault();
+
+    internal int Attach() => AssignRootComponentId(InstantiateComponent(typeof(TimeLapsePlayer)));
+
+    internal Task Present(int componentId, string source, string mediaType)
+        => RenderRootComponentAsync(componentId, ParameterView.FromDictionary(new Dictionary<string, object?>
+        {
+            [nameof(TimeLapsePlayer.Source)] = source,
+            [nameof(TimeLapsePlayer.MediaType)] = mediaType,
+            [nameof(TimeLapsePlayer.Width)] = 640,
+            [nameof(TimeLapsePlayer.Height)] = 480,
+            [nameof(TimeLapsePlayer.Label)] = "Sample label",
+            [nameof(TimeLapsePlayer.Caption)] = "Sample caption"
+        }));
+
+    internal void HoldAcknowledgements() => _acknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal void Acknowledge() => _acknowledgement?.SetResult();
+
+    internal Task Raise(ulong handlerId, EventArgs eventArgs) => DispatchEventAsync(handlerId, null, eventArgs);
+
+    internal IReadOnlyList<ulong> Handlers(int componentId, string eventName)
+        => Attributes(componentId).Where(frame => frame.AttributeName == eventName).Select(frame => frame.AttributeEventHandlerId).ToList();
+
+    internal string? State(int componentId)
+        => Attributes(componentId).Single(frame => frame.AttributeName == "data-player-state").AttributeValue as string;
+
+    protected override Task UpdateDisplayAsync(in RenderBatch renderBatch) => _acknowledgement?.Task ?? Task.CompletedTask;
+
+    protected override void HandleException(Exception exception) => ExceptionDispatchInfo.Capture(exception).Throw();
+
+    private List<RenderTreeFrame> Attributes(int componentId)
+    {
+        var frames = GetCurrentRenderTreeFrames(componentId);
+        return frames.Array.Take(frames.Count).Where(frame => frame.FrameType == RenderTreeFrameType.Attribute).ToList();
+    }
+}
+#pragma warning restore BL0006
 
 internal static class TimeLapsePlayerTestSupport
 {

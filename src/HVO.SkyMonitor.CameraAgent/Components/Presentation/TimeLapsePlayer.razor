@@ -5,12 +5,12 @@
         @switch (_state)
         {
             case PlayerState.Video:
-                <video controls preload="metadata" playsinline width="@Width" height="@Height" aria-label="@Label" @onerror="PlaybackFailed">
-                    <source src="@Source" type="@MediaType" @onerror="PlaybackFailed" />
+                <video controls preload="metadata" playsinline width="@Width" height="@Height" aria-label="@Label" @onerror="_playbackFailed">
+                    <source src="@Source" type="@MediaType" @onerror="_playbackFailed" />
                 </video>
                 break;
             case PlayerState.AnimatedImage when _revealed:
-                <img src="@Source" alt="@Label" width="@Width" height="@Height" decoding="async" @onerror="PlaybackFailed" />
+                <img src="@Source" alt="@Label" width="@Width" height="@Height" decoding="async" @onerror="_playbackFailed" />
                 break;
             case PlayerState.AnimatedImage:
                 <button type="button" class="time-lapse-player__reveal" @onclick="Reveal">

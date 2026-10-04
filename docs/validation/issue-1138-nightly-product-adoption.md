@@ -226,8 +226,8 @@ Download link. No media element remains.
 
 ## Validation
 
-- **Tests.** There are 39 new Unit cases; the CameraAgent inventory is now
-  `Unit=3283`, and the CI runbook totals are aligned. They cover:
+- **Tests.** There are 41 new Unit cases; the CameraAgent inventory is now
+  `Unit=3285`, and the CI runbook totals are aligned. They cover:
   - projections over a real SQLite store: bounds, preference, axis
     reconstruction and other outputs;
   - endpoints: validators, ranges, `HEAD`, download disposition and 404/400;
@@ -256,6 +256,16 @@ Download link. No media element remains.
     each replace the player and keep the download. Three corrupt samples on the
     private host fail this way, one on each element.
   - **F5.** Wording only.
+
+  The first correction rereview, of `b4193118`, confirmed F1, F2, F3 and F5 as
+  fixed. It also found that an error still in flight from replaced media could
+  fail the newer presentation (C1-F1). That correction:
+  - gives each presentation its own error handler, so an error from media that
+    has since been replaced fails nothing;
+  - adds a test renderer that withholds the browser's acknowledgement, as Blazor
+    Server does until the browser applies a render. With it, an error from a
+    replaced video and from a replaced animation each leave the new animation
+    playable. Both cases fail on `b4193118`.
 - **Gate.** `scripts/ci:classify` on `1204a0fe...` selected `mode=full
   complete=false cameraagent=true combined=true`. The classifier output, the
   four CI-control guards and the selected lane results are recorded in the PR

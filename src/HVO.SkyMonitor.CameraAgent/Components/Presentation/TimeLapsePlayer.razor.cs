@@ -11,6 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Presentation;
 /// A failure is handled on the element that reports it: a source that cannot be fetched or chosen errors on
 /// <c>&lt;source&gt;</c>, a file that cannot be decoded errors on <c>&lt;video&gt;</c>, and an animation that cannot be
 /// loaded errors on <c>&lt;img&gt;</c>. Each replaces the player with an explicit failure and keeps the download.
+/// Blazor keeps a removed element's handler until the browser acknowledges the render that removed it, so each
+/// presentation gets its own handler and an error from media that has since been replaced fails nothing.
 /// </summary>
 public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
 {
@@ -20,6 +22,8 @@ public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
     private string? _presented;
     private bool _revealed;
     private bool _disposed;
+    private int _presentation;
+    private Action _playbackFailed = static () => { };
 
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter, EditorRequired] public string Source { get; set; } = default!;
@@ -51,6 +55,8 @@ public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
         _presented = presented;
         _revealed = false;
         _state = IsAnimatedImage(MediaType) ? PlayerState.AnimatedImage : PlayerState.Checking;
+        var presentation = ++_presentation;
+        _playbackFailed = () => PlaybackFailed(presentation);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -78,8 +84,9 @@ public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
         StateHasChanged();
     }
 
-    private void PlaybackFailed()
+    private void PlaybackFailed(int presentation)
     {
+        if (_disposed || presentation != _presentation) return;
         if (_state is PlayerState.Video or PlayerState.AnimatedImage) _state = PlayerState.Failed;
     }
 
