@@ -759,7 +759,7 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
-    public void NewPages_RedirectToAccessDeniedWhenUnauthorized()
+    public async Task NewPages_RedirectToAccessDeniedWhenUnauthorized()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -774,10 +774,14 @@ public sealed class ArchivePagesTests
         calendar.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         foreach (var view in new[] { "/archive/products", ProductsPage.RetainedPath })
         {
+            // bUnit does not route away from a redirected page, so a page left rendered would see the next query
+            // change and redirect again from inside that navigation, without end.
+            await context.DisposeComponentsAsync().ConfigureAwait(false);
             navigation.NavigateTo(view);
             var products = context.Render<ProductsPage>();
             products.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
         }
+        await context.DisposeComponentsAsync().ConfigureAwait(false);
         navigation.NavigateTo("/archive/products/detail");
         var detail = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
 
