@@ -157,6 +157,22 @@ unchanged product answers `If-None-Match` with 304. Byte ranges are supported.
 `?download=1` returns `Content-Disposition: attachment`; otherwise content is
 `inline`.
 
+## Archive pages
+
+The archive pages read the same projections and require `OperationsReadV1`.
+They never start, retry or regenerate a product.
+
+| Page | Nightly product behavior |
+| --- | --- |
+| `/archive/calendar` | In the sunrise-period view, S (star trail) and K (keogram) show produced, hourly only, evaluated without a product, pending, not generated or unavailable. T is always "not yet generated". The legacy noon view hides these badges and links to the sunrise view. |
+| `/archive/day/{yyyy-MM-dd}` | One card per kind, built from the recorded daily evaluation, with its hourly evaluations listed under it. A produced card shows the product's preview and links to its detail page. An unproduced card states the recorded disposition. No capture image is substituted for a product. |
+| `/archive/products/nightly/{productId}` | The exact published product: preview, source period and window, admitted frame span, selection, lineage and direct-source counts, integration, recipe, variant, automation run, algorithms and other current outputs. A planned keogram axis is linear in clock time and hatches its gaps; a segment axis labels only actual frame columns; a keogram without a recorded axis draws no markers. Long source and gap lists name how many they omit. |
+
+When the store cannot be read, the calendar and day page say the nightly status
+is unavailable rather than showing the products as missing. Final cards count
+the segment products they composed; frame counts come from the lineage on the
+detail page.
+
 ## Time-lapse sample
 
 No time-lapse product exists yet. Until it does, the observing-day page always
