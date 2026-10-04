@@ -3,24 +3,41 @@
 <dialog @ref="_dialog" class="large-viewer" aria-labelledby="large-viewer-title" aria-modal="true">
     <header>
         <div>
-            <p>Protected local image</p>
+            <p>@Eyebrow</p>
             <h2 id="large-viewer-title">@Title</h2>
         </div>
-        <button @ref="_closeButton" type="button" class="btn btn-outline-secondary large-viewer__close" aria-label="Close large image" @onclick="CloseAsync">
+        <button @ref="_closeButton" type="button" class="btn btn-outline-secondary large-viewer__close" aria-label="@CloseLabel" @onclick="CloseAsync">
             <i class="bi bi-x-lg" aria-hidden="true"></i>
         </button>
     </header>
-    <div class="@(_nativeSize ? "large-viewer__canvas large-viewer__canvas--native" : "large-viewer__canvas")">
-        @if (Open && Source is not null)
+    <div class="@(Details is null ? "large-viewer__body" : "large-viewer__body large-viewer__body--details")">
+        <div class="@(_nativeSize && ShowsImage ? "large-viewer__canvas large-viewer__canvas--native" : "large-viewer__canvas")">
+            @if (Open && Source is not null)
+            {
+                <img src="@Source.OriginalString" alt="@Alt" @onerror="OnImageError" />
+            }
+            else if (Open)
+            {
+                @Media
+            }
+        </div>
+        @if (Open && Details is not null)
         {
-            <img src="@Source.OriginalString" alt="@Alt" />
+            <aside class="large-viewer__details" aria-label="@($"{Title} details")">@Details</aside>
         }
     </div>
     <footer>
-        <div class="large-viewer__modes hvo-segmented" role="group" aria-label="Image size">
-            <button type="button" class="hvo-segmented__option" aria-pressed="@((!_nativeSize).ToString().ToLowerInvariant())" @onclick="() => _nativeSize = false">Fit image</button>
-            <button type="button" class="hvo-segmented__option" aria-pressed="@_nativeSize.ToString().ToLowerInvariant()" @onclick="() => _nativeSize = true">100%</button>
-        </div>
-        <span>Use 100% for deliberate pan and scroll. Escape closes this viewer.</span>
+        @if (ShowsImage)
+        {
+            <div class="large-viewer__modes hvo-segmented" role="group" aria-label="Image size">
+                <button type="button" class="hvo-segmented__option" aria-pressed="@((!_nativeSize).ToString().ToLowerInvariant())" @onclick="() => _nativeSize = false">Fit image</button>
+                <button type="button" class="hvo-segmented__option" aria-pressed="@_nativeSize.ToString().ToLowerInvariant()" @onclick="() => _nativeSize = true">100%</button>
+            </div>
+            <span>Use 100% for deliberate pan and scroll. Escape closes this viewer.</span>
+        }
+        else
+        {
+            <span>Escape closes this viewer.</span>
+        }
     </footer>
 </dialog>

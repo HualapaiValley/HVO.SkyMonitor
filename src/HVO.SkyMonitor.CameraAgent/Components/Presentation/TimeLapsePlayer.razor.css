@@ -1,5 +1,5 @@
-.time-lapse-player { --time-lapse-max-height: 26rem; display: grid; gap: .45rem; margin: 0; }
-.time-lapse-player__frame { position: relative; width: min(100%, calc(var(--time-lapse-max-height) * var(--time-lapse-width-per-height))); aspect-ratio: var(--time-lapse-aspect); margin: 0 auto; overflow: hidden; border-radius: .4rem; background: #010307; }
+.time-lapse-player { display: grid; gap: .45rem; margin: 0; }
+.time-lapse-player__frame { position: relative; width: min(100%, calc(var(--time-lapse-max-height, 26rem) * var(--time-lapse-width-per-height))); aspect-ratio: var(--time-lapse-aspect); margin: 0 auto; overflow: hidden; border-radius: .4rem; background: #010307; }
 .time-lapse-player__frame video, .time-lapse-player__frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .time-lapse-player__reveal, .time-lapse-player__fallback { display: grid; width: 100%; height: 100%; margin: 0; padding: 1rem; place-content: center; justify-items: center; gap: .45rem; color: var(--hvo-muted); text-align: center; font-size: .72rem; }
 .time-lapse-player__reveal { min-height: 0; border: 0; background: transparent; cursor: pointer; }

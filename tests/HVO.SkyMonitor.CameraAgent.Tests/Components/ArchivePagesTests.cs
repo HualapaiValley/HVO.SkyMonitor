@@ -376,8 +376,10 @@ public sealed class ArchivePagesTests
         {
             var starTrail = cut.Find("[data-product-kind='star trail']");
             Assert.AreEqual("available", starTrail.GetAttribute("data-nightly-state"));
-            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", starTrail.QuerySelector("img")!.GetAttribute("src"));
-            Assert.AreEqual($"/archive/products/nightly/{daily.ProductId:D}", starTrail.QuerySelector(".product-slot__link")!.GetAttribute("href"));
+            var open = starTrail.QuerySelector("button.product-slot__media")!;
+            Assert.AreEqual(ObservingDayPage.TileId(NightlyProductKind.StarTrail), open.Id);
+            Assert.AreEqual("dialog", open.GetAttribute("aria-haspopup"));
+            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", open.QuerySelector("img")!.GetAttribute("src"));
             StringAssert.Contains(starTrail.TextContent, "from 12 segment products", StringComparison.Ordinal);
             // The nightly span runs from one local morning to the next, so both endpoints carry their dates.
             var mst = TimeSpan.FromHours(-7);
@@ -387,8 +389,47 @@ public sealed class ArchivePagesTests
             Assert.DoesNotContain("frames admitted", starTrail.TextContent, StringComparison.Ordinal);
             StringAssert.Contains(starTrail.TextContent, "640 × 480", StringComparison.Ordinal);
             StringAssert.Contains(starTrail.QuerySelector(".hvo-chip")!.TextContent, "Produced", StringComparison.Ordinal);
-            StringAssert.Contains(starTrail.TextContent, "Hourly: 1 of 2 completed hours produced", StringComparison.Ordinal);
-            var hours = starTrail.QuerySelectorAll(".product-hours li");
+            Assert.AreEqual("Hourly: 1 of 2 completed hours produced", starTrail.QuerySelector(".product-slot__hourly")!.TextContent);
+            // The hourly list, links and downloads belong to the viewer, so every tile keeps one size.
+            Assert.IsNull(starTrail.QuerySelector(".product-hours"));
+            Assert.IsEmpty(cut.FindAll(".product-slots a"));
+
+            var keogram = cut.Find("[data-product-kind='keogram']");
+            Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
+            Assert.IsNull(keogram.QuerySelector("img"));
+            // A tile with nothing more to show does not offer a viewer.
+            Assert.IsNull(keogram.QuerySelector("button"));
+            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
+            StringAssert.Contains(keogram.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
+            Assert.IsNull(keogram.QuerySelector(".product-slot__hourly"));
+
+            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
+            StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
+            Assert.AreEqual(ObservingDayPage.TimeLapseTileId, timeLapse.QuerySelector("button.product-slot__media")!.Id);
+            // The sample is fetched only once its viewer is opened.
+            Assert.IsEmpty(cut.FindAll("video, .time-lapse-player"));
+            Assert.IsEmpty(cut.FindAll(".large-viewer img, .large-viewer__details"));
+        });
+        CollectionAssert.AreEqual(new[] { NightlyDayFixture.Date }, Nightly(context).Days);
+
+        cut.Find($"#{ObservingDayPage.TileId(NightlyProductKind.StarTrail)}").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            var viewer = cut.Find(".large-viewer");
+            Assert.AreEqual("Star trail · 1 October 2026", viewer.QuerySelector("h2")!.TextContent);
+            StringAssert.Contains(viewer.QuerySelector("header p")!.TextContent, "Nightly product", StringComparison.Ordinal);
+            var image = viewer.QuerySelector(".large-viewer__canvas img")!;
+            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", image.GetAttribute("src"));
+            Assert.AreEqual("Nightly star trail of 1 October 2026", image.GetAttribute("alt"));
+            var details = viewer.QuerySelector("[data-viewer-kind='star trail']")!;
+            StringAssert.Contains(details.QuerySelector(".hvo-chip")!.TextContent, "Produced", StringComparison.Ordinal);
+            StringAssert.Contains(details.TextContent, "Composed from12 segment products", StringComparison.Ordinal);
+            StringAssert.Contains(details.TextContent, "Encoded size640 × 480", StringComparison.Ordinal);
+            Assert.AreEqual("Hourly: 1 of 2 completed hours produced", details.QuerySelector(".product-hours__label")!.TextContent);
+            var hours = details.QuerySelectorAll(".product-hours li");
             Assert.HasCount(2, hours);
             Assert.AreEqual($"/archive/products/nightly/{hourly.ProductId:D}", hours[0].QuerySelector("a")!.GetAttribute("href"));
             Assert.AreEqual("21:00–22:00: produced from 5 segment products", hours[0].QuerySelector("a")!.GetAttribute("title"));
@@ -396,22 +437,106 @@ public sealed class ArchivePagesTests
             Assert.IsNull(hours[1].QuerySelector("a"));
             StringAssert.Contains(hours[1].QuerySelector("span")!.GetAttribute("title"), "not produced, no segment window admitted a frame",
                 StringComparison.Ordinal);
-
-            var keogram = cut.Find("[data-product-kind='keogram']");
-            Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
-            Assert.IsNull(keogram.QuerySelector("img"));
-            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
-            StringAssert.Contains(keogram.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
-            Assert.IsNull(keogram.QuerySelector(".product-hours"));
-
-            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
-            StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
-            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
-            StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
-            StringAssert.Contains(timeLapse.QuerySelector("figcaption")!.TextContent, "Sample, not generated from this night", StringComparison.Ordinal);
-            Assert.AreEqual("/api/v1/operations/time-lapse-sample", timeLapse.QuerySelector("video source")!.GetAttribute("src"));
+            var actions = details.QuerySelectorAll(".product-viewer__actions a");
+            Assert.AreEqual($"/archive/products/nightly/{daily.ProductId:D}", actions[0].GetAttribute("href"));
+            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview?download=1", actions[1].GetAttribute("href"));
+            Assert.IsNotNull(actions[1].GetAttribute("download"));
         });
-        CollectionAssert.AreEqual(new[] { NightlyDayFixture.Date }, Nightly(context).Days);
+        Assert.HasCount(1, context.JSInterop.Invocations.Where(static invocation => invocation.Identifier == "show"));
+
+        cut.Find(".large-viewer__close").Click();
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".large-viewer img, .large-viewer__details")));
+        Assert.AreEqual(ObservingDayPage.TileId(NightlyProductKind.StarTrail),
+            context.JSInterop.Invocations.Single(static invocation => invocation.Identifier == "close").Arguments[1]);
+
+        cut.Find($"#{ObservingDayPage.TimeLapseTileId}").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            var viewer = cut.Find(".large-viewer");
+            Assert.AreEqual("Night time-lapse sample", viewer.QuerySelector("h2")!.TextContent);
+            StringAssert.Contains(viewer.QuerySelector("header p")!.TextContent, "Sample, not from this night", StringComparison.Ordinal);
+            Assert.IsNull(viewer.QuerySelector(".large-viewer__canvas img"));
+            Assert.IsNull(viewer.QuerySelector(".large-viewer__modes"));
+            StringAssert.Contains(viewer.QuerySelector("figcaption")!.TextContent, "Sample, not generated from this night", StringComparison.Ordinal);
+            Assert.AreEqual("/api/v1/operations/time-lapse-sample", viewer.QuerySelector("video source")!.GetAttribute("src"));
+            var details = viewer.QuerySelector("[data-viewer-kind='time-lapse']")!;
+            StringAssert.Contains(details.TextContent, "not counted as a product", StringComparison.Ordinal);
+            StringAssert.Contains(details.TextContent, "Declared size1280 × 1280", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_AFailedPreviewIsStatedInTheTileAndTheViewer()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        var trailOccurrence = NightlyDayFixture.Daily(NightlyProductKind.StarTrail);
+        var trail = NightlyDayFixture.Product(trailOccurrence, NightlyProductKind.StarTrail);
+        var keogramOccurrence = NightlyDayFixture.Daily(NightlyProductKind.Keogram);
+        var keogram = NightlyDayFixture.Product(keogramOccurrence, NightlyProductKind.Keogram);
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Produced(trailOccurrence, trail, candidates: 12, admitted: 12),
+            NightlyDayFixture.Produced(keogramOccurrence, keogram, candidates: 12, admitted: 12)
+        ], [trail, keogram]), null));
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+        cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".product-slots img")));
+
+        // A thumbnail that fails before the viewer opens leaves nothing to enlarge.
+        cut.Find("[data-product-kind='keogram'] img").TriggerEvent("onerror", EventArgs.Empty);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("[data-product-kind='keogram'] .product-slot__failed").TextContent,
+            "Preview unavailable", StringComparison.Ordinal));
+        cut.Find($"#{ObservingDayPage.TileId(NightlyProductKind.Keogram)}").Click();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNull(cut.Find(".large-viewer").QuerySelector("img"));
+            StringAssert.Contains(cut.Find(".product-viewer__empty").TextContent, "No other image has been substituted.", StringComparison.Ordinal);
+            Assert.IsNotNull(cut.Find("[data-viewer-kind='keogram'] .product-viewer__actions a[download]"));
+        });
+        cut.Find(".large-viewer__close").Click();
+
+        // A larger preview that fails inside the viewer is replaced by the statement, and the tile follows it.
+        cut.Find($"#{ObservingDayPage.TileId(NightlyProductKind.StarTrail)}").Click();
+        cut.WaitForAssertion(() => Assert.IsNotNull(cut.Find(".large-viewer__canvas img")));
+        cut.Find(".large-viewer__canvas img").TriggerEvent("onerror", EventArgs.Empty);
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(cut.FindAll("img"));
+            StringAssert.Contains(cut.Find(".product-viewer__empty").TextContent, "Preview unavailable", StringComparison.Ordinal);
+            Assert.IsNull(cut.Find(".large-viewer").QuerySelector(".large-viewer__modes"));
+            Assert.HasCount(2, cut.FindAll(".product-slot__failed"));
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_HoursWithoutANightlyProductOpenTheirListWithoutSubstitutingAnImage()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        var producedHour = NightlyDayFixture.Hour(NightlyProductKind.Keogram, NightlyDayFixture.FirstHourUtc);
+        var hourly = NightlyDayFixture.Product(producedHour, NightlyProductKind.Keogram, sources: 5);
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+            [NightlyDayFixture.Produced(producedHour, hourly, candidates: 5, admitted: 5)], [hourly]), null));
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+        cut.WaitForAssertion(() => Assert.AreEqual("Hourly: 1 of 1 completed hours produced",
+            cut.Find("[data-product-kind='keogram'] .product-slot__hourly").TextContent));
+        Assert.IsNull(cut.Find("[data-product-kind='keogram']").QuerySelector("img"));
+
+        cut.Find($"#{ObservingDayPage.TileId(NightlyProductKind.Keogram)}").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(cut.FindAll("img"));
+            StringAssert.Contains(cut.Find(".product-viewer__empty").TextContent, "No nightly product to show", StringComparison.Ordinal);
+            var details = cut.Find("[data-viewer-kind='keogram']");
+            Assert.AreEqual($"/archive/products/nightly/{hourly.ProductId:D}", details.QuerySelector(".product-hours a")!.GetAttribute("href"));
+            Assert.IsNull(details.QuerySelector(".product-viewer__actions"));
+        });
     }
 
     [TestMethod]
@@ -451,7 +576,7 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
             StringAssert.EndsWith(keogram.QuerySelector(".hvo-chip")!.GetAttribute("title"),
                 "; also recorded under another source period of this date", StringComparison.Ordinal);
-            Assert.IsEmpty(cut.FindAll(".product-slots a"));
+            Assert.IsEmpty(cut.FindAll(".product-slots a, .product-slots button"));
 
             var note = cut.Find(".daily-products__other");
             Assert.AreEqual("note", note.GetAttribute("role"));
@@ -912,6 +1037,7 @@ public sealed class ArchivePagesTests
     private static TestOperatorUiService Configure(BunitContext context)
     {
         RetainedPreviewImageTestSupport.Configure(context);
+        LargeImageViewerTestSupport.Configure(context);
         ProductDetailTestSupport.Configure(context);
         TimeLapsePlayerTestSupport.Configure(context);
         var service = new TestOperatorUiService();

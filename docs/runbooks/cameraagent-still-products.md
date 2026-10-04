@@ -173,7 +173,7 @@ They never start, retry or regenerate a product.
 | Page | Nightly product behavior |
 | --- | --- |
 | `/archive/calendar` | In the sunrise-period view, S (star trail) and K (keogram) show produced, hourly only, evaluated without a product, recorded only under another period, pending, not generated or unavailable. A badge counts only the sunrise period its date resolves to now; evaluations retained under another period of that date are named, never counted. T is always "not yet generated". The legacy noon view hides these badges and links to the sunrise view. |
-| `/archive/day/{yyyy-MM-dd}` | One card per kind, built from the recorded daily evaluation of the displayed period, with its hourly evaluations listed under it. A produced card shows the product's preview and links to its detail page. An unproduced card states the recorded disposition. Frame spans that cross a local date carry both dates, and a span or hour that crosses a daylight-saving change carries its offsets. Evaluations retained under another period of the same report date are listed separately with that period's site and UTC boundaries. No capture image is substituted for a product. |
+| `/archive/day/{yyyy-MM-dd}` | One equal-sized thumbnail tile per kind, built from the recorded daily evaluation of the displayed period; the preview keeps its aspect ratio inside the tile. A produced tile opens a viewer with the larger preview beside its details: recorded facts, hourly evaluations, and the product detail and download links. A tile without a nightly product but with hourly evaluations opens their list, and an unproduced tile states the recorded disposition. A preview that cannot be read is stated in the tile and the viewer, with nothing substituted. Frame spans that cross a local date carry both dates, and a span or hour that crosses a daylight-saving change carries its offsets. Evaluations retained under another period of the same report date are listed separately with that period's site and UTC boundaries. No capture image is substituted for a product. |
 | `/archive/products/nightly/{productId}` | The exact published product: preview, source period and window, admitted frame span, selection, lineage and direct-source counts, integration, recipe, variant, automation run, algorithms, whether a current pointer names it, and every other published output of its period, window and part. A planned keogram axis is linear in clock time and hatches its gaps; a segment axis labels only actual frame columns; a keogram without a recorded axis draws no markers. Long source and gap lists name how many they omit. |
 
 When the store cannot be read, the calendar and day page say the nightly status
@@ -207,7 +207,7 @@ ratio before metadata loads. The file is served by an authenticated
 with byte ranges, a length-and-write-time ETag and the same private headers.
 It returns 404 when disabled or absent. The page labels it as a sample not
 generated from the selected night, and it is never a product, never counted
-and never cached as one. Large samples are not committed to the repository.
+and never cached as one. Its tile opens the player in the same viewer. Large samples are not committed to the repository.
 
 ## Reproducible qualification
 
