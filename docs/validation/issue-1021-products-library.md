@@ -75,8 +75,14 @@ What is unchanged:
   - or, without a product, a placeholder with the kind icon and the recorded
     reason. A preview that fails becomes "Preview unavailable" and still links
     to the product;
-  - the title, the kind and the state, the state description and the source
-    period when another period is also recorded;
+  - the title, the kind and the state, and the state description. A Partial
+    card's description keeps the daily evaluation's disposition and reason
+    beside the hourly count;
+  - the source period, with its site and UTC boundaries, whenever the card's
+    period is not the one the calendar resolves the date to. The card says so,
+    because the calendar's badges for that date describe another period. The
+    period the calendar shows is named only when another period of the date is
+    also recorded;
   - sources, the frame span (or the period span) in the period's own time zone,
     the state chip and the hourly counts;
   - the observing day link and "Automation: {definition} · revision N".
@@ -112,8 +118,9 @@ The private loopback host on `127.0.0.1:5138` used:
 
 Both builds are Release publishes:
 - the branch point `171d6b57` (before);
-- `567fb0ca2dc0bc85709bc523567f502ceffed950` (after). The later branch commits
-  change only tests and this record.
+- `567fb0ca2dc0bc85709bc523567f502ceffed950` (after). Of the later branch
+  commits, only the review correction `bf208a79` changes the product, and it
+  was captured again in `r1/`.
 
 The prototype is `docs/prototypes/pipeline-operations/products.html`, opened
 from the file system.
@@ -139,9 +146,17 @@ screenshot, and the tool hash behind each index.
 | `date-focus.json` | `567fb0ca` | 4 toolbar screenshots, one per Tab stop of the date input. |
 | `prototype.json` | prototype | 4 screenshots, 2 checks. |
 | `compare.json` | — | 6 side-by-side composites: prototype/after, before/after and before/retained at each acceptance width. |
+| `r1/after.json` | `bf208a79` | The after mode again, on the review correction: 37 screenshots, 20 checks, no browser errors. |
 
 There are no browser errors except the 8 expected `net::ERR_FAILED` loads of
 the aborted previews. No page overflows horizontally.
+
+`r1/` was captured with the same tool (`b2272cde…aaf`) and runtime, by a copy of
+the runner that writes there (`28312dfe…3601`). `r1/after.json` has SHA-256
+`f2187903…316a`. Every check's columns, card states, text and boxes, notices,
+summary, small targets and overflow are identical to `after.json`, and so is the
+keyboard order. The recorded period is the one the calendar resolves
+2026-10-02 to, so no card names its source period.
 
 ### Card measurements
 
@@ -255,3 +270,42 @@ match" notice, unchanged from `171d6b57`.
   - The CameraAgent browser acceptance test now expects the library heading
     and filters, then opens the retained view through the view switch. The
     still-product endpoint test's catalog stub implements the new member.
+
+## Review corrections
+
+The initial review, `PR-1150-R0-e88d7a8f` at `e88d7a8f`, returned two Medium
+findings. Commit `bf208a79` corrects both.
+
+- **F1: partial cards dropped the recorded daily reason.**
+  - `ArchiveCalendarPage.Badge` returned the Partial text before it read the
+    daily disposition. It now resolves the reason first.
+  - With a recorded daily `Rejected` or `NoSources` evaluation, a Partial badge
+    keeps it, for example "Partial: 1 hourly keogram; nightly keogram not
+    produced: rejected (insufficient-coverage)". With no recorded daily
+    evaluation it still reads "Partial: …, no nightly …".
+  - The calendar shares the badge, so its hourly-only badge keeps the reason as
+    well.
+- **F2: a lone former-site period was shown without saying so.**
+  - `OtherPeriodRecorded` only means that another period is stored for the
+    same date and kind. On its own it cannot tell whether a card's period is
+    the one the calendar shows.
+  - The library now resolves each listed date's sunrise period through the same
+    `IObservingDayCalendarProvider` the calendar uses, and compares it with the
+    card's recorded period identity.
+  - A card whose period differs says it was recorded under another source
+    period than the calendar shows, and names that period's site and UTC
+    boundaries. A date the calendar cannot resolve counts as a difference, as
+    it does on the calendar.
+  - A matching card beside another recorded period keeps "Source period: …". A
+    matching card on its own shows no note.
+  - The product stays listed as recorded. Nothing is hidden or reclassified.
+- New and changed tests in `GeneratedProductsLibraryTests`:
+  - `Library_PartialCardsKeepTheirRecordedDailyReason`: Rejected and NoSources
+    daily evaluations beside hourly finals;
+  - `Library_NamesAndExplainsEverySourcePeriodTheCalendarDoesNotShow`: a lone
+    former-site card, a current card on its own, and a current card beside a
+    former-site card;
+  - `Library_ShowsEachDailyFinalAsACardWithItsIdentitySourcesSpanAndAutomation`
+    now expects the Partial reason, and no period note on current cards.
+- Fail before: with these tests on `e88d7a8f`'s `src/`, the three tests fail
+  and the other 20 in the class pass. With `bf208a79`'s `src/`, all 23 pass.
