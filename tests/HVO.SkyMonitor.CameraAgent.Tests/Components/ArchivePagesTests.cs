@@ -393,6 +393,8 @@ public sealed class ArchivePagesTests
             // The hourly list, links and downloads belong to the viewer, so every tile keeps one size.
             Assert.IsNull(starTrail.QuerySelector(".product-hours"));
             Assert.IsEmpty(cut.FindAll(".product-slots a"));
+            Assert.AreEqual(ProductsPage.RetainedPath,
+                cut.FindAll("a").Single(static link => link.TextContent == "Browse retained outputs").GetAttribute("href"));
 
             var keogram = cut.Find("[data-product-kind='keogram']");
             Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
@@ -757,21 +759,29 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
-    public void NewPages_RedirectToAccessDeniedWhenUnauthorized()
+    public async Task NewPages_RedirectToAccessDeniedWhenUnauthorized()
     {
         using var context = new BunitContext();
         var service = Configure(context);
         service.CalendarHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
         service.ProductPageHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
         service.ProductDetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.Unauthorized, "denied"));
+        Nightly(context).LibraryHandler = static _ => OperatorUiResult<NightlyProductLibraryPage>.Failure(OperatorUiResultKind.Unauthorized, "denied");
         var navigation = context.Services.GetRequiredService<NavigationManager>();
 
         navigation.NavigateTo("/archive/calendar");
         var calendar = context.Render<ArchiveCalendarPage>();
         calendar.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
-        navigation.NavigateTo("/archive/products");
-        var products = context.Render<ProductsPage>();
-        products.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+        foreach (var view in new[] { "/archive/products", ProductsPage.RetainedPath })
+        {
+            // bUnit does not route away from a redirected page, so a page left rendered would see the next query
+            // change and redirect again from inside that navigation, without end.
+            await context.DisposeComponentsAsync().ConfigureAwait(false);
+            navigation.NavigateTo(view);
+            var products = context.Render<ProductsPage>();
+            products.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri, "/Account/AccessDenied", StringComparison.Ordinal));
+        }
+        await context.DisposeComponentsAsync().ConfigureAwait(false);
         navigation.NavigateTo("/archive/products/detail");
         var detail = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, Guid.NewGuid()));
 
@@ -921,8 +931,23 @@ public sealed class ArchivePagesTests
             StringAssert.StartsWith(detailLink, "/archive/products/00000000-0000-0000-0000-000000000201?returnUrl=", StringComparison.Ordinal);
             Assert.AreEqual("/gallery/00000000-0000-0000-0000-000000000001", rows[0].QuerySelectorAll("a")[1].GetAttribute("href"));
         });
+        // Every retained action stays in the retained view, including from a link that predates the view switch.
+        Assert.AreEqual("page", cut.Find($".product-views a[href='{ProductsPage.RetainedPath}']").GetAttribute("aria-current"));
         cut.Find(".cursor-nav .btn-primary").Click();
-        cut.WaitForAssertion(() => StringAssert.Contains(navigation.Uri, "cursor=older", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => StringAssert.EndsWith(navigation.Uri,
+            "/archive/products?role=Combined&availability=Available&cursor=older&view=retained", StringComparison.Ordinal));
+        navigation.NavigateTo("/archive/products?role=Combined&cursor=older");
+        var paged = context.Render<ProductsPage>();
+        paged.WaitForElement(".cursor-nav .btn-outline-light").Click();
+        StringAssert.EndsWith(navigation.Uri, "/archive/products?role=Combined&view=retained", StringComparison.Ordinal);
+        navigation.NavigateTo("/archive/products?role=Combined");
+        var filters = context.Render<ProductsPage>();
+        filters.WaitForElement(".product-table");
+        filters.Find("#product-kind").Change("Metadata");
+        filters.Find("form.product-filters").Submit();
+        StringAssert.EndsWith(navigation.Uri, "/archive/products?role=Combined&kind=Metadata&view=retained", StringComparison.Ordinal);
+        filters.FindAll(".filter-actions button").Single(static button => button.TextContent == "Clear").Click();
+        StringAssert.EndsWith(navigation.Uri, ProductsPage.RetainedPath, StringComparison.Ordinal);
 
         service.ProductPageHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Success(new([], null)));
         navigation.NavigateTo("/archive/products?role=Metadata");

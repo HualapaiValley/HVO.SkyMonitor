@@ -133,7 +133,7 @@
             </section>
 
             <section class="daily-products" aria-label="Generated products" aria-busy="@(_nightlyLoading ? "true" : "false")">
-                <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="/archive/products">Browse retained outputs</a></header>
+                <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="@ProductsPage.RetainedPath">Browse retained outputs</a></header>
                 @if (view.Day.Day.SunrisePeriod is null)
                 {
                     <p class="daily-products__note" role="note">Nightly products belong to sunrise report dates, so this noon-to-noon view does not show them. <a href="@SunriseDayUrl">Switch to sunrise periods</a></p>

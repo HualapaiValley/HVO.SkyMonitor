@@ -1134,7 +1134,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, 24).ConfigureAwait(false);
-        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        await page.GotoAsync("/archive/products?view=retained").ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var link = page.Locator(".product-table tbody tr").Filter(new LocatorFilterOptions { HasText = "Preview" }).First.Locator("a").First;
         await VisibleAsync(link).ConfigureAwait(false);
@@ -1220,15 +1220,21 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/gallery" && new Uri(url).Query.Contains("from=", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
 
-        // Products: retained outputs list, a detail page, and its capture link.
+        // Products: the generated products library, then the retained outputs view, a detail page, and its capture link.
         await page.GotoAsync("/archive/products").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Products", Level = 1 })).ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".product-table tbody tr").First).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Generated products", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByLabel("Product type")).ConfigureAwait(false);
         await AssertPageStructureAsync(page, "/archive/products").ConfigureAwait(false);
+        await page.Locator(".product-views").GetByRole(AriaRole.Link, new() { Name = "Retained outputs", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("view=retained", StringComparison.Ordinal)).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Retained outputs", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".product-table tbody tr").First).ConfigureAwait(false);
+        await AssertPageStructureAsync(page, "/archive/products?view=retained").ConfigureAwait(false);
         await page.GetByLabel("Role").SelectOptionAsync("Metadata").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("role=Metadata", StringComparison.Ordinal)).ConfigureAwait(false);
-        await page.GotoAsync("/archive/products").ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).Query.Contains("role=Metadata", StringComparison.Ordinal) &&
+            new Uri(url).Query.Contains("view=retained", StringComparison.Ordinal)).ConfigureAwait(false);
+        await page.GotoAsync("/archive/products?view=retained").ConfigureAwait(false);
         var firstProduct = page.Locator(".product-table tbody tr").First.Locator("a").First;
         await VisibleAsync(firstProduct).ConfigureAwait(false);
         await firstProduct.ClickAsync().ConfigureAwait(false);
@@ -1252,7 +1258,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }
         await AssertPageStructureAsync(page, "/transients").ConfigureAwait(false);
 
-        foreach (var route in new[] { "/archive/calendar", "/archive/products", "/transients" })
+        foreach (var route in new[] { "/archive/calendar", "/archive/products", "/archive/products?view=retained", "/transients" })
         {
             foreach (var viewport in new[]
             {

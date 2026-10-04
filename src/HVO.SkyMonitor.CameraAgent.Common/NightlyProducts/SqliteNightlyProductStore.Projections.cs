@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -35,48 +36,11 @@ internal sealed partial class SqliteNightlyProductStore
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-            using var command = connection.CreateCommand();
-            // The window kind and source period are read from the retained occurrence rather than inferred from the
-            // span length or the report date; one report date can hold periods of different sites or time-zone rules.
-            command.CommandText = """
-                SELECT state.observing_date, state.kind, json_extract(state.occurrence_json, '$.sourceWindow.policy.kind'),
-                       state.window_start_utc_ticks, state.disposition, state.reason_code, state.evaluated_unix_ms,
-                       json_extract(state.occurrence_json, '$.sourceWindow.reportingPeriod.identitySha256'),
-                       (SELECT pointer.product_id
-                        FROM nightly_window_products AS pointer
-                        JOIN nightly_products AS product ON product.product_id = pointer.product_id
-                        WHERE pointer.occurrence_identity_sha256 = state.occurrence_identity_sha256
-                          AND pointer.kind = state.kind AND pointer.scope = state.scope
-                          AND pointer.window_start_utc_ticks = state.window_start_utc_ticks
-                          AND product.scope = 'Final')
-                FROM nightly_windows AS state
-                WHERE state.observing_date BETWEEN $first_date AND $last_date AND state.scope = 'Final'
-                LIMIT $limit;
-                """;
-            command.Parameters.AddWithValue("$first_date", FormatDate(firstDate));
-            command.Parameters.AddWithValue("$last_date", FormatDate(lastDate));
-            command.Parameters.AddWithValue("$limit", NightlyProductProjectionContract.MaximumSummarizedWindows + 1);
-            var rows = new List<FinalEvaluation>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
-                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false))
-                    throw new InvalidDataException("A recorded nightly evaluation does not retain its source window.");
-                rows.Add(new FinalEvaluation(
-                    DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    ParseEnum<NightlyProductKind>(reader.GetString(1)),
-                    ParseEnum<LocalAutomationSourceWindowKind>(reader.GetString(2)),
-                    reader.GetInt64(3),
-                    ParseEnum<NightlyProductWindowDisposition>(reader.GetString(4)),
-                    await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
-                    reader.GetInt64(6),
-                    reader.GetString(7),
-                    await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
-                        ? null : Guid.ParseExact(reader.GetString(8), "N")));
-            }
-            if (rows.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
-                throw new InvalidDataException("The evaluation summary exceeds its declared bound; it cannot represent full coverage.");
+            var rows = await ReadFinalEvaluationsAsync(connection,
+                "WHERE state.observing_date BETWEEN $first_date AND $last_date AND state.scope = 'Final'",
+                cancellationToken,
+                ("$first_date", FormatDate(firstDate)),
+                ("$last_date", FormatDate(lastDate))).ConfigureAwait(false);
             return Summarize(rows);
         }
         finally
@@ -136,6 +100,245 @@ internal sealed partial class SqliteNightlyProductStore
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Lists daily final evaluations, newest report date first. Report dates are found from their daily evaluations
+    /// through the date index and classified from the same summary the archive calendar reads; a status filter examines
+    /// at most <see cref="NightlyProductProjectionContract.MaximumLibraryScannedDates"/> dates per page and then says how
+    /// far back it searched rather than reading further.
+    /// </summary>
+    public async ValueTask<NightlyProductLibraryPage> ListLibraryAsync(
+        NightlyProductLibraryQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.DateCount is < 1 or > NightlyProductProjectionContract.MaximumLibraryDates)
+            throw new ArgumentOutOfRangeException(nameof(query), "The library page size is outside its declared bound.");
+        if (query.ObservingDate is not null && query.Before is not null)
+            throw new ArgumentOutOfRangeException(nameof(query), "A single observing day is not paged.");
+        if (query.Before == DateOnly.MinValue)
+        {
+            return new NightlyProductLibraryPage([], null, null);
+        }
+        var firstDate = query.ObservingDate ?? DateOnly.MinValue;
+        var lastDate = query.ObservingDate ?? query.Before?.AddDays(-1) ?? DateOnly.MaxValue;
+        // Without a status filter every report date with a daily evaluation matches, so one date past the page is enough.
+        var scan = query.State is null ? query.DateCount : NightlyProductProjectionContract.MaximumLibraryScannedDates;
+        var kind = (object?)query.Kind?.ToString() ?? DBNull.Value;
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+            var candidates = await ReadLibraryDatesAsync(connection, firstDate, lastDate, kind, scan + 1, cancellationToken)
+                .ConfigureAwait(false);
+            var truncated = candidates.Count > scan;
+            if (truncated) candidates.RemoveAt(scan);
+            if (candidates.Count == 0)
+            {
+                return new NightlyProductLibraryPage([], null, null);
+            }
+            var (dateFilter, dateParameters) = InList("$date_", candidates.Select(FormatDate));
+            var rows = await ReadFinalEvaluationsAsync(connection,
+                $"WHERE state.observing_date IN ({dateFilter}) AND state.scope = 'Final' AND ($kind IS NULL OR state.kind = $kind)",
+                cancellationToken, [.. dateParameters, ("$kind", kind)]).ConfigureAwait(false);
+            var summaries = Summarize(rows);
+            var matches = summaries.Where(summary => summary.DailyDisposition is not null &&
+                (query.State is null || NightlyProductLibraryEntry.Classify(summary) == query.State)).ToList();
+            var matchedDates = candidates.Where(date => matches.Any(summary => summary.ObservingDate == date)).ToList();
+            var shownDates = matchedDates.Take(query.DateCount).ToHashSet();
+            DateOnly? nextBefore = matchedDates.Count > query.DateCount ? matchedDates[query.DateCount - 1]
+                : truncated ? candidates[^1]
+                : null;
+            DateOnly? searchedThrough = truncated && shownDates.Count < query.DateCount ? candidates[^1] : null;
+            if (shownDates.Count == 0)
+            {
+                return new NightlyProductLibraryPage([], nextBefore, searchedThrough);
+            }
+            var entries = await ReadLibraryEntriesAsync(connection, summaries,
+                [.. matches.Where(summary => shownDates.Contains(summary.ObservingDate))], kind, cancellationToken)
+                .ConfigureAwait(false);
+            return new NightlyProductLibraryPage(entries, nextBefore, searchedThrough);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>The newest distinct report dates, within inclusive bounds, that hold a daily final evaluation.</summary>
+    private static async ValueTask<List<DateOnly>> ReadLibraryDatesAsync(
+        SqliteConnection connection,
+        DateOnly firstDate,
+        DateOnly lastDate,
+        object kind,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT state.observing_date
+            FROM nightly_windows AS state
+            WHERE state.observing_date BETWEEN $first_date AND $last_date AND state.scope = 'Final'
+              AND ($kind IS NULL OR state.kind = $kind)
+              AND json_extract(state.occurrence_json, '$.sourceWindow.policy.kind') = $window_kind
+            ORDER BY state.observing_date DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$first_date", FormatDate(firstDate));
+        command.Parameters.AddWithValue("$last_date", FormatDate(lastDate));
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$window_kind", nameof(LocalAutomationSourceWindowKind.SunriseDay));
+        command.Parameters.AddWithValue("$limit", limit);
+        var dates = new List<DateOnly>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            dates.Add(DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture));
+        }
+        return dates;
+    }
+
+    /// <summary>
+    /// Joins each shown summary to its daily final evaluation, chosen as <see cref="NightlyProductDay.Daily"/> chooses
+    /// it, newest report date first. A choice that disagrees with the summary is a torn read and fails.
+    /// </summary>
+    private static async ValueTask<List<NightlyProductLibraryEntry>> ReadLibraryEntriesAsync(
+        SqliteConnection connection,
+        List<NightlyProductDateSummary> summaries,
+        List<NightlyProductDateSummary> shown,
+        object kind,
+        CancellationToken cancellationToken)
+    {
+        var (dateFilter, dateParameters) = InList("$date_",
+            shown.Select(static summary => summary.ObservingDate).Distinct().Select(FormatDate));
+        var windows = await ReadWindowsAsync(connection, $"""
+            WHERE state.observing_date IN ({dateFilter}) AND state.scope = 'Final' AND ($kind IS NULL OR state.kind = $kind)
+              AND json_extract(state.occurrence_json, '$.sourceWindow.policy.kind') = $window_kind
+            """, cancellationToken,
+            [.. dateParameters, ("$kind", kind), ("$window_kind", nameof(LocalAutomationSourceWindowKind.SunriseDay))])
+            .ConfigureAwait(false);
+        var products = (await ReadProductsAsync(connection,
+                [.. windows.SelectMany(static window => window.ProductIds).Distinct()], cancellationToken).ConfigureAwait(false))
+            .ToDictionary(static product => product.ProductId);
+        var records = windows.Select(window => new NightlyProductWindowRecord(
+            window.Status,
+            [.. window.ProductIds.Select(id => products.TryGetValue(id, out var product)
+                ? product
+                : throw new InvalidDataException("A current nightly product is not published."))]))
+            .ToList();
+        return [.. shown.Select(summary =>
+            {
+                var daily = NightlyProductDay.Preferred(records.Where(record =>
+                    record.Status.ObservingDate == summary.ObservingDate && record.Status.Kind == summary.Kind &&
+                    string.Equals(record.ReportingPeriod.IdentitySha256, summary.ReportingPeriodSha256, StringComparison.Ordinal)));
+                if (daily is null || daily.FinalProduct?.ProductId != summary.DailyProductId)
+                    throw new InvalidDataException("A daily nightly evaluation disagrees with its summary.");
+                var otherPeriod = summaries.Any(other => other.ObservingDate == summary.ObservingDate &&
+                    other.Kind == summary.Kind &&
+                    !string.Equals(other.ReportingPeriodSha256, summary.ReportingPeriodSha256, StringComparison.Ordinal));
+                return new NightlyProductLibraryEntry(summary, daily, otherPeriod);
+            })
+            .OrderByDescending(static entry => entry.Summary.ObservingDate)
+            .ThenBy(static entry => entry.Summary.Kind)
+            .ThenBy(static entry => entry.Daily.ReportingPeriod.StartUtc)
+            .ThenBy(static entry => entry.Summary.ReportingPeriodSha256, StringComparer.Ordinal)];
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Only internal constant filter text is appended; values remain parameterized.")]
+    private static async ValueTask<List<FinalEvaluation>> ReadFinalEvaluationsAsync(
+        SqliteConnection connection,
+        string filter,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+        using var command = connection.CreateCommand();
+        // The window kind and source period are read from the retained occurrence rather than inferred from the
+        // span length or the report date; one report date can hold periods of different sites or time-zone rules.
+        command.CommandText = $"""
+            SELECT state.observing_date, state.kind, json_extract(state.occurrence_json, '$.sourceWindow.policy.kind'),
+                   state.window_start_utc_ticks, state.disposition, state.reason_code, state.evaluated_unix_ms,
+                   json_extract(state.occurrence_json, '$.sourceWindow.reportingPeriod.identitySha256'),
+                   (SELECT pointer.product_id
+                    FROM nightly_window_products AS pointer
+                    JOIN nightly_products AS product ON product.product_id = pointer.product_id
+                    WHERE pointer.occurrence_identity_sha256 = state.occurrence_identity_sha256
+                      AND pointer.kind = state.kind AND pointer.scope = state.scope
+                      AND pointer.window_start_utc_ticks = state.window_start_utc_ticks
+                      AND product.scope = 'Final')
+            FROM nightly_windows AS state
+            {filter}
+            LIMIT $limit;
+            """;
+        foreach (var (name, value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
+        command.Parameters.AddWithValue("$limit", NightlyProductProjectionContract.MaximumSummarizedWindows + 1);
+        var rows = new List<FinalEvaluation>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("A recorded nightly evaluation does not retain its source window.");
+            rows.Add(new FinalEvaluation(
+                DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ParseEnum<NightlyProductKind>(reader.GetString(1)),
+                ParseEnum<LocalAutomationSourceWindowKind>(reader.GetString(2)),
+                reader.GetInt64(3),
+                ParseEnum<NightlyProductWindowDisposition>(reader.GetString(4)),
+                await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
+                reader.GetInt64(6),
+                reader.GetString(7),
+                await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
+                    ? null : Guid.ParseExact(reader.GetString(8), "N")));
+        }
+        if (rows.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
+            throw new InvalidDataException("The evaluation summary exceeds its declared bound; it cannot represent full coverage.");
+        return rows;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "Only generated parameter names are appended; values remain parameterized.")]
+    private static async ValueTask<List<NightlyProductSummary>> ReadProductsAsync(
+        SqliteConnection connection,
+        List<Guid> productIds,
+        CancellationToken cancellationToken)
+    {
+        if (productIds.Count == 0)
+        {
+            return [];
+        }
+        var (idFilter, idParameters) = InList("$product_",
+            productIds.Select(static id => id.ToString("N", CultureInfo.InvariantCulture)));
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {ProductColumns}
+            FROM nightly_products AS product
+            WHERE product.product_id IN ({idFilter});
+            """;
+        foreach (var (name, value) in idParameters)
+        {
+            command.Parameters.AddWithValue(name, value);
+        }
+        var products = new List<NightlyProductSummary>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            products.Add(ReadSummary(reader));
+        }
+        return products;
+    }
+
+    /// <summary>Generated parameter names for an IN list, with their values; no value is ever written into the text.</summary>
+    private static (string Filter, (string Name, object Value)[] Parameters) InList(string prefix, IEnumerable<string> values)
+    {
+        var parameters = values.Select((value, index) =>
+            (string.Create(CultureInfo.InvariantCulture, $"{prefix}{index}"), (object)value)).ToArray();
+        return (string.Join(", ", parameters.Select(static parameter => parameter.Item1)), parameters);
     }
 
     /// <summary>
