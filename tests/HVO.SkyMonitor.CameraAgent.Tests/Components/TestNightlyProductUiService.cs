@@ -13,6 +13,8 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
 
     internal List<DateOnly> Days { get; } = [];
 
+    internal List<Guid> Presentations { get; } = [];
+
     internal Func<DateOnly, DateOnly, OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummaryHandler { get; set; } =
         static (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Success([]);
 
@@ -36,7 +38,10 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
     }
 
     public ValueTask<OperatorUiResult<NightlyProductPresentation>> GetPresentationAsync(Guid productId, CancellationToken cancellationToken)
-        => ValueTask.FromResult(PresentationHandler(productId));
+    {
+        Presentations.Add(productId);
+        return ValueTask.FromResult(PresentationHandler(productId));
+    }
 }
 
 /// <summary>Recorded evaluations of the nightly fixture's report date, built from real planned occurrences.</summary>

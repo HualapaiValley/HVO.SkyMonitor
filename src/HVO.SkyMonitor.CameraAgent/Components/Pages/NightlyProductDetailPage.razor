@@ -1,0 +1,211 @@
+@page "/archive/products/nightly/{ProductId:guid}"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>@PageTitleText</PageTitle>
+
+<div class="product-detail">
+    @if (_isLoading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading nightly product" Message="Reading the exact published product, its lineage and its time axis." />
+    }
+    else if (_presentation is null)
+    {
+        <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)" Title="Nightly product unavailable" Message="@(_errorMessage ?? "The requested nightly product was not found.")">
+            <a class="btn btn-outline-light" href="@DayUrl">Return to the calendar</a>
+            @if (!_notFound) { <button type="button" class="btn btn-outline-light" @onclick="LoadAsync">Try again</button> }
+        </PageStateNotice>
+    }
+    else
+    {
+        var presentation = _presentation;
+        var detail = presentation.Detail;
+        var product = detail.Summary;
+        var occurrence = detail.Occurrence;
+        var noun = NightlyProductLinks.KindNoun(product.Kind);
+        <header class="product-detail-heading">
+            <div>
+                <p class="eyebrow">Archive / Nightly products / exact published product</p>
+                <h1>@Title(detail)</h1>
+                <p>Report date @product.ObservingDate.ToString("yyyy-MM-dd") (@TimeZoneId) / window @Span(product.WindowStartUtc, product.WindowEndUtc) / created @LocalDateTime(product.CreatedUtc)</p>
+            </div>
+            <div class="detail-heading-actions">
+                <a class="btn" href="@DayUrl">Observing day</a>
+                <a class="btn" href="@NightlyProductLinks.PreviewDownload(product.ProductId)" download>Download preview</a>
+                <a class="btn" href="@NightlyProductLinks.ProvenanceDownload(product.ProductId)" download>Download provenance</a>
+            </div>
+        </header>
+
+        <section class="product-viewer-layout" aria-label="Product media and evidence">
+            <figure class="nightly-media" data-product-kind="@noun">
+                @if (!_previewFailed)
+                {
+                    <div class="nightly-frame" style="@FrameStyle(product)">
+                        <RetainedPreviewImage @key="product.ProductId" Source="@NightlyProductLinks.Preview(product.ProductId)" Alt="@($"{Title(detail)} of {product.ObservingDate:yyyy-MM-dd}; product {product.ProductId:D}")" OnFailure="MarkPreviewFailed" />
+                    </div>
+                    @if (presentation.TimeAxis is { } axis)
+                    {
+                        <div class="keogram-axis" style="@FrameStyle(product)" role="img" aria-label="@AxisSummary(axis)" data-axis="@(axis.Planned ? "planned" : "actual")">
+                            <div class="keogram-axis__track">
+                                @foreach (var gap in axis.Gaps)
+                                {
+                                    <span class="keogram-axis__gap" style="@GapStyle(gap, axis.Width)" title="@($"Gap {GapLabel(gap)}")"></span>
+                                }
+                            </div>
+                            <div class="keogram-axis__labels">
+                                @foreach (var tick in AxisTicks(axis, Local))
+                                {
+                                    <span class="@TickClass(tick)" style="@FormattableString.Invariant($"left: {tick.Percent:0.###}%")">@tick.Label</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                    <figcaption class="media-label">Verified display preview of the exact product; @product.Width × @product.Height @product.PixelFormat. The original payload is in the provenance.</figcaption>
+                }
+                else
+                {
+                    <div class="media-unavailable" role="note">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v16H3zM3 17l6-7 4 4 3-3 5 6M6 7h.1" /></svg>
+                        <h2>Preview unavailable</h2>
+                        <p>The display preview of this product could not be read.</p>
+                        <small>Product identity and recorded evidence retained. No other image has been substituted.</small>
+                    </div>
+                }
+            </figure>
+            <aside class="product-inspector">
+                <header><h2>Product evidence</h2><p>@ScopeDescription(detail).</p></header>
+                <div class="nightly-chips">
+                    <span class="state-chip" data-nightly-fact="scope">@Scope(detail)</span>
+                    <span class="state-chip @(product.IsCurrent ? "state-chip--current" : "")" data-nightly-fact="current">@(product.IsCurrent ? "Current" : "Not current")</span>
+                    @if (PartialHour(detail)) { <span class="state-chip" data-nightly-fact="partial">Partial hour</span> }
+                </div>
+                <dl class="product-provenance">
+                    <div class="full"><dt>State</dt><dd>@Finality(detail)@(product.IsCurrent ? "." : "; another output is the current product of this window and part.")</dd></div>
+                    @if (Period is { } period)
+                    {
+                        <div class="full"><dt>Source period</dt><dd>@Span(period.StartUtc, period.EndUtc), sunrise to sunrise</dd></div>
+                    }
+                    <div class="full"><dt>Product window</dt><dd>@Span(product.WindowStartUtc, product.WindowEndUtc)</dd></div>
+                    <div class="full"><dt>Admitted frames</dt><dd>@Span(product.FirstObservationUtc, product.LastObservationUtc)</dd></div>
+                    @if (occurrence.SourceWindow is { } window)
+                    {
+                        <div class="full"><dt>Selection</dt><dd>@Selection(window.Policy.Selection)</dd></div>
+                    }
+                    <div><dt>Preview frames</dt><dd>@presentation.LineageFrameCount.ToString("N0") in lineage</dd></div>
+                    <div><dt>Direct sources</dt><dd>@product.SourceCount.ToString("N0")</dd></div>
+                    <div><dt>Total integration</dt><dd>@FormatIntegration(product.TotalIntegration)</dd></div>
+                    <div><dt>Encoded size</dt><dd>@product.Width × @product.Height @product.PixelFormat</dd></div>
+                    <div><dt>Recipe</dt><dd>@detail.RecipeName</dd></div>
+                    <div><dt>Variant</dt><dd>@detail.Variant</dd></div>
+                    <div class="full"><dt>Automation</dt><dd>@occurrence.Definition.Name (<code>@occurrence.Definition.DefinitionId</code>) revision @occurrence.DefinitionVersion</dd></div>
+                    <div><dt>Run</dt><dd><code>@occurrence.RunKey</code></dd></div>
+                    <div><dt>Scheduled</dt><dd>@LocalDateTime(occurrence.ScheduledForUtc)</dd></div>
+                    <div class="full"><dt>Algorithms</dt><dd>@Algorithms(presentation)</dd></div>
+                </dl>
+            </aside>
+        </section>
+
+        @if (product.Kind == NightlyProductKind.Keogram)
+        {
+            <section class="product-detail-panel archive-panel" aria-label="Keogram time axis" data-nightly-section="axis">
+                <header><div><h2>Time axis</h2><p>Columns are time samples. Gaps are the columns with no admitted frame; nothing is drawn into them.</p></div></header>
+                @if (presentation.TimeAxis is { } axis)
+                {
+                    <p class="axis-summary">@AxisSummary(axis)</p>
+                    @if (axis.Gaps.Count > 0)
+                    {
+                        <ol class="gap-list">
+                            @foreach (var gap in axis.Gaps.Take(MaximumListedGaps))
+                            {
+                                <li>@GapLabel(gap)</li>
+                            }
+                        </ol>
+                        @if (axis.Gaps.Count > MaximumListedGaps)
+                        {
+                            <p class="unavailable-copy" data-nightly-notice="gaps">Listing the first @MaximumListedGaps of @axis.Gaps.Count.ToString("N0") gaps; the axis above draws every one.</p>
+                        }
+                    }
+                }
+                else
+                {
+                    <p class="unavailable-copy" data-nightly-notice="no-axis">No time axis is recorded for this keogram, so no time markers are drawn.</p>
+                }
+            </section>
+        }
+
+        <div class="day-detail-grid">
+            <section class="product-detail-panel archive-panel" aria-label="Other outputs of this window" data-nightly-section="outputs">
+                <header><div><h2>Other outputs of this window</h2><p>Published outputs recorded for the same window and part. No predecessor or successor relationship is assumed.</p></div></header>
+                @if (presentation.OtherOutputs.Count == 0)
+                {
+                    <p class="unavailable-copy">No other output is recorded for this window and part.</p>
+                }
+                else
+                {
+                    <ol class="product-versions">
+                        @foreach (var other in presentation.OtherOutputs)
+                        {
+                            <li><span class="version-dot" aria-hidden="true"></span><span><strong><a href="@NightlyProductLinks.Detail(other.ProductId)">@(other.IsCurrent ? "Current output" : "Not current output")</a></strong><small>@other.Width × @other.Height / @other.SourceCount.ToString("N0") sources / <code>@other.ProductId</code></small></span><time datetime="@other.CreatedUtc.ToString("O")">@LocalDateTime(other.CreatedUtc)</time></li>
+                        }
+                    </ol>
+                }
+            </section>
+            <section class="product-detail-panel archive-panel" aria-label="Integrity and identity" data-nightly-section="integrity">
+                <header><div><h2>Integrity &amp; identity</h2><p>Exact checksums of the retained bytes and the identities they were produced under.</p></div></header>
+                <dl class="product-provenance">
+                    <div class="full"><dt>Payload SHA-256</dt><dd><code>@detail.PayloadSha256</code> (@FormatBytes(detail.PayloadBytes))</dd></div>
+                    <div class="full"><dt>Preview SHA-256</dt><dd><code>@detail.RenditionSha256</code> (@FormatBytes(detail.RenditionBytes))</dd></div>
+                    <div class="full"><dt>Provenance SHA-256</dt><dd><code>@detail.ProvenanceSha256</code></dd></div>
+                    <div class="full"><dt>Output identity</dt><dd><code>@detail.OutputIdentitySha256</code></dd></div>
+                    <div class="full"><dt>Recipe identity</dt><dd><code>@detail.RecipeIdentitySha256</code></dd></div>
+                    <div class="full"><dt>Rig profile</dt><dd><code>@detail.RigProfileSha256</code></dd></div>
+                    <div class="full"><dt>Occurrence identity</dt><dd><code>@occurrence.IdentitySha256</code></dd></div>
+                    <div class="full"><dt>Product ID</dt><dd><code>@product.ProductId</code></dd></div>
+                </dl>
+            </section>
+        </div>
+
+        <section class="product-detail-panel archive-panel" aria-label="Ordered sources" data-nightly-section="sources">
+            <header><div><h2>Ordered sources</h2><p>The direct sources in composition order. A segment's sources are preview frames; a final's are its segments or rollups.</p></div><span class="quiet-label">@Math.Min(detail.Sources.Count, MaximumShownSources) shown / @detail.Sources.Count.ToString("N0") recorded</span></header>
+            @if (detail.Sources.Count == 0)
+            {
+                <p class="unavailable-copy">No ordered sources are recorded.</p>
+            }
+            else
+            {
+                <ol class="source-list">
+                    @foreach (var source in detail.Sources.Take(MaximumShownSources))
+                    {
+                        <li>
+                            <span class="ordinal">@(source.Ordinal + 1)</span>
+                            <span>
+                                @if (source.SourceKind == NightlyProductSourceKind.NightlyProduct)
+                                {
+                                    <a href="@NightlyProductLinks.Detail(source.ArtifactId)">Nightly product part</a>
+                                }
+                                else if (source.CaptureId is { } captureId)
+                                {
+                                    <a href="@($"/gallery/{captureId:D}")">Preview frame at @LocalDateTime(source.ObservationStartedUtc)</a>
+                                }
+                                else
+                                {
+                                    <strong>Preview frame at @LocalDateTime(source.ObservationStartedUtc)</strong>
+                                }
+                                <small>@(source.SourceKind == NightlyProductSourceKind.NightlyProduct ? $"First frame {LocalDateTime(source.ObservationStartedUtc)}" : "Preview output") / <code>@source.ArtifactId</code></small>
+                            </span>
+                        </li>
+                    }
+                </ol>
+                @if (detail.Sources.Count > MaximumShownSources)
+                {
+                    <p class="unavailable-copy" data-nightly-notice="sources">Showing the first @MaximumShownSources of @detail.Sources.Count.ToString("N0") sources; the provenance document lists them all.</p>
+                }
+            }
+        </section>
+    }
+</div>

@@ -32,6 +32,7 @@ public sealed class OperatorRouteTests
             typeof(ArchiveCalendarPage),
             typeof(ProductsPage),
             typeof(ProductDetail),
+            typeof(NightlyProductDetailPage),
             typeof(HealthPage),
             typeof(ControlPage),
             typeof(SoftwarePage),
