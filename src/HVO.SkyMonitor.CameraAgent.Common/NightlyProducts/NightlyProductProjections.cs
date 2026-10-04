@@ -16,7 +16,67 @@ public static class NightlyProductProjectionContract
 
     /// <summary>The most preview frames one product's lineage may hold; one window admits no more.</summary>
     public const int MaximumLineageFrames = NightlyProductContract.MaximumWindowCandidates;
+
+    /// <summary>The most report dates one library page presents.</summary>
+    public const int MaximumLibraryDates = 31;
+
+    /// <summary>
+    /// The most report dates one library page examines while a status filter skips dates; a page that stops there says
+    /// how far back it searched instead of reading further.
+    /// </summary>
+    public const int MaximumLibraryScannedDates = MaximumSummarizedDates;
 }
+
+/// <summary>
+/// The recorded outcome of a whole retained period's daily final, as the archive calendar classifies it: a daily final
+/// product, hourly products without one, or neither.
+/// </summary>
+public enum NightlyProductLibraryState
+{
+    Produced,
+    Partial,
+    NotProduced
+}
+
+/// <summary>
+/// One page of the generated products library: daily final evaluations of whole retained sunrise periods, newest report
+/// date first. A single observing day is never paged; otherwise <see cref="Before"/> continues below an earlier page.
+/// </summary>
+public sealed record NightlyProductLibraryQuery(
+    int DateCount,
+    NightlyProductKind? Kind = null,
+    NightlyProductLibraryState? State = null,
+    DateOnly? ObservingDate = null,
+    DateOnly? Before = null);
+
+/// <summary>
+/// A recorded daily final evaluation of one kind and retained period, with the summary of that period's finals. Hourly
+/// products and periods without a daily evaluation belong to the observing day, not the library.
+/// </summary>
+public sealed record NightlyProductLibraryEntry(
+    NightlyProductDateSummary Summary,
+    NightlyProductWindowRecord Daily,
+    bool OtherPeriodRecorded)
+{
+    public NightlyProductLibraryState State => Classify(Summary);
+
+    /// <summary>The daily final product, when the evaluation produced one.</summary>
+    public NightlyProductSummary? Product => Daily.FinalProduct;
+
+    internal static NightlyProductLibraryState Classify(NightlyProductDateSummary summary) =>
+        summary.DailyProductId is not null ? NightlyProductLibraryState.Produced
+        : summary.HourlyProduced > 0 ? NightlyProductLibraryState.Partial
+        : NightlyProductLibraryState.NotProduced;
+}
+
+/// <summary>
+/// The entries of one library page and where the next page starts. <see cref="SearchedThrough"/> is set when the page
+/// stopped at its scan bound before filling, so older report dates were not examined.
+/// </summary>
+public sealed record NightlyProductLibraryPage(
+    IReadOnlyList<NightlyProductLibraryEntry> Entries,
+    DateOnly? NextBefore,
+    DateOnly? SearchedThrough);
 
 /// <summary>
 /// The recorded final evaluations of one product kind in one retained sunrise period. A daily product is the final of
@@ -98,7 +158,7 @@ public sealed record NightlyProductDay(
             string.Equals(window.ReportingPeriod.IdentitySha256, reportingPeriodSha256, StringComparison.Ordinal));
 
     // A produced evaluation first, then the latest evaluated; the product ID only makes the choice stable.
-    private static NightlyProductWindowRecord? Preferred(IEnumerable<NightlyProductWindowRecord> windows) => windows
+    internal static NightlyProductWindowRecord? Preferred(IEnumerable<NightlyProductWindowRecord> windows) => windows
         .OrderByDescending(static window => window.FinalProduct is not null)
         .ThenByDescending(static window => window.Status.EvaluatedUtc)
         .ThenBy(static window => window.FinalProduct?.ProductId)

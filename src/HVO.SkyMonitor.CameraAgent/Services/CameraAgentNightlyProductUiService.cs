@@ -27,6 +27,9 @@ internal interface ICameraAgentNightlyProductUiService
     ValueTask<OperatorUiResult<CameraAgentNightlyDayView>> GetDayAsync(DateOnly observingDate, CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<NightlyProductPresentation>> GetPresentationAsync(Guid productId, CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentNightlyProductUiService(
@@ -37,6 +40,7 @@ internal sealed class CameraAgentNightlyProductUiService(
     ILogger<CameraAgentNightlyProductUiService> logger) : ICameraAgentNightlyProductUiService
 {
     private const string UnavailableMessage = "Nightly products are temporarily unavailable.";
+    private const string SummaryBoundMessage = "The requested date range is outside the nightly product summary bound.";
 
     public ValueTask<OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummarizeAsync(
         DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
@@ -53,6 +57,12 @@ internal sealed class CameraAgentNightlyProductUiService(
             : OperatorUiResult<NightlyProductPresentation>.Failure(OperatorUiResultKind.NotFound, "The requested nightly product was not found."),
             cancellationToken);
 
+    public ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ReadAsync(async () => OperatorUiResult<NightlyProductLibraryPage>.Success(
+            await catalog.ListLibraryAsync(query, cancellationToken).ConfigureAwait(false)), cancellationToken,
+            "The requested products page is outside the generated products library bound.");
+
     // A sample is offered only while its file is present, so an enabled but missing sample reads as absent rather than
     // as a broken player.
     private CameraAgentTimeLapseSampleView? TimeLapseSample()
@@ -64,7 +74,8 @@ internal sealed class CameraAgentNightlyProductUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    private async ValueTask<OperatorUiResult<T>> ReadAsync<T>(Func<Task<OperatorUiResult<T>>> read, CancellationToken cancellationToken)
+    private async ValueTask<OperatorUiResult<T>> ReadAsync<T>(Func<Task<OperatorUiResult<T>>> read, CancellationToken cancellationToken,
+        string invalidMessage = SummaryBoundMessage)
     {
         var state = await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false);
         if (!(await authorizationService.AuthorizeAsync(state.User, resource: null,
@@ -82,8 +93,7 @@ internal sealed class CameraAgentNightlyProductUiService(
         }
         catch (ArgumentOutOfRangeException)
         {
-            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid,
-                "The requested date range is outside the nightly product summary bound.");
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, invalidMessage);
         }
         catch (Exception exception)
         {

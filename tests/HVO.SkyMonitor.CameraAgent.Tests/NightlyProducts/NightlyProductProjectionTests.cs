@@ -301,6 +301,173 @@ public sealed class NightlyProductProjectionTests
         // The two hours share their boundaries but not their period, so neither is the other's output.
         Assert.IsEmpty((await harness.Store.GetPresentationAsync(hourly, CancellationToken.None))!.OtherOutputs);
         Assert.IsEmpty((await harness.Store.GetPresentationAsync(otherHourly, CancellationToken.None))!.OtherOutputs);
+
+        // The library lists each period's daily evaluation separately and says the date holds another period.
+        var library = await harness.Store.ListLibraryAsync(new(5), CancellationToken.None);
+        Assert.HasCount(2, library.Entries);
+        Assert.IsTrue(library.Entries.All(static entry => entry.OtherPeriodRecorded));
+        var listed = library.Entries.Single(entry => entry.Summary.ReportingPeriodSha256 == here);
+        Assert.AreEqual((NightlyProductLibraryState.Produced, daily), (listed.State, listed.Product!.ProductId));
+        var otherListed = library.Entries.Single(entry => entry.Summary.ReportingPeriodSha256 == there);
+        Assert.AreEqual(NightlyProductLibraryState.Partial, otherListed.State);
+        Assert.IsNull(otherListed.Product);
+        Assert.AreEqual(other.LocationId, otherListed.Daily.ReportingPeriod.Site.LocationId);
+    }
+
+    [TestMethod]
+    public async Task Library_ListsDailyFinalsNewestFirstAndClassifiesThemAsTheCalendarDoes()
+    {
+        var date = NightlyProductFixture.ObservingDate;
+        var partialHour = new DateTimeOffset(2026, 9, 30, 4, 0, 0, TimeSpan.Zero);
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, new(2026, 10, 2, 4, 0, 0, TimeSpan.Zero)),
+            NightlyProductFixture.Frame(2, partialHour.AddMinutes(5)),
+            NightlyProductFixture.Frame(3, partialHour.AddDays(-1).AddMinutes(5)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        var withoutSources = harness.Generator(new InMemoryNightlySourceReader());
+        LocalAutomationOccurrence Daily(NightlyProductKind kind, int daysBefore) =>
+            NightlyProductFixture.Occurrence(kind, observingDate: date.AddDays(-daysBefore));
+        LocalAutomationOccurrence Hourly(int daysBefore, DateTimeOffset start) => NightlyProductFixture.Occurrence(
+            NightlyProductKind.Keogram, windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour, hourStart: start,
+            observingDate: date.AddDays(-daysBefore));
+        await harness.Run(Daily(NightlyProductKind.StarTrail, 0));
+        await harness.Run(Daily(NightlyProductKind.Keogram, 0));
+        await withoutSources.RunAsync(Daily(NightlyProductKind.Keogram, 1), CancellationToken.None);
+        await harness.Run(Hourly(2, partialHour));
+        await withoutSources.RunAsync(Daily(NightlyProductKind.Keogram, 2), CancellationToken.None);
+        // A period whose daily final was never evaluated belongs to its observing day, not the library.
+        await harness.Run(Hourly(3, partialHour.AddDays(-1)));
+
+        var page = await harness.Store.ListLibraryAsync(new(10), CancellationToken.None);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                (date, NightlyProductKind.Keogram, NightlyProductLibraryState.Produced),
+                (date, NightlyProductKind.StarTrail, NightlyProductLibraryState.Produced),
+                (date.AddDays(-1), NightlyProductKind.Keogram, NightlyProductLibraryState.NotProduced),
+                (date.AddDays(-2), NightlyProductKind.Keogram, NightlyProductLibraryState.Partial)
+            },
+            page.Entries.Select(static entry => (entry.Summary.ObservingDate, entry.Summary.Kind, entry.State)).ToArray());
+        Assert.IsNull(page.NextBefore);
+        Assert.IsNull(page.SearchedThrough);
+        var summaries = await harness.Store.SummarizeDatesAsync(date.AddDays(-3), date, CancellationToken.None);
+        foreach (var entry in page.Entries)
+        {
+            // The library reads the calendar's own summary and chooses the evaluation the day page chooses.
+            CollectionAssert.Contains(summaries.ToList(), entry.Summary);
+            Assert.AreEqual(entry.State.ToString(), ArchiveCalendarPage.Badge(entry.Summary.Kind, entry.Summary,
+                entry.OtherPeriodRecorded, unavailable: false, pending: false).State.ToString());
+            Assert.IsFalse(entry.OtherPeriodRecorded);
+            var day = await harness.Store.GetDayAsync(entry.Summary.ObservingDate, CancellationToken.None);
+            var daily = day.Daily(entry.Summary.Kind, entry.Summary.ReportingPeriodSha256)!;
+            Assert.AreEqual(
+                (daily.Status.Kind, daily.Status.WindowStartUtc, daily.Status.Disposition, daily.Status.EvaluatedUtc,
+                    daily.Status.Occurrence.IdentitySha256),
+                (entry.Daily.Status.Kind, entry.Daily.Status.WindowStartUtc, entry.Daily.Status.Disposition,
+                    entry.Daily.Status.EvaluatedUtc, entry.Daily.Status.Occurrence.IdentitySha256));
+            CollectionAssert.AreEqual(daily.CurrentProducts.ToArray(), entry.Daily.CurrentProducts.ToArray());
+        }
+        Assert.AreEqual(await FinalId(harness.Store, Daily(NightlyProductKind.StarTrail, 0)), page.Entries[1].Product!.ProductId);
+        Assert.IsNull(page.Entries[2].Product);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, page.Entries[2].Daily.Status.Disposition);
+        Assert.AreEqual((1, 0), (page.Entries[3].Summary.HourlyProduced, page.Entries[3].Summary.HourlyWithoutProduct));
+    }
+
+    [TestMethod]
+    public async Task Library_FiltersByKindStatusAndDayAndPagesByReportDate()
+    {
+        var date = NightlyProductFixture.ObservingDate;
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, new(2026, 10, 2, 4, 0, 0, TimeSpan.Zero)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        var withoutSources = harness.Generator(new InMemoryNightlySourceReader());
+        await harness.Run(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail));
+        for (var daysBefore = 0; daysBefore < 5; daysBefore++)
+        {
+            await withoutSources.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.Keogram,
+                observingDate: date.AddDays(-daysBefore)), CancellationToken.None);
+        }
+        async Task<NightlyProductLibraryPage> List(NightlyProductLibraryQuery query) =>
+            await harness.Store.ListLibraryAsync(query, CancellationToken.None);
+        static DateOnly[] Dates(NightlyProductLibraryPage page) =>
+            [.. page.Entries.Select(static entry => entry.Summary.ObservingDate).Distinct()];
+
+        // Pages hold whole report dates, so both kinds of the newest date arrive together.
+        var first = await List(new(2));
+        Assert.HasCount(3, first.Entries);
+        CollectionAssert.AreEqual(new[] { date, date.AddDays(-1) }, Dates(first));
+        Assert.AreEqual(date.AddDays(-1), first.NextBefore);
+        var second = await List(new(2, Before: first.NextBefore));
+        CollectionAssert.AreEqual(new[] { date.AddDays(-2), date.AddDays(-3) }, Dates(second));
+        Assert.AreEqual(date.AddDays(-3), second.NextBefore);
+        var last = await List(new(2, Before: second.NextBefore));
+        CollectionAssert.AreEqual(new[] { date.AddDays(-4) }, Dates(last));
+        Assert.IsNull(last.NextBefore);
+        Assert.IsNull(last.SearchedThrough);
+
+        var trails = await List(new(10, Kind: NightlyProductKind.StarTrail));
+        Assert.AreEqual(NightlyProductKind.StarTrail, trails.Entries.Single().Summary.Kind);
+        var produced = await List(new(10, State: NightlyProductLibraryState.Produced));
+        Assert.AreEqual(NightlyProductKind.StarTrail, produced.Entries.Single().Summary.Kind);
+        var notProduced = await List(new(2, NightlyProductKind.Keogram, NightlyProductLibraryState.NotProduced));
+        CollectionAssert.AreEqual(new[] { date, date.AddDays(-1) }, Dates(notProduced));
+        Assert.AreEqual(date.AddDays(-1), notProduced.NextBefore);
+        var mismatch = await List(new(10, NightlyProductKind.Keogram, NightlyProductLibraryState.Produced));
+        Assert.IsEmpty(mismatch.Entries);
+        Assert.IsNull(mismatch.NextBefore);
+        Assert.IsNull(mismatch.SearchedThrough);
+        Assert.IsEmpty((await List(new(10, State: NightlyProductLibraryState.Partial))).Entries);
+
+        var day = await List(new(10, ObservingDate: date.AddDays(-2)));
+        CollectionAssert.AreEqual(new[] { date.AddDays(-2) }, Dates(day));
+        Assert.IsNull(day.NextBefore);
+        Assert.IsEmpty((await List(new(10, ObservingDate: date.AddDays(1)))).Entries);
+        Assert.IsEmpty((await List(new(10, Before: DateOnly.MinValue))).Entries);
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () => await List(new(0)));
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await List(new(NightlyProductProjectionContract.MaximumLibraryDates + 1)));
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+            await List(new(10, ObservingDate: date, Before: date)));
+    }
+
+    [TestMethod]
+    public async Task Library_StatusFilterStopsAtItsScanBoundAndSaysHowFarBackItSearched()
+    {
+        var date = NightlyProductFixture.ObservingDate;
+        var scanned = NightlyProductProjectionContract.MaximumLibraryScannedDates;
+        var oldest = date.AddDays(-scanned - 1);
+        var reader = new InMemoryNightlySourceReader();
+        // Late in the night, so the summer frame is dark enough for a star trail.
+        reader.Add(NightlyProductFixture.Frame(1, new DateTimeOffset(2026, 10, 2, 7, 0, 0, TimeSpan.Zero)
+            .AddDays(-scanned - 1)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        var withoutSources = harness.Generator(new InMemoryNightlySourceReader());
+        for (var daysBefore = 0; daysBefore <= scanned; daysBefore++)
+        {
+            await withoutSources.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail,
+                observingDate: date.AddDays(-daysBefore)), CancellationToken.None);
+        }
+        await harness.Run(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail, observingDate: oldest));
+
+        var bounded = await harness.Store.ListLibraryAsync(
+            new(5, State: NightlyProductLibraryState.Produced), CancellationToken.None);
+
+        Assert.IsEmpty(bounded.Entries);
+        var searched = date.AddDays(1 - scanned);
+        Assert.AreEqual(searched, bounded.SearchedThrough);
+        Assert.AreEqual(searched, bounded.NextBefore);
+        var rest = await harness.Store.ListLibraryAsync(
+            new(5, State: NightlyProductLibraryState.Produced, Before: bounded.NextBefore), CancellationToken.None);
+        Assert.AreEqual(oldest, rest.Entries.Single().Summary.ObservingDate);
+        Assert.IsNull(rest.NextBefore);
+        Assert.IsNull(rest.SearchedThrough);
+        // Without a status filter every examined date matches, so a full page is never cut short.
+        var unfiltered = await harness.Store.ListLibraryAsync(
+            new(NightlyProductProjectionContract.MaximumLibraryDates), CancellationToken.None);
+        Assert.HasCount(NightlyProductProjectionContract.MaximumLibraryDates, unfiltered.Entries);
+        Assert.IsNull(unfiltered.SearchedThrough);
+        Assert.AreEqual(unfiltered.Entries[^1].Summary.ObservingDate, unfiltered.NextBefore);
     }
 
     [TestMethod]

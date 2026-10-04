@@ -129,14 +129,14 @@ internal static class NightlyProductFixture
     internal static LocalAutomationOccurrence Occurrence(NightlyProductKind kind, NightlyProductOptions? options = null,
         LocalAutomationSourceWindowKind windowKind = LocalAutomationSourceWindowKind.SunriseDay,
         DateTimeOffset? hourStart = null, string? definitionId = null, long version = 1,
-        DeploymentLocationSnapshot? site = null)
+        DeploymentLocationSnapshot? site = null, DateOnly? observingDate = null)
     {
         var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion, windowKind,
             kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
                 : LocalAutomationSourceSelection.DarkNightActualSources, TimeSpan.FromMinutes(5));
         var calendar = site is null ? Calendar : ObservingDayCalendar.ForDeployment(site);
         var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
-        var windows = planner.ResolveWindows(ObservingDate, policy);
+        var windows = planner.ResolveWindows(observingDate ?? ObservingDate, policy);
         var window = hourStart is { } start ? windows.Single(item => item.StartUtc == start) : windows[0];
         var id = definitionId ?? $"fixture-{NightlyProductContract.TargetFor(kind)}";
         var definition = new LocalAutomationDefinition(id, id, true, LocalAutomationTaskKind.StillImageGeneration,

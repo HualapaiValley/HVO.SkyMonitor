@@ -114,7 +114,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     internal static string TileId(NightlyProductKind kind) => "product-tile-" + NightlyProductLinks.KindNoun(kind).Replace(' ', '-');
 
-    private static string KindIcon(NightlyProductKind kind) => kind == NightlyProductKind.StarTrail ? "bi-stars" : "bi-bar-chart-steps";
+    internal static string KindIcon(NightlyProductKind kind) => kind == NightlyProductKind.StarTrail ? "bi-stars" : "bi-bar-chart-steps";
 
     // A tile opens only when its viewer adds something: the larger image, or the hours behind a missing nightly product.
     private static bool CanOpen(ProductCard card) => card.Product is not null || card.Hours.Count > 0;
@@ -194,7 +194,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         _ => "Unavailable"
     };
 
-    private static string ChipClass(ArchiveCalendarPage.NightlyBadgeState state) => state switch
+    internal static string ChipClass(ArchiveCalendarPage.NightlyBadgeState state) => state switch
     {
         ArchiveCalendarPage.NightlyBadgeState.Produced => "hvo-chip--success",
         ArchiveCalendarPage.NightlyBadgeState.Partial => "hvo-chip--warning",
@@ -259,9 +259,12 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     /// A local span that never reads as reversed or ambiguous: both endpoints carry their dates when the span crosses
     /// a local date, and their UTC offsets when it crosses a daylight-saving change.
     /// </summary>
-    internal string LocalSpan(DateTimeOffset startUtc, DateTimeOffset endUtc)
+    internal string LocalSpan(DateTimeOffset startUtc, DateTimeOffset endUtc) => LocalSpan(startUtc, endUtc, TimeZoneId);
+
+    /// <inheritdoc cref="LocalSpan(DateTimeOffset, DateTimeOffset)"/>
+    internal static string LocalSpan(DateTimeOffset startUtc, DateTimeOffset endUtc, string timeZoneId)
     {
-        if (!TryLocal(startUtc, out var start) || !TryLocal(endUtc, out var end))
+        if (!TryLocal(startUtc, timeZoneId, out var start) || !TryLocal(endUtc, timeZoneId, out var end))
         {
             return string.Create(CultureInfo.InvariantCulture, $"{startUtc.UtcDateTime:HH:mm d MMM}Z–{endUtc.UtcDateTime:HH:mm d MMM}Z");
         }
@@ -271,15 +274,15 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
             : $"{start.ToString(format, CultureInfo.InvariantCulture)} {Offset(start)}–{end.ToString(format, CultureInfo.InvariantCulture)} {Offset(end)}";
     }
 
-    private string LocalOffset(DateTimeOffset utc) => TryLocal(utc, out var local) ? Offset(local) : "UTC";
+    private string LocalOffset(DateTimeOffset utc) => TryLocal(utc, TimeZoneId, out var local) ? Offset(local) : "UTC";
 
     private static string Offset(DateTimeOffset local) => "UTC" + local.ToString("zzz", CultureInfo.InvariantCulture);
 
-    private bool TryLocal(DateTimeOffset utc, out DateTimeOffset local)
+    private static bool TryLocal(DateTimeOffset utc, string timeZoneId, out DateTimeOffset local)
     {
         try
         {
-            local = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, TimeZoneId);
+            local = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, timeZoneId);
             return true;
         }
         catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)

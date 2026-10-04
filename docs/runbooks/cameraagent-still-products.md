@@ -107,6 +107,7 @@ lighten composition of actual eligible frames, preserving any missing interval.
 | Provenance document | 8 MiB |
 | Products or windows in one date listing | 1,024; larger listings fail explicitly |
 | Calendar date summary | At most 62 dates and 8,192 evaluated windows; a reversed or wider range is a 400, excess windows fail explicitly |
+| Generated products library page | 12 report dates per page, at most 31; a status filter examines at most 62 report dates with a daily evaluation per page and then states how far back it searched |
 | Presentation lineage | Distinct preview frames, at most the 4,096 window-candidate bound; excess fails explicitly |
 | Other outputs for one span | 1,024; larger listings fail explicitly |
 
@@ -174,10 +175,12 @@ They never start, retry or regenerate a product.
 | --- | --- |
 | `/archive/calendar` | In the sunrise-period view, S (star trail) and K (keogram) show produced, hourly only, evaluated without a product, recorded only under another period, pending, not generated or unavailable. A badge counts only the sunrise period its date resolves to now; evaluations retained under another period of that date are named, never counted. T is always "not yet generated". The legacy noon view hides these badges and links to the sunrise view. |
 | `/archive/day/{yyyy-MM-dd}` | One equal-sized thumbnail tile per kind, built from the recorded daily evaluation of the displayed period; the preview keeps its aspect ratio inside the tile. A produced tile opens a viewer with the larger preview beside its details: recorded facts, hourly evaluations, and the product detail and download links. A tile without a nightly product but with hourly evaluations opens their list, and an unproduced tile states the recorded disposition. A preview that cannot be read is stated in the tile and the viewer, with nothing substituted. Frame spans that cross a local date carry both dates, and a span or hour that crosses a daylight-saving change carries its offsets. Evaluations retained under another period of the same report date are listed separately with that period's site and UTC boundaries. No capture image is substituted for a product. |
+| `/archive/products` | The generated products library: one card per recorded daily evaluation of a whole sunrise period, star trail then keogram, newest report date first. A card shows the exact preview kept at its aspect ratio, or a placeholder and the recorded reason when the period has no nightly product; its sources, frame span (or period span) in the period's own time zone, state, hourly counts, observing-day link and automation definition and revision. Hourly products and periods still in progress stay on the observing day page. Product type, status and observing day filters and the page position are URL state; time-lapses, daily summaries and a running state are not recorded, so they are disabled and explained, and a link that names them lists nothing. An empty older page returns to the newest page rather than claiming no product matches. The retained outputs table is the second view, `?view=retained`; links that carry its role, kind, availability, recipe, cursor or page size open it unchanged, and a retained output's detail page returns to it. |
 | `/archive/products/nightly/{productId}` | The exact published product: preview, source period and window, admitted frame span, selection, lineage and direct-source counts, integration, recipe, variant, automation run, algorithms, whether a current pointer names it, and every other published output of its period, window and part. A planned keogram axis is linear in clock time and hatches its gaps; a segment axis labels only actual frame columns; a keogram without a recorded axis draws no markers. Long source and gap lists name how many they omit. |
 
 When the store cannot be read, the calendar and day page say the nightly status
-is unavailable rather than showing the products as missing. Final cards count
+is unavailable rather than showing the products as missing, and the library says
+generated products are unavailable and offers a retry. Final cards count
 the segment products they composed; frame counts come from the lineage on the
 detail page.
 

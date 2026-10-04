@@ -15,6 +15,8 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
 
     internal List<Guid> Presentations { get; } = [];
 
+    internal List<NightlyProductLibraryQuery> LibraryQueries { get; } = [];
+
     internal Func<DateOnly, DateOnly, OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummaryHandler { get; set; } =
         static (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Success([]);
 
@@ -23,6 +25,9 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
 
     internal Func<Guid, OperatorUiResult<NightlyProductPresentation>> PresentationHandler { get; set; } =
         static _ => OperatorUiResult<NightlyProductPresentation>.Failure(OperatorUiResultKind.NotFound, "The requested nightly product was not found.");
+
+    internal Func<NightlyProductLibraryQuery, OperatorUiResult<NightlyProductLibraryPage>> LibraryHandler { get; set; } =
+        static _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([], null, null));
 
     public ValueTask<OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummarizeAsync(
         DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
@@ -42,17 +47,28 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
         Presentations.Add(productId);
         return ValueTask.FromResult(PresentationHandler(productId));
     }
+
+    public ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
+        NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+    {
+        LibraryQueries.Add(query);
+        return ValueTask.FromResult(LibraryHandler(query));
+    }
 }
 
-/// <summary>Recorded evaluations of the nightly fixture's report date, built from real planned occurrences.</summary>
+/// <summary>
+/// Recorded evaluations built from real planned occurrences, of the nightly fixture's report date unless an occurrence
+/// of another date is supplied; each record takes its report date from its own occurrence.
+/// </summary>
 internal static class NightlyDayFixture
 {
     internal static DateOnly Date => NightlyProductFixture.ObservingDate;
 
     internal static readonly DateTimeOffset FirstHourUtc = new(2026, 10, 2, 4, 0, 0, TimeSpan.Zero);
 
-    internal static LocalAutomationOccurrence Daily(NightlyProductKind kind, DeploymentLocationSnapshot? site = null) =>
-        NightlyProductFixture.Occurrence(kind, site: site);
+    internal static LocalAutomationOccurrence Daily(NightlyProductKind kind, DeploymentLocationSnapshot? site = null,
+        DateOnly? observingDate = null) =>
+        NightlyProductFixture.Occurrence(kind, site: site, observingDate: observingDate);
 
     internal static LocalAutomationOccurrence Hour(NightlyProductKind kind, DateTimeOffset startUtc, DeploymentLocationSnapshot? site = null) =>
         NightlyProductFixture.Occurrence(kind, windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour, hourStart: startUtc, site: site);
@@ -60,7 +76,8 @@ internal static class NightlyDayFixture
     internal static NightlyProductSummary Product(LocalAutomationOccurrence occurrence, NightlyProductKind kind, int sources = 12)
     {
         var window = occurrence.SourceWindow!;
-        return new NightlyProductSummary(Guid.NewGuid(), kind, NightlyProductScope.Final, Date, window.StartUtc, window.EndUtc, 0,
+        return new NightlyProductSummary(Guid.NewGuid(), kind, NightlyProductScope.Final, window.ReportingPeriod.ReportDate,
+            window.StartUtc, window.EndUtc, 0,
             true, 640, 480, CameraPixelFormat.Mono8, sources, window.StartUtc.AddMinutes(4), window.EndUtc.AddMinutes(-4),
             TimeSpan.FromMinutes(sources), window.EndUtc.AddMinutes(10));
     }
@@ -78,7 +95,8 @@ internal static class NightlyDayFixture
         IReadOnlyList<NightlyProductSummary> products)
     {
         var window = occurrence.SourceWindow!;
-        var status = new NightlyProductWindowStatus(kind, NightlyProductScope.Final, Date, window.StartUtc, window.EndUtc,
+        var status = new NightlyProductWindowStatus(kind, NightlyProductScope.Final, window.ReportingPeriod.ReportDate,
+            window.StartUtc, window.EndUtc,
             disposition, reason, candidates, admitted, new Dictionary<string, int>(), window.EndUtc.AddMinutes(10))
         { Occurrence = occurrence };
         return new NightlyProductWindowRecord(status, products);

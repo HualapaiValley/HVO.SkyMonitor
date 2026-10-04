@@ -213,4 +213,7 @@ public interface INightlyProductCatalog
 
     /// <summary>Returns a product with its axis, lineage frame count and other outputs, or null when it does not exist.</summary>
     ValueTask<NightlyProductPresentation?> GetPresentationAsync(Guid productId, CancellationToken cancellationToken);
+
+    /// <summary>Lists recorded daily final evaluations, newest report date first, one bounded page at a time.</summary>
+    ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken);
 }

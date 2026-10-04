@@ -8,8 +8,14 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
+/// <summary>
+/// The archive Products page: the generated products library by default, and the retained outputs table as a second
+/// view. Every link that carries a retained-output filter or cursor keeps opening the retained view unchanged.
+/// </summary>
 public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
 {
+    internal const string RetainedPath = "/archive/products?view=retained";
+
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentProductPage? _page;
     private string? _errorMessage;
@@ -28,14 +34,29 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
     [Parameter, SupplyParameterFromQuery(Name = "recipe")] public string? Recipe { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "cursor")] public string? Cursor { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "pageSize")] public int? PageSize { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "view")] public string? View { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "type")] public string? Type { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "day")] public string? Day { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "before")] public string? Before { get; set; }
 
-    protected override Task OnParametersSetAsync()
+    // Links from before the generated products library carry no view, so any retained filter or cursor selects it.
+    internal bool IsRetainedView => string.Equals(View, "retained", StringComparison.Ordinal) ||
+        Role is not null || Kind is not null || Availability is not null || Recipe is not null || Cursor is not null || PageSize is not null;
+
+    protected override async Task OnParametersSetAsync()
     {
+        if (!IsRetainedView)
+        {
+            await CancelLoadAsync();
+            _page = null;
+            return;
+        }
         _draftRole = Role ?? string.Empty;
         _draftKind = Kind ?? string.Empty;
         // The default option already means available, so an explicit value maps onto it.
         _draftAvailability = string.Equals(Availability, "Available", StringComparison.OrdinalIgnoreCase) ? string.Empty : Availability ?? string.Empty;
-        return LoadAsync();
+        await LoadAsync();
     }
 
     private async Task LoadAsync()
@@ -106,12 +127,16 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
             ["availability"] = EmptyToNull(_draftAvailability),
             ["recipe"] = Recipe,
             ["pageSize"] = PageSize,
-            ["cursor"] = null
+            ["cursor"] = null,
+            ["view"] = "retained"
         }));
 
-    private void ClearFilters() => NavigationManager.NavigateTo("/archive/products");
-    private void ShowNewest() => NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameter("cursor", (string?)null));
-    private void ShowOlder() => NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameter("cursor", _page?.NextCursor));
+    private void ClearFilters() => NavigationManager.NavigateTo(RetainedPath);
+    private void ShowNewest() => NavigationManager.NavigateTo(RetainedCursorUrl(null));
+    private void ShowOlder() => NavigationManager.NavigateTo(RetainedCursorUrl(_page?.NextCursor));
+
+    private string RetainedCursorUrl(string? cursor) => NavigationManager.GetUriWithQueryParameters(
+        new Dictionary<string, object?>(StringComparer.Ordinal) { ["cursor"] = cursor, ["view"] = "retained" });
 
     private string DetailUrl(Guid artifactId)
     {
@@ -120,7 +145,7 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
         if (!string.Equals(returnUrl, "/archive/products", StringComparison.Ordinal) &&
             !returnUrl.StartsWith("/archive/products?", StringComparison.Ordinal))
         {
-            returnUrl = "/archive/products";
+            returnUrl = RetainedPath;
         }
         return QueryHelpers.AddQueryString(FormattableString.Invariant($"/archive/products/{artifactId:D}"), "returnUrl", returnUrl);
     }
@@ -134,7 +159,7 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
 
     private static string? EmptyToNull(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    public async ValueTask DisposeAsync()
+    private async Task CancelLoadAsync()
     {
         Interlocked.Increment(ref _generation);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
@@ -144,4 +169,6 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
             cancellation.Dispose();
         }
     }
+
+    public async ValueTask DisposeAsync() => await CancelLoadAsync().ConfigureAwait(false);
 }

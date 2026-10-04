@@ -43,9 +43,9 @@ public sealed partial class ProductDetail : ComponentBase, IAsyncDisposable
     {
         get
         {
+            // A retained output returns to the retained view; the bare products path is now the generated library.
             var value = ReturnUrlHelper.NormalizeReturnUrl(ReturnUrl);
-            return value == "/archive/products" || value.StartsWith("/archive/products?", StringComparison.Ordinal)
-                ? value : "/archive/products";
+            return value.StartsWith("/archive/products?", StringComparison.Ordinal) ? value : ProductsPage.RetainedPath;
         }
     }
 

@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -151,6 +152,27 @@ public sealed class ProductDetailTests
         pending.SetResult(OperatorUiResult<CameraAgentProductDetail>.Success(first));
         await Task.Yield();
         cut.WaitForAssertion(() => Assert.AreEqual($"/api/v1/operations/artifacts/{secondId:D}/content?inline=true", cut.Find("img").GetAttribute("src")));
+    }
+
+    [TestMethod]
+    [DataRow("", ProductsPage.RetainedPath)]
+    [DataRow("/archive/products", ProductsPage.RetainedPath)]
+    [DataRow("/archive/products?view=retained", ProductsPage.RetainedPath)]
+    [DataRow("/archive/products?role=Combined&cursor=older", "/archive/products?role=Combined&cursor=older")]
+    [DataRow("/archive/calendar", ProductsPage.RetainedPath)]
+    public void ReturnLinkOpensTheRetainedOutputsView(string returnTo, string expected)
+    {
+        // The bare products path is the generated products library; a retained output returns to the retained view.
+        using var context = new BunitContext();
+        Configure(context, Detail());
+        var url = $"/archive/products/{ArtifactId:D}";
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            string.IsNullOrEmpty(returnTo) ? url : QueryHelpers.AddQueryString(url, "returnUrl", returnTo));
+        var cut = context.Render<ProductDetail>(parameters => parameters.Add(page => page.ArtifactId, ArtifactId));
+        cut.WaitForElement("img");
+        var back = cut.FindAll("a").Where(static link => link.TextContent == "Return to products").ToList();
+        Assert.IsNotEmpty(back);
+        Assert.IsTrue(back.All(link => link.GetAttribute("href") == expected));
     }
 
     [TestMethod]

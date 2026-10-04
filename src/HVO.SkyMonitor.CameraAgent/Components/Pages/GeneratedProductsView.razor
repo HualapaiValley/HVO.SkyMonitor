@@ -1,0 +1,143 @@
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using HVO.SkyMonitor.CameraAgent.Services
+
+<section class="library-toolbar" aria-label="Product filters">
+    <div>
+        <label for="library-type">Product type</label>
+        <select id="library-type" class="form-select" aria-describedby="library-filter-note" @bind="_draftType" @bind:after="ApplyType">
+            <option value="">All products</option>
+            @foreach (var option in TypeOptions)
+            {
+                <option value="@option.Value" disabled="@(!option.Recorded)">@option.Label@(option.Recorded ? "" : " (not yet generated)")</option>
+            }
+        </select>
+    </div>
+    <div>
+        <label for="library-status">Status</label>
+        <select id="library-status" class="form-select" aria-describedby="library-filter-note" @bind="_draftStatus" @bind:after="ApplyStatus">
+            <option value="">All states</option>
+            @foreach (var option in StatusOptions)
+            {
+                <option value="@option.Value" disabled="@(!option.Recorded)">@option.Label@(option.Recorded ? "" : " (not recorded)")</option>
+            }
+        </select>
+    </div>
+    <div>
+        <label for="library-day">Observing day</label>
+        <input id="library-day" type="date" class="form-control" value="@_draftDay" @onchange="ApplyDay" />
+    </div>
+    <button type="button" class="btn btn-outline-light" @onclick="ShowAllDays">Show all days</button>
+    <p id="library-filter-note" class="library-toolbar__note">Time-lapses and daily summaries are not yet generated, and generation progress is not recorded, so those choices are unavailable. Each card is a whole sunrise-to-sunrise period; hourly products and periods still in progress are on each observing day's page.</p>
+</section>
+
+@if (_notice is not null)
+{
+    <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="Nothing is listed for this filter" Message="@_notice">
+        <a class="btn btn-outline-light btn-sm" href="@LibraryPath">Show all products</a>
+    </PageStateNotice>
+}
+else if (_isLoading)
+{
+    <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading generated products" Message="Reading recorded daily evaluations." />
+}
+else if (_errorMessage is not null)
+{
+    <PageStateNotice Kind="@_errorKind" Title="Generated products unavailable" Message="@_errorMessage">
+        <button type="button" class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button>
+    </PageStateNotice>
+}
+else if (_page is { } page)
+{
+    @if (page.SearchedThrough is { } searched)
+    {
+        <p class="library-bounded" role="status">This page stopped after examining @NightlyProductProjectionContract.MaximumLibraryScannedDates evaluated days, back to @NightDate(searched). Older days were not examined; use Older products to keep searching.</p>
+    }
+    @if (page.Entries.Count == 0 && page.SearchedThrough is null)
+    {
+        @* An empty older page says nothing about newer pages, so it never claims that no product matches. *@
+        @if (_query?.Before is not null)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No older generated products" Message="@(IsFiltered ? "No earlier sunrise-to-sunrise period has a recorded daily evaluation matching these filters." : "No earlier sunrise-to-sunrise period has a recorded daily evaluation.")">
+                <a class="btn btn-outline-light btn-sm" href="@NewestUrl">Newest products</a>
+            </PageStateNotice>
+        }
+        else if (IsFiltered)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No generated products match these filters" Message="Change the product type, status, or observing day.">
+                <a class="btn btn-outline-light btn-sm" href="@LibraryPath">Show all products</a>
+                @if (_query?.ObservingDate is { } day) { <a class="btn btn-outline-light btn-sm" href="@ArchiveCalendarPage.DayUrl(day)">Open the observing day</a> }
+            </PageStateNotice>
+        }
+        else
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No generated products yet" Message="No sunrise-to-sunrise period has a recorded star-trail or keogram evaluation. Cards appear here once an enabled automation evaluates a completed period.">
+                <a class="btn btn-outline-light btn-sm" href="/operations/automations">Manage automations</a>
+            </PageStateNotice>
+        }
+    }
+    else if (page.Entries.Count > 0)
+    {
+        <p class="library-summary" role="status">@PageSummary(page)</p>
+        <section class="library-grid" aria-label="Generated products">
+            @foreach (var entry in Ordered(page))
+            {
+                var badge = Badge(entry);
+                var kind = entry.Summary.Kind;
+                var label = NightlyProductLinks.KindLabel(kind);
+                var noun = NightlyProductLinks.KindNoun(kind);
+                var span = Span(entry);
+                var hourly = Hourly(entry);
+                var title = NightTitle(entry.Summary.ObservingDate);
+                <article class="library-card" data-product-kind="@noun" data-nightly-state="@badge.CssClass" aria-label="@CardLabel(entry)">
+                    @if (entry.Product is { } product)
+                    {
+                        <a class="library-card__media" href="@NightlyProductLinks.Detail(product.ProductId)" aria-label="@($"Open the nightly {noun} of {NightDate(entry.Summary.ObservingDate)}")">
+                            @if (_failedPreviews.Contains(product.ProductId))
+                            {
+                                <span class="library-card__placeholder"><i class="bi bi-image" aria-hidden="true"></i>Preview unavailable</span>
+                            }
+                            else
+                            {
+                                <RetainedPreviewImage Source="@NightlyProductLinks.Preview(product.ProductId)" Alt="@($"Nightly {noun} of {NightDate(entry.Summary.ObservingDate)}")" OnFailure="() => MarkPreviewFailed(product.ProductId)" />
+                            }
+                            <span class="library-card__overlay" aria-hidden="true"><span><strong>@title</strong><small>@label / @ObservingDayPage.ChipLabel(badge.State)</small></span><small>Open product</small></span>
+                        </a>
+                    }
+                    else
+                    {
+                        <div class="library-card__media library-card__media--empty">
+                            <span class="library-card__placeholder"><i class="bi @ObservingDayPage.KindIcon(kind)" aria-hidden="true"></i>@PlaceholderText(entry)</span>
+                            <span class="library-card__overlay" aria-hidden="true"><span><strong>@title</strong><small>@label / @ObservingDayPage.ChipLabel(badge.State)</small></span></span>
+                        </div>
+                    }
+                    <div class="library-card__body">
+                        <p>@badge.Description.</p>
+                        @if (entry.OtherPeriodRecorded)
+                        {
+                            <p class="library-card__period">Source period: @ObservingDayPage.OtherPeriodLabel(entry.Daily.ReportingPeriod)</p>
+                        }
+                        <dl class="library-card__facts">
+                            <div><dt>Sources</dt><dd>@Sources(entry)</dd></div>
+                            <div><dt>@span.Label</dt><dd>@span.Value</dd></div>
+                            <div><dt>Status</dt><dd><span class="hvo-chip @ObservingDayPage.ChipClass(badge.State)">@ObservingDayPage.ChipLabel(badge.State)</span></dd></div>
+                        </dl>
+                        @if (hourly is not null) { <p class="library-card__hourly">@hourly</p> }
+                        <div class="library-card__meta">
+                            <a href="@ArchiveCalendarPage.DayUrl(entry.Summary.ObservingDate)">Observing day @NightDate(entry.Summary.ObservingDate)</a>
+                            <span>Automation: @Automation(entry)</span>
+                        </div>
+                    </div>
+                </article>
+            }
+        </section>
+    }
+    @if ((page.Entries.Count > 0 || page.SearchedThrough is not null) && (_query?.Before is not null || page.NextBefore is not null))
+    {
+        <nav class="library-pages" aria-label="Generated product pages">
+            @if (_query?.Before is not null) { <a class="btn btn-outline-light" href="@NewestUrl">Newest products</a> }
+            @if (page.NextBefore is { } next) { <a class="btn btn-primary" href="@OlderUrl(next)">Older products</a> }
+        </nav>
+    }
+}
