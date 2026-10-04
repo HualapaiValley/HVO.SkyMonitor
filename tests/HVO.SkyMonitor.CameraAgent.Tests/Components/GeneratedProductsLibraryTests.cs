@@ -1,5 +1,6 @@
 using System.Globalization;
 using Bunit;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -70,7 +71,8 @@ public sealed class GeneratedProductsLibraryTests
         Assert.IsNull(partialCard.QuerySelector("img"));
         Assert.IsNull(partialCard.QuerySelector("a.library-card__media"));
         StringAssert.Contains(partialCard.QuerySelector(".library-card__media--empty")!.TextContent, "No nightly star trail", StringComparison.Ordinal);
-        StringAssert.Contains(partialCard.TextContent, "Partial: 3 hourly star trails, no nightly star trail", StringComparison.Ordinal);
+        StringAssert.Contains(partialCard.TextContent, "Partial: 3 hourly star trails; nightly star trail not produced: no admitted frames",
+            StringComparison.Ordinal);
         StringAssert.Contains(partialCard.QuerySelector(".library-card__facts")!.TextContent, "Period", StringComparison.Ordinal);
         Assert.AreEqual("/archive/day/2026-09-30", partialCard.QuerySelector(".library-card__meta a")!.GetAttribute("href"));
         var rejectedCard = cut.FindAll(".library-card")[3];
@@ -79,10 +81,65 @@ public sealed class GeneratedProductsLibraryTests
         StringAssert.Contains(rejectedCard.QuerySelector(".library-card__media--empty")!.TextContent, "Not produced", StringComparison.Ordinal);
         StringAssert.Contains(rejectedCard.TextContent, "Keogram not produced: rejected (insufficient-coverage)", StringComparison.Ordinal);
         Assert.IsNull(rejectedCard.QuerySelector(".library-card__hourly"));
+        // Every period here is the one the calendar shows for its date, and no date holds another period.
+        Assert.IsEmpty(cut.FindAll(".library-card__period"));
 
         // The first page offers only older products, continuing below the oldest date it shows.
         Assert.AreEqual("/archive/products?before=2026-09-30", cut.Find(".library-pages .btn-primary").GetAttribute("href"));
         Assert.HasCount(1, cut.FindAll(".library-pages a"));
+    }
+
+    [TestMethod]
+    public void Library_PartialCardsKeepTheirRecordedDailyReason()
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var rejected = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Rejected, reason: "insufficient-coverage",
+            hourlyProduced: 1);
+        var noSources = Entry(Older, NightlyProductKind.Keogram, NightlyProductWindowDisposition.NoSources, hourlyProduced: 2, hourlyWithout: 1);
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([rejected, noSources], null, null));
+
+        var cut = Render(context, "/archive/products");
+
+        cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".library-card")));
+        // Hourly products keep the card partial, and the daily evaluation's disposition and reason stay beside them.
+        var cards = cut.FindAll(".library-card");
+        Assert.IsTrue(cards.All(static card => card.GetAttribute("data-nightly-state") == "partial"));
+        Assert.AreEqual("Partial: 1 hourly keogram; nightly keogram not produced: rejected (insufficient-coverage).",
+            cards[0].QuerySelector(".library-card__body p")!.TextContent);
+        Assert.AreEqual("Partial: 2 hourly keograms; nightly keogram not produced: no admitted frames.",
+            cards[1].QuerySelector(".library-card__body p")!.TextContent);
+        Assert.AreEqual("Partial", cards[0].QuerySelector(".library-card__facts .hvo-chip")!.TextContent);
+    }
+
+    [TestMethod]
+    public void Library_NamesAndExplainsEverySourcePeriodTheCalendarDoesNotShow()
+    {
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        var other = NightlyProductFixture.OtherSite;
+        // A former site's period is the only record of its date and kind, so no second record flags it.
+        var lone = Entry(Newest, NightlyProductKind.StarTrail, NightlyProductWindowDisposition.Produced, site: other);
+        var current = Entry(Newest, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced);
+        var shown = Entry(Older, NightlyProductKind.Keogram, NightlyProductWindowDisposition.Produced, otherPeriodRecorded: true);
+        var beside = Entry(Older, NightlyProductKind.Keogram, NightlyProductWindowDisposition.NoSources, site: other, otherPeriodRecorded: true);
+        nightly.LibraryHandler = _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([lone, current, shown, beside], null, null));
+
+        var cut = Render(context, "/archive/products");
+
+        cut.WaitForAssertion(() => Assert.HasCount(4, cut.FindAll(".library-card")));
+        var cards = cut.FindAll(".library-card");
+        const string Explained = "Recorded under another source period than the calendar shows for this date (another site or time-zone rules). Source period: Site nightly-other version 2 ";
+        // The former site's product is kept as produced, and named as the period the calendar does not show.
+        Assert.AreEqual("available", cards[0].GetAttribute("data-nightly-state"));
+        Assert.AreEqual(NightlyProductLinks.Preview(lone.Product!.ProductId), cards[0].QuerySelector("img")!.GetAttribute("src"));
+        StringAssert.StartsWith(cards[0].QuerySelector(".library-card__period")!.TextContent, Explained, StringComparison.Ordinal);
+        StringAssert.Contains(cards[0].QuerySelector(".library-card__period")!.TextContent, "America/Denver", StringComparison.Ordinal);
+        // The period the calendar shows is named only when the date also holds another period.
+        Assert.IsNull(cards[1].QuerySelector(".library-card__period"));
+        StringAssert.StartsWith(cards[2].QuerySelector(".library-card__period")!.TextContent, "Source period: Site nightly-fixture version 1 ",
+            StringComparison.Ordinal);
+        StringAssert.StartsWith(cards[3].QuerySelector(".library-card__period")!.TextContent, Explained, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -290,6 +347,7 @@ public sealed class GeneratedProductsLibraryTests
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(operations);
         context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(nightly);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar));
         return (operations, nightly);
     }
 
@@ -301,14 +359,15 @@ public sealed class GeneratedProductsLibraryTests
 
     /// <summary>A library entry of one recorded daily final, summarized as the store summarizes it.</summary>
     private static NightlyProductLibraryEntry Entry(DateOnly date, NightlyProductKind kind, NightlyProductWindowDisposition disposition,
-        string? reason = null, int hourlyProduced = 0, int hourlyWithout = 0)
+        string? reason = null, int hourlyProduced = 0, int hourlyWithout = 0, DeploymentLocationSnapshot? site = null,
+        bool otherPeriodRecorded = false)
     {
-        var occurrence = NightlyDayFixture.Daily(kind, observingDate: date);
+        var occurrence = NightlyDayFixture.Daily(kind, site, date);
         var record = disposition == NightlyProductWindowDisposition.Produced
             ? NightlyDayFixture.Produced(occurrence, NightlyDayFixture.Product(occurrence, kind), candidates: 40, admitted: 12)
             : NightlyDayFixture.Without(occurrence, kind, disposition, candidates: 3, reason);
         var summary = new NightlyProductDateSummary(date, kind, record.ReportingPeriod.IdentitySha256, record.FinalProduct?.ProductId,
             disposition, reason, hourlyProduced, hourlyWithout);
-        return new(summary, record, OtherPeriodRecorded: false);
+        return new(summary, record, otherPeriodRecorded);
     }
 }

@@ -114,9 +114,9 @@ else if (_page is { } page)
                     }
                     <div class="library-card__body">
                         <p>@badge.Description.</p>
-                        @if (entry.OtherPeriodRecorded)
+                        @if (PeriodNote(entry) is { } periodNote)
                         {
-                            <p class="library-card__period">Source period: @ObservingDayPage.OtherPeriodLabel(entry.Daily.ReportingPeriod)</p>
+                            <p class="library-card__period">@periodNote</p>
                         }
                         <dl class="library-card__facts">
                             <div><dt>Sources</dt><dd>@Sources(entry)</dd></div>

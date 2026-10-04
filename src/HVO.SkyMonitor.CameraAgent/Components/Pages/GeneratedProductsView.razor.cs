@@ -1,4 +1,5 @@
 using System.Globalization;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -39,6 +40,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     ];
 
     private readonly HashSet<Guid> _failedPreviews = [];
+    private Dictionary<DateOnly, string?> _calendarPeriods = [];
     private CancellationTokenSource? _loadCancellation;
     private NightlyProductLibraryQuery? _query;
     private NightlyProductLibraryPage? _page;
@@ -53,6 +55,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
 
     [Inject] internal ICameraAgentNightlyProductUiService NightlyProducts { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
 
     [Parameter] public string? Type { get; set; }
     [Parameter] public string? Status { get; set; }
@@ -160,6 +163,8 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
             }
             else if (result.IsSuccess && result.Value is not null)
             {
+                _calendarPeriods = result.Value.Entries.Select(static entry => entry.Summary.ObservingDate).Distinct()
+                    .ToDictionary(static date => date, CalendarPeriodIdentity);
                 _page = result.Value;
             }
             else
@@ -219,6 +224,35 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
 
     internal static ArchiveCalendarPage.NightlyBadge Badge(NightlyProductLibraryEntry entry)
         => ArchiveCalendarPage.Badge(entry.Summary.Kind, entry.Summary, entry.OtherPeriodRecorded, unavailable: false, pending: false);
+
+    // The sunrise period the calendar resolves a report date to, resolved as the calendar and generator resolve it.
+    private string? CalendarPeriodIdentity(DateOnly date)
+    {
+        try
+        {
+            return ObservingDays.Current.Resolve(date).SunrisePeriod?.IdentitySha256;
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return null;
+        }
+    }
+
+    private string? PeriodNote(NightlyProductLibraryEntry entry)
+        => PeriodNote(entry, _calendarPeriods.GetValueOrDefault(entry.Summary.ObservingDate));
+
+    /// <summary>
+    /// A card's source period line. A period other than the one the calendar resolves the date to is always named and
+    /// explained, because the calendar and its badges for that date describe another period; the period the calendar
+    /// shows is named only when another period of the date is also recorded.
+    /// </summary>
+    internal static string? PeriodNote(NightlyProductLibraryEntry entry, string? calendarPeriodIdentity)
+    {
+        var period = entry.Daily.ReportingPeriod;
+        return !string.Equals(period.IdentitySha256, calendarPeriodIdentity, StringComparison.Ordinal)
+            ? $"Recorded under another source period than the calendar shows for this date (another site or time-zone rules). Source period: {ObservingDayPage.OtherPeriodLabel(period)}"
+            : entry.OtherPeriodRecorded ? $"Source period: {ObservingDayPage.OtherPeriodLabel(period)}" : null;
+    }
 
     internal static string NightDate(DateOnly date) => date.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
 

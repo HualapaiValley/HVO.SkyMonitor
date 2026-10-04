@@ -168,9 +168,9 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
 
     /// <summary>
     /// One kind's badge on one report date, from the summary of the sunrise period the date resolves to. A daily final
-    /// lights it; hourly finals alone are partial; a recorded daily evaluation without a product keeps its reason;
-    /// evaluations retained only under another period of the date are named as such; anything else is pending or not
-    /// generated. Nothing is inferred, and another period's products never light it.
+    /// lights it; hourly finals alone are partial; a recorded daily evaluation without a product keeps its reason, partial
+    /// or not; evaluations retained only under another period of the date are named as such; anything else is pending or
+    /// not generated. Nothing is inferred, and another period's products never light it.
     /// </summary>
     internal static NightlyBadge Badge(
         NightlyProductKind kind,
@@ -186,6 +186,12 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             ? FormattableString.Invariant($"{produced.HourlyProduced} hourly {noun}{(produced.HourlyProduced == 1 ? "" : "s")}")
             : null;
         var also = otherPeriod ? "; also recorded under another source period of this date" : "";
+        var reason = summary?.DailyDisposition switch
+        {
+            NightlyProductWindowDisposition.NoSources => "no admitted frames",
+            NightlyProductWindowDisposition.Rejected => $"rejected ({summary.DailyReasonCode ?? "no reason recorded"})",
+            _ => null
+        };
         if (unavailable)
         {
             return new(letter, NightlyBadgeState.Unavailable, $"{label} status unavailable");
@@ -199,14 +205,11 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         {
             return new(letter, NightlyBadgeState.Partial, (pending
                 ? $"{hourly} so far; the nightly {noun} is due after the period ends"
-                : $"Partial: {hourly}, no nightly {noun}") + also);
+                : reason is null ? $"Partial: {hourly}, no nightly {noun}" : $"Partial: {hourly}; nightly {noun} not produced: {reason}") + also);
         }
-        return summary?.DailyDisposition switch
+        return reason switch
         {
-            NightlyProductWindowDisposition.NoSources => new(letter, NightlyBadgeState.NotProduced,
-                $"{label} not produced: no admitted frames" + also),
-            NightlyProductWindowDisposition.Rejected => new(letter, NightlyBadgeState.NotProduced,
-                $"{label} not produced: rejected ({summary.DailyReasonCode ?? "no reason recorded"})" + also),
+            not null => new(letter, NightlyBadgeState.NotProduced, $"{label} not produced: {reason}" + also),
             _ when otherPeriod => new(letter, NightlyBadgeState.OtherPeriod,
                 $"{label} recorded only under another source period of this date (another site or time-zone rules)"),
             _ when pending => new(letter, NightlyBadgeState.Pending, $"{label} pending; the period has not ended"),
