@@ -208,7 +208,10 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
 The default cadence is one source per minute, with leading/trailing ten-minute
 omissions and a deliberate 30-minute internal omission. Setting
 `HVO_ISSUE993_SOURCE_STRIDE_MINUTES=60` runs an explicitly sparse smoke recipe;
-it does not qualify minute-cadence coverage. The harness executes the real
+it does not qualify minute-cadence coverage. `HVO_ISSUE993_REPORT_DATE=yyyy-MM-dd`
+replaces the October 12, 2026 report date, so presentation evidence can use a
+sunrise period that has already closed on the reviewing host; the site, recipe
+and gaps are unchanged, and the evidence records the resolved period. The harness executes the real
 durable automation runner, verifies dark-only leaf lineage and unchanged
 retry, and retains actual times/settings, raw statistics, code/binary/catalog
 identities, checksums and resource measurements. Public review files must be
