@@ -51,10 +51,11 @@ internal static class NightlyDayFixture
 
     internal static readonly DateTimeOffset FirstHourUtc = new(2026, 10, 2, 4, 0, 0, TimeSpan.Zero);
 
-    internal static LocalAutomationOccurrence Daily(NightlyProductKind kind) => NightlyProductFixture.Occurrence(kind);
+    internal static LocalAutomationOccurrence Daily(NightlyProductKind kind, DeploymentLocationSnapshot? site = null) =>
+        NightlyProductFixture.Occurrence(kind, site: site);
 
-    internal static LocalAutomationOccurrence Hour(NightlyProductKind kind, DateTimeOffset startUtc) => NightlyProductFixture.Occurrence(
-        kind, windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour, hourStart: startUtc);
+    internal static LocalAutomationOccurrence Hour(NightlyProductKind kind, DateTimeOffset startUtc, DeploymentLocationSnapshot? site = null) =>
+        NightlyProductFixture.Occurrence(kind, windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour, hourStart: startUtc, site: site);
 
     internal static NightlyProductSummary Product(LocalAutomationOccurrence occurrence, NightlyProductKind kind, int sources = 12)
     {

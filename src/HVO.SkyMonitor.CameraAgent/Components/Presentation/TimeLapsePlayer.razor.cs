@@ -8,6 +8,9 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Presentation;
 /// Plays a time-lapse in whatever container it was produced in (#1138). A video is offered only once the browser says it
 /// can decode the declared type, and its source is attached only after the circuit is interactive so a decoding failure
 /// is never missed. An animated image waits for an explicit request, so nothing moves without the operator asking.
+/// A failure is handled on the element that reports it: a source that cannot be fetched or chosen errors on
+/// <c>&lt;source&gt;</c>, a file that cannot be decoded errors on <c>&lt;video&gt;</c>, and an animation that cannot be
+/// loaded errors on <c>&lt;img&gt;</c>. Each replaces the player with an explicit failure and keeps the download.
 /// </summary>
 public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
 {
@@ -77,7 +80,7 @@ public sealed partial class TimeLapsePlayer : ComponentBase, IDisposable
 
     private void PlaybackFailed()
     {
-        if (_state == PlayerState.Video) _state = PlayerState.Failed;
+        if (_state is PlayerState.Video or PlayerState.AnimatedImage) _state = PlayerState.Failed;
     }
 
     private void Reveal() => _revealed = true;

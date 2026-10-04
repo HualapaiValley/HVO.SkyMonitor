@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
@@ -18,14 +19,16 @@ public static class NightlyProductProjectionContract
 }
 
 /// <summary>
-/// The recorded final evaluations of one product kind on one report date. A daily product is the final of a whole
-/// sunrise period; hourly products are finals of its completed civil hours. When more than one automation definition
-/// or revision evaluated the same span, a produced evaluation is preferred and then the latest evaluated; nothing here
-/// claims one replaced another.
+/// The recorded final evaluations of one product kind in one retained sunrise period. A daily product is the final of
+/// the whole period; hourly products are finals of its completed civil hours. A report date holds one summary per
+/// retained period, so a period resolved for another site or time-zone rules is never merged into it. When more than
+/// one automation definition or revision evaluated the same span, a produced evaluation is preferred and then the
+/// latest evaluated; nothing here claims one replaced another.
 /// </summary>
 public sealed record NightlyProductDateSummary(
     DateOnly ObservingDate,
     NightlyProductKind Kind,
+    string ReportingPeriodSha256,
     Guid? DailyProductId,
     NightlyProductWindowDisposition? DailyDisposition,
     string? DailyReasonCode,
@@ -40,32 +43,59 @@ public sealed record NightlyProductWindowRecord(
     /// <summary>Whether the evaluation covered a completed civil hour or a whole sunrise period.</summary>
     public LocalAutomationSourceWindowKind WindowKind => Status.Occurrence.SourceWindow!.Policy.Kind;
 
+    /// <summary>The retained sunrise period, with its site and time-zone rules, that the evaluation belongs to.</summary>
+    public SunriseReportingPeriod ReportingPeriod => Status.Occurrence.SourceWindow!.ReportingPeriod;
+
     /// <summary>The final product of a produced final evaluation; rollups and segments are lineage only.</summary>
     public NightlyProductSummary? FinalProduct => Status.Scope == NightlyProductScope.Final
         ? CurrentProducts.SingleOrDefault(static product => product.Scope == NightlyProductScope.Final)
         : null;
 }
 
-/// <summary>Every recorded evaluation and every published product of one report date.</summary>
+/// <summary>
+/// Every recorded evaluation and every published product of one report date. A report date can hold more than one
+/// retained sunrise period, such as before and after a site change, so every selection names the period it reads.
+/// </summary>
 public sealed record NightlyProductDay(
     DateOnly ObservingDate,
     IReadOnlyList<NightlyProductWindowRecord> Windows,
     IReadOnlyList<NightlyProductSummary> Products)
 {
-    /// <summary>The final evaluation of the whole sunrise period, chosen as <see cref="NightlyProductDateSummary"/> chooses it.</summary>
-    public NightlyProductWindowRecord? Daily(NightlyProductKind kind)
-        => Preferred(Finals(kind, LocalAutomationSourceWindowKind.SunriseDay));
+    /// <summary>
+    /// The final evaluation of the whole retained period, chosen as <see cref="NightlyProductDateSummary"/> chooses it.
+    /// </summary>
+    public NightlyProductWindowRecord? Daily(NightlyProductKind kind, string reportingPeriodSha256)
+        => Preferred(Finals(kind, LocalAutomationSourceWindowKind.SunriseDay, reportingPeriodSha256));
 
-    /// <summary>One final evaluation per completed civil hour, in hour order, chosen as the date summary chooses it.</summary>
-    public IReadOnlyList<NightlyProductWindowRecord> Hours(NightlyProductKind kind)
-        => [.. Finals(kind, LocalAutomationSourceWindowKind.CompletedCivilHour)
+    /// <summary>
+    /// One final evaluation per completed civil hour of the retained period, in hour order, chosen as the date summary
+    /// chooses it.
+    /// </summary>
+    public IReadOnlyList<NightlyProductWindowRecord> Hours(NightlyProductKind kind, string reportingPeriodSha256)
+        => [.. Finals(kind, LocalAutomationSourceWindowKind.CompletedCivilHour, reportingPeriodSha256)
             .GroupBy(static window => window.Status.WindowStartUtc)
             .OrderBy(static hour => hour.Key)
             .Select(static hour => Preferred(hour)!)];
 
-    private IEnumerable<NightlyProductWindowRecord> Finals(NightlyProductKind kind, LocalAutomationSourceWindowKind windowKind)
+    /// <summary>
+    /// The other retained periods of this report date that hold final evaluations, in period start order. Their
+    /// products belong to those periods and are never presented as products of the named one.
+    /// </summary>
+    public IReadOnlyList<SunriseReportingPeriod> OtherPeriods(string reportingPeriodSha256)
+        => [.. Windows.Where(window => window.Status.Scope == NightlyProductScope.Final &&
+                !string.Equals(window.ReportingPeriod.IdentitySha256, reportingPeriodSha256, StringComparison.Ordinal))
+            .Select(static window => window.ReportingPeriod)
+            .DistinctBy(static period => period.IdentitySha256)
+            .OrderBy(static period => period.StartUtc)
+            .ThenBy(static period => period.IdentitySha256, StringComparer.Ordinal)];
+
+    private IEnumerable<NightlyProductWindowRecord> Finals(
+        NightlyProductKind kind,
+        LocalAutomationSourceWindowKind windowKind,
+        string reportingPeriodSha256)
         => Windows.Where(window => window.Status.Kind == kind && window.Status.Scope == NightlyProductScope.Final &&
-            window.WindowKind == windowKind);
+            window.WindowKind == windowKind &&
+            string.Equals(window.ReportingPeriod.IdentitySha256, reportingPeriodSha256, StringComparison.Ordinal));
 
     // A produced evaluation first, then the latest evaluated; the product ID only makes the choice stable.
     private static NightlyProductWindowRecord? Preferred(IEnumerable<NightlyProductWindowRecord> windows) => windows
@@ -91,7 +121,8 @@ public sealed record NightlyProductTimeAxis(
 
 /// <summary>
 /// A product with the retained facts a Product Detail page presents: its algorithms, the preview frames of its full
-/// lineage, its keogram time axis, and other published outputs recorded for the same window and part.
+/// lineage, its keogram time axis, and every other published output of the same retained period, window and part,
+/// current or not.
 /// </summary>
 public sealed record NightlyProductPresentation(
     NightlyProductDetail Detail,

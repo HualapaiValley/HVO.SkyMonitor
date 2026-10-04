@@ -36,10 +36,12 @@ internal sealed partial class SqliteNightlyProductStore
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
-            // The window kind is read from the retained occurrence rather than inferred from the span length.
+            // The window kind and source period are read from the retained occurrence rather than inferred from the
+            // span length or the report date; one report date can hold periods of different sites or time-zone rules.
             command.CommandText = """
                 SELECT state.observing_date, state.kind, json_extract(state.occurrence_json, '$.sourceWindow.policy.kind'),
                        state.window_start_utc_ticks, state.disposition, state.reason_code, state.evaluated_unix_ms,
+                       json_extract(state.occurrence_json, '$.sourceWindow.reportingPeriod.identitySha256'),
                        (SELECT pointer.product_id
                         FROM nightly_window_products AS pointer
                         JOIN nightly_products AS product ON product.product_id = pointer.product_id
@@ -58,8 +60,9 @@ internal sealed partial class SqliteNightlyProductStore
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false))
-                    throw new InvalidDataException("A recorded nightly evaluation does not retain its source window kind.");
+                if (await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ||
+                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidDataException("A recorded nightly evaluation does not retain its source window.");
                 rows.Add(new FinalEvaluation(
                     DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture),
                     ParseEnum<NightlyProductKind>(reader.GetString(1)),
@@ -68,8 +71,9 @@ internal sealed partial class SqliteNightlyProductStore
                     ParseEnum<NightlyProductWindowDisposition>(reader.GetString(4)),
                     await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
                     reader.GetInt64(6),
-                    await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
-                        ? null : Guid.ParseExact(reader.GetString(7), "N")));
+                    reader.GetString(7),
+                    await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false)
+                        ? null : Guid.ParseExact(reader.GetString(8), "N")));
             }
             if (rows.Count > NightlyProductProjectionContract.MaximumSummarizedWindows)
                 throw new InvalidDataException("The evaluation summary exceeds its declared bound; it cannot represent full coverage.");
@@ -124,7 +128,7 @@ internal sealed partial class SqliteNightlyProductStore
                 .ConfigureAwait(false);
             var frames = await ReadLineageFramesAsync(connection, productId, cancellationToken).ConfigureAwait(false);
             var axis = detail.Summary.Kind == NightlyProductKind.Keogram ? CreateTimeAxis(detail, recipeJson, frames) : null;
-            var others = await ReadOtherOutputsAsync(connection, detail.Summary, cancellationToken).ConfigureAwait(false);
+            var others = await ReadOtherOutputsAsync(connection, detail, cancellationToken).ConfigureAwait(false);
             return new NightlyProductPresentation(
                 detail, Deserialize<List<ProcessingAlgorithmIdentity>>(algorithmsJson), frames.Count, axis, others);
         }
@@ -161,8 +165,9 @@ internal sealed partial class SqliteNightlyProductStore
     }
 
     private static List<NightlyProductDateSummary> Summarize(List<FinalEvaluation> rows) =>
-        [.. rows.GroupBy(static row => (row.Date, row.Kind))
+        [.. rows.GroupBy(static row => (row.Date, row.Kind, row.ReportingPeriodSha256))
             .OrderBy(static group => group.Key.Date).ThenBy(static group => group.Key.Kind)
+            .ThenBy(static group => group.Key.ReportingPeriodSha256, StringComparer.Ordinal)
             .Select(static group =>
             {
                 var daily = Preferred(group.Where(static row => row.WindowKind == LocalAutomationSourceWindowKind.SunriseDay));
@@ -173,6 +178,7 @@ internal sealed partial class SqliteNightlyProductStore
                 return new NightlyProductDateSummary(
                     group.Key.Date,
                     group.Key.Kind,
+                    group.Key.ReportingPeriodSha256,
                     daily?.ProductId,
                     daily?.Disposition,
                     daily?.ReasonCode,
@@ -240,11 +246,18 @@ internal sealed partial class SqliteNightlyProductStore
         return frames;
     }
 
+    /// <summary>
+    /// Every other published output of the same retained source period, window and part, current or not. Nothing here
+    /// records which output followed which.
+    /// </summary>
     private static async ValueTask<List<NightlyProductSummary>> ReadOtherOutputsAsync(
         SqliteConnection connection,
-        NightlyProductSummary summary,
+        NightlyProductDetail detail,
         CancellationToken cancellationToken)
     {
+        var summary = detail.Summary;
+        var period = detail.Occurrence.SourceWindow?.ReportingPeriod.IdentitySha256
+            ?? throw new InvalidDataException("A nightly product does not retain its source window.");
         using var command = connection.CreateCommand();
         command.CommandText = $"""
             SELECT {ProductColumns}
@@ -252,6 +265,7 @@ internal sealed partial class SqliteNightlyProductStore
             WHERE product.observing_date = $observing_date AND product.kind = $kind AND product.scope = $scope
               AND product.window_start_utc_ticks = $start AND product.window_end_utc_ticks = $end
               AND product.part_ordinal = $part_ordinal AND product.product_id <> $product_id
+              AND json_extract(product.occurrence_json, '$.sourceWindow.reportingPeriod.identitySha256') = $period
             ORDER BY product.created_unix_ms, product.product_id
             LIMIT $limit;
             """;
@@ -262,6 +276,7 @@ internal sealed partial class SqliteNightlyProductStore
         command.Parameters.AddWithValue("$end", summary.WindowEndUtc.UtcTicks);
         command.Parameters.AddWithValue("$part_ordinal", summary.PartOrdinal);
         command.Parameters.AddWithValue("$product_id", summary.ProductId.ToString("N", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$period", period);
         command.Parameters.AddWithValue("$limit", NightlyProductContract.MaximumListedProducts + 1);
         var others = new List<NightlyProductSummary>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -329,5 +344,6 @@ internal sealed partial class SqliteNightlyProductStore
         NightlyProductWindowDisposition Disposition,
         string? ReasonCode,
         long EvaluatedUnixMs,
+        string ReportingPeriodSha256,
         Guid? ProductId);
 }

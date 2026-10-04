@@ -85,6 +85,17 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
             ? "Final for its window; the sunrise period is still open, so later hours may still be evaluated"
             : "Final; the sunrise period has closed";
 
+    /// <summary>
+    /// Whether a current pointer names this product. A product without one is only "not current": a later evaluation
+    /// can record no product, and a publication can precede its evaluation, so another current output is claimed only
+    /// when one is listed, and no succession between them is ever claimed.
+    /// </summary>
+    internal static string Currency(NightlyProductPresentation presentation) => presentation.Detail.Summary.IsCurrent
+        ? "Current; a recorded evaluation names it as its product of this window and part."
+        : presentation.OtherOutputs.Any(static other => other.IsCurrent)
+            ? "Not current; another output of this window and part is current, listed below. No succession between them is recorded."
+            : "Not current; no recorded evaluation names it, and no other output of this window and part is current.";
+
     private static string Selection(LocalAutomationSourceSelection selection) => selection switch
     {
         LocalAutomationSourceSelection.DarkNightActualSources => "Dark-night frames only (Sun at or below −18°)",

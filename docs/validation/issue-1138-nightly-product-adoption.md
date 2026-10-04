@@ -26,18 +26,20 @@ unchanged. Nightly products have their own route.
 
 - **Read-only projections.** `SqliteNightlyProductStore` gains three bounded,
   read-only projections:
-  - A calendar date summary of at most 62 dates and 8,192 evaluated windows.
+  - A calendar date summary of at most 62 dates and 8,192 evaluated windows,
+    kept per retained sunrise-period identity.
   - A day listing that joins every recorded evaluation to its current products.
   - A product presentation, holding:
     - the exact detail and its recorded algorithms;
     - the distinct lineage frame count, within the window-candidate bound;
     - the keogram time axis and gaps;
-    - other current outputs for the same span.
+    - every other published output of the same retained period, window and
+      part, current or not.
 
   A final keogram's axis is its retained planned axis. A segment keogram's axis
   is rebuilt from its retained gap options and lineage. Other outputs are other
-  definitions or revisions current for the span; no predecessor or successor
-  is inferred.
+  definitions, revisions or reevaluations of the same period, window and part,
+  current or not; no predecessor or successor is recorded or inferred.
 - **Endpoints.** Authenticated `OperationsReadV1` endpoints serve those
   projections. Preview and provenance media:
   - accept `GET` and `HEAD`;
@@ -69,7 +71,9 @@ unchanged. Nightly products have their own route.
 - **Time-lapse player.** `TimeLapsePlayer` reserves the declared aspect ratio
   and uses native video controls. An animated image loads only when asked,
   because it cannot be paused. Media that fails or is unsupported is reported
-  as such.
+  as such. Failures are handled on the element that reports them: `<source>`
+  for an unusable source, `<video>` for undecodable content, and `<img>` for an
+  animation that cannot load. Each keeps the download link.
 
   The sample (`CameraAgent:TimeLapseSample`) is off by default and requires a
   fully qualified path. It is served at an authenticated
@@ -80,7 +84,9 @@ unchanged. Nightly products have their own route.
   - its source period, product window and admitted frame span;
   - selection, lineage and direct-source counts, and total integration;
   - recipe, variant, automation definition and run, and algorithms;
-  - other current outputs.
+  - whether a current pointer names it: "not current" alone unless another
+    listed output is current, and never a succession;
+  - every other published output of its period, window and part.
 
   A planned keogram axis is linear in clock time and hatches its gaps. A segment
   axis labels only actual frame columns. A keogram without a recorded axis draws
@@ -173,8 +179,8 @@ What the indexes show:
 
 ## Validation
 
-- **Tests.** There are 33 new Unit cases; the CameraAgent inventory is now
-  `Unit=3277`, and the CI runbook totals are aligned. They cover:
+- **Tests.** There are 39 new Unit cases; the CameraAgent inventory is now
+  `Unit=3283`, and the CI runbook totals are aligned. They cover:
   - projections over a real SQLite store: bounds, preference, axis
     reconstruction and other outputs;
   - endpoints: validators, ranges, `HEAD`, download disposition and 404/400;
@@ -185,6 +191,21 @@ What the indexes show:
   - the detail page.
 
   The test-category audit and `scripts/docs:audit-operations` pass.
+- **Review corrections.** The initial review of `3e2c69f9` found five defects,
+  and each has a regression test:
+  - **F1.** Two sites on one report date keep their own summaries, day
+    evaluations and other outputs over a real store, including hourly windows
+    that share their UTC boundaries. The calendar badge and day page name
+    another period's evaluations without counting or showing them as the
+    period's products. Each date's period is resolved as the generator
+    resolves it, so a product whose captures have expired keeps its date.
+  - **F2.** A no-source reevaluation over a real store leaves the published
+    final not current, with no other output. The page then claims no
+    replacement, and a non-current sibling is not taken as one.
+  - **F3.** A nightly card spanning two local dates shows both dates.
+  - **F4.** Errors raised on `<video>`, `<source>` and the revealed `<img>`
+    each replace the player and keep the download.
+  - **F5.** Wording only.
 - **Gate.** `scripts/ci:classify` on `1204a0fe...` selected `mode=full
   complete=false cameraagent=true combined=true`. The classifier output, the
   four CI-control guards and the selected lane results are recorded in the PR

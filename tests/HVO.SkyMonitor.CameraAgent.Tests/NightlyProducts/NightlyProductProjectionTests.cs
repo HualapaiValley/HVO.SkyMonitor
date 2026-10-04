@@ -1,8 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
@@ -204,18 +206,21 @@ public sealed class NightlyProductProjectionTests
         Assert.AreEqual(NightlyProductWindowDisposition.Produced, summary.DailyDisposition);
         Assert.AreEqual(1, summary.HourlyProduced);
         Assert.AreEqual(1, summary.HourlyWithoutProduct);
+        var period = Daily("alpha").SourceWindow!.ReportingPeriod.IdentitySha256;
+        Assert.AreEqual(period, summary.ReportingPeriodSha256);
         // The day page chooses among the same evaluations exactly as the calendar summary does.
         var day = await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
-        Assert.AreEqual(daily, day.Daily(NightlyProductKind.Keogram)!.FinalProduct!.ProductId);
-        var hours = day.Hours(NightlyProductKind.Keogram);
+        Assert.AreEqual(daily, day.Daily(NightlyProductKind.Keogram, period)!.FinalProduct!.ProductId);
+        var hours = day.Hours(NightlyProductKind.Keogram, period);
         Assert.HasCount(2, hours);
         Assert.AreEqual(produced, hours[0].Status.WindowStartUtc);
         Assert.IsNotNull(hours[0].FinalProduct);
         Assert.AreEqual(empty, hours[1].Status.WindowStartUtc);
         Assert.IsNull(hours[1].FinalProduct);
         Assert.AreEqual("beta", hours[1].Status.Occurrence.Definition.DefinitionId);
-        Assert.IsNull(day.Daily(NightlyProductKind.StarTrail));
-        Assert.IsEmpty(day.Hours(NightlyProductKind.StarTrail));
+        Assert.IsNull(day.Daily(NightlyProductKind.StarTrail, period));
+        Assert.IsEmpty(day.Hours(NightlyProductKind.StarTrail, period));
+        Assert.IsEmpty(day.OtherPeriods(period));
     }
 
     [TestMethod]
@@ -232,7 +237,8 @@ public sealed class NightlyProductProjectionTests
         Assert.IsNull(summary.DailyProductId);
         Assert.AreEqual(NightlyProductWindowDisposition.NoSources, summary.DailyDisposition);
         Assert.AreEqual(0, summary.HourlyProduced + summary.HourlyWithoutProduct);
-        var daily = (await harness.Store.GetDayAsync(date, CancellationToken.None)).Daily(NightlyProductKind.StarTrail)!;
+        var daily = (await harness.Store.GetDayAsync(date, CancellationToken.None))
+            .Daily(NightlyProductKind.StarTrail, summary.ReportingPeriodSha256)!;
         Assert.AreEqual("beta", daily.Status.Occurrence.Definition.DefinitionId);
         Assert.AreEqual(NightlyProductWindowDisposition.NoSources, daily.Status.Disposition);
         Assert.IsEmpty(await harness.Store.SummarizeDatesAsync(date.AddDays(1), date.AddDays(61), CancellationToken.None));
@@ -240,6 +246,86 @@ public sealed class NightlyProductProjectionTests
             await harness.Store.SummarizeDatesAsync(date, date.AddDays(62), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
             await harness.Store.SummarizeDatesAsync(date, date.AddDays(-1), CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task TwoSitesOnOneReportDate_KeepTheirOwnSummariesEvaluationsAndOtherOutputs()
+    {
+        var hour = new DateTimeOffset(2026, 10, 2, 4, 0, 0, TimeSpan.Zero);
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, hour.AddMinutes(5)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        LocalAutomationOccurrence Daily(DeploymentLocationSnapshot? site = null) =>
+            NightlyProductFixture.Occurrence(NightlyProductKind.Keogram, site: site);
+        LocalAutomationOccurrence Hourly(DeploymentLocationSnapshot? site = null) => NightlyProductFixture.Occurrence(
+            NightlyProductKind.Keogram, windowKind: LocalAutomationSourceWindowKind.CompletedCivilHour, hourStart: hour, site: site);
+        var other = NightlyProductFixture.OtherSite;
+        await harness.Run(Daily());
+        await harness.Run(Hourly());
+        // A CameraAgent at the other site admits the same frame only into that site's periods.
+        var report = await harness.Generator(reader, NightlyProductFixture.Configuration(observatory: NightlyProductFixture.OtherObservatory))
+            .RunAsync(Hourly(other), CancellationToken.None);
+        Assert.AreEqual(0, report.FailedWindows, report.Describe());
+        // The newer evaluation of the other site's period finds nothing; it must not borrow the fixture site's product.
+        harness.Clock.UtcNow = harness.Clock.UtcNow.AddMinutes(1);
+        await harness.Generator(new InMemoryNightlySourceReader()).RunAsync(Daily(other), CancellationToken.None);
+        var here = Daily().SourceWindow!.ReportingPeriod.IdentitySha256;
+        var there = Daily(other).SourceWindow!.ReportingPeriod.IdentitySha256;
+        Assert.AreNotEqual(here, there);
+        Assert.AreEqual(Hourly().SourceWindow!.StartUtc, Hourly(other).SourceWindow!.StartUtc);
+        Assert.AreEqual(Hourly().SourceWindow!.EndUtc, Hourly(other).SourceWindow!.EndUtc);
+        var daily = await FinalId(harness.Store, Daily());
+        var hourly = await FinalId(harness.Store, Hourly());
+        var otherHourly = await FinalId(harness.Store, Hourly(other));
+
+        var summaries = await harness.Store.SummarizeDatesAsync(
+            NightlyProductFixture.ObservingDate, NightlyProductFixture.ObservingDate, CancellationToken.None);
+
+        Assert.HasCount(2, summaries);
+        var mine = summaries.Single(summary => summary.ReportingPeriodSha256 == here);
+        Assert.AreEqual(daily, mine.DailyProductId);
+        Assert.AreEqual((1, 0), (mine.HourlyProduced, mine.HourlyWithoutProduct));
+        var theirs = summaries.Single(summary => summary.ReportingPeriodSha256 == there);
+        Assert.IsNull(theirs.DailyProductId);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, theirs.DailyDisposition);
+        Assert.AreEqual((1, 0), (theirs.HourlyProduced, theirs.HourlyWithoutProduct));
+
+        var day = await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
+        Assert.AreEqual(daily, day.Daily(NightlyProductKind.Keogram, here)!.FinalProduct!.ProductId);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, day.Daily(NightlyProductKind.Keogram, there)!.Status.Disposition);
+        Assert.AreEqual(hourly, day.Hours(NightlyProductKind.Keogram, here).Single().FinalProduct!.ProductId);
+        Assert.AreEqual(otherHourly, day.Hours(NightlyProductKind.Keogram, there).Single().FinalProduct!.ProductId);
+        Assert.AreEqual(there, day.OtherPeriods(here).Single().IdentitySha256);
+        Assert.AreEqual(here, day.OtherPeriods(there).Single().IdentitySha256);
+        Assert.AreEqual(other.LocationId, day.OtherPeriods(here).Single().Site.LocationId);
+        // The two hours share their boundaries but not their period, so neither is the other's output.
+        Assert.IsEmpty((await harness.Store.GetPresentationAsync(hourly, CancellationToken.None))!.OtherOutputs);
+        Assert.IsEmpty((await harness.Store.GetPresentationAsync(otherHourly, CancellationToken.None))!.OtherOutputs);
+    }
+
+    [TestMethod]
+    public async Task ReevaluationWithoutAProduct_LeavesThePublishedFinalNotCurrentWithoutAClaimedReplacement()
+    {
+        var reader = new InMemoryNightlySourceReader();
+        reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram);
+        await harness.Run(occurrence);
+        var final = await FinalId(harness.Store, occurrence);
+        Assert.IsTrue((await harness.Store.GetPresentationAsync(final, CancellationToken.None))!.Detail.Summary.IsCurrent);
+
+        harness.Clock.UtcNow = harness.Clock.UtcNow.AddMinutes(1);
+        await harness.Generator(new InMemoryNightlySourceReader()).RunAsync(occurrence, CancellationToken.None);
+
+        var state = await harness.Store.ReadWindowAsync(NightlyProductKind.Keogram, NightlyProductScope.Final,
+            occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrence.IdentitySha256);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, state!.Status.Disposition);
+        Assert.IsEmpty(state.ProductIds);
+        var presentation = await harness.Store.GetPresentationAsync(final, CancellationToken.None);
+        Assert.IsFalse(presentation!.Detail.Summary.IsCurrent);
+        Assert.IsEmpty(presentation.OtherOutputs);
+        Assert.AreEqual("Not current; no recorded evaluation names it, and no other output of this window and part is current.",
+            NightlyProductDetailPage.Currency(presentation));
     }
 
     [TestMethod]
@@ -299,9 +385,10 @@ public sealed class NightlyProductProjectionTests
 
         internal SqliteNightlyProductStore Store { get; }
 
-        internal NightlyProductGenerator Generator(InMemoryNightlySourceReader reader)
+        internal NightlyProductGenerator Generator(InMemoryNightlySourceReader reader, CameraModuleConfig? configuration = null)
         {
-            var generator = new NightlyProductGenerator(_host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
+            var generator = new NightlyProductGenerator(_host,
+                new FixedConfigurationAccessor(configuration ?? NightlyProductFixture.Configuration()),
                 reader, Store, new AstronomyEnginePlanetEphemeris(), static () => null, Clock);
             _generators.Add(generator);
             return generator;

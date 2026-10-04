@@ -10,7 +10,9 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// The observing calendar as a month grid (#988, prototype <c>calendar.html</c>). Weeks start on
 /// Sunday; the grid always covers whole weeks so the month's leading and trailing days from the
 /// neighbouring months are shown muted. Every cell links to the observing-day page. Nightly product badges (#1138)
-/// come from recorded evaluations and are shown only in the sunrise-period view, whose report dates they share.
+/// come from recorded evaluations and are shown only in the sunrise-period view, whose report dates they share. A
+/// badge reads only evaluations of the sunrise period the cell resolves to; evaluations retained under another period
+/// of the same report date, such as one resolved for an earlier site, are noted and never counted as its products.
 /// </summary>
 public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposable
 {
@@ -18,6 +20,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCalendar? _calendar;
     private Dictionary<(DateOnly Date, NightlyProductKind Kind), NightlyProductDateSummary> _nightly = [];
+    private HashSet<(DateOnly Date, NightlyProductKind Kind)> _otherPeriods = [];
     private bool _nightlyUnavailable;
     private string? _errorMessage;
     private readonly HashSet<Guid> _failedThumbnails = [];
@@ -34,7 +37,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
 
     internal sealed record CalendarCell(DateOnly Date, bool InMonth, bool IsToday, CameraAgentGalleryCalendarDay? Day);
 
-    internal enum NightlyBadgeState { Produced, Partial, NotProduced, Pending, NotGenerated, Unavailable }
+    internal enum NightlyBadgeState { Produced, Partial, NotProduced, OtherPeriod, Pending, NotGenerated, Unavailable }
 
     internal sealed record NightlyBadge(string Letter, NightlyBadgeState State, string Description)
     {
@@ -137,19 +140,44 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         summary.Kind == kind && summary.DailyProductId is not null &&
         summary.ObservingDate.Month == MonthStart.Month && summary.ObservingDate.Year == MonthStart.Year);
 
-    private bool HasNightlyRecord(DateOnly date) => BadgeKinds.Any(kind => _nightly.ContainsKey((date, kind)));
+    private int OtherPeriodNights => _otherPeriods
+        .Where(record => record.Date.Month == MonthStart.Month && record.Date.Year == MonthStart.Year)
+        .Select(static record => record.Date).Distinct().Count();
+
+    private bool HasNightlyRecord(DateOnly date) =>
+        BadgeKinds.Any(kind => _nightly.ContainsKey((date, kind)) || _otherPeriods.Contains((date, kind)));
 
     private IReadOnlyList<NightlyBadge> Badges(CalendarCell cell) => [.. BadgeKinds.Select(kind => Badge(kind,
-        _nightly.GetValueOrDefault((cell.Date, kind)), _nightlyUnavailable, IsPending(cell.Date)))];
+        _nightly.GetValueOrDefault((cell.Date, kind)), _otherPeriods.Contains((cell.Date, kind)), _nightlyUnavailable,
+        IsPending(cell.Date)))];
+
+    private string? PeriodIdentity(DateOnly date)
+    {
+        try
+        {
+            return SelectedCalendar.Resolve(date).SunrisePeriod?.IdentitySha256;
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return null;
+        }
+    }
 
     // The current period cannot have a daily product before its closing sunrise, and later dates have no period yet.
     private bool IsPending(DateOnly date) => HasCurrentReportingPeriod && date >= LatestObservingDay;
 
     /// <summary>
-    /// One kind's badge on one report date. A daily final lights it; hourly finals alone are partial; a recorded daily
-    /// evaluation without a product keeps its reason; anything else is pending or not generated. Nothing is inferred.
+    /// One kind's badge on one report date, from the summary of the sunrise period the date resolves to. A daily final
+    /// lights it; hourly finals alone are partial; a recorded daily evaluation without a product keeps its reason;
+    /// evaluations retained only under another period of the date are named as such; anything else is pending or not
+    /// generated. Nothing is inferred, and another period's products never light it.
     /// </summary>
-    internal static NightlyBadge Badge(NightlyProductKind kind, NightlyProductDateSummary? summary, bool unavailable, bool pending)
+    internal static NightlyBadge Badge(
+        NightlyProductKind kind,
+        NightlyProductDateSummary? summary,
+        bool otherPeriod,
+        bool unavailable,
+        bool pending)
     {
         var label = NightlyProductLinks.KindLabel(kind);
         var noun = NightlyProductLinks.KindNoun(kind);
@@ -157,26 +185,30 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         var hourly = summary is { HourlyProduced: > 0 } produced
             ? FormattableString.Invariant($"{produced.HourlyProduced} hourly {noun}{(produced.HourlyProduced == 1 ? "" : "s")}")
             : null;
+        var also = otherPeriod ? "; also recorded under another source period of this date" : "";
         if (unavailable)
         {
             return new(letter, NightlyBadgeState.Unavailable, $"{label} status unavailable");
         }
         if (summary?.DailyProductId is not null)
         {
-            return new(letter, NightlyBadgeState.Produced, $"Nightly {noun} produced" + (hourly is null ? "" : $", {hourly}"));
+            return new(letter, NightlyBadgeState.Produced,
+                $"Nightly {noun} produced" + (hourly is null ? "" : $", {hourly}") + also);
         }
         if (hourly is not null)
         {
-            return new(letter, NightlyBadgeState.Partial, pending
+            return new(letter, NightlyBadgeState.Partial, (pending
                 ? $"{hourly} so far; the nightly {noun} is due after the period ends"
-                : $"Partial: {hourly}, no nightly {noun}");
+                : $"Partial: {hourly}, no nightly {noun}") + also);
         }
         return summary?.DailyDisposition switch
         {
             NightlyProductWindowDisposition.NoSources => new(letter, NightlyBadgeState.NotProduced,
-                $"{label} not produced: no admitted frames"),
+                $"{label} not produced: no admitted frames" + also),
             NightlyProductWindowDisposition.Rejected => new(letter, NightlyBadgeState.NotProduced,
-                $"{label} not produced: rejected ({summary.DailyReasonCode ?? "no reason recorded"})"),
+                $"{label} not produced: rejected ({summary.DailyReasonCode ?? "no reason recorded"})" + also),
+            _ when otherPeriod => new(letter, NightlyBadgeState.OtherPeriod,
+                $"{label} recorded only under another source period of this date (another site or time-zone rules)"),
             _ when pending => new(letter, NightlyBadgeState.Pending, $"{label} pending; the period has not ended"),
             _ => new(letter, NightlyBadgeState.NotGenerated, $"{label} not generated")
         };
@@ -273,9 +305,16 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             {
                 return;
             }
-            _nightly = nightly is { IsSuccess: true, Value: { } summaries }
-                ? summaries.ToDictionary(static summary => (summary.ObservingDate, summary.Kind))
-                : [];
+            // A summary belongs to a cell only when it was recorded under the very sunrise period the cell resolves to,
+            // resolved as the generator resolves it, so a date whose captures have expired still finds its products.
+            var summaries = nightly is { IsSuccess: true, Value: { } values } ? values : [];
+            var periods = summaries.Select(static summary => summary.ObservingDate).Distinct()
+                .ToDictionary(static date => date, PeriodIdentity);
+            bool Matches(NightlyProductDateSummary summary) => string.Equals(
+                periods[summary.ObservingDate], summary.ReportingPeriodSha256, StringComparison.Ordinal);
+            _nightly = summaries.Where(Matches).ToDictionary(static summary => (summary.ObservingDate, summary.Kind));
+            _otherPeriods = [.. summaries.Where(summary => !Matches(summary))
+                .Select(static summary => (summary.ObservingDate, summary.Kind))];
             _nightlyUnavailable = nightly is { IsSuccess: false };
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {

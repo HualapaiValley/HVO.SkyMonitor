@@ -146,11 +146,11 @@
                 {
                     <p class="daily-products__note daily-products__note--warning" role="status"><strong>Nightly product status unavailable.</strong> @_nightlyMessage</p>
                 }
-                else
+                else if (view.Day.Day.SunrisePeriod is { } period)
                 {
                     var sample = _nightly.TimeLapseSample;
                     <div class="product-slots @(sample is null ? "" : "product-slots--with-sample")">
-                        @foreach (var card in Cards(view, _nightly.Day))
+                        @foreach (var card in Cards(view, period, _nightly.Day))
                         {
                             var label = NightlyProductLinks.KindLabel(card.Kind);
                             var noun = NightlyProductLinks.KindNoun(card.Kind);
@@ -191,11 +191,11 @@
                                                 <li>
                                                     @if (hour.FinalProduct is { } hourly)
                                                     {
-                                                        <a href="@NightlyProductLinks.Detail(hourly.ProductId)" title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@LocalTime(hour.Status.WindowStartUtc)</a>
+                                                        <a href="@NightlyProductLinks.Detail(hourly.ProductId)" title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(card, hour)</a>
                                                     }
                                                     else
                                                     {
-                                                        <span title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@LocalTime(hour.Status.WindowStartUtc)</span>
+                                                        <span title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(card, hour)</span>
                                                     }
                                                 </li>
                                             }
@@ -223,6 +223,33 @@
                             </div>
                         </article>
                     </div>
+                    var otherPeriods = _nightly.Day.OtherPeriods(period.IdentitySha256);
+                    @if (otherPeriods.Count > 0)
+                    {
+                        <div class="daily-products__note daily-products__other" role="note">
+                            <p><strong>Also recorded under another source period.</strong> This report date has evaluations retained under a sunrise period resolved for another site or time-zone rules. They belong to that period, so they are not shown above as this period's products.</p>
+                            <ul>
+                                @foreach (var other in otherPeriods)
+                                {
+                                    <li>
+                                        <span>@ObservingDayPage.OtherPeriodLabel(other)</span>
+                                        <ul>
+                                            @foreach (var kind in ProductKinds)
+                                            {
+                                                var nightly = _nightly.Day.Daily(kind, other.IdentitySha256)?.FinalProduct;
+                                                <li>
+                                                    @NightlyProductLinks.KindLabel(kind): @OtherPeriodFacts(_nightly.Day, other, kind)@if (nightly is not null)
+                                                    {
+                                                        <text> · </text><a href="@NightlyProductLinks.Detail(nightly.ProductId)">Product detail</a>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                    </li>
+                                }
+                            </ul>
+                        </div>
+                    }
                 }
             </section>
 

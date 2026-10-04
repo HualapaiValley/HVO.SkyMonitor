@@ -52,17 +52,36 @@ public sealed class TimeLapsePlayerTests
     }
 
     [TestMethod]
-    public void DecodingFailure_ReplacesThePlayerWithTheDownload()
+    [DataRow("video", DisplayName = "A file the browser cannot decode errors on the video element")]
+    [DataRow("video source", DisplayName = "A source the browser cannot fetch or select errors on the source element")]
+    public void PlaybackFailure_ReplacesThePlayerWithTheDownload(string element)
     {
         using var context = new BunitContext();
         TimeLapsePlayerTestSupport.Configure(context);
         var player = Render(context, "video/mp4", 960, 720);
         player.WaitForAssertion(() => Assert.HasCount(1, player.FindAll("video source")));
 
-        player.Find("video source").TriggerEvent("onerror", EventArgs.Empty);
+        player.Find(element).TriggerEvent("onerror", EventArgs.Empty);
 
         player.WaitForAssertion(() => Assert.AreEqual("failed", player.Find("figure").GetAttribute("data-player-state")));
+        Assert.IsEmpty(player.FindAll("video"));
         StringAssert.Contains(player.Find(".time-lapse-player__fallback").TextContent, "could not play this file", StringComparison.Ordinal);
+        Assert.AreEqual(Source, player.Find("figcaption a[download]").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    public void AnimationFailure_ReplacesTheBrokenImageWithTheDownload()
+    {
+        using var context = new BunitContext();
+        var player = Render(context, "image/gif", 640, 480);
+        player.Find("button.time-lapse-player__reveal").Click();
+
+        player.Find("img").TriggerEvent("onerror", EventArgs.Empty);
+
+        Assert.AreEqual("failed", player.Find("figure").GetAttribute("data-player-state"));
+        Assert.IsEmpty(player.FindAll("img"));
+        StringAssert.Contains(player.Find(".time-lapse-player__fallback").TextContent, "could not play this file", StringComparison.Ordinal);
+        Assert.AreEqual(Source, player.Find("figcaption a[download]").GetAttribute("href"));
     }
 
     [TestMethod]

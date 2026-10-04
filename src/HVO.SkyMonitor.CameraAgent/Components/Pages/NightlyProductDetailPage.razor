@@ -85,7 +85,8 @@
                     @if (PartialHour(detail)) { <span class="state-chip" data-nightly-fact="partial">Partial hour</span> }
                 </div>
                 <dl class="product-provenance">
-                    <div class="full"><dt>State</dt><dd>@Finality(detail)@(product.IsCurrent ? "." : "; another output is the current product of this window and part.")</dd></div>
+                    <div class="full"><dt>State</dt><dd>@Finality(detail).</dd></div>
+                    <div class="full"><dt>Current</dt><dd data-nightly-fact="currency">@Currency(presentation)</dd></div>
                     @if (Period is { } period)
                     {
                         <div class="full"><dt>Source period</dt><dd>@Span(period.StartUtc, period.EndUtc), sunrise to sunrise</dd></div>
@@ -140,7 +141,7 @@
 
         <div class="day-detail-grid">
             <section class="product-detail-panel archive-panel" aria-label="Other outputs of this window" data-nightly-section="outputs">
-                <header><div><h2>Other outputs of this window</h2><p>Published outputs recorded for the same window and part. No predecessor or successor relationship is assumed.</p></div></header>
+                <header><div><h2>Other outputs of this window</h2><p>Every other published output of the same source period, window and part, current or not. No predecessor or successor relationship is recorded or assumed.</p></div></header>
                 @if (presentation.OtherOutputs.Count == 0)
                 {
                     <p class="unavailable-copy">No other output is recorded for this window and part.</p>

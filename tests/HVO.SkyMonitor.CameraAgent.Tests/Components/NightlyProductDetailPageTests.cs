@@ -133,7 +133,9 @@ public sealed class NightlyProductDetailPageTests
         StringAssert.StartsWith(ticks[0].GetAttribute("style"), "left: 0.667%", StringComparison.Ordinal);
         Assert.AreEqual("Segment", cut.Find("[data-nightly-fact='scope']").TextContent);
         Assert.AreEqual("Not current", cut.Find("[data-nightly-fact='current']").TextContent);
-        StringAssert.Contains(cut.Find(".product-provenance").TextContent, "another output is the current product of this window and part.", StringComparison.Ordinal);
+        Assert.AreEqual(
+            "Not current; another output of this window and part is current, listed below. No succession between them is recorded.",
+            cut.Find("[data-nightly-fact='currency']").TextContent);
 
         var sources = cut.FindAll(".source-list li");
         Assert.HasCount(NightlyProductDetailPage.MaximumShownSources, sources);
@@ -146,6 +148,30 @@ public sealed class NightlyProductDetailPageTests
         Assert.AreEqual(NightlyProductLinks.Detail(current.ProductId), outputs[0].GetAttribute("href"));
         var outputsText = cut.Find("[data-nightly-section='outputs']").TextContent;
         Assert.IsFalse(outputsText.Contains("Earlier", StringComparison.Ordinal) || outputsText.Contains("Later", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void NightlyDetail_NotCurrentWithoutACurrentOtherOutputClaimsNoReplacement()
+    {
+        using var context = new BunitContext();
+        var nightly = Configure(context, Closed);
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.StarTrail);
+        var older = NightlyDayFixture.Product(occurrence, NightlyProductKind.StarTrail) with { IsCurrent = false };
+        // A later no-source or rejected evaluation, or a publication whose evaluation is not yet recorded, leaves no
+        // current output at all; a non-current sibling is not one either.
+        var presentation = Presentation(occurrence, NightlyProductKind.StarTrail, isCurrent: false, others: [older]);
+        nightly.PresentationHandler = _ => OperatorUiResult<NightlyProductPresentation>.Success(presentation);
+
+        var cut = context.Render<NightlyProductDetailPage>(parameters => parameters.Add(page => page.ProductId, presentation.Detail.Summary.ProductId));
+
+        cut.WaitForAssertion(() => Assert.AreEqual("Not current", cut.Find("[data-nightly-fact='current']").TextContent));
+        const string Unnamed = "Not current; no recorded evaluation names it, and no other output of this window and part is current.";
+        Assert.AreEqual(Unnamed, cut.Find("[data-nightly-fact='currency']").TextContent);
+        Assert.DoesNotContain("is current, listed below", cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual("Not current output", cut.Find("[data-nightly-section='outputs'] li a").TextContent);
+        Assert.AreEqual(Unnamed, NightlyProductDetailPage.Currency(presentation with { OtherOutputs = [] }));
+        Assert.AreEqual("Current; a recorded evaluation names it as its product of this window and part.",
+            NightlyProductDetailPage.Currency(Presentation(occurrence, NightlyProductKind.StarTrail, others: [older])));
     }
 
     [TestMethod]
