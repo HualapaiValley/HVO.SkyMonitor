@@ -50,7 +50,7 @@ internal sealed record NightlyWindowState(
 /// its files are rewritten. Windows record their latest evaluation and point at their current products, so a window
 /// re-evaluated over different sources supersedes its earlier products without deleting them.
 /// </summary>
-internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDisposable
+internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog, IDisposable
 {
     internal const string DirectoryName = ".nightly-products";
     internal const string FileName = "nightly-products.db";
@@ -515,31 +515,39 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-            using var command = connection.CreateCommand();
-            command.CommandText = $"""
-                SELECT {ProductColumns}
-                FROM nightly_products AS product
-                WHERE product.observing_date = $observing_date
-                ORDER BY product.window_start_utc_ticks, product.kind, product.scope, product.part_ordinal,
-                         product.created_unix_ms, product.product_id
-                LIMIT $limit;
-                """;
-            command.Parameters.AddWithValue("$observing_date", FormatDate(observingDate));
-            command.Parameters.AddWithValue("$limit", NightlyProductContract.MaximumListedProducts + 1);
-            var summaries = new List<NightlyProductSummary>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                summaries.Add(ReadSummary(reader));
-            }
-            if (summaries.Count > NightlyProductContract.MaximumListedProducts)
-                throw new InvalidDataException("The product listing exceeds its declared bound; it cannot represent full coverage.");
-            return summaries;
+            return await ReadDateProductsAsync(connection, observingDate, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private static async ValueTask<List<NightlyProductSummary>> ReadDateProductsAsync(
+        SqliteConnection connection,
+        DateOnly observingDate,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {ProductColumns}
+            FROM nightly_products AS product
+            WHERE product.observing_date = $observing_date
+            ORDER BY product.window_start_utc_ticks, product.kind, product.scope, product.part_ordinal,
+                     product.created_unix_ms, product.product_id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$observing_date", FormatDate(observingDate));
+        command.Parameters.AddWithValue("$limit", NightlyProductContract.MaximumListedProducts + 1);
+        var summaries = new List<NightlyProductSummary>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            summaries.Add(ReadSummary(reader));
+        }
+        if (summaries.Count > NightlyProductContract.MaximumListedProducts)
+            throw new InvalidDataException("The product listing exceeds its declared bound; it cannot represent full coverage.");
+        return summaries;
     }
 
     public async ValueTask<IReadOnlyList<NightlyProductWindowStatus>> ListWindowsAsync(
@@ -598,7 +606,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             }
             var content = await ReadVerifiedAsync(
                 reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken).ConfigureAwait(false);
-            return new NightlyProductRendition(productId, RenditionMediaType, content);
+            return new NightlyProductRendition(productId, RenditionMediaType, content, reader.GetString(2));
         }
         finally
         {
@@ -620,7 +628,7 @@ internal sealed class SqliteNightlyProductStore : INightlyProductCatalog, IDispo
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
             var content = await ReadVerifiedAsync(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
                 .ConfigureAwait(false);
-            return new(productId, content);
+            return new(productId, content, reader.GetString(2));
         }
         finally { _gate.Release(); }
     }

@@ -35,7 +35,7 @@ public sealed class FullDayStillProductQualificationTests
     private const int Size = 640;
     private const double Latitude = 35.347;
     private const double Longitude = -113.878;
-    private static readonly DateOnly Date = new(2026, 10, 12);
+    private static readonly DateOnly DefaultDate = new(2026, 10, 12);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly AstronomyEnginePlanetEphemeris Ephemeris = new();
     public TestContext TestContext { get; set; } = null!;
@@ -51,7 +51,10 @@ public sealed class FullDayStillProductQualificationTests
         var site = DeploymentLocationSnapshot.Create("issue-993-qualified-site", 1, "test", null,
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, Latitude, Longitude, 0, "America/Phoenix");
         var calendar = ObservingDayCalendar.ForDeployment(site);
-        var period = calendar.Resolve(Date).SunrisePeriod!;
+        // An explicit report date lets presentation evidence use a sunrise period that has closed on the reviewing host.
+        var date = Environment.GetEnvironmentVariable("HVO_ISSUE993_REPORT_DATE") is { Length: > 0 } requested
+            ? DateOnly.ParseExact(requested, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) : DefaultDate;
+        var period = calendar.Resolve(date).SunrisePeriod!;
         var configuration = Configuration(null);
         var clock = new NightlyClock(period.EndUtc.AddMinutes(10));
         using var provider = Provider(Path.Combine(root, "runtime"), clock);

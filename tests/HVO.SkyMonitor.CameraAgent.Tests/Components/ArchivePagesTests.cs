@@ -1,10 +1,13 @@
+using System.Globalization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -101,7 +104,8 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("/archive/day/2026-07-21", observedNight.QuerySelector("a")!.GetAttribute("href"));
             Assert.AreEqual($"/api/v1/operations/gallery/{representative:D}/thumbnail", observedNight.QuerySelector("img.calendar-thumb")!.GetAttribute("src"));
             Assert.IsNotNull(observedNight.QuerySelector(".calendar-products i.event"));
-            Assert.HasCount(3, observedNight.QuerySelectorAll(".calendar-products i.unavailable"));
+            // The legacy noon view does not share the products' report dates, so it shows no product badges.
+            Assert.HasCount(1, observedNight.QuerySelectorAll(".calendar-products i"));
             Assert.AreEqual("true", observedNight.QuerySelector(".calendar-products")!.GetAttribute("aria-hidden"));
             var empty = cells[24];
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--empty"));
@@ -116,10 +120,12 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(summary, "Capture coverageUnavailable", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Expected schedule not projected", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Shown in the sunrise-period view", StringComparison.Ordinal);
             Assert.IsNotNull(cut.Find(".calendar-legend__unavailable"));
-            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "T time-lapse", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "muted badges are unavailable", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "sunrise-period view", StringComparison.Ordinal);
+            var hidden = cut.FindAll(".page-state").Single(notice => notice.TextContent.Contains("Nightly products hidden", StringComparison.Ordinal));
+            StringAssert.Contains(hidden.QuerySelector("a")!.GetAttribute("href"), "calendar=" + SunriseReportingPeriod.CurrentVersion, StringComparison.Ordinal);
+            Assert.IsEmpty(Nightly(context).Summaries);
             Assert.IsFalse(cut.Find(".calendar-legend").ParentElement!.ClassList.Contains("observing-calendar"));
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
@@ -127,6 +133,98 @@ public sealed class ArchivePagesTests
         StringAssert.Contains(nav[0], "month=2026-06", StringComparison.Ordinal);
         StringAssert.Contains(nav[1], "month=2026-08", StringComparison.Ordinal);
         StringAssert.Contains(nav[2], "month=2026-07", StringComparison.Ordinal);
+    }
+
+    private static readonly int[] SunriseNights = [19, 20, 21, 22];
+    private static readonly int[] BadgeCells = [12, 21, 22, 23, 24];
+    private static readonly string[] NightlyKindNames = ["star trail", "keogram"];
+
+    [TestMethod]
+    public void Calendar_SunriseViewShowsOnlyRecordedNightlyProductStates()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var calendar = ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create("site", 1, "test", null,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.347, -113.878, 1000, "America/Phoenix"));
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar));
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(
+            calendar.TimeZoneId, false,
+            [.. SunriseNights.Select(day => calendar.Resolve(new DateOnly(2026, 7, day)))
+                .Select(night => new CameraAgentGalleryCalendarDay(night, 5, 0, night.StartUtc, night.EndUtc))],
+            calendar.CalendarVersion)));
+        var nightly = Nightly(context);
+        string Period(int day) => calendar.Resolve(new DateOnly(2026, 7, day)).SunrisePeriod!.IdentitySha256;
+        var otherSite = new string('9', 64);
+        nightly.SummaryHandler = (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Success(
+        [
+            new(new DateOnly(2026, 7, 10), NightlyProductKind.StarTrail, Period(10), Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 0, 0),
+            new(new DateOnly(2026, 7, 19), NightlyProductKind.StarTrail, Period(19), Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 3, 0),
+            new(new DateOnly(2026, 7, 19), NightlyProductKind.Keogram, Period(19), null, NightlyProductWindowDisposition.Rejected, "nightly.output-bound", 0, 0),
+            new(new DateOnly(2026, 7, 20), NightlyProductKind.StarTrail, Period(20), null, null, null, 2, 1),
+            new(new DateOnly(2026, 7, 20), NightlyProductKind.Keogram, Period(20), null, NightlyProductWindowDisposition.NoSources, "nightly.no-sources", 0, 0),
+            new(new DateOnly(2026, 7, 22), NightlyProductKind.StarTrail, Period(22), null, null, null, 1, 0),
+            // Evaluations retained under a period resolved for another site never light or count for these dates.
+            new(new DateOnly(2026, 7, 20), NightlyProductKind.Keogram, otherSite, Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 4, 0),
+            new(new DateOnly(2026, 7, 21), NightlyProductKind.StarTrail, otherSite, Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 2, 0)
+        ]);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=2026-07");
+
+        var cut = context.Render<ArchiveCalendarPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual((new DateOnly(2026, 6, 28), new DateOnly(2026, 8, 1)), nightly.Summaries.Last());
+            var cells = cut.FindAll(".calendar-day");
+            (string State, string Title) Badge(int index, string letter)
+            {
+                var badge = cells[index].QuerySelectorAll(".calendar-products i[data-nightly-state]").Single(item => item.TextContent == letter);
+                return (badge.GetAttribute("data-nightly-state")!, badge.GetAttribute("title")!);
+            }
+            // 1 July is index 3 of the grid.
+            Assert.AreEqual(("Produced", "Nightly star trail produced, 3 hourly star trails"), Badge(21, "S"));
+            Assert.AreEqual(("NotProduced", "Keogram not produced: rejected (nightly.output-bound)"), Badge(21, "K"));
+            Assert.IsTrue(cells[21].QuerySelector("i[data-nightly-state='NotProduced']")!.ClassList.Contains("not-produced"));
+            Assert.AreEqual(("Partial", "Partial: 2 hourly star trails, no nightly star trail"), Badge(22, "S"));
+            Assert.AreEqual(("NotProduced", "Keogram not produced: no admitted frames; also recorded under another source period of this date"),
+                Badge(22, "K"));
+            Assert.AreEqual(("OtherPeriod", "Star trail recorded only under another source period of this date (another site or time-zone rules)"),
+                Badge(23, "S"));
+            Assert.AreEqual("unavailable", cells[23].QuerySelector("i[data-nightly-state='OtherPeriod']")!.ClassName);
+            Assert.AreEqual(("NotGenerated", "Keogram not generated"), Badge(23, "K"));
+            // The current period (22 July) cannot have a nightly product before its closing sunrise.
+            Assert.AreEqual(("Partial", "1 hourly star trail so far; the nightly star trail is due after the period ends"), Badge(24, "S"));
+            Assert.AreEqual(("Pending", "Keogram pending; the period has not ended"), Badge(24, "K"));
+            // A product outlives its retained captures and still belongs to its own report date.
+            Assert.AreEqual(("Produced", "Nightly star trail produced"), Badge(12, "S"));
+            Assert.IsNull(cells[12].QuerySelector(".calendar-products i.event, .calendar-products i[title*='candidate']"));
+            Assert.IsEmpty(cells[13].QuerySelectorAll(".calendar-products i"));
+            foreach (var index in BadgeCells)
+            {
+                var timeLapse = cells[index].QuerySelectorAll(".calendar-products i").Single(item => item.TextContent == "T");
+                Assert.AreEqual("unavailable", timeLapse.ClassName);
+                Assert.AreEqual("Time-lapse not yet generated", timeLapse.GetAttribute("title"));
+            }
+            StringAssert.Contains(cells[21].QuerySelector("a")!.GetAttribute("aria-label"), "Nightly star trail produced", StringComparison.Ordinal);
+            StringAssert.Contains(cells[21].QuerySelector("a")!.GetAttribute("aria-label"), "Time-lapse not yet generated", StringComparison.Ordinal);
+            var summary = cut.Find(".calendar-summary").TextContent;
+            StringAssert.Contains(summary, "Nights with nightly products2", StringComparison.Ordinal);
+            StringAssert.Contains(summary,
+                "2 star trail · 0 keogram; time-lapse not yet generated. 2 nights have evaluations under another source period, not counted",
+                StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("Nightly products hidden", StringComparison.Ordinal));
+        });
+
+        nightly.SummaryHandler = (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Failure(
+            OperatorUiResultKind.Unavailable, "Nightly products are temporarily unavailable.");
+        var unavailable = context.Render<ArchiveCalendarPage>();
+        unavailable.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(unavailable.Find(".page-state--warning").TextContent, "Nightly product status unavailable", StringComparison.Ordinal);
+            var badges = unavailable.FindAll(".calendar-products i[data-nightly-state]");
+            Assert.IsNotEmpty(badges);
+            Assert.IsTrue(badges.All(static badge => badge.GetAttribute("data-nightly-state") == "Unavailable"));
+            StringAssert.Contains(unavailable.Find(".calendar-summary").TextContent, "Nightly productsUnavailable", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]
@@ -186,7 +284,7 @@ public sealed class ArchivePagesTests
     }
 
     [TestMethod]
-    public void ObservingDay_RendersFactsTimelineAndHonestProductSlots()
+    public void ObservingDay_RendersFactsTimelineAndHidesNightlyProductsOnTheLegacyView()
     {
         using var context = new BunitContext();
         Configure(context);
@@ -238,14 +336,182 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "21 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "22 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".timeline-key").TextContent, "Cloud/usable intervals: unavailable", StringComparison.Ordinal);
-            var slots = cut.FindAll(".product-slot");
-            Assert.HasCount(3, slots);
-            Assert.IsTrue(slots.All(slot => slot.TextContent.Contains("Not yet produced", StringComparison.Ordinal)));
+            Assert.IsEmpty(cut.FindAll(".product-slot"));
+            StringAssert.Contains(cut.Find(".daily-products__note").TextContent, "belong to sunrise report dates", StringComparison.Ordinal);
+            Assert.AreEqual("/archive/day/2026-07-21?calendar=" + SunriseReportingPeriod.CurrentVersion,
+                cut.Find(".daily-products__note a").GetAttribute("href"));
             StringAssert.Contains(cut.Find(".day-events").TextContent, "Extracted", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".day-events").TextContent, "not confirmed meteors", StringComparison.Ordinal);
             Assert.AreEqual("/archive/day/2026-07-20", cut.FindAll(".day-title__step")[0].GetAttribute("href"));
             Assert.AreEqual("/archive/day/2026-07-22", cut.FindAll(".day-title__step")[1].GetAttribute("href"));
             Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", cut.Find(".day-actions a").GetAttribute("href"));
+        });
+        Assert.IsEmpty(Nightly(context).Days);
+    }
+
+    [TestMethod]
+    public void ObservingDay_SunrisePeriodShowsRecordedNightlyProductsAndALabelledSample()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        var dailyOccurrence = NightlyDayFixture.Daily(NightlyProductKind.StarTrail);
+        var daily = NightlyDayFixture.Product(dailyOccurrence, NightlyProductKind.StarTrail);
+        var producedHour = NightlyDayFixture.Hour(NightlyProductKind.StarTrail, NightlyDayFixture.FirstHourUtc);
+        var hourly = NightlyDayFixture.Product(producedHour, NightlyProductKind.StarTrail, sources: 5);
+        var emptyHour = NightlyDayFixture.Hour(NightlyProductKind.StarTrail, NightlyDayFixture.FirstHourUtc.AddHours(1));
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Produced(dailyOccurrence, daily, candidates: 12, admitted: 12),
+            NightlyDayFixture.Produced(producedHour, hourly, candidates: 5, admitted: 5),
+            NightlyDayFixture.Without(emptyHour, NightlyProductKind.StarTrail, NightlyProductWindowDisposition.NoSources, candidates: 0),
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
+                NightlyProductWindowDisposition.NoSources, candidates: 0)
+        ], [daily, hourly]), new CameraAgentTimeLapseSampleView("/api/v1/operations/time-lapse-sample", "video/mp4", 1280, 1280)));
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            var starTrail = cut.Find("[data-product-kind='star trail']");
+            Assert.AreEqual("available", starTrail.GetAttribute("data-nightly-state"));
+            Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", starTrail.QuerySelector("img")!.GetAttribute("src"));
+            Assert.AreEqual($"/archive/products/nightly/{daily.ProductId:D}", starTrail.QuerySelector(".product-slot__link")!.GetAttribute("href"));
+            StringAssert.Contains(starTrail.TextContent, "from 12 segment products", StringComparison.Ordinal);
+            // The nightly span runs from one local morning to the next, so both endpoints carry their dates.
+            var mst = TimeSpan.FromHours(-7);
+            StringAssert.Contains(starTrail.TextContent, string.Create(CultureInfo.InvariantCulture,
+                $"Frames {daily.FirstObservationUtc.ToOffset(mst):HH:mm} 1 Oct–{daily.LastObservationUtc.ToOffset(mst):HH:mm} 2 Oct from"),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("frames admitted", starTrail.TextContent, StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.TextContent, "640 × 480", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.QuerySelector(".hvo-chip")!.TextContent, "Produced", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.TextContent, "Hourly: 1 of 2 completed hours produced", StringComparison.Ordinal);
+            var hours = starTrail.QuerySelectorAll(".product-hours li");
+            Assert.HasCount(2, hours);
+            Assert.AreEqual($"/archive/products/nightly/{hourly.ProductId:D}", hours[0].QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual("21:00–22:00: produced from 5 segment products", hours[0].QuerySelector("a")!.GetAttribute("title"));
+            Assert.AreEqual("21:00", hours[0].QuerySelector("a")!.TextContent);
+            Assert.IsNull(hours[1].QuerySelector("a"));
+            StringAssert.Contains(hours[1].QuerySelector("span")!.GetAttribute("title"), "not produced, no segment window admitted a frame",
+                StringComparison.Ordinal);
+
+            var keogram = cut.Find("[data-product-kind='keogram']");
+            Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
+            Assert.IsNull(keogram.QuerySelector("img"));
+            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
+            StringAssert.Contains(keogram.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
+            Assert.IsNull(keogram.QuerySelector(".product-hours"));
+
+            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
+            StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.QuerySelector("figcaption")!.TextContent, "Sample, not generated from this night", StringComparison.Ordinal);
+            Assert.AreEqual("/api/v1/operations/time-lapse-sample", timeLapse.QuerySelector("video source")!.GetAttribute("src"));
+        });
+        CollectionAssert.AreEqual(new[] { NightlyDayFixture.Date }, Nightly(context).Days);
+    }
+
+    [TestMethod]
+    public void ObservingDay_AnotherSitesPeriodIsListedApartAndNeverShownAsThisPeriodsProduct()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        var otherTrail = NightlyDayFixture.Daily(NightlyProductKind.StarTrail, NightlyProductFixture.OtherSite);
+        var otherProduct = NightlyDayFixture.Product(otherTrail, NightlyProductKind.StarTrail);
+        var otherHour = NightlyDayFixture.Hour(NightlyProductKind.Keogram, NightlyDayFixture.FirstHourUtc, NightlyProductFixture.OtherSite);
+        var otherHourly = NightlyDayFixture.Product(otherHour, NightlyProductKind.Keogram, sources: 5);
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Produced(otherTrail, otherProduct, candidates: 12, admitted: 12),
+            NightlyDayFixture.Produced(otherHour, otherHourly, candidates: 5, admitted: 5),
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
+                NightlyProductWindowDisposition.NoSources, candidates: 0)
+        ], [otherProduct, otherHourly]), null));
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            var starTrail = cut.Find("[data-product-kind='star trail']");
+            Assert.AreEqual("unavailable", starTrail.GetAttribute("data-nightly-state"));
+            Assert.IsNull(starTrail.QuerySelector("img"));
+            Assert.IsNull(starTrail.QuerySelector("a"));
+            Assert.AreEqual("Other period only", starTrail.QuerySelector(".hvo-chip")!.TextContent);
+            StringAssert.Contains(starTrail.TextContent,
+                "Star trail recorded only under another source period of this date (another site or time-zone rules).", StringComparison.Ordinal);
+
+            var keogram = cut.Find("[data-product-kind='keogram']");
+            Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
+            Assert.IsNull(keogram.QuerySelector(".product-hours"));
+            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
+            StringAssert.EndsWith(keogram.QuerySelector(".hvo-chip")!.GetAttribute("title"),
+                "; also recorded under another source period of this date", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".product-slots a"));
+
+            var note = cut.Find(".daily-products__other");
+            Assert.AreEqual("note", note.GetAttribute("role"));
+            var period = otherTrail.SourceWindow!.ReportingPeriod;
+            Assert.AreEqual(ObservingDayPage.OtherPeriodLabel(period), note.QuerySelector("li > span")!.TextContent);
+            StringAssert.StartsWith(ObservingDayPage.OtherPeriodLabel(period), "Site nightly-other version 2 (", StringComparison.Ordinal);
+            StringAssert.Contains(ObservingDayPage.OtherPeriodLabel(period), "America/Denver), 2026-10-01 ", StringComparison.Ordinal);
+            var facts = note.QuerySelectorAll("li li").Select(static item => item.TextContent.Trim()).ToArray();
+            Assert.HasCount(2, facts);
+            StringAssert.StartsWith(facts[0], "Star trail: nightly star trail produced · Product detail", StringComparison.Ordinal);
+            Assert.AreEqual("Keogram: no nightly keogram evaluation; 1 of 1 hourly keograms produced", facts[1]);
+            Assert.AreEqual(NightlyProductLinks.Detail(otherProduct.ProductId), note.QuerySelector("a")!.GetAttribute("href"));
+            Assert.HasCount(1, note.QuerySelectorAll("a"));
+        });
+    }
+
+    [TestMethod]
+    public void ObservingDay_OpenPeriodIsPendingAndAnUnavailableCatalogIsStated()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(NightlyDayFixture.FirstHourUtc));
+        ConfigureFixtureDay(context);
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            foreach (var kind in NightlyKindNames)
+            {
+                var card = cut.Find($"[data-product-kind='{kind}']");
+                Assert.AreEqual("unavailable", card.GetAttribute("data-nightly-state"));
+                StringAssert.Contains(card.QuerySelector(".hvo-chip")!.TextContent, "Pending", StringComparison.Ordinal);
+                StringAssert.Contains(card.TextContent, "pending; the period has not ended", StringComparison.Ordinal);
+            }
+            var timeLapse = cut.Find("[data-product-kind='time-lapse']");
+            StringAssert.Contains(timeLapse.ClassName, "product-slot--pending", StringComparison.Ordinal);
+            Assert.IsNull(timeLapse.QuerySelector(".time-lapse-player"));
+            StringAssert.Contains(timeLapse.TextContent, "Nothing is substituted for it.", StringComparison.Ordinal);
+        });
+
+        Nightly(context).DayHandler = static _ => OperatorUiResult<CameraAgentNightlyDayView>.Failure(
+            OperatorUiResultKind.Unavailable, "Nightly products are temporarily unavailable.");
+        var unavailable = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+        unavailable.WaitForAssertion(() =>
+        {
+            Assert.IsEmpty(unavailable.FindAll(".product-slot"));
+            StringAssert.Contains(unavailable.Find(".daily-products__note--warning").TextContent,
+                "Nightly product status unavailable. Nightly products are temporarily unavailable.", StringComparison.Ordinal);
+            Assert.IsNotNull(unavailable.Find(".day-facts"));
+        });
+    }
+
+    private static void ConfigureFixtureDay(BunitContext context)
+    {
+        var day = NightlyProductFixture.Calendar.Resolve(NightlyDayFixture.Date);
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+                new CameraAgentGalleryCalendarDay(day, 0, 0, null, null), [], TimeSpan.Zero, null, [], false, [], null, null, null)))
         });
     }
 
@@ -647,12 +913,17 @@ public sealed class ArchivePagesTests
     {
         RetainedPreviewImageTestSupport.Configure(context);
         ProductDetailTestSupport.Configure(context);
+        TimeLapsePlayerTestSupport.Configure(context);
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(Phoenix));
+        context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(new TestNightlyProductUiService());
         return service;
     }
+
+    private static TestNightlyProductUiService Nightly(BunitContext context) =>
+        (TestNightlyProductUiService)context.Services.GetRequiredService<ICameraAgentNightlyProductUiService>();
 
     private static CameraAgentProduct Product(Guid artifactId) => new(
         artifactId,

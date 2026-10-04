@@ -29,6 +29,13 @@ internal static class NightlyProductFixture
 
     internal static readonly ObservingDayCalendar Calendar = ObservingDayCalendar.ForDeployment(Site);
 
+    /// <summary>A second deployment whose sunrise periods share the fixture's report dates but not their identities.</summary>
+    internal static readonly DeploymentLocationSnapshot OtherSite = DeploymentLocationSnapshot.Create("nightly-other", 2, "test",
+        null, new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), null, 39.7392, -104.9903, 1609, "America/Denver");
+
+    /// <summary>The static observatory of a CameraAgent at <see cref="OtherSite"/>, whose frames only that site admits.</summary>
+    internal static readonly ObservatoryLocation OtherObservatory = new(39.7392, -104.9903, 1609, "America/Denver");
+
     internal static readonly DateOnly ObservingDate = new(2026, 10, 1);
 
     internal static readonly DateTimeOffset DayStartUtc = Calendar.Resolve(ObservingDate).StartUtc;
@@ -53,8 +60,8 @@ internal static class NightlyProductFixture
     internal static readonly ProcessingCompatibilityIdentity Compatibility = new(
         RigProfileSha256, "zenith-v1", "none-v1", "full-v1", "sensor-v1", "night-v1", "pipeline-v1");
 
-    internal static CameraModuleConfig Configuration(bool redactedLocation = false) =>
-        new(Observatory, new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { })), Rig,
+    internal static CameraModuleConfig Configuration(bool redactedLocation = false, ObservatoryLocation? observatory = null) =>
+        new(observatory ?? Observatory, new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new { })), Rig,
             CapturePipelineConfig.Empty, "nightly-fixture")
         {
             DeploymentLocationRedacted = redactedLocation
@@ -121,12 +128,14 @@ internal static class NightlyProductFixture
 
     internal static LocalAutomationOccurrence Occurrence(NightlyProductKind kind, NightlyProductOptions? options = null,
         LocalAutomationSourceWindowKind windowKind = LocalAutomationSourceWindowKind.SunriseDay,
-        DateTimeOffset? hourStart = null, string? definitionId = null, long version = 1)
+        DateTimeOffset? hourStart = null, string? definitionId = null, long version = 1,
+        DeploymentLocationSnapshot? site = null)
     {
         var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion, windowKind,
             kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
                 : LocalAutomationSourceSelection.DarkNightActualSources, TimeSpan.FromMinutes(5));
-        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(Calendar));
+        var calendar = site is null ? Calendar : ObservingDayCalendar.ForDeployment(site);
+        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
         var windows = planner.ResolveWindows(ObservingDate, policy);
         var window = hourStart is { } start ? windows.Single(item => item.StartUtc == start) : windows[0];
         var id = definitionId ?? $"fixture-{NightlyProductContract.TargetFor(kind)}";

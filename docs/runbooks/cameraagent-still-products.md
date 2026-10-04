@@ -106,6 +106,9 @@ lighten composition of actual eligible frames, preserving any missing interval.
 | Keogram assembly inputs | Predicted total part bytes at most 256 MiB; reject before publishing parts |
 | Provenance document | 8 MiB |
 | Products or windows in one date listing | 1,024; larger listings fail explicitly |
+| Calendar date summary | At most 62 dates and 8,192 evaluated windows; a reversed or wider range is a 400, excess windows fail explicitly |
+| Presentation lineage | Distinct preview frames, at most the 4,096 window-candidate bound; excess fails explicitly |
+| Other outputs for one span | 1,024; larger listings fail explicitly |
 
 The still store has schema version 2. Earlier, newer or corrupt stores fail
 closed; installed-state migration is outside this change. Packed payload,
@@ -131,14 +134,80 @@ Authenticated `OperationsReadV1` endpoints under
 
 | Suffix | Result |
 | --- | --- |
+| `/dates?from={yyyy-MM-dd}&to={yyyy-MM-dd}` | Per-date, per-kind, per-retained-period calendar summary: the preferred daily evaluation and the produced and unproduced hourly counts |
 | `/dates/{yyyy-MM-dd}` | Bounded product and evaluated-window listing |
+| `/days/{yyyy-MM-dd}` | Every recorded evaluation for the date joined to its current products |
 | `/{productId}` | Detail, retained occurrence and ordered lineage |
-| `/{productId}/preview` | Checksum-verified JPEG |
-| `/{productId}/provenance` | Checksum-verified canonical JSON |
+| `/{productId}/presentation` | Detail, recorded algorithms, lineage frame count, the keogram time axis and gaps rebuilt from retained recipe options, and every other published output of the same retained period, window and part |
+| `/{productId}/preview` | Checksum-verified JPEG (`GET` or `HEAD`) |
+| `/{productId}/provenance` | Checksum-verified canonical JSON (`GET` or `HEAD`) |
+
+A report date can hold more than one retained sunrise period, for example
+before and after a site or time-zone rules change. Summaries and day cards are
+therefore kept per retained period identity and never merged across periods.
+Within one period a summary prefers a produced evaluation, then the latest
+evaluated one, so a date with a product never reports an older rejection. A planned
+(final) keogram's axis is the retained planned axis; a segment keogram's axis is
+recomputed from its retained gap options and lineage. Star trails have no axis.
+Other outputs are every other published output of the same retained period,
+window and part: other definitions, revisions or reevaluations, current or not.
+They are not predecessors, and no predecessor or successor is recorded or
+inferred. A product without a current pointer is only "not current". A later
+evaluation can record no product, and a publication can precede its
+evaluation, so the detail page claims another current output only when one is
+listed.
 
 Unknown IDs return 404; unavailable or invalid storage returns a sanitized 503.
-Content responses are private and are not cached. Broader archive page and
-historical archive compatibility adoption remain separate work.
+Content responses are `private, no-cache` with `Vary: Cookie` and
+`X-Content-Type-Options: nosniff`. Their strong ETag is the published SHA-256,
+also returned in `X-Content-SHA256`, so a browser revalidates each use and an
+unchanged product answers `If-None-Match` with 304. Byte ranges are supported.
+`?download=1` returns `Content-Disposition: attachment`; otherwise content is
+`inline`.
+
+## Archive pages
+
+The archive pages read the same projections and require `OperationsReadV1`.
+They never start, retry or regenerate a product.
+
+| Page | Nightly product behavior |
+| --- | --- |
+| `/archive/calendar` | In the sunrise-period view, S (star trail) and K (keogram) show produced, hourly only, evaluated without a product, recorded only under another period, pending, not generated or unavailable. A badge counts only the sunrise period its date resolves to now; evaluations retained under another period of that date are named, never counted. T is always "not yet generated". The legacy noon view hides these badges and links to the sunrise view. |
+| `/archive/day/{yyyy-MM-dd}` | One card per kind, built from the recorded daily evaluation of the displayed period, with its hourly evaluations listed under it. A produced card shows the product's preview and links to its detail page. An unproduced card states the recorded disposition. Frame spans that cross a local date carry both dates, and a span or hour that crosses a daylight-saving change carries its offsets. Evaluations retained under another period of the same report date are listed separately with that period's site and UTC boundaries. No capture image is substituted for a product. |
+| `/archive/products/nightly/{productId}` | The exact published product: preview, source period and window, admitted frame span, selection, lineage and direct-source counts, integration, recipe, variant, automation run, algorithms, whether a current pointer names it, and every other published output of its period, window and part. A planned keogram axis is linear in clock time and hatches its gaps; a segment axis labels only actual frame columns; a keogram without a recorded axis draws no markers. Long source and gap lists name how many they omit. |
+
+When the store cannot be read, the calendar and day page say the nightly status
+is unavailable rather than showing the products as missing. Final cards count
+the segment products they composed; frame counts come from the lineage on the
+detail page.
+
+## Time-lapse sample
+
+No time-lapse product exists yet. Until it does, the observing-day page always
+reports the time-lapse as not generated and the calendar never lights its
+badge. For player development an operator may configure a stand-in file:
+
+```json
+"CameraAgent": {
+  "TimeLapseSample": {
+    "Enabled": true,
+    "FilePath": "/absolute/path/to/sample.mp4",
+    "MediaType": "video/mp4",
+    "Width": 1280,
+    "Height": 1280
+  }
+}
+```
+
+The sample is off by default. `FilePath` must be fully qualified when enabled.
+`MediaType` is one of `video/mp4`, `video/webm`, `image/gif`, `image/webp` or
+`video/x-ms-wmv`; `Width` and `Height` (1–8,192) reserve the player's aspect
+ratio before metadata loads. The file is served by an authenticated
+`OperationsReadV1` `GET`/`HEAD` at `/api/v1/operations/time-lapse-sample`
+with byte ranges, a length-and-write-time ETag and the same private headers.
+It returns 404 when disabled or absent. The page labels it as a sample not
+generated from the selected night, and it is never a product, never counted
+and never cached as one. Large samples are not committed to the repository.
 
 ## Reproducible qualification
 
@@ -163,7 +232,10 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
 The default cadence is one source per minute, with leading/trailing ten-minute
 omissions and a deliberate 30-minute internal omission. Setting
 `HVO_ISSUE993_SOURCE_STRIDE_MINUTES=60` runs an explicitly sparse smoke recipe;
-it does not qualify minute-cadence coverage. The harness executes the real
+it does not qualify minute-cadence coverage. `HVO_ISSUE993_REPORT_DATE=yyyy-MM-dd`
+replaces the October 12, 2026 report date, so presentation evidence can use a
+sunrise period that has already closed on the reviewing host; the site, recipe
+and gaps are unchanged, and the evidence records the resolved period. The harness executes the real
 durable automation runner, verifies dark-only leaf lineage and unchanged
 retry, and retains actual times/settings, raw statistics, code/binary/catalog
 identities, checksums and resource measurements. Public review files must be

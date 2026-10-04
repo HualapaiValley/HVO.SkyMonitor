@@ -69,6 +69,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
 
+    [Required]
+    public TimeLapseSampleOptions TimeLapseSample { get; init; } = new();
+
     [Range(1, 60)]
     public int OperationsReferenceLifetimeMinutes { get; init; } = 15;
 
@@ -288,6 +291,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             nightlyResults,
             validateAllProperties: true);
         foreach (var result in nightlyResults)
+        {
+            yield return result;
+        }
+
+        var sampleResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            TimeLapseSample,
+            new ValidationContext(TimeLapseSample),
+            sampleResults,
+            validateAllProperties: true);
+        foreach (var result in sampleResults)
         {
             yield return result;
         }
@@ -853,6 +867,55 @@ public sealed class NightlyProductOptions : IValidatableObject
             yield return new ValidationResult(
                 "NightlyProducts:KeogramMaximumGapColumnCount must not exceed KeogramMaximumColumnCount.",
                 [nameof(KeogramMaximumGapColumnCount), nameof(KeogramMaximumColumnCount)]);
+        }
+    }
+}
+
+/// <summary>
+/// An operator-supplied video shown in the time-lapse slot of an observing day while no time-lapse is generated.
+/// It is a development stand-in only: it is never attributed to a night, never counted as a product and never makes a
+/// time-lapse appear available. Generated time-lapse output is owned by issue #1130.
+/// </summary>
+public sealed class TimeLapseSampleOptions : IValidatableObject
+{
+    /// <summary>The media types a sample may declare. Browsers decide which of them they can play.</summary>
+    public static readonly IReadOnlySet<string> SupportedMediaTypes = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "video/mp4", "video/webm", "image/gif", "image/webp", "video/x-ms-wmv"
+    };
+
+    /// <summary>Whether the sample is offered. It is off unless an operator opts in.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>The fully qualified path of the sample file; it is read only, and served only to operations readers.</summary>
+    [StringLength(4096)]
+    public string? FilePath { get; init; }
+
+    /// <summary>The declared media type of the sample, one of <see cref="SupportedMediaTypes"/>.</summary>
+    [StringLength(64)]
+    public string MediaType { get; init; } = "video/mp4";
+
+    /// <summary>The declared frame width, used to reserve the player's aspect ratio before metadata loads.</summary>
+    [Range(1, 8192)]
+    public int Width { get; init; } = 1280;
+
+    /// <summary>The declared frame height, used to reserve the player's aspect ratio before metadata loads.</summary>
+    [Range(1, 8192)]
+    public int Height { get; init; } = 1280;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Enabled && (string.IsNullOrWhiteSpace(FilePath) || !Path.IsPathFullyQualified(FilePath) ||
+                        FilePath.Any(char.IsControl)))
+        {
+            yield return new ValidationResult(
+                "TimeLapseSample:FilePath must be a fully qualified file path when the sample is enabled.", [nameof(FilePath)]);
+        }
+        if (!SupportedMediaTypes.Contains(MediaType))
+        {
+            yield return new ValidationResult(
+                "TimeLapseSample:MediaType must be one of " + string.Join(", ", SupportedMediaTypes.Order(StringComparer.Ordinal)) + ".",
+                [nameof(MediaType)]);
         }
     }
 }

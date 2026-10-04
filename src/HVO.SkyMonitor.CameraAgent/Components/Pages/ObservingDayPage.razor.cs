@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -7,19 +8,28 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 /// <summary>
 /// One observing day (#988, prototype <c>day.html</c>): representative capture, night facts,
-/// a night timeline of schedule / captures / candidates on one local axis, the nightly product
-/// slots (honestly "not yet produced" until #993), candidates and automation runs.
+/// a night timeline of schedule / captures / candidates on one local axis, the recorded nightly
+/// products of a sunrise period (#1138; the time-lapse stays "not yet generated" until #1130),
+/// candidates and automation runs. Product cards read only evaluations retained under the displayed
+/// period; another period of the same report date, such as one resolved for an earlier site, is
+/// listed separately under its own site and boundaries.
 /// </summary>
 public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 {
-    internal sealed record ProductSlot(string Title, string Description, string Icon);
+    /// <summary>
+    /// One product kind of the period: the calendar's badge for it, so the two pages cannot disagree, the chosen
+    /// whole-period evaluation, and one evaluation per completed civil hour.
+    /// </summary>
+    internal sealed record ProductCard(
+        NightlyProductKind Kind,
+        ArchiveCalendarPage.NightlyBadge Badge,
+        NightlyProductWindowRecord? Daily,
+        IReadOnlyList<NightlyProductWindowRecord> Hours)
+    {
+        internal NightlyProductSummary? Product => Daily?.FinalProduct;
+    }
 
-    internal static readonly ProductSlot[] ProductSlots =
-    [
-        new("Night timelapse", "Processed captures of the observing window in sequence.", "bi-film"),
-        new("Star trail", "Lighten composite of the night's quality-approved frames.", "bi-stars"),
-        new("North–south keogram", "One north–zenith–south slice per capture along the time axis.", "bi-bar-chart-steps")
-    ];
+    private static readonly NightlyProductKind[] ProductKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
 
     internal sealed record CaptureSegment(DateTimeOffset StartUtc, DateTimeOffset EndUtc, int Count);
 
@@ -27,12 +37,17 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentObservingDayView? _view;
+    private CameraAgentNightlyDayView? _nightly;
+    private string? _nightlyMessage;
+    private bool _nightlyLoading;
+    private readonly HashSet<Guid> _failedPreviews = [];
     private string? _errorMessage;
     private bool _isLoading = true;
     private bool _invalidDate;
     private long _generation;
 
     [Inject] internal ICameraAgentObservingDayUiService DayService { get; set; } = default!;
+    [Inject] internal ICameraAgentNightlyProductUiService NightlyProducts { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal TimeProvider Clock { get; set; } = default!;
     [Parameter] public string DateText { get; set; } = string.Empty;
@@ -70,6 +85,103 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         }
     }
 
+    private string SunriseDayUrl => ArchiveCalendarPage.DayUrl(Date) + "?calendar=" +
+        Uri.EscapeDataString(SunriseReportingPeriod.CurrentVersion);
+
+    internal static ProductCard Card(NightlyProductDay day, NightlyProductKind kind, SunriseReportingPeriod period, bool periodOpen)
+    {
+        var daily = day.Daily(kind, period.IdentitySha256);
+        var hours = day.Hours(kind, period.IdentitySha256);
+        var otherPeriod = day.OtherPeriods(period.IdentitySha256).Any(other =>
+            day.Daily(kind, other.IdentitySha256) is not null || day.Hours(kind, other.IdentitySha256).Count > 0);
+        var summary = new NightlyProductDateSummary(day.ObservingDate, kind, period.IdentitySha256,
+            daily?.FinalProduct?.ProductId, daily?.Status.Disposition, daily?.Status.ReasonCode,
+            hours.Count(static hour => hour.FinalProduct is not null),
+            hours.Count(static hour => hour.FinalProduct is null));
+        return new ProductCard(kind,
+            ArchiveCalendarPage.Badge(kind, summary, otherPeriod, unavailable: false, pending: periodOpen), daily, hours);
+    }
+
+    private IEnumerable<ProductCard> Cards(CameraAgentObservingDayView view, SunriseReportingPeriod period, NightlyProductDay day)
+        => ProductKinds.Select(kind => Card(day, kind, period, Clock.GetUtcNow() < view.Day.Day.EndUtc));
+
+    /// <summary>
+    /// What another retained period of the report date holds for one kind, from its own evaluations only: its nightly
+    /// final and how many of its completed hours were produced.
+    /// </summary>
+    internal static string OtherPeriodFacts(NightlyProductDay day, SunriseReportingPeriod period, NightlyProductKind kind)
+    {
+        var noun = NightlyProductLinks.KindNoun(kind);
+        var daily = day.Daily(kind, period.IdentitySha256);
+        var hours = day.Hours(kind, period.IdentitySha256);
+        var nightly = daily switch
+        {
+            null => $"no nightly {noun} evaluation",
+            { FinalProduct: not null } => $"nightly {noun} produced",
+            { Status: var status } => $"nightly {noun} not produced, {Outcome(status)}"
+        };
+        return hours.Count == 0
+            ? nightly
+            : FormattableString.Invariant(
+                $"{nightly}; {hours.Count(static hour => hour.FinalProduct is not null)} of {hours.Count} hourly {noun}s produced");
+    }
+
+    // Another period is described in UTC and its own site, never in this page's time zone.
+    internal static string OtherPeriodLabel(SunriseReportingPeriod period) => string.Create(CultureInfo.InvariantCulture,
+        $"Site {period.Site.LocationId} version {period.Site.Version} ({period.Site.LatitudeDegrees:0.####}°, {period.Site.LongitudeDegrees:0.####}°, {period.Site.TimeZoneId}), {period.StartUtc.UtcDateTime:yyyy-MM-dd HH:mm}Z to {period.EndUtc.UtcDateTime:yyyy-MM-dd HH:mm}Z");
+
+    internal static string ChipLabel(ArchiveCalendarPage.NightlyBadgeState state) => state switch
+    {
+        ArchiveCalendarPage.NightlyBadgeState.Produced => "Produced",
+        ArchiveCalendarPage.NightlyBadgeState.Partial => "Partial",
+        ArchiveCalendarPage.NightlyBadgeState.NotProduced => "Not produced",
+        ArchiveCalendarPage.NightlyBadgeState.OtherPeriod => "Other period only",
+        ArchiveCalendarPage.NightlyBadgeState.Pending => "Pending",
+        ArchiveCalendarPage.NightlyBadgeState.NotGenerated => "Not generated",
+        _ => "Unavailable"
+    };
+
+    private static string ChipClass(ArchiveCalendarPage.NightlyBadgeState state) => state switch
+    {
+        ArchiveCalendarPage.NightlyBadgeState.Produced => "hvo-chip--success",
+        ArchiveCalendarPage.NightlyBadgeState.Partial => "hvo-chip--warning",
+        ArchiveCalendarPage.NightlyBadgeState.Pending => "hvo-chip--info",
+        _ => "hvo-chip--neutral"
+    };
+
+    /// <summary>
+    /// Why a recorded final evaluation has no product, from its retained disposition only. A final composes the
+    /// products of its segment windows, so it records no frame counts of its own; a final without sources means no
+    /// segment window admitted a frame.
+    /// </summary>
+    internal static string Outcome(NightlyProductWindowStatus status) => status.Disposition switch
+    {
+        NightlyProductWindowDisposition.NoSources => "no segment window admitted a frame",
+        NightlyProductWindowDisposition.Rejected => $"rejected ({status.ReasonCode ?? "no reason recorded"})",
+        _ => "no current product is recorded"
+    };
+
+    // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
+    private string ProductFacts(ProductCard card) => card.Product is { } product
+        ? $"Frames {LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)} from " +
+          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} segment products; {product.Width:N0} × {product.Height:N0}.")
+        : card.Daily is { Status: var status } && card.Badge.State == ArchiveCalendarPage.NightlyBadgeState.NotProduced
+            ? $"The period was evaluated: {Outcome(status)}."
+            : card.Badge.Description + ".";
+
+    private string HourTitle(NightlyProductWindowRecord hour)
+    {
+        var span = LocalSpan(hour.Status.WindowStartUtc, hour.Status.WindowEndUtc);
+        return hour.FinalProduct is null
+            ? $"{span}: not produced, {Outcome(hour.Status)}"
+            : FormattableString.Invariant($"{span}: produced from {hour.Status.AdmittedCount:N0} segment products");
+    }
+
+    private static string SampleCaption(CameraAgentTimeLapseSampleView sample) => FormattableString.Invariant(
+        $"Sample, not generated from this night · {sample.MediaType} · declared {sample.Width} × {sample.Height}");
+
+    private void MarkPreviewFailed(Guid productId) => _failedPreviews.Add(productId);
+
     // The calendar's own clamp; a step never leaves it.
     internal static readonly DateOnly MinimumDate = new(1, 2, 1);
     internal static readonly DateOnly MaximumDate = new(9999, 11, 30);
@@ -79,6 +191,49 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         var target = Date.AddDays(direction);
         var url = ArchiveCalendarPage.DayUrl(target < MinimumDate ? MinimumDate : target > MaximumDate ? MaximumDate : target);
         return CalendarVersion is null ? url : url + "?calendar=" + Uri.EscapeDataString(CalendarVersion);
+    }
+
+    // A repeated civil hour keeps its offset, so the two hours of a daylight-saving fall-back stay distinct.
+    private string HourLabel(ProductCard card, NightlyProductWindowRecord hour)
+    {
+        var label = LocalTime(hour.Status.WindowStartUtc);
+        return card.Hours.Count(other => LocalTime(other.Status.WindowStartUtc) == label) > 1
+            ? label + " " + LocalOffset(hour.Status.WindowStartUtc)
+            : label;
+    }
+
+    /// <summary>
+    /// A local span that never reads as reversed or ambiguous: both endpoints carry their dates when the span crosses
+    /// a local date, and their UTC offsets when it crosses a daylight-saving change.
+    /// </summary>
+    internal string LocalSpan(DateTimeOffset startUtc, DateTimeOffset endUtc)
+    {
+        if (!TryLocal(startUtc, out var start) || !TryLocal(endUtc, out var end))
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"{startUtc.UtcDateTime:HH:mm d MMM}Z–{endUtc.UtcDateTime:HH:mm d MMM}Z");
+        }
+        var format = start.Date == end.Date ? "HH:mm" : "HH:mm d MMM";
+        return start.Offset == end.Offset
+            ? $"{start.ToString(format, CultureInfo.InvariantCulture)}–{end.ToString(format, CultureInfo.InvariantCulture)}"
+            : $"{start.ToString(format, CultureInfo.InvariantCulture)} {Offset(start)}–{end.ToString(format, CultureInfo.InvariantCulture)} {Offset(end)}";
+    }
+
+    private string LocalOffset(DateTimeOffset utc) => TryLocal(utc, out var local) ? Offset(local) : "UTC";
+
+    private static string Offset(DateTimeOffset local) => "UTC" + local.ToString("zzz", CultureInfo.InvariantCulture);
+
+    private bool TryLocal(DateTimeOffset utc, out DateTimeOffset local)
+    {
+        try
+        {
+            local = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(utc, TimeZoneId);
+            return true;
+        }
+        catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            local = utc;
+            return false;
+        }
     }
 
     private string LocalTime(DateTimeOffset utc)
@@ -275,6 +430,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
             else if (result.IsSuccess && result.Value is not null)
             {
                 _view = result.Value;
+                await LoadNightlyAsync(generation, cancellation.Token);
             }
             else
             {
@@ -291,6 +447,37 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
             {
                 _isLoading = false;
             }
+        }
+    }
+
+    // Nightly products are recorded against sunrise report dates, so a legacy noon day reads none. The day itself is
+    // shown while they load.
+    private async Task LoadNightlyAsync(long generation, CancellationToken cancellationToken)
+    {
+        _nightly = null;
+        _nightlyMessage = null;
+        _failedPreviews.Clear();
+        if (_view?.Day.Day.SunrisePeriod is null)
+        {
+            _nightlyLoading = false;
+            return;
+        }
+        _nightlyLoading = true;
+        _isLoading = false;
+        StateHasChanged();
+        var result = await NightlyProducts.GetDayAsync(Date, cancellationToken);
+        if (generation != Volatile.Read(ref _generation))
+        {
+            return;
+        }
+        _nightlyLoading = false;
+        if (result.IsSuccess && result.Value is not null)
+        {
+            _nightly = result.Value;
+        }
+        else
+        {
+            _nightlyMessage = result.Message ?? "Nightly products are temporarily unavailable.";
         }
     }
 

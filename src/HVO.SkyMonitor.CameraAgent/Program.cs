@@ -307,6 +307,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentEventEvidenceUiService, CameraAgentEventEvidenceUiService>();
         builder.Services.AddScoped<ICameraAgentTransientOperationsUiService, CameraAgentTransientOperationsUiService>();
         builder.Services.AddScoped<ICameraAgentObservingDayUiService, CameraAgentObservingDayUiService>();
+        builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
@@ -419,6 +420,7 @@ public class Program
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentStillProductEndpoints();
+        app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();

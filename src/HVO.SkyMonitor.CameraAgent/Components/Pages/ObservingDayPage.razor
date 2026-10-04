@@ -2,6 +2,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Automation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
 @using HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
@@ -131,19 +132,125 @@
                 @if (view.Schedule?.ActiveRevisionCaveat == true) { <p class="night-timeline__note">The active schedule was created after this day. Its windows are not a historical admission record.</p> }
             </section>
 
-            <section class="daily-products" aria-label="Generated products">
-                <header><div><p class="eyebrow">Daily derivatives</p><h2>Generated products</h2><p>Timelapse, star trail and keogram generation is not yet available. No capture image is substituted for a product.</p></div><a href="/archive/products">Browse retained outputs</a></header>
-                <div class="product-slots">
-                    @foreach (var slot in ProductSlots)
-                    {
-                        <article class="product-slot product-slot--pending">
-                            <div class="product-slot__media" aria-hidden="true"><i class="bi @slot.Icon"></i></div>
-                            <h3>@slot.Title</h3>
-                            <p>@slot.Description</p>
-                            <span class="hvo-chip hvo-chip--neutral">Not yet produced</span>
+            <section class="daily-products" aria-label="Generated products" aria-busy="@(_nightlyLoading ? "true" : "false")">
+                <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="/archive/products">Browse retained outputs</a></header>
+                @if (view.Day.Day.SunrisePeriod is null)
+                {
+                    <p class="daily-products__note" role="note">Nightly products belong to sunrise report dates, so this noon-to-noon view does not show them. <a href="@SunriseDayUrl">Switch to sunrise periods</a></p>
+                }
+                else if (_nightlyLoading)
+                {
+                    <p class="daily-products__note" role="status">Loading nightly products…</p>
+                }
+                else if (_nightly is null)
+                {
+                    <p class="daily-products__note daily-products__note--warning" role="status"><strong>Nightly product status unavailable.</strong> @_nightlyMessage</p>
+                }
+                else if (view.Day.Day.SunrisePeriod is { } period)
+                {
+                    var sample = _nightly.TimeLapseSample;
+                    <div class="product-slots @(sample is null ? "" : "product-slots--with-sample")">
+                        @foreach (var card in Cards(view, period, _nightly.Day))
+                        {
+                            var label = NightlyProductLinks.KindLabel(card.Kind);
+                            var noun = NightlyProductLinks.KindNoun(card.Kind);
+                            <article class="product-slot" data-product-kind="@noun" data-nightly-state="@card.Badge.CssClass" aria-label="Nightly @noun">
+                                @if (card.Product is { } product)
+                                {
+                                    <a class="product-slot__media" href="@NightlyProductLinks.Detail(product.ProductId)" aria-label="Open the nightly @noun">
+                                        @if (_failedPreviews.Contains(product.ProductId))
+                                        {
+                                            <span class="product-slot__failed"><i class="bi bi-image" aria-hidden="true"></i>Preview unavailable</span>
+                                        }
+                                        else
+                                        {
+                                            <RetainedPreviewImage Source="@NightlyProductLinks.Preview(product.ProductId)" Alt="@($"Nightly {noun} of {DayTitle}")" OnFailure="() => MarkPreviewFailed(product.ProductId)" />
+                                        }
+                                    </a>
+                                }
+                                else
+                                {
+                                    <div class="product-slot__media" aria-hidden="true"><i class="bi @(card.Kind == NightlyProductKind.StarTrail ? "bi-stars" : "bi-bar-chart-steps")"></i></div>
+                                }
+                                <h3>@label</h3>
+                                <p>@ProductFacts(card)</p>
+                                <div class="product-slot__chips">
+                                    <span class="hvo-chip @ChipClass(card.Badge.State)" title="@card.Badge.Description">@ChipLabel(card.Badge.State)</span>
+                                    @if (card.Product is { } detail)
+                                    {
+                                        <a class="product-slot__link" href="@NightlyProductLinks.Detail(detail.ProductId)">Product detail</a>
+                                    }
+                                </div>
+                                @if (card.Hours.Count > 0)
+                                {
+                                    <div class="product-hours">
+                                        <span class="product-hours__label">Hourly: @(card.Hours.Count(static hour => hour.FinalProduct is not null)) of @card.Hours.Count completed hours produced</span>
+                                        <ol aria-label="Hourly @(noun)s">
+                                            @foreach (var hour in card.Hours)
+                                            {
+                                                <li>
+                                                    @if (hour.FinalProduct is { } hourly)
+                                                    {
+                                                        <a href="@NightlyProductLinks.Detail(hourly.ProductId)" title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(card, hour)</a>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(card, hour)</span>
+                                                    }
+                                                </li>
+                                            }
+                                        </ol>
+                                    </div>
+                                }
+                            </article>
+                        }
+                        <article class="product-slot @(sample is null ? "product-slot--pending" : "product-slot--sample")" data-product-kind="time-lapse" aria-label="Night time-lapse">
+                            @if (sample is not null)
+                            {
+                                <div class="product-slot__player">
+                                    <TimeLapsePlayer Source="@sample.Url" MediaType="@sample.MediaType" Width="@sample.Width" Height="@sample.Height" Label="Time-lapse sample, not generated from this night" Caption="@SampleCaption(sample)" />
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="product-slot__media" aria-hidden="true"><i class="bi bi-film"></i></div>
+                            }
+                            <h3>Night time-lapse</h3>
+                            <p>Time-lapse generation is not yet available. @(sample is null ? "Nothing is substituted for it." : "The player shows a configured sample; it was not generated from this night and is not counted as a product.")</p>
+                            <div class="product-slot__chips">
+                                <span class="hvo-chip hvo-chip--neutral">Not yet generated</span>
+                                @if (sample is not null) { <span class="hvo-chip hvo-chip--info">Sample</span> }
+                            </div>
                         </article>
+                    </div>
+                    var otherPeriods = _nightly.Day.OtherPeriods(period.IdentitySha256);
+                    @if (otherPeriods.Count > 0)
+                    {
+                        <div class="daily-products__note daily-products__other" role="note">
+                            <p><strong>Also recorded under another source period.</strong> This report date has evaluations retained under a sunrise period resolved for another site or time-zone rules. They belong to that period, so they are not shown above as this period's products.</p>
+                            <ul>
+                                @foreach (var other in otherPeriods)
+                                {
+                                    <li>
+                                        <span>@ObservingDayPage.OtherPeriodLabel(other)</span>
+                                        <ul>
+                                            @foreach (var kind in ProductKinds)
+                                            {
+                                                var nightly = _nightly.Day.Daily(kind, other.IdentitySha256)?.FinalProduct;
+                                                <li>
+                                                    @NightlyProductLinks.KindLabel(kind): @OtherPeriodFacts(_nightly.Day, other, kind)@if (nightly is not null)
+                                                    {
+                                                        <text> · </text><a href="@NightlyProductLinks.Detail(nightly.ProductId)">Product detail</a>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                    </li>
+                                }
+                            </ul>
+                        </div>
                     }
-                </div>
+                }
             </section>
 
             <div class="day-columns">
