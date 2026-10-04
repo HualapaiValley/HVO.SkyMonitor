@@ -164,6 +164,53 @@ What the indexes show:
   | 1280 × 1280, 30 fps, 12 s H.264 High MP4 | `84e6fad9…c711` | Plays at `readyState` 4 |
   | 480 × 480 GIF | `0fcb0947…2e89` | Loads at 480 × 480 when asked |
 
+### Correction evidence on `7f09c21a`
+
+The host above recorded its deployment site as `issue-1138-evidence-site`. The
+harness generated the products under `issue-993-qualified-site` version 1. The
+coordinates are the same, but the site records differ, so the sunrise-period
+identities differ.
+
+Before the F1 correction, the pages showed those products as the host period's
+own. The first capture therefore itself showed F1.
+
+The recapture used a Release publish of `7f09c21a` and a capture tool with
+SHA-256 `5af17783…53ba`. The evidence is in `/home/roys/.cache/hvo/1138-c1/`.
+Every index has zero browser errors, no horizontal overflow and no clipped
+controls.
+
+| Index | Host | What it shows |
+| --- | --- | --- |
+| `other-period.json` (6 screenshots and 4 checks at 1440 and 390) | The same host and site record as above | See below. |
+| `pages.json` (29 screenshots and 18 checks at 1440, 390 and 320) | A second copy of the harness runtime, configured with the harness's own site record (`issue-993-qualified-site`, source `test`) | See below. |
+
+**`other-period.json`.** The products are listed apart, as F1 requires:
+- The calendar marks S and K "recorded only under another source period".
+- The calendar counts 0 nights and notes "1 night has evaluations under
+  another source period, not counted".
+- The day cards show no image or link.
+- A note names the harness period, with its site, version, coordinates and UTC
+  boundaries, and links to both products.
+
+**`pages.json`.** The host resolves the products' own period, `535A2C16…1346`,
+and shows them as this period's products:
+- Day cards read "Frames 19:42 2 Oct–05:07 3 Oct" and "Frames 06:41 2
+  Oct–06:21 3 Oct" (F3).
+- The validators and the anonymous 401s match the table above.
+
+Three unplayable samples were configured on the second host. Each index holds 2
+screenshots and 2 checks, at 1440 and 390. A capturing listener recorded which
+element raised each error:
+
+| Index | Sample | Error raised on | Result |
+| --- | --- | --- | --- |
+| `corrupt-mp4.json` | 512 KiB of random bytes declared `video/mp4` (`546412f7…7502`) | `<source>`, network state no source | Failed |
+| `corrupt-webm.json` | The VP9 WebM sample, with random bytes from 64 KiB to 4 KiB before its end (`d1b2d57c…523f`) | `<video>`, `MEDIA_ERR_DECODE` (`PIPELINE_ERROR_DECODE`) during playback | Failed |
+| `corrupt-gif.json` | 128 KiB of random bytes declared `image/gif` (`c235ea98…aae5`), once the animation was requested | `<img>` | Failed |
+
+Each failure says "This browser could not play this file" and keeps the
+Download link. No media element remains.
+
 ## Limitations
 
 - The harness produces daily finals only. Hourly evaluation rendering is covered
@@ -198,13 +245,16 @@ What the indexes show:
     that share their UTC boundaries. The calendar badge and day page name
     another period's evaluations without counting or showing them as the
     period's products. Each date's period is resolved as the generator
-    resolves it, so a product whose captures have expired keeps its date.
+    resolves it, so a product whose captures have expired keeps its date. The
+    private-host recapture shows both presentations.
   - **F2.** A no-source reevaluation over a real store leaves the published
     final not current, with no other output. The page then claims no
     replacement, and a non-current sibling is not taken as one.
-  - **F3.** A nightly card spanning two local dates shows both dates.
+  - **F3.** A nightly card spanning two local dates shows both dates. The
+    private-host recapture shows this for the real products.
   - **F4.** Errors raised on `<video>`, `<source>` and the revealed `<img>`
-    each replace the player and keep the download.
+    each replace the player and keep the download. Three corrupt samples on the
+    private host fail this way, one on each element.
   - **F5.** Wording only.
 - **Gate.** `scripts/ci:classify` on `1204a0fe...` selected `mode=full
   complete=false cameraagent=true combined=true`. The classifier output, the
