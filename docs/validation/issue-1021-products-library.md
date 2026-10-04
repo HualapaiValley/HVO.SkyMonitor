@@ -309,3 +309,29 @@ findings. Commit `bf208a79` corrects both.
     now expects the Partial reason, and no period note on current cards.
 - Fail before: with these tests on `e88d7a8f`'s `src/`, the three tests fail
   and the other 20 in the class pass. With `bf208a79`'s `src/`, all 23 pass.
+  The red/green run builds a separate clone and is in the review evidence.
+- Gates on the correction, with the Development v1 target profile unchanged:
+  - `./scripts/ci:classify pull_request e88d7a8f bf208a79`: `mode=full
+    complete=false cameraagent=true combined=false paths=4`. Over the whole PR,
+    `171d6b57..bf208a79` gives `combined=true paths=26`: the 25 paths reviewed
+    at `e88d7a8f` plus `ArchiveCalendarPage.razor.cs`;
+  - at `bf208a79`: Debug and Release builds with `-warnaserror`,
+    `dotnet format --verify-no-changes`, the four CI-control guards (154 shell
+    files, Bash 5.2.21) and `./scripts/docs:audit-operations`;
+  - the complete Docker-disabled Unit selection at `bf208a79`: 5785 total,
+    5778 passed, 7 skipped, 0 failed. CameraAgent ran 3320 passed and 1
+    skipped;
+  - the test-category audit at `bf208a79` failed. CameraAgent Unit discovery
+    was 3321 against an inventory of 3319, because the two new tests were not
+    counted. `d7f404fd` updates the inventory and the totals in
+    `docs/runbooks/ci-pipeline.md`. The audit there passes with `Unit=5785`,
+    `Integration=684`, `Manual=167`, `Soak=1`, `External=0` and `Hardware=1`,
+    as do the docs audit and `./scripts/test:ci-classification`.
+  - the classifier-selected CameraAgent component lane at `d7f404fd`, using
+    the `ci.yml` filters, coverage settings and TRX names: Unit 3320 passed and
+    1 skipped (macOS only), acceptance Unit 27 passed, storage integration 221
+    passed, standalone integration 7 passed, the integration-tests assembly 22
+    passed, `ci:component-publish cameraagent` 264 files and the replay runner
+    206 files, and `coverage:component cameraagent` passed at line 85.29 % and
+    branch 67.20 %. The correction delta does not select the combined lane; its
+    Unit assembly passed 69 in the complete Unit selection.
