@@ -12,7 +12,9 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// products of a sunrise period (#1138; the time-lapse stays "not yet generated" until #1130),
 /// candidates and automation runs. Product cards read only evaluations retained under the displayed
 /// period; another period of the same report date, such as one resolved for an earlier site, is
-/// listed separately under its own site and boundaries.
+/// listed separately under its own site and boundaries. Each product is an equal-sized thumbnail tile
+/// that opens one shared viewer with the larger image or player beside its details (#1148), so more
+/// artifact kinds can join the row without widening it.
 /// </summary>
 public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
 {
@@ -41,6 +43,9 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     private string? _nightlyMessage;
     private bool _nightlyLoading;
     private readonly HashSet<Guid> _failedPreviews = [];
+    // The tile whose viewer is open: a nightly product kind, or the time-lapse sample when no kind is set.
+    private NightlyProductKind? _viewerKind;
+    private bool _viewerOpen;
     private string? _errorMessage;
     private bool _isLoading = true;
     private bool _invalidDate;
@@ -102,8 +107,56 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
             ArchiveCalendarPage.Badge(kind, summary, otherPeriod, unavailable: false, pending: periodOpen), daily, hours);
     }
 
-    private IEnumerable<ProductCard> Cards(CameraAgentObservingDayView view, SunriseReportingPeriod period, NightlyProductDay day)
-        => ProductKinds.Select(kind => Card(day, kind, period, Clock.GetUtcNow() < view.Day.Day.EndUtc));
+    private List<ProductCard> Cards(CameraAgentObservingDayView view, SunriseReportingPeriod period, NightlyProductDay day)
+        => ProductKinds.Select(kind => Card(day, kind, period, Clock.GetUtcNow() < view.Day.Day.EndUtc)).ToList();
+
+    internal const string TimeLapseTileId = "product-tile-time-lapse";
+
+    internal static string TileId(NightlyProductKind kind) => "product-tile-" + NightlyProductLinks.KindNoun(kind).Replace(' ', '-');
+
+    private static string KindIcon(NightlyProductKind kind) => kind == NightlyProductKind.StarTrail ? "bi-stars" : "bi-bar-chart-steps";
+
+    // A tile opens only when its viewer adds something: the larger image, or the hours behind a missing nightly product.
+    private static bool CanOpen(ProductCard card) => card.Product is not null || card.Hours.Count > 0;
+
+    private static string HourlySummary(ProductCard card) => FormattableString.Invariant(
+        $"Hourly: {card.Hours.Count(static hour => hour.FinalProduct is not null)} of {card.Hours.Count} completed hours produced");
+
+    private void OpenViewer(NightlyProductKind kind)
+    {
+        _viewerKind = kind;
+        _viewerOpen = true;
+    }
+
+    private void OpenTimeLapse()
+    {
+        _viewerKind = null;
+        _viewerOpen = true;
+    }
+
+    private void ViewerOpenChanged(bool open) => _viewerOpen = open;
+
+    private bool ViewerOpen(ProductCard? viewed, CameraAgentTimeLapseSampleView? sample)
+        => _viewerOpen && (viewed is not null || (_viewerKind is null && sample is not null));
+
+    private string ViewerTriggerId => _viewerKind is { } kind ? TileId(kind) : TimeLapseTileId;
+
+    private string ViewerTitle(ProductCard? viewed) => viewed is null
+        ? "Night time-lapse sample"
+        : $"{NightlyProductLinks.KindLabel(viewed.Kind)} · {DayTitle}";
+
+    // The viewer shows the product's own preview, and nothing in its place once that preview has failed.
+    private Uri? ViewerSource(ProductCard? viewed) => viewed?.Product is { } product && !_failedPreviews.Contains(product.ProductId)
+        ? new Uri(NightlyProductLinks.Preview(product.ProductId), UriKind.Relative)
+        : null;
+
+    private void MarkViewedPreviewFailed(Guid? productId)
+    {
+        if (productId is { } id)
+        {
+            _failedPreviews.Add(id);
+        }
+    }
 
     /// <summary>
     /// What another retained period of the report date holds for one kind, from its own evaluations only: its nightly
@@ -413,6 +466,8 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         }
         _isLoading = true;
         _errorMessage = null;
+        _viewerOpen = false;
+        _viewerKind = null;
         try
         {
             var result = CalendarVersion is null
