@@ -171,6 +171,12 @@ public sealed class CameraAgentStillProductEndpointsTests
             => Read<NightlyProductRendition>();
         public ValueTask<NightlyProductProvenance?> OpenProvenanceAsync(Guid productId, CancellationToken cancellationToken)
             => Read<NightlyProductProvenance>();
+        public ValueTask<IReadOnlyList<NightlyProductDateSummary>> SummarizeDatesAsync(DateOnly firstDate, DateOnly lastDate,
+            CancellationToken cancellationToken) => ValueTask.FromResult<IReadOnlyList<NightlyProductDateSummary>>([]);
+        public ValueTask<NightlyProductDay> GetDayAsync(DateOnly observingDate, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new NightlyProductDay(observingDate, [], []));
+        public ValueTask<NightlyProductPresentation?> GetPresentationAsync(Guid productId, CancellationToken cancellationToken)
+            => Read<NightlyProductPresentation>();
         private ValueTask<T?> Read<T>() where T : class => Failure is { } failure ? throw failure : ValueTask.FromResult<T?>(null);
     }
 }

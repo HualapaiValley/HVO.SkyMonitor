@@ -201,4 +201,16 @@ public interface INightlyProductCatalog
 
     /// <summary>Returns the checksum-verified JPEG rendition, or null when the product does not exist.</summary>
     ValueTask<NightlyProductRendition?> OpenRenditionAsync(Guid productId, CancellationToken cancellationToken);
+
+    /// <summary>Summarizes recorded final evaluations per report date and kind over an inclusive date range.</summary>
+    ValueTask<IReadOnlyList<NightlyProductDateSummary>> SummarizeDatesAsync(
+        DateOnly firstDate,
+        DateOnly lastDate,
+        CancellationToken cancellationToken);
+
+    /// <summary>Returns every recorded evaluation of one report date joined to its current products.</summary>
+    ValueTask<NightlyProductDay> GetDayAsync(DateOnly observingDate, CancellationToken cancellationToken);
+
+    /// <summary>Returns a product with its axis, lineage frame count and other outputs, or null when it does not exist.</summary>
+    ValueTask<NightlyProductPresentation?> GetPresentationAsync(Guid productId, CancellationToken cancellationToken);
 }
