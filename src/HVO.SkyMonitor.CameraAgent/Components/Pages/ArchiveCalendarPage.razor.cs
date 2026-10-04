@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -8,13 +9,16 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <summary>
 /// The observing calendar as a month grid (#988, prototype <c>calendar.html</c>). Weeks start on
 /// Sunday; the grid always covers whole weeks so the month's leading and trailing days from the
-/// neighbouring months are shown muted. Every cell links to the observing-day page.
+/// neighbouring months are shown muted. Every cell links to the observing-day page. Nightly product badges (#1138)
+/// come from recorded evaluations and are shown only in the sunrise-period view, whose report dates they share.
 /// </summary>
 public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposable
 {
     internal static readonly string[] Weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCalendar? _calendar;
+    private Dictionary<(DateOnly Date, NightlyProductKind Kind), NightlyProductDateSummary> _nightly = [];
+    private bool _nightlyUnavailable;
     private string? _errorMessage;
     private readonly HashSet<Guid> _failedThumbnails = [];
     private bool _isLoading = true;
@@ -24,10 +28,30 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal IObservingDayCalendarProvider ObservingDays { get; set; } = default!;
+    [Inject] internal ICameraAgentNightlyProductUiService NightlyProducts { get; set; } = default!;
     [Parameter, SupplyParameterFromQuery(Name = "month")] public string? Month { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "calendar")] public string? CalendarVersion { get; set; }
 
     internal sealed record CalendarCell(DateOnly Date, bool InMonth, bool IsToday, CameraAgentGalleryCalendarDay? Day);
+
+    internal enum NightlyBadgeState { Produced, Partial, NotProduced, Pending, NotGenerated, Unavailable }
+
+    internal sealed record NightlyBadge(string Letter, NightlyBadgeState State, string Description)
+    {
+        internal string CssClass => State switch
+        {
+            NightlyBadgeState.Produced => "available",
+            NightlyBadgeState.Partial => "partial",
+            NightlyBadgeState.NotProduced => "unavailable not-produced",
+            _ => "unavailable"
+        };
+    }
+
+    private static readonly NightlyProductKind[] BadgeKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
+
+    private const string TimeLapseDescription = "Time-lapse not yet generated";
+
+    private bool ShowsNightlyProducts => _calendar?.CalendarVersion == SunriseReportingPeriod.CurrentVersion;
 
     private ObservingDayCalendar SelectedCalendar => CalendarVersion == ObservingDayCalendar.LegacyNoonVersion
         ? ObservingDays.Current.LegacyNoon : ObservingDays.Current;
@@ -104,6 +128,60 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
 
     private int ObservedNights => MonthDays.Count(static day => day.CaptureCount > 0);
 
+    private int NightlyProductNights => _nightly.Values
+        .Where(summary => summary.ObservingDate.Month == MonthStart.Month && summary.ObservingDate.Year == MonthStart.Year &&
+            summary.DailyProductId is not null)
+        .Select(static summary => summary.ObservingDate).Distinct().Count();
+
+    private int NightlyProductCount(NightlyProductKind kind) => _nightly.Values.Count(summary =>
+        summary.Kind == kind && summary.DailyProductId is not null &&
+        summary.ObservingDate.Month == MonthStart.Month && summary.ObservingDate.Year == MonthStart.Year);
+
+    private bool HasNightlyRecord(DateOnly date) => BadgeKinds.Any(kind => _nightly.ContainsKey((date, kind)));
+
+    private IReadOnlyList<NightlyBadge> Badges(CalendarCell cell) => [.. BadgeKinds.Select(kind => Badge(kind,
+        _nightly.GetValueOrDefault((cell.Date, kind)), _nightlyUnavailable, IsPending(cell.Date)))];
+
+    // The current period cannot have a daily product before its closing sunrise, and later dates have no period yet.
+    private bool IsPending(DateOnly date) => HasCurrentReportingPeriod && date >= LatestObservingDay;
+
+    /// <summary>
+    /// One kind's badge on one report date. A daily final lights it; hourly finals alone are partial; a recorded daily
+    /// evaluation without a product keeps its reason; anything else is pending or not generated. Nothing is inferred.
+    /// </summary>
+    internal static NightlyBadge Badge(NightlyProductKind kind, NightlyProductDateSummary? summary, bool unavailable, bool pending)
+    {
+        var label = NightlyProductLinks.KindLabel(kind);
+        var noun = NightlyProductLinks.KindNoun(kind);
+        var letter = kind == NightlyProductKind.StarTrail ? "S" : "K";
+        var hourly = summary is { HourlyProduced: > 0 } produced
+            ? FormattableString.Invariant($"{produced.HourlyProduced} hourly {noun}{(produced.HourlyProduced == 1 ? "" : "s")}")
+            : null;
+        if (unavailable)
+        {
+            return new(letter, NightlyBadgeState.Unavailable, $"{label} status unavailable");
+        }
+        if (summary?.DailyProductId is not null)
+        {
+            return new(letter, NightlyBadgeState.Produced, $"Nightly {noun} produced" + (hourly is null ? "" : $", {hourly}"));
+        }
+        if (hourly is not null)
+        {
+            return new(letter, NightlyBadgeState.Partial, pending
+                ? $"{hourly} so far; the nightly {noun} is due after the period ends"
+                : $"Partial: {hourly}, no nightly {noun}");
+        }
+        return summary?.DailyDisposition switch
+        {
+            NightlyProductWindowDisposition.NoSources => new(letter, NightlyBadgeState.NotProduced,
+                $"{label} not produced: no admitted frames"),
+            NightlyProductWindowDisposition.Rejected => new(letter, NightlyBadgeState.NotProduced,
+                $"{label} not produced: rejected ({summary.DailyReasonCode ?? "no reason recorded"})"),
+            _ when pending => new(letter, NightlyBadgeState.Pending, $"{label} pending; the period has not ended"),
+            _ => new(letter, NightlyBadgeState.NotGenerated, $"{label} not generated")
+        };
+    }
+
     private long TotalCandidates => MonthDays.Sum(static day => day.CandidateCount);
 
     private void MarkThumbnailFailed(Guid captureId) => _failedThumbnails.Add(captureId);
@@ -136,10 +214,17 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             ? FormattableString.Invariant($"{day.CaptureCount:N0} capture{(day.CaptureCount == 1 ? "" : "s")}")
             : "No retained captures";
 
-    private static string CellAriaLabel(CalendarCell cell, bool missingThumbnail)
-        => cell.Day is { CaptureCount: > 0 } day
+    private string CellAriaLabel(CalendarCell cell, bool missingThumbnail)
+    {
+        var label = cell.Day is { CaptureCount: > 0 } day
             ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates{(missingThumbnail ? ", preview unavailable" : string.Empty)}")
             : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no retained captures");
+        return ShowsBadges(cell)
+            ? label + ". " + string.Join(". ", Badges(cell).Select(static badge => badge.Description)) + ". " + TimeLapseDescription
+            : label;
+    }
+
+    private bool ShowsBadges(CalendarCell cell) => ShowsNightlyProducts && (cell.Day is { CaptureCount: > 0 } || HasNightlyRecord(cell.Date));
 
     internal static string DayUrl(DateOnly date) => FormattableString.Invariant($"/archive/day/{date:yyyy-MM-dd}");
 
@@ -177,12 +262,21 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         _errorMessage = null;
         try
         {
+            // Only a sunrise calendar shares the products' report dates; any other view neither shows nor reads them.
+            var nightlyRead = SelectedCalendar.CalendarVersion != SunriseReportingPeriod.CurrentVersion
+                ? null
+                : NightlyProducts.SummarizeAsync(GridStart, GridEnd, cancellation.Token).AsTask();
             var result = await OperatorService.GetArchiveCalendarAsync(
                 new CameraAgentGalleryCalendarQuery(GridStart, GridEnd, CalendarVersion: CalendarVersion), cancellation.Token);
+            var nightly = nightlyRead is null ? null : await nightlyRead;
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
             }
+            _nightly = nightly is { IsSuccess: true, Value: { } summaries }
+                ? summaries.ToDictionary(static summary => (summary.ObservingDate, summary.Kind))
+                : [];
+            _nightlyUnavailable = nightly is { IsSuccess: false };
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 _calendar = null;

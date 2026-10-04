@@ -1,6 +1,7 @@
 @page "/archive/calendar"
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -10,7 +11,7 @@
 
 <div class="calendar-page">
     <header class="calendar-heading">
-        <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions and local detection candidates. Product and schedule coverage are shown only when verified.</p></div>
+        <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions, nightly products and local detection candidates. Products and schedule coverage are shown only when recorded.</p></div>
         @if (HasCurrentReportingPeriod)
         {
             <a class="btn btn-outline-light" href="@SelectedDayUrl(LatestObservingDay)">Latest observing day</a>
@@ -44,6 +45,16 @@
         @if (_calendar.TimeZoneFallback)
         {
             <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Legacy noon view uses UTC" Message="No deployment time zone is configured. This explicitly selected legacy view uses noon-to-noon UTC; it does not qualify sunrise products." />
+        }
+        @if (!ShowsNightlyProducts)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="Nightly products hidden" Message="Nightly products belong to sunrise-to-sunrise periods, so this view does not show their badges.">
+                <a class="btn btn-outline-light btn-sm" href="@SunriseCalendarUrl">Switch to sunrise periods</a>
+            </PageStateNotice>
+        }
+        else if (_nightlyUnavailable)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Nightly product status unavailable" Message="Captures are shown, but nightly product badges could not be read. They are marked unavailable, not missing." />
         }
 
         <section class="observing-calendar" aria-label="Observing days">
@@ -88,13 +99,21 @@
                                 <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
                             }
                             <span class="calendar-day__details"><small>@CellSummary(cell)@(missingThumbnail ? " / preview unavailable" : string.Empty)</small>
-                                @if (hasSession)
+                                @if (hasSession || ShowsBadges(cell))
                                 {
                                     <span class="calendar-products" aria-hidden="true">
-                                        <i class="unavailable" title="Time-lapse availability not projected">T</i>
-                                        <i class="unavailable" title="Star-trail availability not projected">S</i>
-                                        <i class="unavailable" title="Keogram availability not projected">K</i>
-                                        <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                        @if (ShowsNightlyProducts)
+                                        {
+                                            <i class="unavailable" title="@TimeLapseDescription">T</i>
+                                            @foreach (var badge in Badges(cell))
+                                            {
+                                                <i class="@badge.CssClass" title="@badge.Description" data-nightly-state="@badge.State">@badge.Letter</i>
+                                            }
+                                        }
+                                        @if (hasSession)
+                                        {
+                                            <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                        }
                                     </span>
                                 }
                             </span>
@@ -106,15 +125,33 @@
         <div class="calendar-legend" aria-label="Calendar key">
             <span><i class="calendar-legend__session" aria-hidden="true"></i>Retained captures</span>
             <span><i class="calendar-legend__event" aria-hidden="true"></i>Local detection candidate</span>
-            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Coverage and nightly products unavailable</span>
-            <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate; muted badges are unavailable, not produced</span>
+            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Not generated or unavailable</span>
+            @if (ShowsNightlyProducts)
+            {
+                <span class="calendar-legend__badges">T time-lapse (not yet generated) · S star trail · K keogram · ! local candidate. <i class="calendar-legend__produced" aria-hidden="true"></i> nightly product · <i class="calendar-legend__partial" aria-hidden="true"></i> hourly only · struck through: evaluated, not produced</span>
+            }
+            else
+            {
+                <span class="calendar-legend__badges">! local candidate; nightly product badges appear in the sunrise-period view</span>
+            }
             <span>@(_calendar.CalendarVersion == SunriseReportingPeriod.CurrentVersion ? "Report date names the starting sunrise; the period ends at the following sunrise." : "Legacy noon association: 12:00 to 12:00") @(_calendar.TimeZoneFallback ? "UTC" : _calendar.TimeZoneId)</span>
         </div>
 
         <section class="calendar-summary" aria-label="Month summary">
             <article><p class="eyebrow">Nights with captures</p><strong>@ObservedNights</strong><small>@(DateTime.DaysInMonth(MonthStart.Year, MonthStart.Month) - ObservedNights) without retained captures</small></article>
             <article><p class="eyebrow">Capture coverage</p><strong>Unavailable</strong><small>Expected schedule not projected</small></article>
-            <article><p class="eyebrow">Generated products</p><strong>—</strong><small>Nightly products are not yet generated</small></article>
+            @if (!ShowsNightlyProducts)
+            {
+                <article><p class="eyebrow">Nightly products</p><strong>—</strong><small>Shown in the sunrise-period view</small></article>
+            }
+            else if (_nightlyUnavailable)
+            {
+                <article><p class="eyebrow">Nightly products</p><strong>Unavailable</strong><small>Nightly product status could not be read</small></article>
+            }
+            else
+            {
+                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram; time-lapse not yet generated</small></article>
+            }
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>
         </section>
     }

@@ -1,6 +1,7 @@
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
@@ -101,7 +102,8 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("/archive/day/2026-07-21", observedNight.QuerySelector("a")!.GetAttribute("href"));
             Assert.AreEqual($"/api/v1/operations/gallery/{representative:D}/thumbnail", observedNight.QuerySelector("img.calendar-thumb")!.GetAttribute("src"));
             Assert.IsNotNull(observedNight.QuerySelector(".calendar-products i.event"));
-            Assert.HasCount(3, observedNight.QuerySelectorAll(".calendar-products i.unavailable"));
+            // The legacy noon view does not share the products' report dates, so it shows no product badges.
+            Assert.HasCount(1, observedNight.QuerySelectorAll(".calendar-products i"));
             Assert.AreEqual("true", observedNight.QuerySelector(".calendar-products")!.GetAttribute("aria-hidden"));
             var empty = cells[24];
             Assert.IsTrue(empty.ClassList.Contains("calendar-day--empty"));
@@ -116,10 +118,12 @@ public sealed class ArchivePagesTests
             StringAssert.Contains(summary, "Capture coverageUnavailable", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Expected schedule not projected", StringComparison.Ordinal);
             StringAssert.Contains(summary, "Detected candidates1", StringComparison.Ordinal);
-            StringAssert.Contains(summary, "not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "Shown in the sunrise-period view", StringComparison.Ordinal);
             Assert.IsNotNull(cut.Find(".calendar-legend__unavailable"));
-            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "T time-lapse", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "muted badges are unavailable", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".calendar-legend__badges").TextContent, "sunrise-period view", StringComparison.Ordinal);
+            var hidden = cut.FindAll(".page-state").Single(notice => notice.TextContent.Contains("Nightly products hidden", StringComparison.Ordinal));
+            StringAssert.Contains(hidden.QuerySelector("a")!.GetAttribute("href"), "calendar=" + SunriseReportingPeriod.CurrentVersion, StringComparison.Ordinal);
+            Assert.IsEmpty(Nightly(context).Summaries);
             Assert.IsFalse(cut.Find(".calendar-legend").ParentElement!.ClassList.Contains("observing-calendar"));
             Assert.IsFalse(cut.Markup.Contains("UTC days", StringComparison.Ordinal));
         });
@@ -127,6 +131,87 @@ public sealed class ArchivePagesTests
         StringAssert.Contains(nav[0], "month=2026-06", StringComparison.Ordinal);
         StringAssert.Contains(nav[1], "month=2026-08", StringComparison.Ordinal);
         StringAssert.Contains(nav[2], "month=2026-07", StringComparison.Ordinal);
+    }
+
+    private static readonly int[] SunriseNights = [19, 20, 21, 22];
+    private static readonly int[] BadgeCells = [12, 21, 22, 23, 24];
+
+    [TestMethod]
+    public void Calendar_SunriseViewShowsOnlyRecordedNightlyProductStates()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var calendar = ObservingDayCalendar.ForDeployment(DeploymentLocationSnapshot.Create("site", 1, "test", null,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, 35.347, -113.878, 1000, "America/Phoenix"));
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar));
+        service.CalendarHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(
+            calendar.TimeZoneId, false,
+            [.. SunriseNights.Select(day => calendar.Resolve(new DateOnly(2026, 7, day)))
+                .Select(night => new CameraAgentGalleryCalendarDay(night, 5, 0, night.StartUtc, night.EndUtc))],
+            calendar.CalendarVersion)));
+        var nightly = Nightly(context);
+        nightly.SummaryHandler = (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Success(
+        [
+            new(new DateOnly(2026, 7, 10), NightlyProductKind.StarTrail, Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 0, 0),
+            new(new DateOnly(2026, 7, 19), NightlyProductKind.StarTrail, Guid.NewGuid(), NightlyProductWindowDisposition.Produced, null, 3, 0),
+            new(new DateOnly(2026, 7, 19), NightlyProductKind.Keogram, null, NightlyProductWindowDisposition.Rejected, "nightly.output-bound", 0, 0),
+            new(new DateOnly(2026, 7, 20), NightlyProductKind.StarTrail, null, null, null, 2, 1),
+            new(new DateOnly(2026, 7, 20), NightlyProductKind.Keogram, null, NightlyProductWindowDisposition.NoSources, "nightly.no-sources", 0, 0),
+            new(new DateOnly(2026, 7, 22), NightlyProductKind.StarTrail, null, null, null, 1, 0)
+        ]);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/archive/calendar?month=2026-07");
+
+        var cut = context.Render<ArchiveCalendarPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual((new DateOnly(2026, 6, 28), new DateOnly(2026, 8, 1)), nightly.Summaries.Last());
+            var cells = cut.FindAll(".calendar-day");
+            (string State, string Title) Badge(int index, string letter)
+            {
+                var badge = cells[index].QuerySelectorAll(".calendar-products i[data-nightly-state]").Single(item => item.TextContent == letter);
+                return (badge.GetAttribute("data-nightly-state")!, badge.GetAttribute("title")!);
+            }
+            // 1 July is index 3 of the grid.
+            Assert.AreEqual(("Produced", "Nightly star trail produced, 3 hourly star trails"), Badge(21, "S"));
+            Assert.AreEqual(("NotProduced", "Keogram not produced: rejected (nightly.output-bound)"), Badge(21, "K"));
+            Assert.IsTrue(cells[21].QuerySelector("i[data-nightly-state='NotProduced']")!.ClassList.Contains("not-produced"));
+            Assert.AreEqual(("Partial", "Partial: 2 hourly star trails, no nightly star trail"), Badge(22, "S"));
+            Assert.AreEqual(("NotProduced", "Keogram not produced: no admitted frames"), Badge(22, "K"));
+            Assert.AreEqual(("NotGenerated", "Star trail not generated"), Badge(23, "S"));
+            Assert.AreEqual(("NotGenerated", "Keogram not generated"), Badge(23, "K"));
+            // The current period (22 July) cannot have a nightly product before its closing sunrise.
+            Assert.AreEqual(("Partial", "1 hourly star trail so far; the nightly star trail is due after the period ends"), Badge(24, "S"));
+            Assert.AreEqual(("Pending", "Keogram pending; the period has not ended"), Badge(24, "K"));
+            // A product outlives its retained captures and still belongs to its own report date.
+            Assert.AreEqual(("Produced", "Nightly star trail produced"), Badge(12, "S"));
+            Assert.IsNull(cells[12].QuerySelector(".calendar-products i.event, .calendar-products i[title*='candidate']"));
+            Assert.IsEmpty(cells[13].QuerySelectorAll(".calendar-products i"));
+            foreach (var index in BadgeCells)
+            {
+                var timeLapse = cells[index].QuerySelectorAll(".calendar-products i").Single(item => item.TextContent == "T");
+                Assert.AreEqual("unavailable", timeLapse.ClassName);
+                Assert.AreEqual("Time-lapse not yet generated", timeLapse.GetAttribute("title"));
+            }
+            StringAssert.Contains(cells[21].QuerySelector("a")!.GetAttribute("aria-label"), "Nightly star trail produced", StringComparison.Ordinal);
+            StringAssert.Contains(cells[21].QuerySelector("a")!.GetAttribute("aria-label"), "Time-lapse not yet generated", StringComparison.Ordinal);
+            var summary = cut.Find(".calendar-summary").TextContent;
+            StringAssert.Contains(summary, "Nights with nightly products2", StringComparison.Ordinal);
+            StringAssert.Contains(summary, "2 star trail · 0 keogram; time-lapse not yet generated", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("Nightly products hidden", StringComparison.Ordinal));
+        });
+
+        nightly.SummaryHandler = (_, _) => OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>.Failure(
+            OperatorUiResultKind.Unavailable, "Nightly products are temporarily unavailable.");
+        var unavailable = context.Render<ArchiveCalendarPage>();
+        unavailable.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(unavailable.Find(".page-state--warning").TextContent, "Nightly product status unavailable", StringComparison.Ordinal);
+            var badges = unavailable.FindAll(".calendar-products i[data-nightly-state]");
+            Assert.IsNotEmpty(badges);
+            Assert.IsTrue(badges.All(static badge => badge.GetAttribute("data-nightly-state") == "Unavailable"));
+            StringAssert.Contains(unavailable.Find(".calendar-summary").TextContent, "Nightly productsUnavailable", StringComparison.Ordinal);
+        });
     }
 
     [TestMethod]
@@ -651,8 +736,12 @@ public sealed class ArchivePagesTests
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(Phoenix));
+        context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(new TestNightlyProductUiService());
         return service;
     }
+
+    private static TestNightlyProductUiService Nightly(BunitContext context) =>
+        (TestNightlyProductUiService)context.Services.GetRequiredService<ICameraAgentNightlyProductUiService>();
 
     private static CameraAgentProduct Product(Guid artifactId) => new(
         artifactId,
