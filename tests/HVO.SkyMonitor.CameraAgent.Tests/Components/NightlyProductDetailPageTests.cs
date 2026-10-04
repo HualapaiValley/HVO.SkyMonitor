@@ -76,6 +76,10 @@ public sealed class NightlyProductDetailPageTests
         var strip = cut.Find(".keogram-axis");
         Assert.AreEqual("planned", strip.GetAttribute("data-axis"));
         StringAssert.Contains(strip.GetAttribute("aria-label"), "1 gap.", StringComparison.Ordinal);
+        // The period spans two local dates, so the span names both.
+        StringAssert.Contains(strip.GetAttribute("aria-label"), "from " +
+            window.StartUtc.ToOffset(Mst).ToString("HH:mm dd MMM", System.Globalization.CultureInfo.InvariantCulture) + " to " +
+            window.EndUtc.ToOffset(Mst).ToString("HH:mm dd MMM", System.Globalization.CultureInfo.InvariantCulture) + ";", StringComparison.Ordinal);
         var drawn = cut.Find(".keogram-axis__gap");
         StringAssert.StartsWith(drawn.GetAttribute("style"), FormattableString.Invariant($"left: {6000.0 / width:0.###}%;"), StringComparison.Ordinal);
         var labels = cut.FindAll(".keogram-axis__tick").Select(static tick => tick.TextContent).ToList();
@@ -108,12 +112,22 @@ public sealed class NightlyProductDetailPageTests
         var older = current with { ProductId = Guid.NewGuid(), IsCurrent = false, CreatedUtc = current.CreatedUtc.AddHours(-1) };
         var presentation = Presentation(occurrence, NightlyProductKind.Keogram, axis, sources: 75,
             scope: NightlyProductScope.Segment, isCurrent: false, others: [current, older]);
+        // Daylight exposures sum to milliseconds; the total must not round to zero.
+        presentation = presentation with
+        {
+            Detail = presentation.Detail with { Summary = presentation.Detail.Summary with { TotalIntegration = TimeSpan.FromMilliseconds(32.5) } }
+        };
         nightly.PresentationHandler = _ => OperatorUiResult<NightlyProductPresentation>.Success(presentation);
 
         var cut = context.Render<NightlyProductDetailPage>(parameters => parameters.Add(page => page.ProductId, presentation.Detail.Summary.ProductId));
 
         cut.WaitForAssertion(() => Assert.AreEqual("Keogram segment part 1", cut.Find("h1").TextContent));
         Assert.AreEqual("actual", cut.Find(".keogram-axis").GetAttribute("data-axis"));
+        var summary = cut.Find(".axis-summary").TextContent;
+        StringAssert.Contains(summary, "75 frames from " + start.ToOffset(Mst).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture) + " to " +
+            frames[^1].ObservationStartedUtc.ToOffset(Mst).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture) + "; 0 rendered gaps.", StringComparison.Ordinal);
+        Assert.DoesNotContain("not linear", summary, StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".product-provenance").TextContent, "Total integration32.5 ms", StringComparison.Ordinal);
         var ticks = cut.FindAll(".keogram-axis__tick");
         Assert.HasCount(NightlyProductDetailPage.MaximumTicks, ticks);
         StringAssert.StartsWith(ticks[0].GetAttribute("style"), "left: 0.667%", StringComparison.Ordinal);

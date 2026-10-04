@@ -352,9 +352,9 @@ public sealed class ArchivePagesTests
         var emptyHour = NightlyDayFixture.Hour(NightlyProductKind.StarTrail, NightlyDayFixture.FirstHourUtc.AddHours(1));
         Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
         [
-            NightlyDayFixture.Produced(dailyOccurrence, daily, candidates: 14, admitted: 12),
+            NightlyDayFixture.Produced(dailyOccurrence, daily, candidates: 12, admitted: 12),
             NightlyDayFixture.Produced(producedHour, hourly, candidates: 5, admitted: 5),
-            NightlyDayFixture.Without(emptyHour, NightlyProductKind.StarTrail, NightlyProductWindowDisposition.NoSources, candidates: 3),
+            NightlyDayFixture.Without(emptyHour, NightlyProductKind.StarTrail, NightlyProductWindowDisposition.NoSources, candidates: 0),
             NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
                 NightlyProductWindowDisposition.NoSources, candidates: 0)
         ], [daily, hourly]), new CameraAgentTimeLapseSampleView("/api/v1/operations/time-lapse-sample", "video/mp4", 1280, 1280)));
@@ -367,21 +367,23 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("available", starTrail.GetAttribute("data-nightly-state"));
             Assert.AreEqual($"/api/v1/operations/still-products/{daily.ProductId:D}/preview", starTrail.QuerySelector("img")!.GetAttribute("src"));
             Assert.AreEqual($"/archive/products/nightly/{daily.ProductId:D}", starTrail.QuerySelector(".product-slot__link")!.GetAttribute("href"));
-            StringAssert.Contains(starTrail.TextContent, "12 of 14 frames admitted", StringComparison.Ordinal);
+            StringAssert.Contains(starTrail.TextContent, "from 12 segment products", StringComparison.Ordinal);
+            Assert.DoesNotContain("frames admitted", starTrail.TextContent, StringComparison.Ordinal);
             StringAssert.Contains(starTrail.TextContent, "640 × 480", StringComparison.Ordinal);
             StringAssert.Contains(starTrail.QuerySelector(".hvo-chip")!.TextContent, "Produced", StringComparison.Ordinal);
             StringAssert.Contains(starTrail.TextContent, "Hourly: 1 of 2 completed hours produced", StringComparison.Ordinal);
             var hours = starTrail.QuerySelectorAll(".product-hours li");
             Assert.HasCount(2, hours);
             Assert.AreEqual($"/archive/products/nightly/{hourly.ProductId:D}", hours[0].QuerySelector("a")!.GetAttribute("href"));
+            StringAssert.Contains(hours[0].QuerySelector("a")!.GetAttribute("title"), "produced from 5 segment products", StringComparison.Ordinal);
             Assert.IsNull(hours[1].QuerySelector("a"));
-            StringAssert.Contains(hours[1].QuerySelector("span")!.GetAttribute("title"), "not produced, none of 3 retained frames was admitted",
+            StringAssert.Contains(hours[1].QuerySelector("span")!.GetAttribute("title"), "not produced, no segment window admitted a frame",
                 StringComparison.Ordinal);
 
             var keogram = cut.Find("[data-product-kind='keogram']");
             Assert.AreEqual("unavailable not-produced", keogram.GetAttribute("data-nightly-state"));
             Assert.IsNull(keogram.QuerySelector("img"));
-            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no frames were retained in the window.", StringComparison.Ordinal);
+            StringAssert.Contains(keogram.TextContent, "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
             StringAssert.Contains(keogram.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
             Assert.IsNull(keogram.QuerySelector(".product-hours"));
 

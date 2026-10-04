@@ -58,7 +58,7 @@
 .daily-products header a, .day-automations header a { color: #58a6ff; font-size: .7rem; font-weight: 700; text-decoration: none; }
 .product-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
 .product-slot { min-width: 0; padding: .7rem; border: 1px solid var(--hvo-border-muted); border-radius: .5rem; background: rgba(9, 15, 24, .86); }
-.product-slot__media { display: grid; height: 10rem; place-items: center; margin: -.7rem -.7rem .7rem; color: var(--hvo-muted); background: #020408; font-size: 1.65rem; }
+.product-slot__media { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); height: 10rem; place-items: center; overflow: hidden; margin: -.7rem -.7rem .7rem; border-radius: .5rem .5rem 0 0; color: var(--hvo-muted); background: #020408; font-size: 1.65rem; }
 .product-slot h3 { margin: 0; font-size: .8rem; }
 .product-slot p { min-height: 2rem; margin: .25rem 0 .6rem; color: var(--hvo-muted); font-size: .68rem; }
 .product-slot .hvo-chip { font-size: .6rem; }

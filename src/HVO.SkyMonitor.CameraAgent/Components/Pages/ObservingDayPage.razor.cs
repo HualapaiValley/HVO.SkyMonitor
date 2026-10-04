@@ -118,21 +118,22 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         _ => "hvo-chip--neutral"
     };
 
-    /// <summary>Why a recorded evaluation has no product, from its retained disposition and counts only.</summary>
+    /// <summary>
+    /// Why a recorded final evaluation has no product, from its retained disposition only. A final composes the
+    /// products of its segment windows, so it records no frame counts of its own; a final without sources means no
+    /// segment window admitted a frame.
+    /// </summary>
     internal static string Outcome(NightlyProductWindowStatus status) => status.Disposition switch
     {
-        NightlyProductWindowDisposition.NoSources when status.CandidateCount == 0 => "no frames were retained in the window",
-        NightlyProductWindowDisposition.NoSources => FormattableString.Invariant(
-            $"none of {status.CandidateCount:N0} retained frames was admitted"),
+        NightlyProductWindowDisposition.NoSources => "no segment window admitted a frame",
         NightlyProductWindowDisposition.Rejected => $"rejected ({status.ReasonCode ?? "no reason recorded"})",
         _ => "no current product is recorded"
     };
 
+    // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
     private string ProductFacts(ProductCard card) => card.Product is { } product
-        ? FormattableString.Invariant(
-            $"{card.Daily!.Status.AdmittedCount:N0} of {card.Daily.Status.CandidateCount:N0} frames admitted, ") +
-          $"{LocalTime(product.FirstObservationUtc)}–{LocalTime(product.LastObservationUtc)}; " +
-          FormattableString.Invariant($"{product.Width:N0} × {product.Height:N0}.")
+        ? $"Frames {LocalTime(product.FirstObservationUtc)}–{LocalTime(product.LastObservationUtc)} from " +
+          FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} segment products; {product.Width:N0} × {product.Height:N0}.")
         : card.Daily is { Status: var status } && card.Badge.State == ArchiveCalendarPage.NightlyBadgeState.NotProduced
             ? $"The period was evaluated: {Outcome(status)}."
             : card.Badge.Description + ".";
@@ -142,7 +143,7 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
         var span = $"{LocalTime(hour.Status.WindowStartUtc)}–{LocalTime(hour.Status.WindowEndUtc)}";
         return hour.FinalProduct is null
             ? $"{span}: not produced, {Outcome(hour.Status)}"
-            : FormattableString.Invariant($"{span}: {hour.Status.AdmittedCount:N0} frames admitted");
+            : FormattableString.Invariant($"{span}: produced from {hour.Status.AdmittedCount:N0} segment products");
     }
 
     private static string SampleCaption(CameraAgentTimeLapseSampleView sample) => FormattableString.Invariant(

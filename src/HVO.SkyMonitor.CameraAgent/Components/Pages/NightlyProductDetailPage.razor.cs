@@ -172,19 +172,36 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
         $"left: {100.0 * gap.FirstColumn / width:0.###}%; width: {Math.Max(0.2, 100.0 * gap.ColumnCount / width):0.###}%");
 
     private string AxisSummary(NightlyProductTimeAxis axis) => axis.Planned
-        ? FormattableString.Invariant(
-            $"Planned axis: {FormatColumn(axis.ColumnSeconds)} per column from {LocalTime(axis.StartUtc)} to {LocalTime(axis.EndUtc)}; ") +
+        ? FormattableString.Invariant($"Planned axis: {FormatColumn(axis.ColumnSeconds)} per column from ") +
+          AxisSpan(axis.StartUtc, axis.EndUtc) + "; " +
           FormattableString.Invariant($"{axis.SampledColumns:N0} of {axis.Width:N0} columns hold frames, {axis.Gaps.Count:N0} {(axis.Gaps.Count == 1 ? "gap" : "gaps")}.")
         : FormattableString.Invariant(
             $"Actual axis: one column per frame at a {FormatColumn(axis.ColumnSeconds)} cadence, {axis.Frames.Count:N0} frames from ") +
-          $"{LocalTime(axis.StartUtc)} to {LocalTime(axis.EndUtc)}; " +
-          FormattableString.Invariant($"{axis.Gaps.Count:N0} rendered {(axis.Gaps.Count == 1 ? "gap" : "gaps")}. Time is not linear across gap columns.");
+          AxisSpan(axis.StartUtc, axis.EndUtc) + "; " +
+          FormattableString.Invariant($"{axis.Gaps.Count:N0} rendered {(axis.Gaps.Count == 1 ? "gap" : "gaps")}.") +
+          (axis.Gaps.Count > 0 ? " Time is not linear across gap columns." : "");
+
+    // A sunrise period spans two local dates, and a bare clock time would read as a one-minute axis.
+    private string AxisSpan(DateTimeOffset startUtc, DateTimeOffset endUtc)
+    {
+        var start = Local(startUtc);
+        var end = Local(endUtc);
+        return start.Date == end.Date
+            ? $"{LocalTime(startUtc)} to {LocalTime(endUtc)}"
+            : string.Create(CultureInfo.InvariantCulture, $"{start:HH:mm dd MMM} to {end:HH:mm dd MMM}");
+    }
 
     internal static string FormatColumn(double seconds) => seconds >= 60 && seconds % 60 == 0
         ? FormattableString.Invariant($"{seconds / 60:0} min")
         : FormattableString.Invariant($"{seconds:0.##} s");
 
-    private static string FormatIntegration(TimeSpan value) => ObservingDayPage.FormatDuration(value);
+    // Daylight exposures last milliseconds, so a short total keeps its precision instead of rounding to zero.
+    private static string FormatIntegration(TimeSpan value) => value.TotalSeconds switch
+    {
+        < 1 => FormattableString.Invariant($"{value.TotalMilliseconds:0.#} ms"),
+        < 60 => FormattableString.Invariant($"{value.TotalSeconds:0.###} s"),
+        _ => ObservingDayPage.FormatDuration(value)
+    };
 
     private static string FormatBytes(long bytes) => FormattableString.Invariant($"{bytes:N0} bytes");
 
