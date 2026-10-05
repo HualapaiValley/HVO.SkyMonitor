@@ -17,6 +17,16 @@ existing staged/committed scene protocol binds the canonical product to capture
 ID, raw artifact ID, and raw descriptor SHA-256. Successful product commitment
 releases the transient stage. Archive destinations enqueue the committed product
 from the canonical raw root; they do not publish additional scene payloads.
+The ordinary upload lane also queues this required dependency whenever it uploads
+compact raw, including supported pipelines without any Storage node. It enqueues
+raw first, then defers without consuming failure attempts until the canonical
+scene commits. The existing required lane retains raw during that wait. A bounded
+capture/schema lookup rejects ambiguous products; payload, sidecar and raw-source
+identity are authenticated under the storage lifecycle gate before enqueueing.
+Both publishers use the committed producer identity and identical manifest bytes,
+so retries and optional Storage publication converge on one outbox record.
+Optional archive upload policy cannot suppress a compact raw upload's required
+scene dependency. Legacy inline captures retain their raw-only lane behavior.
 A scene-specific retention guard checks remaining canonical consumers and every
 Storage root recorded in the capture's live/replay graph revisions. Those
 revision and execution rows survive canonical output expiry, so old archive
@@ -55,8 +65,8 @@ lease, and frozen input-set rules apply. A compact-only retention reference also
 keeps the scene while any non-expired image consumer remains in its exact central
 frame, after jobs finish. The hold uses existing rows and reservation transaction
 fencing; it clears after those consumers expire and leaves legacy inline captures
-on their existing retention rules. Its post-completion tests are pending the next
-local gate slot. Raw identity must be authenticated before
+on their existing retention rules. Post-completion hold and ordinary release-query
+budget regressions passed. Raw identity must be authenticated before
 selection; raw arriving later leaves selection waiting. Executor and processing-runner
 paths resolve the same pinned scene bytes and embedded raw descriptor hash after
 selection, without requiring an undeclared raw pixel retention dependency. The metadata input does not become an image-kernel
@@ -81,8 +91,16 @@ existing binding regression passed 2/2. The SQL-backed arrival-order matrix pass
 responses, retries, frozen scene retention/recipe identity, and exact annotation
 pixels. The first SQL run exposed missing requirement hydration in a lease query
 and missing explicit EF insertion for the new graph input; both were corrected
-without weakening immutable-input guards. The complete Tier C candidate gate
-and independent immutable review remain pending. Before/after measurements are
+without weakening immutable-input guards. The original complete Unit and Integration attempts exposed fixture and central
+compatibility defects; their failed logs remain retained alongside individual
+passing corrections. Canonical 23-slot coverage and component floors passed,
+including seven additional malformed compact-contract cases. Full deployment
+qualification and affected upload-correction gates remain in progress; independent
+immutable review has not started. Six focused upload checks passed with no skips:
+four real VirtualSky/ingress/lane/SQLite-outbox cases cover both arrival orders
+with and without Storage, plus legacy raw-only and two-archive compatibility.
+The cases verify deferred retry budgets, retention holds, repeated enqueue,
+unaltered evidence bytes, payload/sidecar tampering and raw-source mismatch. Before/after measurements are
 recorded below. Neither this document nor the preserved September prototype constitutes
 qualification evidence.
 
@@ -110,8 +128,8 @@ producer and compositor outside timing, recording a raster checksum independent
 of capture GUIDs. This checks layer pixel equivalence alongside annotation output.
 
 The harness uses real VirtualSky capture, raw ingress, durable standard-lane graph,
-scene/preview/annotation kernels, canonical raw upload and archive derivative
-publication. Central integration is enabled; no hosted uploader runs. The baseline
+scene/preview/annotation kernels, Storage-driven canonical raw upload and archive
+derivative publication. It does not invoke the ordinary raw upload lane. Central integration is enabled; no hosted uploader runs. The baseline
 explicit-v2 validator rejects every metadata upload, so both workload graphs use
 identical policies that enable image outbox records and disable metadata upload.
 The separate two-destination structured-upload test verifies canonical metadata
@@ -180,7 +198,10 @@ and raw log/TRX/JSON SHA-256 index are retained in
 [comparison script](scene-compaction-1055-compare.py) reads capture JSON and both
 immutable journals; run it before retention preparation. Failed
 attempts remain indexed and are not counted as passing measurements. The measured CameraAgent endpoint is `5872b69b`; subsequent changes add a
-module-type validation-cache key and its regression, plus central consumer
-retention. They do not change the workload's geometry or storage representation,
-but those later changes are not included in these timing samples. Full
+module-type validation-cache key and its regression, central consumer retention,
+and canonical-scene delivery from the ordinary raw upload lane. The shared scene
+publisher now authenticates committed payload/sidecar/source evidence before
+enqueue. These changes do not change this workload's geometry or storage
+representation, but their costs are not included in these timing samples:
+metadata publication was disabled identically and the ordinary lane was not run. Full
 qualification and independent review remain required before merge.

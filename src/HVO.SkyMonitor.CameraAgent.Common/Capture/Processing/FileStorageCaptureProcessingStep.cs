@@ -302,14 +302,9 @@ internal sealed class FileStorageCaptureProcessingStep(
             {
                 var output = await _processingPersistence.RequireCommittedSceneAsync(
                     descriptor.Capture.CaptureId, product, cancellationToken).ConfigureAwait(false);
-                await _artifactOutbox.EnqueueAsync(root,
-                    new StructuredProcessingProductManifestV1(
-                        StructuredProcessingProductManifestV1.CurrentSchemaVersion,
-                        new StructuredProcessingProductDescriptorV1(
-                            descriptor, output.Artifact, product.OutputIdentitySha256, product.Algorithms,
-                            product.Compatibility, product.TotalIntegration.Ticks, product.Payload.Length,
-                            product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
-                        output.PayloadRelativePath, producer), cancellationToken).ConfigureAwait(false);
+                var manifest = await _processingPersistence.CreateSceneUploadManifestAsync(
+                    descriptor, output, cancellationToken).ConfigureAwait(false);
+                await _artifactOutbox.EnqueueAsync(root, manifest, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
