@@ -11,7 +11,20 @@ public sealed class P5TrialDiagnosticsTests
     private string DirectoryPath => Path.Combine(_root, "private");
 
     [TestInitialize]
-    public void Initialize() => _root = Path.Combine(Path.GetTempPath(), $"hvo-p5-{Guid.NewGuid():N}");
+    public void Initialize()
+    {
+        // The trusted temporary base may contain platform symlinks (for example /var on macOS).
+        // Resolve those before creating the fixture; the writer must still reject links inside it.
+        var temporary = Path.GetFullPath(Path.GetTempPath());
+        var physical = Path.GetPathRoot(temporary)!;
+        foreach (var segment in temporary[physical.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = new DirectoryInfo(Path.Combine(physical, segment));
+            physical = (directory.ResolveLinkTarget(returnFinalTarget: true) ?? directory).FullName;
+        }
+        _root = Path.Combine(physical, $"hvo-p5-{Guid.NewGuid():N}");
+    }
 
     [TestCleanup]
     public void Cleanup()
