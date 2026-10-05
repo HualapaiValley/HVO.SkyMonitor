@@ -1078,6 +1078,7 @@ internal sealed partial class CentralDerivativeJobService(
     private async Task<CentralDerivativeJob> LoadJobAsync(Guid jobId, CancellationToken cancellationToken)
         => await dbContext.CentralDerivativeJobs.AsNoTracking()
             .Include(job => job.GraphExecution)
+            .Include(job => job.InputRequirements)
             .Include(job => job.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.Inputs).ThenInclude(input => input.Artifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.Inputs).ThenInclude(input => input.Requirement)

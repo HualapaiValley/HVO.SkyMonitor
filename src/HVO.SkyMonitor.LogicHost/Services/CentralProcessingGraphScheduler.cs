@@ -1013,7 +1013,10 @@ internal sealed partial class CentralProcessingGraphScheduler(
         }
         var changed = true;
         foreach (var job in execution.Jobs.Where(static job => job.Status == CentralDerivativeJobStatus.Waiting))
-            CentralProjectedSceneResolver.MaterializeReference(job, now);
+        {
+            if (CentralProjectedSceneResolver.MaterializeReference(job, now) is { } sceneInput)
+                dbContext.CentralDerivativeJobInputs.Add(sceneInput);
+        }
         while (changed)
         {
             changed = false;

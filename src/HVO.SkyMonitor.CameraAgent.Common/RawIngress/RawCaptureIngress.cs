@@ -663,7 +663,7 @@ internal sealed class RawCaptureIngress :
                     throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
-                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
                     (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,

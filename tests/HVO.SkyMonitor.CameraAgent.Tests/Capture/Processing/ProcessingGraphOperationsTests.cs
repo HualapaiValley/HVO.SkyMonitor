@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using HVO.SkyMonitor.Processing;
@@ -2180,6 +2181,66 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    public async Task OldUnboundVirtualEnvelopeRecoversWithoutImposingNewCaptureScenePolicy()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-old-scene-recovery");
+        try
+        {
+            var retained = CreateConfiguration() with { Module = new CameraModuleDescriptor("VirtualSky") };
+            RawCaptureReceipt receipt;
+            using (var provider = CreateProvider(root, configureServices:
+                       services => services.RemoveAll<ProcessingGraphOperationsCoordinator>()))
+            {
+                // Seed the pre-binding protocol: immutable raw evidence plus its old envelope, no live execution.
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                receipt = (await ingress.AcceptAsync(retained, CreateSubmission(), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+                Assert.IsNotNull(receipt);
+            }
+            var sidecar = Path.ChangeExtension(Path.Combine(root, receipt.Manifest.RelativeArtifactPath), ".json");
+            var original = await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+            using (var provider = CreateProvider(root))
+            {
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var current = retained with
+                {
+                    Pipeline = new CapturePipelineConfig(
+                    [new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+                };
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await operations.EnsureConfiguredBasicAsync(current, CancellationToken.None).ConfigureAwait(false);
+                await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);
+                await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);
+                var executions = await operations.ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(1, executions);
+                Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, executions[0].CaptureId);
+                var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(item => item.Name == "standard");
+                var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+                await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+                var lease = await laneStore.ClaimAsync(lane, "old-envelope", current, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                Assert.IsEmpty(lease.Context.Configuration.Pipeline.Steps);
+                Assert.AreEqual("VirtualSky", lease.Context.Configuration.ModuleType);
+                Assert.IsNotNull(lease.Context.Execution);
+                Assert.AreEqual(executions[0].ExecutionId, lease.Context.Execution.ExecutionId);
+                CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false));
+                // The retained-validation cache must never authorize new capture configuration with the same hash.
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => operations.EnsureConfiguredBasicAsync(
+                    retained, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ReconciledRawEvidenceIsBoundToFrozenLiveExecutionBeforeClaim()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-recovery");
@@ -3375,7 +3436,7 @@ public sealed class ProcessingGraphOperationsTests
     private static CameraModuleConfig CreateConfiguration()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"),
             new CameraRigConfig(
                 new SensorProfile("Test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
                 new OpticsProfile("Test", 1, 1, 0),

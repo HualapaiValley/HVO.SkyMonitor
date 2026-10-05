@@ -69,9 +69,14 @@ compact-contract validation passed 1/1, and explicit-v2 structured scene upload
 validation passed 1/1. The focused central source-freeze/expiry/identity test also
 passed 1/1, all without skips. The 17-capture expiration test retains
 every scene while archive consumers exist, then deletes 16+1 across bounded
-passes after their payloads expire. SQL arrival-order tests, the complete Tier C candidate
-gate, independent immutable review, and before/after performance evidence remain
-pending. Neither this document nor the preserved September prototype constitutes
+passes after their payloads expire. Retained unbound VirtualSky recovery and the
+existing binding regression passed 2/2. The SQL-backed arrival-order matrix passed
+8/8 (four orders across legacy and graph scheduling), including durable waiting
+responses, retries, frozen scene retention/recipe identity, and exact annotation
+pixels. The first SQL run exposed missing requirement hydration in a lease query
+and missing explicit EF insertion for the new graph input; both were corrected
+without weakening immutable-input guards. The complete Tier C candidate gate,
+independent immutable review, and before/after performance evidence remain pending. Neither this document nor the preserved September prototype constitutes
 qualification evidence.
 
 Performance evidence must compare the same fixed production-catalog capture

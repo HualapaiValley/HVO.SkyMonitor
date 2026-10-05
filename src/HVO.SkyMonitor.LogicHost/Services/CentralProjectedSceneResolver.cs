@@ -217,13 +217,13 @@ internal sealed class CentralProjectedSceneResolver(
     internal static IEnumerable<CentralDerivativeJobLeaseInput> RecipeInputs(CentralDerivativeJobLease lease)
         => (lease.Inputs ?? []).Where(input => lease.ProjectedScene is null || input.BindingName != BindingName);
 
-    internal static void MaterializeReference(CentralDerivativeJob job, DateTimeOffset now)
+    internal static CentralDerivativeJobInput? MaterializeReference(CentralDerivativeJob job, DateTimeOffset now)
     {
         var requirement = job.InputRequirements.SingleOrDefault(item => item.BindingName == BindingName);
-        if (requirement is null || job.Inputs.Any(item => item.CentralDerivativeJobInputRequirementId == requirement.Id)) return;
+        if (requirement is null || job.Inputs.Any(item => item.CentralDerivativeJobInputRequirementId == requirement.Id)) return null;
         var artifact = requirement.ExpectedArtifact
             ?? throw new CentralDerivativeJobStateException("The frozen projected-scene artifact was not loaded.");
-        job.Inputs.Add(new CentralDerivativeJobInput
+        var input = new CentralDerivativeJobInput
         {
             Job = job,
             CentralDerivativeJobId = job.Id,
@@ -236,6 +236,9 @@ internal sealed class CentralProjectedSceneResolver(
             CompatibilityJson = requirement.SelectorJson,
             CompatibilitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.Deserialize<JsonElement>(requirement.SelectorJson)),
             SelectedAtUtc = now
-        });
+        };
+        job.Inputs.Add(input);
+        requirement.Input = input;
+        return input;
     }
 }

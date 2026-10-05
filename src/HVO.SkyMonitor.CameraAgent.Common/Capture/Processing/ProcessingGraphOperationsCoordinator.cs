@@ -42,6 +42,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly SemaphoreSlim _configurationGate = new(1, 1);
     private CameraModuleConfig? _baseConfiguration;
     private string? _configuredPipelineIdentity;
+    private bool _configuredPipelineRetained;
 
     public ProcessingGraphOperationsCoordinator(
         ICaptureProcessingPipelineFactory pipelineFactory,
@@ -60,8 +61,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public ProcessingGraphAgentCapabilities Capabilities =>
         ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
 
-    internal async ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
+    internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
+        CancellationToken cancellationToken)
+        => EnsureConfiguredBasicAsync(configuration, retainedCapture: false, cancellationToken);
+
+    private async ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
+        CameraModuleConfig configuration,
+        bool retainedCapture,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -71,7 +78,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             Volatile.Write(ref _baseConfiguration, configuration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
-            if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal))
+            if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
+                _configuredPipelineRetained == retainedCapture)
             {
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -81,7 +89,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 ConfiguredGraphName,
                 revisionName,
                 _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated);
+                ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
             var occupant = await _store.ReadRevisionIdByNameAsync(ConfiguredGraphName, revisionName, cancellationToken)
                 .ConfigureAwait(false);
             if (occupant is not null && !string.Equals(occupant, revision.State.RevisionId, StringComparison.Ordinal))
@@ -95,11 +103,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     ConfiguredGraphName,
                     SupersededRevisionName(revisionName, revision.State),
                     _timeProvider.GetUtcNow(),
-                    ProcessingGraphRevisionLifecycle.Validated);
+                    ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
             }
             EnsureLiveEligible(revision);
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
             _configuredPipelineIdentity = pipelineIdentity;
+            _configuredPipelineRetained = retainedCapture;
             return state;
         }
         finally
@@ -108,14 +117,31 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
     }
 
-    internal async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
+    internal ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
         CameraModuleConfig configuration,
         Guid captureId,
         Guid artifactId,
         DateTimeOffset acceptedUtc,
         CancellationToken cancellationToken)
+        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: false, cancellationToken);
+
+    internal ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareRecoveredLiveExecutionAsync(
+        CameraModuleConfig configuration,
+        Guid captureId,
+        Guid artifactId,
+        DateTimeOffset acceptedUtc,
+        CancellationToken cancellationToken)
+        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: true, cancellationToken);
+
+    private async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
+        CameraModuleConfig configuration,
+        Guid captureId,
+        Guid artifactId,
+        DateTimeOffset acceptedUtc,
+        bool retainedCapture,
+        CancellationToken cancellationToken)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, cancellationToken).ConfigureAwait(false);
+        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
         var revision = await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false);
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
         var executionId = StableExecutionId(new
@@ -539,10 +565,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string revision,
         DateTimeOffset createdUtc,
         ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft,
-        ProcessingGraphDefinition? sourceDefinition = null)
+        ProcessingGraphDefinition? sourceDefinition = null,
+        bool retainedCapture = false)
     {
         using var graph = new DisposableProcessingGraph(sourceDefinition is null
-            ? _pipelineFactory.CreateGraph(configuration)
+            ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
             : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));
         var sharedPlan = graph.Value.SharedPlan
             ?? throw new InvalidOperationException("Processing graph revisions require explicit pipeline v2 compilation.");

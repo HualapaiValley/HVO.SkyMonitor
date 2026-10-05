@@ -85,7 +85,9 @@ public sealed partial class ArtifactIngestTests
             using var response = item == "scene"
                 ? await PostAsync(client, sceneManifest, sceneBytes).ConfigureAwait(false)
                 : await PostAsync(client, item == "raw" ? raw : derivative, pixels).ConfigureAwait(false);
-            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            response.StatusCode.Should().Be(
+                item != "raw" && !received.Contains("raw") ? (HttpStatusCode)425 : HttpStatusCode.Accepted,
+                $"arrival {item}: {await response.Content.ReadAsStringAsync().ConfigureAwait(false)}");
             received.Add(item);
             if (!received.Contains("scene") || !received.Contains("raw"))
             {
@@ -96,7 +98,10 @@ public sealed partial class ArtifactIngestTests
                     job.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false)).Should().Be(0);
             }
         }
+        // Durable 425 arrivals become acknowledgable once their exact raw source arrives.
         using (var duplicate = await PostAsync(client, sceneManifest, sceneBytes).ConfigureAwait(false))
+            duplicate.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using (var duplicate = await PostAsync(client, derivative, pixels).ConfigureAwait(false))
             duplicate.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
         Guid jobId;
