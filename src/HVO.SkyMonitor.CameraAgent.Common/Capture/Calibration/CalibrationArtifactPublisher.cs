@@ -227,16 +227,14 @@ public sealed class CalibrationArtifactPublisher(
             {
                 await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not guarantee durable filesystem publication.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             EnsureSafePath(directory);
             try
             {
-                File.Move(temporaryPath, path, overwrite: false);
+                CameraAgentFileSystem.PublishPrepared(_root, temporaryPath, path, overwrite: false);
             }
-            catch (IOException exception) when (File.Exists(path))
+            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(path))
             {
                 if (!await FileMatchesAsync(path, bytes, cancellationToken).ConfigureAwait(false))
                 {

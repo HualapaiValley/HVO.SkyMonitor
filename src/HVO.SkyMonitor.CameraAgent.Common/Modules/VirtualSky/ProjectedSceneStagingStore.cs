@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -225,7 +226,7 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
                     await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                    RandomAccess.FlushToDisk(stream.SafeFileHandle);
+                    CameraAgentFileSystem.FlushFile(stream.SafeFileHandle, temporary);
                 }
                 finally
                 {
@@ -322,7 +323,7 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     using var directory = OpenLinuxStageDirectory(create: false);
                     if (directory is not null && LinuxUnlink(directory, $"{stageKey}.json"))
-                        RandomAccess.FlushToDisk(directory);
+                        CameraAgentFileSystem.SyncDirectory(directory, _root);
                 }
                 else
                 {
@@ -378,7 +379,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
                     _ = LinuxUnlink(directory, activeName);
                 }
-                RandomAccess.FlushToDisk(directory);
+                CameraAgentFileSystem.SyncDirectory(directory, _root);
                 return;
             }
 
@@ -422,7 +423,7 @@ internal sealed class ProjectedSceneStagingStore :
             if (OperatingSystem.IsLinux())
             {
                 using var directory = OpenLinuxStageDirectory(create: false);
-                if (directory is not null && LinuxUnlink(directory, name)) RandomAccess.FlushToDisk(directory);
+                if (directory is not null && LinuxUnlink(directory, name)) CameraAgentFileSystem.SyncDirectory(directory, _root);
                 return;
             }
             var path = Path.Combine(_root, name);
@@ -723,7 +724,7 @@ internal sealed class ProjectedSceneStagingStore :
         if (OperatingSystem.IsLinux())
         {
             using var directory = OpenLinuxStageDirectory(create: false);
-            if (directory is not null && LinuxUnlink(directory, name)) RandomAccess.FlushToDisk(directory);
+            if (directory is not null && LinuxUnlink(directory, name)) CameraAgentFileSystem.SyncDirectory(directory, _root);
             return;
         }
         var path = Path.Combine(_root, name);
@@ -794,10 +795,10 @@ internal sealed class ProjectedSceneStagingStore :
             LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
 
     private static StagingOpenFlags LinuxDirectoryFlag()
-        => (StagingOpenFlags)Storage.LinuxOpenFlags.Directory;
+        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.Directory;
 
     private static StagingOpenFlags LinuxNoFollowFlag()
-        => (StagingOpenFlags)Storage.LinuxOpenFlags.NoFollow;
+        => (StagingOpenFlags)HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.NoFollow;
 
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxNoFollowFlag() |
@@ -823,7 +824,7 @@ internal sealed class ProjectedSceneStagingStore :
         {
             cancellationToken.ThrowIfCancellationRequested();
             RandomAccess.Write(temporary, bytes, 0);
-            RandomAccess.FlushToDisk(temporary);
+            CameraAgentFileSystem.FlushFile(temporary, temporaryName);
             temporary.Dispose();
             if (!TryRenameNoReplace(directory, temporaryName, finalName, out var exists))
             {
@@ -839,7 +840,7 @@ internal sealed class ProjectedSceneStagingStore :
             {
                 published = true;
             }
-            RandomAccess.FlushToDisk(directory);
+            CameraAgentFileSystem.SyncDirectory(directory, _root);
         }
         catch
         {
@@ -848,7 +849,7 @@ internal sealed class ProjectedSceneStagingStore :
                 try
                 {
                     _ = LinuxUnlink(directory, finalName);
-                    RandomAccess.FlushToDisk(directory);
+                    CameraAgentFileSystem.SyncDirectory(directory, _root);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {

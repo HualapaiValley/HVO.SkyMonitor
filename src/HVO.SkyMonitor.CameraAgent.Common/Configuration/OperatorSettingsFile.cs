@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Buffers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -327,9 +328,7 @@ public sealed class OperatorSettingsFile : IDisposable
             {
                 await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             if (!OperatingSystem.IsWindows())
             {
@@ -341,7 +340,7 @@ public sealed class OperatorSettingsFile : IDisposable
             {
                 return onDisk;
             }
-            File.Move(temporaryPath, FilePath, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, FilePath, overwrite: true);
             SyncPublishedDirectory(directory);
             return null;
         }

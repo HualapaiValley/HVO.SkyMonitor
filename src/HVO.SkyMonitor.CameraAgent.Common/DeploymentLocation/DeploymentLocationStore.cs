@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -785,12 +786,10 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RestrictFile(temporaryPath);
-            File.Move(temporaryPath, path, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, path, overwrite: true);
             RestrictFile(path);
             RawIngressFileStore.SyncDirectory(directory);
         }

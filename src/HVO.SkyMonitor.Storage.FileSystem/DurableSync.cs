@@ -24,6 +24,22 @@ public static class DurableSync
     /// <summary>True where <see cref="Directory(string)"/> performs a real flush.</summary>
     public static bool SupportsDirectorySync => OperatingSystem.IsLinux();
 
+    /// <summary>Flush managed stream buffers and then the underlying file to its medium.</summary>
+    public static void File(FileStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        try
+        {
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+            stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw FileSystemFaultException.From("sync-file", stream.Name, exception);
+        }
+    }
+
     /// <summary>
     /// Flush a file's written data and metadata to its medium. The handle must be open for
     /// writing on Windows and may be read-only elsewhere.
