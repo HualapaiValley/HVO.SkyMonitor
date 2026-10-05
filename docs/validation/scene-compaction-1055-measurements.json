@@ -231,6 +231,220 @@
         "physicalFilesBytes": 509580238,
         "bytesPerCapture": 14559435.371428572
       }
+    },
+    {
+      "schemaVersion": "issue1055-comparison-v1",
+      "baselineRevision": "24a60a01f7e0095481fe355ca7b623f5d013cd02",
+      "candidateRevision": "a4f834e5ffd868a97859ff317ee3bdbd60809470",
+      "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+      "equivalence": "PASS",
+      "journalInlineGeometryItems": {
+        "baseline": 34737,
+        "candidate": 0
+      },
+      "baseline": {
+        "milliseconds": {
+          "median": 850.17075,
+          "p95": 1117.1557,
+          "max": 1186.205
+        },
+        "cpuMilliseconds": {
+          "median": 729.6759999999999,
+          "p95": 977.676,
+          "max": 1073.026
+        },
+        "allocatedBytes": {
+          "median": 270296784.0,
+          "p95": 273528616,
+          "max": 273762696
+        },
+        "workingSetBytes": {
+          "median": 362170368.0,
+          "p95": 487112704,
+          "max": 498872320
+        },
+        "peakWorkingSetBytes": {
+          "median": 500355072.0,
+          "p95": 500355072,
+          "max": 500355072
+        },
+        "measuredIo": {
+          "rchar": 597284238,
+          "wchar": 506585618,
+          "syscr": 48309,
+          "syscw": 25897,
+          "read_bytes": 0,
+          "write_bytes": 513290240,
+          "cancelled_write_bytes": 2949120
+        },
+        "journal": {
+          "captures": 35,
+          "rawManifestBytes": 1978122,
+          "products": 105,
+          "productManifestBytes": 4071805
+        },
+        "retainedScenePayloads": 70,
+        "retainedSceneBytes": 11496184,
+        "frameManifestBytes": 9957005,
+        "outboxManifestBytes": 5966566,
+        "physicalFilesBytes": 535196965,
+        "bytesPerCapture": 15291341.857142856
+      },
+      "candidate": {
+        "milliseconds": {
+          "median": 569.7893,
+          "p95": 913.1582,
+          "max": 2050.4867
+        },
+        "cpuMilliseconds": {
+          "median": 458.9365,
+          "p95": 716.1,
+          "max": 1508.458
+        },
+        "allocatedBytes": {
+          "median": 285941184.0,
+          "p95": 290468088,
+          "max": 290759584
+        },
+        "workingSetBytes": {
+          "median": 359655424.0,
+          "p95": 405393408,
+          "max": 405790720
+        },
+        "peakWorkingSetBytes": {
+          "median": 419692544.0,
+          "p95": 419692544,
+          "max": 419692544
+        },
+        "measuredIo": {
+          "rchar": 608299704,
+          "wchar": 477163838,
+          "syscr": 48308,
+          "syscw": 20329,
+          "read_bytes": 0,
+          "write_bytes": 486445056,
+          "cancelled_write_bytes": 4915200
+        },
+        "journal": {
+          "captures": 35,
+          "rawManifestBytes": 166201,
+          "products": 105,
+          "productManifestBytes": 447963
+        },
+        "retainedScenePayloads": 35,
+        "retainedSceneBytes": 5748092,
+        "frameManifestBytes": 897400,
+        "outboxManifestBytes": 701309,
+        "physicalFilesBytes": 509830238,
+        "bytesPerCapture": 14566578.228571428
+      }
+    },
+    {
+      "schemaVersion": "issue1055-comparison-v1",
+      "baselineRevision": "24a60a01f7e0095481fe355ca7b623f5d013cd02",
+      "candidateRevision": "a4f834e5ffd868a97859ff317ee3bdbd60809470",
+      "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+      "equivalence": "PASS",
+      "journalInlineGeometryItems": {
+        "baseline": 34737,
+        "candidate": 0
+      },
+      "baseline": {
+        "milliseconds": {
+          "median": 916.03985,
+          "p95": 1043.1931,
+          "max": 1056.194
+        },
+        "cpuMilliseconds": {
+          "median": 797.76,
+          "p95": 914.784,
+          "max": 916.27
+        },
+        "allocatedBytes": {
+          "median": 271772668.0,
+          "p95": 273369792,
+          "max": 274026848
+        },
+        "workingSetBytes": {
+          "median": 326422528.0,
+          "p95": 337735680,
+          "max": 362901504
+        },
+        "peakWorkingSetBytes": {
+          "median": 351059968.0,
+          "p95": 364175360,
+          "max": 364175360
+        },
+        "measuredIo": {
+          "rchar": 597216721,
+          "wchar": 506474335,
+          "syscr": 48316,
+          "syscw": 25843,
+          "read_bytes": 4096,
+          "write_bytes": 513171456,
+          "cancelled_write_bytes": 2949120
+        },
+        "journal": {
+          "captures": 35,
+          "rawManifestBytes": 1978120,
+          "products": 105,
+          "productManifestBytes": 4071801
+        },
+        "retainedScenePayloads": 70,
+        "retainedSceneBytes": 11496184,
+        "frameManifestBytes": 9956995,
+        "outboxManifestBytes": 5966560,
+        "physicalFilesBytes": 535180451,
+        "bytesPerCapture": 15290870.028571429
+      },
+      "candidate": {
+        "milliseconds": {
+          "median": 1002.86215,
+          "p95": 1271.1116,
+          "max": 1277.7343
+        },
+        "cpuMilliseconds": {
+          "median": 821.0160000000001,
+          "p95": 978.079,
+          "max": 1058.339
+        },
+        "allocatedBytes": {
+          "median": 289708400.0,
+          "p95": 291139344,
+          "max": 291204360
+        },
+        "workingSetBytes": {
+          "median": 391813120.0,
+          "p95": 447676416,
+          "max": 478810112
+        },
+        "peakWorkingSetBytes": {
+          "median": 455030784.0,
+          "p95": 485257216,
+          "max": 485257216
+        },
+        "measuredIo": {
+          "rchar": 607934009,
+          "wchar": 476953854,
+          "syscr": 48101,
+          "syscw": 20233,
+          "read_bytes": 4096,
+          "write_bytes": 486264832,
+          "cancelled_write_bytes": 4915200
+        },
+        "journal": {
+          "captures": 35,
+          "rawManifestBytes": 166203,
+          "products": 105,
+          "productManifestBytes": 447967
+        },
+        "retainedScenePayloads": 35,
+        "retainedSceneBytes": 5748092,
+        "frameManifestBytes": 897410,
+        "outboxManifestBytes": 701317,
+        "physicalFilesBytes": 509813648,
+        "bytesPerCapture": 14566104.228571428
+      }
     }
   ],
   "retentionAndCold": {
@@ -1759,13 +1973,317 @@
     "retention-cold-comparison-2.json": {
       "bytes": 2963,
       "sha256": "02290534ed3903e175ef0b5bc0b79a4dae0a27e17cb3cf0fc4f4adcedb1b402d"
+    },
+    "baseline-capture-4.invocation": {
+      "bytes": 205,
+      "sha256": "4ccae8acc9fa55466f55de0e25cc1b7737a8aadfe527dc877ca16f539e540ac5"
+    },
+    "baseline-capture-4.json": {
+      "bytes": 316622,
+      "sha256": "39e08e3c8a4dda80c5d9d6338239768294ef42523741a4186b4f24377c590238"
+    },
+    "baseline-capture-4.log": {
+      "bytes": 487,
+      "sha256": "993b71954059256cd901c5ac83775e05b1ecb65526c4656d2a9ee320035b3826"
+    },
+    "baseline-capture-4.time": {
+      "bytes": 2060,
+      "sha256": "e7b390ba2c56dd12f560bafee121cd529508ea6acae56b5b1a7d687d4cea0513"
+    },
+    "baseline-capture-4.trx": {
+      "bytes": 2930,
+      "sha256": "30b28d198abc3424d6262592398cdd5b95fe604cb1220f1d8f5d31be88936425"
+    },
+    "baseline-capture-5.invocation": {
+      "bytes": 205,
+      "sha256": "8cd6eaed952d48c0ed1911b4a7b2a6cfd5ac45ca1905810934b173f2aabea4b6"
+    },
+    "baseline-capture-5.json": {
+      "bytes": 316619,
+      "sha256": "57732234a638be18438a2bdd69129f8d6e0845c3a3e5fe52c2d1b73d3b7f3ddf"
+    },
+    "baseline-capture-5.log": {
+      "bytes": 487,
+      "sha256": "2c844b95f2bcfc03c3029d665f7a75fe324d1c9a400c3e87840311a36fa4f323"
+    },
+    "baseline-capture-5.time": {
+      "bytes": 2056,
+      "sha256": "90f15836143e7814baa5983f0b6028c40fceed30bc9efd0b39a902b2619e1b1f"
+    },
+    "baseline-capture-5.trx": {
+      "bytes": 2930,
+      "sha256": "75d6406e302e3bf391b4af40f5043c7e2739e7bd4858a5b4553309f6d91d583f"
+    },
+    "baseline-cold-4.invocation": {
+      "bytes": 202,
+      "sha256": "3e74f33e451c3bb2c3167bd11331456c18dee0c90b95c13943e1cd869a96910c"
+    },
+    "baseline-cold-4.json": {
+      "bytes": 286182,
+      "sha256": "01c54f949e1f7884c8a6f66504931d2a168876a91f3a3c281ac95230c0913ed6"
+    },
+    "baseline-cold-4.log": {
+      "bytes": 483,
+      "sha256": "0aeeae9996797c3adb1d0ac3d34577429b1dbfab83f67b7688d16db8497db040"
+    },
+    "baseline-cold-4.time": {
+      "bytes": 2044,
+      "sha256": "afc785f1cd893d87c95a0ba19526ddc2a47248c28e5e0e5896097ce4d10d5727"
+    },
+    "baseline-cold-4.trx": {
+      "bytes": 2930,
+      "sha256": "b9c8fc758cac55bd82f42d1f94f6d692466f79e196df756a72825db0a6dd597a"
+    },
+    "baseline-retention-4.invocation": {
+      "bytes": 207,
+      "sha256": "4456406fc0aaa2c7dc595aa68da357b3865e080d762edf7601c34d20868e300c"
+    },
+    "baseline-retention-4.json": {
+      "bytes": 1964735,
+      "sha256": "93720cb891783be96e069a134247dcd73d6f32b691368a6ad9ebd8c66f5fbc0d"
+    },
+    "baseline-retention-4.log": {
+      "bytes": 489,
+      "sha256": "ffe79263bb9bbd3334993ca7616dea0c36012844481e45bd584df390bbd1395d"
+    },
+    "baseline-retention-4.time": {
+      "bytes": 2059,
+      "sha256": "e3237c623470adf41ffdb623715b0bbdf30d7197c82b856a98d1355ab8d3e6ad"
+    },
+    "baseline-retention-4.trx": {
+      "bytes": 2930,
+      "sha256": "236ab57bf507f87aeccd992dccb05671f24eea7e4e8b9a44e130d7a112e36066"
+    },
+    "candidate-capture-4.invocation": {
+      "bytes": 206,
+      "sha256": "ae8b3d8c8e57bcf35721c01d2d164205a01e67b2b908be686473d82662855360"
+    },
+    "candidate-capture-4.json": {
+      "bytes": 290003,
+      "sha256": "88ca655a05653dadcb2e7725925ae167708d0b68480991e966d7dcff4193e8b6"
+    },
+    "candidate-capture-4.log": {
+      "bytes": 479,
+      "sha256": "b789432f72d0ae2485a3beb29c8a291f864d3a22d4581becd69552e07d846193"
+    },
+    "candidate-capture-4.time": {
+      "bytes": 2059,
+      "sha256": "caadccc9f12e4bcd27ff41ea90702db5f66127c45e80af573e9e26a38d51929b"
+    },
+    "candidate-capture-4.trx": {
+      "bytes": 2903,
+      "sha256": "4ec8f92d843081163772eeb111db59af1b294add48fc2f9251c9458bceed9ade"
+    },
+    "candidate-capture-5.invocation": {
+      "bytes": 206,
+      "sha256": "e5180a8e3fbab272e2be7d54ed7d9b13500cbce9650ee122be8250d73846ed8b"
+    },
+    "candidate-capture-5.json": {
+      "bytes": 290031,
+      "sha256": "34fc1b739476d0f253b0e731931c6bbf39efd36bc53c98e1b814206c749a6cbf"
+    },
+    "candidate-capture-5.log": {
+      "bytes": 479,
+      "sha256": "0e52b262329ee483cf83744cdc3c42422590040428e2f33c1712464a90c65e48"
+    },
+    "candidate-capture-5.time": {
+      "bytes": 2059,
+      "sha256": "ef3ee7772d8abb7f779a1dadce6c93b3cd94b41df9cd3b191230316d9d548739"
+    },
+    "candidate-capture-5.trx": {
+      "bytes": 2903,
+      "sha256": "c6537d958ac8883e891ecc6b5135922700907cf07485cf962ffb17d5ae2497b5"
+    },
+    "candidate-cold-4.invocation": {
+      "bytes": 203,
+      "sha256": "eab2feb7f4feede96299f1fd56f40ba969cee319049f2ba7eae27847593810a3"
+    },
+    "candidate-cold-4.json": {
+      "bytes": 259544,
+      "sha256": "86863dc8d105b936f50cb698a078d419b10e6101151edad5f38f62e8ee21139e"
+    },
+    "candidate-cold-4.log": {
+      "bytes": 475,
+      "sha256": "a4defa1ce368eefd628ba83bf9cecc3e2c4b15bce7a87b1030a0f9cb475e7fb2"
+    },
+    "candidate-cold-4.time": {
+      "bytes": 2045,
+      "sha256": "1d4ed7d732c0d586c90c7327c18ed52bf13e6702dd3b10192cc667fe29329477"
+    },
+    "candidate-cold-4.trx": {
+      "bytes": 2903,
+      "sha256": "9d62063890e0a7b79f7ab60d5f74f54fcfb506fec7f997152da59381c493e044"
+    },
+    "candidate-retention-4.invocation": {
+      "bytes": 208,
+      "sha256": "3ddd90944f29d0baacc02200b06c4e238e138771ed53b6fdb274391d640a5521"
+    },
+    "candidate-retention-4.json": {
+      "bytes": 1978336,
+      "sha256": "220225d873adf38c9c3e688c03c6256e07d2cf60491862b701c0a1c3724f9fbd"
+    },
+    "candidate-retention-4.log": {
+      "bytes": 481,
+      "sha256": "577f96ab8386f1a4c4e5dbdfd6095d630aba1fee7c875d9222d653c73014ad7c"
+    },
+    "candidate-retention-4.time": {
+      "bytes": 2064,
+      "sha256": "0adb8a526545887a101a3220cf1a61a7dea9d9bfa7cad25203d30f1b7bb5e234"
+    },
+    "candidate-retention-4.trx": {
+      "bytes": 2903,
+      "sha256": "cfe0b9c1689683383c9641b0898d4966ae9957664dd6c986d36705397df37abc"
+    },
+    "comparison-4.json": {
+      "bytes": 2637,
+      "sha256": "c40705282adca370fd624ea9363c8155018c20ba189934553912fcb26c4f620f"
+    },
+    "comparison-5.json": {
+      "bytes": 2644,
+      "sha256": "1954df2f46b35a297b24e4c6417a22f38060960143ac44521251a090461068a2"
+    },
+    "storage-pair4-driver.log": {
+      "bytes": 534,
+      "sha256": "e5e32460311f1644de7186d559de8e473a5244a2f310141e706e3ac3a8ecc39e"
     }
   },
   "limitations": [
-    "Metadata upload disabled in identical workload because baseline explicit-v2 validator rejects it; canonical structured outbox identity covered separately by Unit regression.",
+    "Initial pairs disabled optional metadata upload and did not include required canonical scene delivery. Updated pairs4/5 use the exact same harness and now include required Storage scene upload; the ordinary upload lane remains outside timed capture.",
     "Cold means fresh-process raw-ingress initialization, not complete host or OS cache-cold startup; one observation per capture pair.",
     "Retention costs measure discovery/expiration after fixture preparation, excluding normal queue/window holds; baseline can expire canonical scenes because archive copies remain.",
     "Capture latency and RSS vary with GC scheduling across pairs; no unconditional speedup or memory-reduction claim."
   ],
-  "comparatorSha256": "ff4e4d810826d525ba2640129329b00e3d488c69058dfbb0617808081d0ac35c"
+  "comparatorSha256": "ff4e4d810826d525ba2640129329b00e3d488c69058dfbb0617808081d0ac35c",
+  "requiredStorageDependencyQualification": {
+    "candidateRevision": "a4f834e5ffd868a97859ff317ee3bdbd60809470",
+    "harnessUnchanged": true,
+    "capturePairs": [
+      4,
+      5
+    ],
+    "outboxRecords": {
+      "baseline": 105,
+      "candidate": 140,
+      "candidateRequiredScenes": 35
+    },
+    "cold": {
+      "baseline": {
+        "revision": "24a60a01f7e0095481fe355ca7b623f5d013cd02",
+        "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+        "assemblySha256": "9A7CC3498BDBD6C984084B3E479F2FE973FEF903FB80BA3E0327FF0A78232159",
+        "timedOperation": "raw-ingress-initialize",
+        "coldMilliseconds": 607.4132,
+        "allocatedBytes": 30228464,
+        "workingSetBytes": 200679424,
+        "peakWorkingSetBytes": 200679424
+      },
+      "candidate": {
+        "revision": "a4f834e5ffd868a97859ff317ee3bdbd60809470",
+        "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+        "assemblySha256": "53F91210AE1EA1E3CF4247946A0AC946F9E4E635EF6BD2D34E110BF0B87D7276",
+        "timedOperation": "raw-ingress-initialize",
+        "coldMilliseconds": 394.6409,
+        "allocatedBytes": 13457168,
+        "workingSetBytes": 200388608,
+        "peakWorkingSetBytes": 200388608
+      }
+    },
+    "retention": {
+      "baseline": {
+        "revision": "24a60a01f7e0095481fe355ca7b623f5d013cd02",
+        "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+        "assemblySha256": "9A7CC3498BDBD6C984084B3E479F2FE973FEF903FB80BA3E0327FF0A78232159",
+        "timedOperation": "canonical-derived-expiration",
+        "coldMilliseconds": 676.5405,
+        "allocatedBytes": 227482016,
+        "workingSetBytes": 220020736,
+        "peakWorkingSetBytes": 220020736,
+        "samples": {
+          "milliseconds": {
+            "median": 2.82125,
+            "p95": 3.1327,
+            "max": 3.4087
+          },
+          "cpuMilliseconds": {
+            "median": 2.836,
+            "p95": 3.151,
+            "max": 3.44
+          },
+          "allocatedBytes": {
+            "median": 62088.0,
+            "p95": 62256,
+            "max": 62984
+          },
+          "workingSetBytes": {
+            "median": 220020736.0,
+            "p95": 220020736,
+            "max": 220020736
+          }
+        },
+        "retainedCanonicalScenes": [
+          0
+        ],
+        "measuredIo": {
+          "rchar": 8385274,
+          "wchar": 0,
+          "syscr": 3421,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "revision": "a4f834e5ffd868a97859ff317ee3bdbd60809470",
+        "harnessSha256": "6E8C8D4DD784B47E42158A3E91664B8B5AE1940EDBC371B8B7EE002E11D70C62",
+        "assemblySha256": "53F91210AE1EA1E3CF4247946A0AC946F9E4E635EF6BD2D34E110BF0B87D7276",
+        "timedOperation": "canonical-derived-expiration",
+        "coldMilliseconds": 385.513,
+        "allocatedBytes": 8997549872,
+        "workingSetBytes": 234237952,
+        "peakWorkingSetBytes": 234237952,
+        "samples": {
+          "milliseconds": {
+            "median": 925.8522499999999,
+            "p95": 1048.1414,
+            "max": 1109.4973
+          },
+          "cpuMilliseconds": {
+            "median": 925.7284999999999,
+            "p95": 1047.107,
+            "max": 1109.25
+          },
+          "allocatedBytes": {
+            "median": 255243512.0,
+            "p95": 255251584,
+            "max": 255252984
+          },
+          "workingSetBytes": {
+            "median": 226932736.0,
+            "p95": 234237952,
+            "max": 234250240
+          }
+        },
+        "retainedCanonicalScenes": [
+          35
+        ],
+        "measuredIo": {
+          "rchar": 1011795316,
+          "wchar": 0,
+          "syscr": 342762,
+          "syscw": 0,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    "interpretation": [
+      "Required canonical scene authentication/publication is now included even with optional metadata=false. The baseline carried geometry inline under that same configuration.",
+      "Candidate adds 15.6\u201317.9 MB median transient allocation per capture; the new path restores/parses/authenticates the canonical scene for both Storage publishers and durably queues one scene record.",
+      "Capture latency remains variable across ordered and reversed pairs. The pair4 candidate2.050-second sample did not recur in pair5, but its GC pause delta15.791ms does not explain it; retain the unclassified tail, not a GC-cause claim. Pair5 median/p95 were9.5%/21.8% slower and medianCPU2.9% higher.",
+      "Peak RSS varies with run order; candidate final live heap83\u201386MB remains below baseline88\u201395MB. No unconditional latency/RSS improvement claim.",
+      "W3M explicitly excludes external outbox/queue/window holds; it exercises archive-consumer discovery using empty external holds and retains35canonical scenes."
+    ]
+  }
 }

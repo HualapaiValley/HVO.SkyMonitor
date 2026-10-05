@@ -47,7 +47,7 @@ A small mutable journal cursor conservatively defers already checked candidates;
 it never authorizes deletion from partial discovery. A complete pass clears the
 cursor. Production-workload headroom and many-manifest costs still require the
 before/after evidence below. The 10,000-sidecar workload completes without a
-budget cursor; full candidate qualification remains pending.
+budget cursor; the selected local candidate gates passed as recorded below.
 
 Retained old manifests are read in their original representation. Recovery and
 archived replay recreate the recorded graph without imposing new-acquisition
@@ -102,10 +102,18 @@ without weakening immutable-input guards. The original complete Unit and Integra
 compatibility defects; their failed logs remain retained alongside individual
 passing corrections. Canonical 23-slot coverage and component floors passed,
 including seven additional malformed compact-contract cases. Full deployment
-qualification and affected upload-correction gates remain in progress; independent
-immutable review has not started. Six focused upload checks passed with no skips:
+qualification and the affected upload/Storage correction gates passed. The selected
+aggregate is Unit 5,825 passes plus seven existing skips (5,832 cases), Integration
+693/693 with no skips; canonical coverage is 86.7439% line and 71.6908% branch.
+The full-range classifier selects the complete local matrix and deployment shards;
+the final Storage delta selects CameraAgent and combined-host gates. Unchanged
+passing source is bound by Git-object proofs, and replacement TRXs are explicit.
+Independent immutable review is still required. Twelve focused upload checks
+passed with no skips:
 four real VirtualSky/ingress/lane/SQLite-outbox cases cover both arrival orders
-with and without Storage, plus legacy raw-only and two-archive compatibility.
+with and without Storage, plus legacy raw-only and two-archive compatibility; six
+Storage-only raw/preview cases cover optional metadata=false, disabled image
+upload, and missing explicit scene dependencies rejected before capture.
 The cases verify deferred retry budgets, retention holds, repeated enqueue,
 unaltered evidence bytes, payload/sidecar tampering and raw-source mismatch. Before/after measurements are
 recorded below. Neither this document nor the preserved September prototype constitutes
@@ -138,7 +146,10 @@ The harness uses real VirtualSky capture, raw ingress, durable standard-lane gra
 scene/preview/annotation kernels, Storage-driven canonical raw upload and archive
 derivative publication. It does not invoke the ordinary raw upload lane. Central integration is enabled; no hosted uploader runs. The baseline
 explicit-v2 validator rejects every metadata upload, so both workload graphs use
-identical policies that enable image outbox records and disable metadata upload.
+identical policies that enable image outbox records and disable optional metadata
+upload. Initial candidate pairs omitted required scene delivery. The updated pairs
+below include it under the same unchanged graph: compact image upload now queues
+the required canonical scene, preserving the information previously carried inline.
 The separate two-destination structured-upload test verifies canonical metadata
 outbox identity and the absence of archive geometry copies. The candidate accepts
 the supported scene upload in explicit-v2 configuration.
@@ -210,5 +221,53 @@ and canonical-scene delivery from the ordinary raw upload lane. The shared scene
 publisher now authenticates committed payload/sidecar/source evidence before
 enqueue. These changes do not change this workload's geometry or storage
 representation, but their costs are not included in these timing samples:
-metadata publication was disabled identically and the ordinary lane was not run. Full
-qualification and independent review remain required before merge.
+optional metadata publication was disabled identically and the ordinary lane was
+not run. Updated Storage-path measurements follow. Local qualification is complete;
+independent review and final target synchronization remain required before merge.
+
+## Required Storage dependency delivery: final production measurements
+
+Fresh pair 4 and reversed capture-only pair 5 compare baseline `24a60a01`
+(production `fead5666`) with qualified candidate `a4f834e5`, using the identical
+GC-instrumented harness SHA above. Source and assembly hashes are frozen in the
+issue evidence. Each capture run uses five warmups plus thirty samples, one CPU,
+and no competing builds/tests. Pair 4 also repeats fresh-process ingress recovery
+and the 10,000-sidecar retention workload. Pair 5 investigates one long sample;
+it does not replace the first pair. Both output comparators passed.
+
+The candidate queues 140 records: 105 compact images and 35 authenticated canonical
+scenes. The baseline queues 105 images containing inline geometry. Canonical scene
+payloads remain 70 → 35; outbox manifest bytes are 5,966,566 → 701,309, and total
+retained file bytes are 535,196,965 → 509,830,238. Raw journal, derivative descriptor
+and frame sidecar reductions remain as above, with zero inline geometry in the
+candidate journal. Thirty measured captures write 513.3 → 486.4 MB and make
+25,897 → 20,329 write calls in pair 4.
+
+| Capture measurement | Pair 4 baseline → candidate | Reversed pair 5 baseline → candidate |
+| --- | --- | --- |
+| Median elapsed | 850 → 570 ms | 916 → 1,003 ms |
+| p95 elapsed | 1,117 → 913 ms | 1,043 → 1,271 ms |
+| Maximum elapsed | 1,186 → 2,050 ms | 1,056 → 1,278 ms |
+| Median CPU | 730 → 459 ms | 798 → 821 ms |
+| Median allocated bytes | 270.3 → 285.9 MB | 271.8 → 289.7 MB |
+| Peak process working set | 500.4 → 419.7 MB | 364.2 → 485.3 MB |
+
+Required scene delivery adds a repeatable 15.6–17.9 MB of transient allocation per
+capture (5.8–6.6%). Its new path restores, parses and authenticates the canonical
+scene for both Storage publishers, while the outbox retains one record. This cost
+is included in these measurements. Pair 5 has 9.5% higher median and 21.8% higher
+p95 wall time, with 2.9% higher median CPU; no unconditional throughput improvement
+is claimed. The pair-4 2.050-second sample did not recur, and its 15.791 ms GC pause
+delta does not explain it. That sample remains an unclassified timing outlier.
+Peak RSS varies by order; final live heaps were 83–86 MB candidate and 88–95 MB
+baseline, without retained-heap growth across the workload.
+
+Fresh-process ingress initialization was 607 → 395 ms, allocating 30.23 → 13.46 MB;
+working sets were 200.68 → 200.39 MB. These are individual observations, not full
+host/cache-cold percentiles. Candidate W3M retained all 35 canonical scenes with
+no budget cursor; its median pass cost was 926 ms and 255.24 MB transient allocation
+versus the baseline's 2.82 ms and 62 KB after its archive scene copies allowed
+canonical expiration. The direct expiry API receives empty external holds to
+exercise archive discovery; normal outbox/queue/window retention aggregation is
+outside that measurement. The separate bounded deletion and durable-hold tests
+remain the correctness evidence for those paths.
