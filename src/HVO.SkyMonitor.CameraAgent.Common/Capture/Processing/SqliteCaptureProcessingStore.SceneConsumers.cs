@@ -12,6 +12,13 @@ internal sealed record SceneConsumerInventory(
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
+    // Step options retain their original JSON; match the factory's accepted string/numeric enums.
+    private static readonly JsonSerializerOptions SceneStorageOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
     internal async ValueTask<SceneConsumerInventory?> ReadSceneConsumersAsync(
         Guid captureId, Guid sceneArtifactId, Action<long> accountBytes, CancellationToken cancellationToken)
     {
@@ -69,7 +76,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 foreach (var step in pipeline.Steps.Where(static step => step.Enabled != false &&
                              RetentionBackgroundService.IsFileStorageStep(step.Type)))
                 {
-                    var options = step.Options?.Deserialize<FileStorageCaptureProcessingStepOptions>(ExecutionSerializerOptions)
+                    var options = step.Options?.Deserialize<FileStorageCaptureProcessingStepOptions>(SceneStorageOptions)
                         ?? new FileStorageCaptureProcessingStepOptions();
                     roots.Add(Path.GetFullPath(options.StorageRoot));
                     if (roots.Count > 4096) throw new InvalidDataException("Scene archive roots exceed their safety bound.");

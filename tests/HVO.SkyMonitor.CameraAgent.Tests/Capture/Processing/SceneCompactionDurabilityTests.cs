@@ -130,10 +130,12 @@ public sealed partial class DurableCaptureProcessingTests
             var pipeline = new CapturePipelineConfig([
                 new CaptureProcessingStepConfig("Storage", "archive", Options:
                     System.Text.Json.JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = archiveRoot, RetentionDays = 365 })),
+                    { StorageRoot = archiveRoot, RetentionDays = 365,
+                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] })),
                 new CaptureProcessingStepConfig("Storage", "second-archive", Options:
                     System.Text.Json.JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = otherArchiveRoot, RetentionDays = 365 }))]);
+                    { StorageRoot = otherArchiveRoot, RetentionDays = 365,
+                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] }, WebEnumJsonOptions))]);
             var now = DateTimeOffset.UtcNow;
             var revision = new ProcessingGraphRevisionSnapshot(
                 new ProcessingGraphRevisionState(new string('C', 64), "old", "1", ProcessingGraphRevisionLifecycle.Validated,

@@ -90,11 +90,13 @@ rewritten into a claimed producer benchmark.
 
 `tests/HVO.SkyMonitor.CameraAgent.Tests/Issue1055SceneCompactionEvidenceTests.cs`
 is the same source in candidate and the baseline harness-only branch. Its current
-SHA-256 is `5712296770cdb929a94288b788c980819449bf3b2284f9ee4df06727a4e46073`;
-baseline commit `f6745ab6a38c5c01d3ce074b707e6c0502343bd7` retains production
+SHA-256 is `6e8c8d4dd784b47e42158a3e91664b8b5ae1940edbc371b8b7ee002e11d70c62`;
+baseline commit `24a60a01f7e0095481fe355ca7b623f5d013cd02` retains production
 `fead5666bae05f3a51affee94847de93141c56cd`. The earlier harness-only commit
 `1021fc798c0f6b6dd7af95bb81e16a651e7fdbab` was corrected before any workload run. A later whitespace-only harness commit
-normalizes repository formatting; neither revision has produced measured evidence.
+normalizes repository formatting. The first successful pair used harness SHA
+`16021f6286bea3c7893faf3209cd8925a1bb26e6e89a6f95bba4c9e9e16ed2e9`.
+The current identical harness adds GC statistics to investigate its transient RSS result.
 
 The harness also renders each retained scene through the real presentation-layer
 producer and compositor outside timing, recording a raster checksum independent
@@ -126,4 +128,22 @@ consumers. Raw identity remains bound to the immutable journal manifest.
 Per-operation CPU, allocation, working set and process I/O exclude preparation;
 aggregate totals explicitly include it. This measures canonical scene discovery
 under same-day metadata volume, not an end-to-end retention policy cycle.
-No Manual workload has run yet; these are execution instructions, not results.
+The initial successful pair (baseline `384c7114`, candidate `78371b75`) passed
+raw/derivative pixels, projected geometry, real layer raster pixels and provenance
+comparison. Random stage lease keys differ between independent captures and are
+excluded from cross-run reproducibility comparison; each scene remains checked
+against its own immutable raw descriptor. It retained 70 versus 35 scene payloads
+for 35 captures, with zero candidate inline geometry in frame/outbox/journal
+records. Raw journal manifests fell from 1,978,122 to 166,197 bytes and product
+descriptors from 4,071,805 to 447,955 bytes. Capture median was 839 versus 593 ms.
+
+This pair is provisional: candidate peak RSS rose from about 357 to 494 MB,
+although its later samples returned to about 329 MB. A reversed-order repeat with
+GC statistics is pending. Fresh-process initialization was 553 versus 362 ms,
+with 30.3 versus 13.4 MB allocated; these are single observations, not percentiles
+or OS cache-cold startup claims. The first retention run safely rejected valid
+numeric storage-policy enums in historical options; the reader now matches the
+pipeline factory's string/numeric enum semantics, with both forms in the
+historical-root regression. Full same-day retention measurement remains pending.
+Failed attempts and the original successful pair are retained in the issue ledger;
+these findings have not been replaced with later results.

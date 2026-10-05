@@ -174,6 +174,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                     allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - beforeAllocated,
                     workingSetBytes = process.WorkingSet64,
                     peakWorkingSetBytes = process.PeakWorkingSet64,
+                    gc = ReadGc(),
                     io = IoDelta(beforeIo, ReadIo()),
                     rawSha256 = PayloadChecksum.ComputeSha256(captured.Frame.PixelData.Span),
                     receipt.Manifest.Descriptor.Capture.CaptureSequence,
@@ -251,6 +252,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                         allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - beforeAllocated,
                         workingSetBytes = process.WorkingSet64,
                         peakWorkingSetBytes = process.PeakWorkingSet64,
+                        gc = ReadGc(),
                         io = IoDelta(beforeIo, ReadIo()),
                         deleted,
                         retainedCanonicalScenes = scenePaths.Count(File.Exists)
@@ -283,6 +285,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - startAllocated,
             workingSetBytes = process.WorkingSet64,
             peakWorkingSetBytes = process.PeakWorkingSet64,
+            gc = ReadGc(),
             io = IoDelta(startIo, ReadIo()),
             samples,
             files = ReadFiles(root),
@@ -302,6 +305,22 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult<string?>("issue1055-production");
         }
+    }
+
+    private static object ReadGc()
+    {
+        var memory = GC.GetGCMemoryInfo();
+        return new
+        {
+            generation0 = GC.CollectionCount(0),
+            generation1 = GC.CollectionCount(1),
+            generation2 = GC.CollectionCount(2),
+            liveBytes = GC.GetTotalMemory(forceFullCollection: false),
+            heapBytes = memory.HeapSizeBytes,
+            committedBytes = memory.TotalCommittedBytes,
+            fragmentedBytes = memory.FragmentedBytes,
+            pauseMilliseconds = GC.GetTotalPauseDuration().TotalMilliseconds
+        };
     }
 
     private static object[] ReadFiles(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
