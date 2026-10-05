@@ -11,8 +11,11 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -228,7 +231,7 @@ public sealed partial class ArtifactIngestTests
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
                     .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
         }
-        var first = await ExecuteAnnotationAsync(firstJobId).ConfigureAwait(false);
+        var first = await ExecuteSceneAnnotationAsync(data, firstJobId).ConfigureAwait(false);
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -247,6 +250,26 @@ public sealed partial class ArtifactIngestTests
             var retired = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == rawId).ConfigureAwait(false);
             retired.ObjectState.Should().Be(CentralArtifactObjectState.Expired);
             retired.RetentionDeletionToken.Should().NotBeNull();
+            using (var sceneStatus = await PostStatusAsync(client, data.SceneManifest).ConfigureAwait(false))
+                sceneStatus.StatusCode.Should().Be(HttpStatusCode.Accepted,
+                    "a scene status retry needs retained source identity, not expired raw pixels");
+            // Recover the durable state produced by the pre-correction status-retry regression.
+            var sceneRow = await db.CentralArtifacts.Include(item => item.Sources)
+                .SingleAsync(item => item.Id == first.Scene.CentralArtifactId).ConfigureAwait(false);
+            sceneRow.ReconstructionState = CentralReconstructionState.PendingReference;
+            sceneRow.StateReasonCode = "lineage.source-unavailable";
+            sceneRow.Sources.Single().ResolvedCentralArtifactId = null;
+            sceneRow.Sources.Single().ResolvedArtifact = null;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            using (var telemetry = new CentralIngestTelemetry())
+                await new CentralArtifactReconciliationService(
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+                    TimeProvider.System, telemetry, NullLogger<CentralArtifactReconciliationService>.Instance)
+                    .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            var recoveredScene = await db.CentralArtifacts.AsNoTracking().Include(item => item.Sources)
+                .SingleAsync(item => item.Id == first.Scene.CentralArtifactId).ConfigureAwait(false);
+            recoveredScene.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            recoveredScene.Sources.Single().ResolvedCentralArtifactId.Should().Be(rawId);
             (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
                 .ReleaseAsync(first.Scene.CentralArtifactId, CancellationToken.None).ConfigureAwait(false))
                 .Should().Be(CentralArtifactRetentionResult.Held);
@@ -256,38 +279,145 @@ public sealed partial class ArtifactIngestTests
             replay.Outcome.Should().Be(CentralProcessingGraphScheduleOutcome.Created, replay.ReasonCode);
             var replayJobId = await db.CentralDerivativeJobs.Where(item => item.GraphExecutionId == replay.Execution!.Id)
                 .Select(item => item.Id).SingleAsync().ConfigureAwait(false);
-            var second = await ExecuteAnnotationAsync(replayJobId).ConfigureAwait(false);
+            var second = await ExecuteSceneAnnotationAsync(data, replayJobId).ConfigureAwait(false);
             second.RecipeIdentity.Should().Be(first.RecipeIdentity);
             second.Scene.Should().Be(first.Scene);
             second.Pixels.Should().Equal(first.Pixels);
         }
 
-        async Task<(string RecipeIdentity, CentralProjectedSceneReference Scene, byte[] Pixels)> ExecuteAnnotationAsync(Guid expectedJobId)
+    }
+
+    [TestMethod]
+    public async Task SceneMetadataArrivingAfterAuthenticatedRawExpiryUnblocksCalibratedAnnotation()
+    {
+        var data = await CreateSceneIngestCaseAsync(graph: true, FrameArtifactRole.Calibrated).ConfigureAwait(false);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using (var raw = await PostAsync(client, data.Raw, data.Pixels).ConfigureAwait(false))
+            raw.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using (var calibrated = await PostAsync(client, data.Derivative, data.Pixels).ConfigureAwait(false))
+            calibrated.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
-            await using var worker = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-            var lease = await worker.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
-                .ClaimNextAsync("expired-raw-scene-replay", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
-            lease.Should().NotBeNull();
-            lease!.JobId.Should().Be(expectedJobId);
-            lease.ProjectedScene.Should().NotBeNull();
-            using var options = JsonDocument.Parse(lease.RecipeOptionsJson);
-            var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SceneSelectorOptions);
-            selector.Should().NotBeNull();
-            var expected = await worker.ServiceProvider.GetRequiredService<LogicHostRecipeExecutionAdapter>()
-                .ExecuteAsync(data.Derivative.Descriptor, data.Pixels, lease.RecipeName, options.RootElement,
-                    selector!, lease.TargetVariant, CreateExpectedAnnotation(data.Full)).ConfigureAwait(false);
-            lease.ExpectedRecipeIdentitySha256.Should().Be(expected.Products.Single().Recipe.IdentitySha256);
-            var result = await worker.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
-                .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
-            result.Status.Should().Be(ProcessingOutcomeStatus.Produced, result.ReasonCode);
-            using var owner = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password)
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var raw = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == data.Raw.Descriptor.Artifact.ArtifactId)
                 .ConfigureAwait(false);
-            var pixels = await ReadDerivativeAsync(owner, lease.SourceDevicePublicId, result.ArtifactId!.Value).ConfigureAwait(false);
-            pixels.Should().Equal(expected.Products.Single().Payload.ToArray());
-            await worker.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>()
-                .ConvergeAsync(lease.GraphExecutionId!.Value, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
-            return (lease.ExpectedRecipeIdentitySha256, lease.ProjectedScene!, pixels);
+            // Legacy successful publication could mark Available before recording this timestamp.
+            raw.ObjectVerifiedAtUtc = null;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            var actor = await db.DeviceRegistrations.Where(item => item.Id == data.RegistrationId)
+                .Select(item => item.OwnerUserId).SingleAsync().ConfigureAwait(false);
+            var jobs = await db.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId == raw.Id &&
+                    (job.Status == CentralDerivativeJobStatus.Waiting || job.Status == CentralDerivativeJobStatus.Pending ||
+                        job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .Select(job => job.Id).ToArrayAsync().ConfigureAwait(false);
+            foreach (var job in jobs)
+                await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>()
+                    .CancelAsync(job, actor, CancellationToken.None).ConfigureAwait(false);
+            (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
+                .ReleaseAsync(raw.Id, CancellationToken.None).ConfigureAwait(false)).Should().Be(CentralArtifactRetentionResult.Released);
+            var retired = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false);
+            retired.ObjectVerifiedAtUtc.Should().NotBeNull("retirement preserves prior successful publication evidence");
         }
+        using (var scene = await PostAsync(client, data.SceneManifest, data.SceneBytes).ConfigureAwait(false))
+            scene.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        Guid jobId;
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            jobId = await db.CentralDerivativeJobs.Where(job => job.GraphExecutionId != null &&
+                    job.SourceArtifact!.ArtifactId == data.Derivative.Descriptor.Artifact.ArtifactId &&
+                    job.RecipeName == BuiltInProcessingRecipes.Annotation)
+                .Select(job => job.Id).SingleAsync().ConfigureAwait(false);
+            await db.CentralDerivativeJobs.Where(job => job.Id != jobId &&
+                    (job.Status == CentralDerivativeJobStatus.Pending || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+        }
+        _ = await ExecuteSceneAnnotationAsync(data, jobId).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task RetiringUnpublishedRawIntentDoesNotAuthenticateProjectedSceneSource()
+    {
+        var data = await CreateSceneIngestCaseAsync(graph: false).ConfigureAwait(false);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        var token = await GetSystemTokenAsync(client).ConfigureAwait(false);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        await using var objectScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var fault = new RejectSceneRawCopyStore(objectScope.ServiceProvider.GetRequiredService<IObjectStore>());
+        using var faultFactory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IObjectStore>();
+            services.AddSingleton<IObjectStore>(fault);
+        }));
+        using var faultClient = faultFactory.CreateClient();
+        faultClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using (var failed = await PostAsync(faultClient, data.Raw, data.Pixels).ConfigureAwait(false))
+            failed.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        fault.Failures.Should().BeGreaterThan(0);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var raw = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == data.Raw.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false);
+        raw.ObjectState.Should().Be(CentralArtifactObjectState.Pending);
+        raw.ObjectVerifiedAtUtc.Should().BeNull();
+        using (var waiting = await PostAsync(client, data.SceneManifest, data.SceneBytes).ConfigureAwait(false))
+            waiting.StatusCode.Should().Be((HttpStatusCode)425);
+        (await scope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
+            .ReleaseAsync(raw.Id, CancellationToken.None).ConfigureAwait(false)).Should().Be(CentralArtifactRetentionResult.Released);
+        var retired = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == raw.Id).ConfigureAwait(false);
+        retired.ObjectState.Should().Be(CentralArtifactObjectState.Expired);
+        retired.RetentionDeletionToken.Should().NotBeNull();
+        retired.ObjectVerifiedAtUtc.Should().BeNull("retention cannot invent successful publication");
+        using (var waiting = await PostStatusAsync(client, data.SceneManifest).ConfigureAwait(false))
+            waiting.StatusCode.Should().Be((HttpStatusCode)425);
+        var frame = await db.CentralFrames.SingleAsync(item => item.Id == raw.CentralFrameId).ConfigureAwait(false);
+        (await scope.ServiceProvider.GetRequiredService<CentralProjectedSceneResolver>()
+            .SelectAsync(frame, CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
+    }
+
+    private sealed class RejectSceneRawCopyStore(IObjectStore inner) : PerformanceObjectStoreDecorator(inner)
+    {
+        public int Failures { get; private set; }
+        protected override ValueTask BeforeOperationAsync(string operation, string key, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (operation == "copy")
+            {
+                Failures++;
+                throw new ObjectStoreException(ObjectStoreFailureKind.Transient, "copy");
+            }
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private static async Task<(string RecipeIdentity, CentralProjectedSceneReference Scene, byte[] Pixels)> ExecuteSceneAnnotationAsync(SceneIngestCase data, Guid expectedJobId)
+    {
+        await using var worker = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var lease = await worker.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+            .ClaimNextAsync("expired-raw-scene-replay", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+        lease.Should().NotBeNull();
+        lease!.JobId.Should().Be(expectedJobId);
+        lease.ProjectedScene.Should().NotBeNull();
+        using var options = JsonDocument.Parse(lease.RecipeOptionsJson);
+        var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SceneSelectorOptions);
+        selector.Should().NotBeNull();
+        var expected = await worker.ServiceProvider.GetRequiredService<LogicHostRecipeExecutionAdapter>()
+            .ExecuteAsync(data.Derivative.Descriptor, data.Pixels, lease.RecipeName, options.RootElement,
+                selector!, lease.TargetVariant, CreateExpectedAnnotation(data.Full)).ConfigureAwait(false);
+        lease.ExpectedRecipeIdentitySha256.Should().Be(expected.Products.Single().Recipe.IdentitySha256);
+        var result = await worker.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+            .ExecuteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        result.Status.Should().Be(ProcessingOutcomeStatus.Produced, result.ReasonCode);
+        using var owner = await ArtifactRetrievalTests.CreateUserClientAsync(TestUsers.Operator.Username, TestUsers.Operator.Password)
+            .ConfigureAwait(false);
+        var pixels = await ReadDerivativeAsync(owner, lease.SourceDevicePublicId, result.ArtifactId!.Value).ConfigureAwait(false);
+        pixels.Should().Equal(expected.Products.Single().Payload.ToArray());
+        await worker.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>()
+            .ConvergeAsync(lease.GraphExecutionId!.Value, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        return (lease.ExpectedRecipeIdentitySha256, lease.ProjectedScene!, pixels);
     }
 
     private sealed record SceneIngestCase(

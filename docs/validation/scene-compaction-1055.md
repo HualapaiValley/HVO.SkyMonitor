@@ -295,6 +295,19 @@ rolling-window hold, cancels it through the supported service, expires raw throu
 real retention, then creates and executes a new replay with identical pixels and
 frozen scene/recipe identity. Raw pixels are not an undeclared replay dependency.
 
+The subsequent expiry audit reproduced a scene status retry returning HTTP 425
+after authentic raw retirement. Ingest, status retry, background reconciliation
+and scene selection now share the same narrow source-eligibility predicate.
+Only projected-scene metadata may use an expired raw identity with a retention
+token, completed reconstruction and preserved publication verification. Other
+products still require available source pixels. Retirement preserves prior
+verification for already-available legacy rows but cannot add it to unpublished
+intents; no schema or frozen-input mutation is needed. Three focused SQL cases
+cover status retry and background repair, metadata arriving after authentic expiry,
+and a real failed-copy intent retired without acquiring publication evidence.
+The original HTTP 425 reproducer and the initial thirteen-case proof are retained.
+The extended scene selection contains fifteen SQL cases.
+
 ### Five paired process trials
 
 The [predeclared protocol](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1159#issuecomment-5997066493)
@@ -374,8 +387,13 @@ allocation increase and required-publication stage cost in exchange for the sing
 authenticated durable scene, smaller immutable metadata and lower write traffic.
 The default-runtime p95 increase remains a reported startup-tail regression;
 there is no unconditional speedup or equivalence claim. All observed default
-captures finish within 2.74 seconds against this fixture's configured 25-second
-arrival cadence, which provides workload headroom context, not a production SLO
-or full-host/backlog qualification. Original pairs, outliers, W3M retention costs,
+captures finish within 2.74 seconds. The harness advances timestamps by 25 seconds
+but submits captures back-to-back without wall-clock pauses; it measures
+accelerated service cost, not a host operating at that cadence. On one CPU,
+capture work and background compilation compete throughout this short process.
+The runtime controls diagnose that interaction without proving how much
+compilation would finish between live captures. Neither cadence arithmetic nor
+the controls establish a production SLO or full-host/backlog qualification.
+Original pairs, outliers, W3M retention costs,
 profiler limitations and all raw evidence remain retained. Independent correction
 review must assess this disposition before convergence.

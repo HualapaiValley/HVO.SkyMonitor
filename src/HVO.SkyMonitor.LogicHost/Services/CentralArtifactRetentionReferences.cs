@@ -468,6 +468,10 @@ internal sealed partial class CentralArtifactRetentionService(
         }
 
         var now = timeProvider.GetUtcNow();
+        // Available raw entered through checksum-verified publication or verification. Preserve
+        // that prior success before retirement overwrites its state; pending intents get no stamp.
+        if (artifact.Role == FrameArtifactRole.Raw && artifact.ObjectState == CentralArtifactObjectState.Available)
+            artifact.ObjectVerifiedAtUtc ??= artifact.ReconciledAtUtc ?? artifact.ReceivedAtUtc;
         artifact.ObjectState = CentralArtifactObjectState.Expired;
         artifact.StateReasonCode = "retention.expired";
         artifact.ReconciledAtUtc = now;

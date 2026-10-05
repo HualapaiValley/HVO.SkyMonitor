@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -33,6 +34,25 @@ internal sealed class CentralProjectedSceneResolver(
     internal static SceneProvenance? ReadProvenance(string? json)
         => json is null ? null : JsonSerializer.Deserialize<SceneProvenance>(json, JsonOptions);
 
+    internal static bool IsProjectedScene(CentralArtifact artifact)
+        => artifact.Role == FrameArtifactRole.Metadata &&
+            artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
+            artifact.StructuredProduct?.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion;
+
+    internal static Expression<Func<CentralArtifact, bool>> SourceEligibility(bool projectedScene)
+    {
+        if (!projectedScene)
+            return static source => source.ObjectState == CentralArtifactObjectState.Available &&
+                source.ReconstructionState == CentralReconstructionState.Complete;
+        // Scene geometry consumes authenticated raw identity, not retained raw pixels. Retention
+        // preserves prior publication evidence; an uncommitted intent cannot acquire it by expiring.
+        return static source => source.ReconstructionState == CentralReconstructionState.Complete &&
+            (source.ObjectState == CentralArtifactObjectState.Available ||
+                source.Role == FrameArtifactRole.Raw && source.ObjectState == CentralArtifactObjectState.Expired &&
+                source.RetentionDeletionToken != null && source.ObjectVerifiedAtUtc != null &&
+                source.StateReasonCode == "retention.expired");
+    }
+
     public async Task<CentralProjectedSceneSelection?> SelectAsync(
         CentralFrame frame, CancellationToken cancellationToken)
     {
@@ -40,12 +60,8 @@ internal sealed class CentralProjectedSceneResolver(
         if (provenance?.RequiresProjectedScene != true) return null;
         // Metadata/calibrated arrivals can precede raw. A retention tombstone preserves
         // authenticated source identity; a rejected/pending publication never supplies that evidence.
-        if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(raw =>
-                raw.CentralFrameId == frame.Id && raw.Role == FrameArtifactRole.Raw &&
-                (raw.ObjectState == CentralArtifactObjectState.Available ||
-                    raw.ObjectState == CentralArtifactObjectState.Expired && raw.RetentionDeletionToken != null &&
-                    raw.StateReasonCode == "retention.expired") &&
-                raw.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false))
+        if (!await dbContext.CentralArtifacts.AsNoTracking().Where(SourceEligibility(projectedScene: true)).AnyAsync(raw =>
+                raw.CentralFrameId == frame.Id && raw.Role == FrameArtifactRole.Raw, cancellationToken).ConfigureAwait(false))
             return null;
         var candidates = await dbContext.CentralArtifacts
             .Include(item => item.StructuredProduct)
@@ -58,13 +74,9 @@ internal sealed class CentralProjectedSceneResolver(
         if (candidates.Length != 1) throw new CentralArtifactIntegrityException("projected-scene.ambiguous");
         var artifact = candidates[0];
         var scene = await ReadAsync(artifact, cancellationToken).ConfigureAwait(false);
-        if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(raw =>
+        if (!await dbContext.CentralArtifacts.AsNoTracking().Where(SourceEligibility(projectedScene: true)).AnyAsync(raw =>
                 raw.CentralFrameId == artifact.CentralFrameId && raw.Role == FrameArtifactRole.Raw &&
-                raw.ArtifactId == scene.Source.ArtifactId && raw.IdempotencyKey == scene.Source.ArtifactIdentitySha256 &&
-                (raw.ObjectState == CentralArtifactObjectState.Available ||
-                    raw.ObjectState == CentralArtifactObjectState.Expired && raw.RetentionDeletionToken != null &&
-                    raw.StateReasonCode == "retention.expired") &&
-                raw.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false))
+                raw.ArtifactId == scene.Source.ArtifactId && raw.IdempotencyKey == scene.Source.ArtifactIdentitySha256, cancellationToken).ConfigureAwait(false))
             throw new CentralArtifactIntegrityException("projected-scene.raw-source-mismatch");
         ValidateSource(artifact, scene, frame.FrameId, provenance);
         var annotation = CreateAnnotation(scene, provenance.SceneId);

@@ -107,6 +107,12 @@ public sealed class CentralProjectedSceneResolverTests
         rawArtifact.RetentionDeletionToken = Guid.NewGuid();
         rawArtifact.StateReasonCode = "retention.expired";
         await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false),
+            "retiring a never-authenticated pending intent cannot create source authority");
+        rawArtifact.ObjectVerifiedAtUtc = DateTimeOffset.UnixEpoch;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsFalse(CentralProjectedSceneResolver.SourceEligibility(projectedScene: false).Compile()(rawArtifact),
+            "ordinary pixel lineage still requires an available source object");
         var selectedAfterExpiry = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selectedAfterExpiry, "new work can freeze the authenticated source identity after pixel expiry");
         Assert.AreEqual(selected.Reference, selectedAfterExpiry.Reference);

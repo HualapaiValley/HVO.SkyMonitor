@@ -1753,6 +1753,7 @@ internal sealed partial class ArtifactIngestService(
             var expected = manifest.StructuredSourceFacts?.ElementAtOrDefault(ordinal);
             var requiresSameFrame = RequiresSameFrameSource(artifact, ordinal);
             var resolved = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
                 .Include(candidate => candidate.Layout)
@@ -1760,9 +1761,7 @@ internal sealed partial class ArtifactIngestService(
                 .FirstOrDefaultAsync(candidate =>
                         candidate.ArtifactId == sourceArtifactId
                         && candidate.DevicePublicId == devicePublicId
-                        && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                        && candidate.ObjectState == CentralArtifactObjectState.Available
-                        && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                        && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                     cancellationToken).ConfigureAwait(false);
             artifact.Sources.Add(new CentralArtifactSource
             {
@@ -2121,11 +2120,11 @@ internal sealed partial class ArtifactIngestService(
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId != null))
         {
             var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
-            var usable = await dbContext.CentralArtifacts.AnyAsync(candidate =>
+            var usable = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
+                .AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (!usable)
             {
@@ -2138,6 +2137,7 @@ internal sealed partial class ArtifactIngestService(
         {
             var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
             var resolved = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
                 .Include(candidate => candidate.Layout)
@@ -2145,9 +2145,7 @@ internal sealed partial class ArtifactIngestService(
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (resolved is not null)
             {
