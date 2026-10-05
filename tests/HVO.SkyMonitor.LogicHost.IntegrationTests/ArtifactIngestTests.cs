@@ -1253,18 +1253,24 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames()
+    [DataRow(0)]
+    [DataRow(100)]
+    [DoNotParallelize]
+    public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames(int verificationBacklog)
     {
-        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        // Keep the synthetic backlog out of the assembly's shared object inventory.
+        using var fixture = new IntegrationTestFixture(suppressRecurringWorkers: true);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync(fixture: fixture).ConfigureAwait(false);
         var rig = CreateRig("structured-cloud-history-rig");
-        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        await SeedRigProfileAsync(registrationId, rig, fixture).ConfigureAwait(false);
         var clearBytes = new byte[] { 1, 2, 3, 4 };
         var currentBytes = new byte[] { 5, 6, 7, 8 };
         var clear = CreateManifestV2(
             deviceId, rig, clearBytes, 91, capturedAtUtc: DateTimeOffset.UnixEpoch);
         var current = CreateManifestV2(
             deviceId, rig, currentBytes, 92, capturedAtUtc: DateTimeOffset.UnixEpoch.AddMinutes(1));
-        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
         using var currentResponse = await PostAsync(client, current, currentBytes).ConfigureAwait(false);
@@ -1370,8 +1376,23 @@ public sealed class ArtifactIngestTests
             deviceId, rig, dependentBytes, 94, capturedAtUtc: DateTimeOffset.UnixEpoch.AddMinutes(2));
         using var dependentResponse = await PostAsync(client, dependentManifest, dependentBytes).ConfigureAwait(false);
         dependentResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var backlogArtifactIds = new List<Guid>();
+        for (var index = 0; index < verificationBacklog; index++)
+        {
+            var backlogManifest = CreateManifestV2(deviceId, rig, dependentBytes, 1000 + index);
+            using var backlogResponse = await PostAsync(client, backlogManifest, dependentBytes).ConfigureAwait(false);
+            backlogResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            backlogArtifactIds.Add(backlogManifest.Descriptor.Artifact.ArtifactId);
+        }
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralArtifacts.Where(item => backlogArtifactIds.Contains(item.ArtifactId))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
+                .SetProperty(item => item.ObjectVerificationToken, Guid.NewGuid())
+                .SetProperty(item => item.ObjectVerificationRequestedAtUtc, DateTimeOffset.UnixEpoch)
+                .SetProperty(item => item.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
         var stored = await db.CentralArtifacts.Include(item => item.Sources)
             .SingleAsync(item => item.ArtifactId == artifact.ArtifactId).ConfigureAwait(false);
         stored.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
@@ -1422,14 +1443,27 @@ public sealed class ArtifactIngestTests
             .ConfigureAwait(false);
         using var telemetry = new CentralIngestTelemetry();
         var reconciler = new CentralArtifactReconciliationService(
-            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
             new MutableTimeProvider(DateTimeOffset.UtcNow.AddHours(1)),
             telemetry,
             NullLogger<CentralArtifactReconciliationService>.Instance);
-        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        // Recovery uses a bounded queue. A single cycle behind the backlog may
+        // not visit these artifacts, so wait for their verification reservations.
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!await db.CentralArtifacts.AnyAsync(item =>
+                    (item.Id == stored.Id || item.Id == dependentId) && item.ObjectVerificationToken != null)
+                .ConfigureAwait(false))
+            {
+                break;
+            }
+        }
         db.ChangeTracker.Clear();
         var reconciled = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == artifact.ArtifactId)
             .ConfigureAwait(false);
+        reconciled.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        reconciled.ObjectVerificationToken.Should().BeNull("the quarantined parent must be verified before checking invalidation");
         reconciled.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
         reconciled.StateReasonCode.Should().Be("lineage.source-identity-mismatch");
         var reconciledDependent = await db.CentralArtifacts.SingleAsync(item => item.Id == dependentId)
@@ -4958,9 +4992,11 @@ public sealed class ArtifactIngestTests
         storedPayload.ToArray().Should().Equal(payload);
     }
 
-    private static async Task SeedRigProfileAsync(Guid registrationId, CameraRigConfig rig)
+    private static async Task SeedRigProfileAsync(
+        Guid registrationId, CameraRigConfig rig, IntegrationTestFixture? fixture = null)
     {
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        fixture ??= AssemblyHooks.Fixture;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
         db.DeviceRigProfiles.Add(new DeviceRigProfile
@@ -4985,9 +5021,11 @@ public sealed class ArtifactIngestTests
         Guid registrationId,
         DateTimeOffset? effectiveFromUtc = null,
         DateTimeOffset? effectiveUntilUtc = null,
-        string locationId = "inherited-observatory")
+        string locationId = "inherited-observatory",
+        IntegrationTestFixture? fixture = null)
     {
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        fixture ??= AssemblyHooks.Fixture;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
             .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
@@ -5118,10 +5156,12 @@ public sealed class ArtifactIngestTests
         return token.AccessToken;
     }
 
-    private static async Task<(string DeviceId, Guid RegistrationId)> SeedActiveDeviceAsync(string? requestedDeviceId = null)
+    private static async Task<(string DeviceId, Guid RegistrationId)> SeedActiveDeviceAsync(
+        string? requestedDeviceId = null, IntegrationTestFixture? fixture = null)
     {
+        fixture ??= AssemblyHooks.Fixture;
         var deviceId = requestedDeviceId ?? $"artifact-device-{Guid.NewGuid():N}";
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email).ConfigureAwait(false);
         var observatory = new Observatory
@@ -5176,10 +5216,11 @@ public sealed class ArtifactIngestTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         DefaultLocations[deviceId] = await SeedAcknowledgedDeploymentLocationAsync(
             registration.Id,
-            locationId: "default-observatory").ConfigureAwait(false);
+            locationId: "default-observatory",
+            fixture: fixture).ConfigureAwait(false);
         for (var step = 0; step < 10; step++)
         {
-            await using var processScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            await using var processScope = fixture.Factory.Services.CreateAsyncScope();
             if (!await processScope.ServiceProvider.GetRequiredService<IDeploymentLocationReconciliationProcessor>()
                     .ProcessNextAsync().ConfigureAwait(false))
             {
