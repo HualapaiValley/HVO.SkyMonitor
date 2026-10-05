@@ -131,3 +131,32 @@ affected correction TRX SHA-256:
 `c3517bfc03a481444a223b24435c46016985394fbcbf74dfd1d722cfb5cf9d13`.
 These files include the original failed fixture attempt and per-boundary stdout;
 they are retained outside the source worktree, not committed artifact payloads.
+
+## Complete local candidate gate
+
+On immutable candidate `2db485443e33d4ce407c146bd46ae49528f9c6a4`, SDK
+10.0.401 tool/solution restore, warning-clean Debug and Release solution builds,
+solution format, package audit and all four CI-control guards passed. Positive
+Unit selection with an invalid Docker endpoint returned 5,778 passes and seven
+existing skips; sequential Integration returned **685 passes**, zero failures.
+The final fault selection passed 20 cases with one expected worker skip. The
+23 workflow-selected coverage reports merged through ReportGenerator 5.5.11
+passed the unchanged policy at 86.6953% line and 71.6347% branch coverage.
+CameraAgent component coverage also passed (85.3177% line, 67.2278% branch), and
+its host/replay-runner publish gate passed. Architecture's 18 Unit and seven
+Integration cases passed within the complete selections.
+
+The full run exposed an inherited inventory error: LogicHost's Integration
+assembly discovered and passed 418 cases while its inventory said 417. Complete
+unfiltered and six-category discovery, parsed by stable case IDs from VSTest
+completion messages, proves a complete disjoint partition of 460 cases:
+Unit=4, Integration=418, Manual=38, and zero other categories. The extra case
+is not a repeated execution or category overlap. This PR corrects that inventory
+and the repository Integration total to 685. These metadata-only corrections
+preserve the completed suite evidence; the classifier, control guards and docs
+checks run again on the corrected head. Concurrent target changes require an
+additive count reconciliation during final synchronization.
+
+The protected profile is Development v1 Preflight and Build and Unit. These
+local results do not authorize full `ci.yml` dispatch, installed upgrades,
+production hourly storage adoption or closing #1059.
