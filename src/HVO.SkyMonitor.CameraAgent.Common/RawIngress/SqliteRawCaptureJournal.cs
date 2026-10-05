@@ -532,6 +532,44 @@ internal sealed class SqliteRawCaptureJournal(
             oldest);
     }
 
+    /// <summary>
+    /// Visits one manifest at a time using the primary-key cursor. Each reader closes before the caller
+    /// validates payloads or repairs state, so slow file I/O cannot pin the WAL for the entire history.
+    /// The initial high-water mark excludes captures committed after enumeration starts.
+    /// </summary>
+    internal async IAsyncEnumerable<RawIngressJournalEntry> EnumerateAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var maximumRowId = await ExecuteScalarLongAsync(
+            connection, "SELECT COALESCE(MAX(raw_capture_row_id), 0) FROM raw_captures;", cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT agent_id, capture_sequence, capture_id, raw_artifact_id,
+                   descriptor_sha256, manifest_sha256, payload_sha256, payload_length,
+                   payload_relative_path, sidecar_relative_path, manifest_json,
+                   exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold, evidence_origin,
+                   raw_capture_row_id
+            FROM raw_captures
+            WHERE raw_capture_row_id > $cursor AND raw_capture_row_id <= $maximum
+            ORDER BY raw_capture_row_id LIMIT 1;
+            """;
+        var cursor = command.Parameters.AddWithValue("$cursor", 0L);
+        command.Parameters.AddWithValue("$maximum", maximumRowId);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RawIngressJournalEntry entry;
+            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) yield break;
+                entry = ReadEntry(reader);
+                cursor.Value = reader.GetInt64(16);
+            }
+            yield return entry;
+        }
+    }
+
     internal async Task<IReadOnlyList<RawIngressJournalEntry>> ReadAllAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -1667,7 +1705,6 @@ internal sealed class SqliteRawCaptureJournal(
         return await SqliteInspectionSnapshot.InspectAsync(
             _databasePath,
             _busyTimeoutSeconds,
-            "hvo-raw-ingress-inspection-",
             EnsureDatabaseFilesArePhysical,
             async (connection, token) =>
             {
