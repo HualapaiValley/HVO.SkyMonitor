@@ -4,6 +4,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
@@ -26,6 +30,20 @@ public sealed partial class RawCaptureIngressPerformanceTests
         Assert.IsFalse(Directory.Exists(root), "Fixture preparation requires a new disposable directory.");
         Directory.CreateDirectory(root);
         var configuration = await LoadCanonicalConfigurationAsync().ConfigureAwait(false);
+        var locationOptions = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = root,
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        using (var locations = new ProtectedDeploymentLocationStore(
+            locationOptions, new DataProtectionDeploymentLocationProtector(locationOptions), TimeProvider.System,
+            NullLogger<ProtectedDeploymentLocationStore>.Instance))
+        {
+            var location = await locations.InitializeAsync(new DeploymentLocationSeed(
+                "local-deployment", "local-configuration", null, DateTimeOffset.UnixEpoch, null,
+                configuration.Observatory, DeploymentLocationSourceKind.Manual), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(configuration.DeploymentLocation!.ToProvenance(), location.ToProvenance());
+        }
         var input = await RenderCanonicalW2InputAsync(configuration).ConfigureAwait(false);
         var objects = Enumerable.Range(0, RetainedSceneObjectCount)
             .Select(index => new ProjectedObjectProvenance(
@@ -141,6 +159,39 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Fingerprint = fingerprint,
             Fixture = fixture.RootElement.Clone()
         }, EvidenceOptions)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task RetainedHistory_PrepareHostReadinessClone()
+    {
+        // Run only on a disposable copy after the unchanged-history component measurements. Acknowledge
+        // the synthetic consumer through its production API, so host readiness measures retained history
+        // without draining 1812 deliberately unfinished test captures into the processing pipeline.
+        var root = ColdStartRoot();
+        Assert.IsTrue(File.Exists(Path.Combine(root, "fixture.json")));
+        var configuration = await LoadCanonicalConfigurationAsync().ConfigureAwait(false);
+        using var fixture = CreateIngress(root);
+        await fixture.Ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var lanes = (ICaptureLaneStore)fixture.Ingress;
+        var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+        var standard = policy.Definitions.Single(lane => lane.Name == "standard");
+        var completed = 0;
+        while (await lanes.ClaimAsync(standard, "cold-start-fixture-consumer", configuration, CancellationToken.None).ConfigureAwait(false) is { } lease)
+        {
+            await lanes.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            completed++;
+        }
+        Assert.AreEqual(RetainedCaptureCount, completed);
+        await File.WriteAllTextAsync(Path.Combine(root, "host-fixture-fingerprint.txt"),
+            await ColdStartFingerprintAsync(root).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task RetainedHistory_VerifyHostReadinessClone()
+    {
+        var root = ColdStartRoot();
+        var expected = await File.ReadAllTextAsync(Path.Combine(root, "host-fixture-fingerprint.txt")).ConfigureAwait(false);
+        Assert.AreEqual(expected, await ColdStartFingerprintAsync(root).ConfigureAwait(false));
     }
 
     private static string ColdStartRoot()
