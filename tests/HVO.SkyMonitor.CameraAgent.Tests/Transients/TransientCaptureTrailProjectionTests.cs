@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using Microsoft.Extensions.DependencyInjection;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
@@ -51,6 +52,8 @@ public sealed partial class TransientWorkerRuntimeTests
             {
                 Assert.AreNotEqual("ConfirmedMeteor", trail.State);
             }
+            await AssertRetainedTrailAuthorityAsync(root, projection, source.CaptureId, trail.CandidateId)
+                .ConfigureAwait(false);
             await provider.DisposeAsync().ConfigureAwait(false);
             using var recovered = CreateProvider(root);
             // A recovered owner acquires the journal only after the original owner has released its process lock.
@@ -81,6 +84,91 @@ public sealed partial class TransientWorkerRuntimeTests
         finally
         {
             Cleanup(root);
+        }
+    }
+
+    private static async Task AssertRetainedTrailAuthorityAsync(string root,
+        ICameraAgentTransientOperatorProjection projection, Guid captureId, Guid candidateId)
+    {
+        using var connection = await OpenAsync(root).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT finalization_payload, state FROM transient_candidates WHERE candidate_id = $candidate;";
+        command.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+        byte[] originalBytes;
+        string originalState;
+        using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+        {
+            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+            originalBytes = await reader.GetFieldValueAsync<byte[]>(0).ConfigureAwait(false);
+            originalState = reader.GetString(1);
+        }
+        var receipt = TransientCandidateDeliveryJson.ParseFinalization(originalBytes).Value;
+        Assert.IsNotNull(receipt);
+        var originalEvent = receipt.Event;
+        var observation = originalEvent.Observations.Single();
+        var meteor = originalEvent.Assessments.Single() with
+        {
+            Authority = TransientAssessmentAuthority.Authoritative,
+            Classification = TransientClassification.Meteor,
+            MeteorSeverity = TransientMeteorSeverity.Meteor,
+            CreatedUtc = originalEvent.EventCreatedUtc,
+            EvidenceObservationIds = [observation.ObservationId],
+            SupersedesAssessmentId = null
+        };
+        var validated = originalEvent with
+        {
+            State = TransientEventState.Validated,
+            VersionCreatedUtc = originalEvent.VersionCreatedUtc.AddSeconds(1),
+            Assessments = [meteor],
+            Reviews = [],
+            Notifications = []
+        };
+        var conflicting = meteor with
+        {
+            AssessmentId = Guid.NewGuid(),
+            CreatedUtc = validated.VersionCreatedUtc,
+            Classification = TransientClassification.Satellite,
+            MeteorSeverity = null
+        };
+        var variants = new (TransientEventV1 Event, bool Confirmed, string Description)[]
+        {
+            (validated, true, "exact authoritative meteor"),
+            (validated with { Assessments = [meteor with { Authority = TransientAssessmentAuthority.Provisional }] }, false, "provisional classification"),
+            (validated with { Assessments = [meteor, conflicting] }, false, "conflicting active authority"),
+            (validated with { Assessments = [meteor, conflicting with { SupersedesAssessmentId = meteor.AssessmentId }] }, false, "superseded meteor"),
+            (validated with { Observations = [observation with { Geometry = observation.Geometry with
+            {
+                Polyline = observation.Geometry.Polyline.Select((point, index) => index == 0 ? point with { X = point.X + 0.01 } : point).ToArray()
+            } }] }, false, "different measured geometry")
+        };
+        try
+        {
+            foreach (var variant in variants)
+            {
+                var changed = receipt with { Event = variant.Event };
+                changed = changed with { ReceiptIdentitySha256 = TransientCandidateDeliveryJson.ComputeFinalizationIdentitySha256(changed) };
+                // Persist complete, canonically valid immutable receipt evidence; changing only the UI summary cannot confirm a trail.
+                var bytes = TransientCandidateDeliveryJson.Serialize(changed);
+                await WriteReceiptAsync(bytes, changed.ReceiptIdentitySha256, "validated").ConfigureAwait(false);
+                var projected = await projection.GetCaptureTrailsAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(projected.Incomplete, projected.Reason);
+                Assert.AreEqual(variant.Confirmed, projected.Trails.Single().State == "ConfirmedMeteor", variant.Description);
+            }
+        }
+        finally
+        {
+            await WriteReceiptAsync(originalBytes, receipt.ReceiptIdentitySha256, originalState).ConfigureAwait(false);
+        }
+
+        async Task WriteReceiptAsync(byte[] bytes, string identity, string state)
+        {
+            using var update = connection.CreateCommand();
+            update.CommandText = "UPDATE transient_candidates SET finalization_payload = $payload, finalization_receipt_identity_sha256 = $identity, state = $state WHERE candidate_id = $candidate;";
+            update.Parameters.AddWithValue("$payload", bytes);
+            update.Parameters.AddWithValue("$identity", identity);
+            update.Parameters.AddWithValue("$state", state);
+            update.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+            Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
         }
     }
 
