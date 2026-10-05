@@ -271,3 +271,111 @@ canonical expiration. The direct expiry API receives empty external holds to
 exercise archive discovery; normal outbox/queue/window retention aggregation is
 outside that measurement. The separate bounded deletion and durable-hold tests
 remain the correctness evidence for those paths.
+
+## Independent review corrections and performance disposition
+
+The initial exact-range review (`fead5666..e955733a`) identified late inline
+provenance replacing compact authority, new replay being blocked after raw expiry,
+and insufficient performance attribution. The implementation correction is
+`c36beaba`; the focused SQL selection passes all thirteen cases with no skips.
+
+Mixed inline/compact arrivals now authenticate inline geometry against the
+source-bound canonical product before acceptance. Missing canonical metadata
+returns retryable HTTP 425; altered, extra or missing geometry conflicts. Once
+established, compact authority cannot be replaced by inline enrichment. Existing
+inline authority and previously frozen jobs also remain unchanged. The eight
+arrival-order cases submit late inline provenance, execute annotation and verify
+that completed jobs do not release the scene while compact consumers remain.
+Four further cases cover both representation orders and altered/empty geometry.
+
+New calibrated-source annotation replay can select the exact authenticated raw
+identity after its genuine retention tombstone. Pending, rejected or arbitrarily
+expired rows remain insufficient. The SQL regression first proves the existing
+rolling-window hold, cancels it through the supported service, expires raw through
+real retention, then creates and executes a new replay with identical pixels and
+frozen scene/recipe identity. Raw pixels are not an undeclared replay dependency.
+
+### Five paired process trials
+
+The [predeclared protocol](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1159#issuecomment-5997066493)
+uses five independent process pairs, alternating baseline/candidate order, one
+CPU, five warmups and thirty measured captures per process. Baseline `b89c1a01`
+retains production `fead5666`; candidate `c36beaba` has exactly the same edge
+production sources as `a4f834e5`. The identical optional harness probe has SHA-256
+`13a0b64fbae5ac42445692b5cf4ce121521fe102cf46563ffe5788a7b06fa70c`.
+It records capture, ingress, the complete processing lane, and all five node spans.
+Node spans include persistence and overlap the lane span; they must not be summed
+twice. Process CPU/allocation counters include background runtime work. Probe
+cost is included symmetrically, making this a separate instrumented series.
+All ten Manual runs and five pixel/geometry/layer comparators pass.
+
+[The analysis script](scene-compaction-1055-stage-analysis.py) uses process means
+as the units for paired differences and log-ratio Student-t intervals (five pairs,
+four degrees of freedom). Within-process captures are not independent replicates.
+Small sample size, approximate normality and temporal host effects limit the
+intervals. Distribution and individual-stage intervals are exploratory, without
+multiple-comparison adjustment. An interval including one does not prove
+performance equivalence; no acceptance tolerance was chosen after these results.
+
+| Measurement | Candidate minus baseline | Paired ratio, 95% interval |
+| --- | --- | --- |
+| Mean capture wall time | +64.2 ms, interval −80.1 to +208.5 ms | 1.080, 0.917–1.271 |
+| Mean process CPU | +71.0 ms, interval −54.4 to +196.4 ms | 1.104, 0.934–1.304 |
+| Mean allocated bytes | +16.35 MB, interval +15.71 to +16.99 MB | 1.060, 1.058–1.062 |
+| Per-process median wall time | +81.5 ms | 1.099, 0.927–1.302 |
+| Per-process p95 wall time | +211.2 ms | 1.209, 1.015–1.441 |
+| Canonical Storage mean wall time | +32.0 ms, interval +10.2 to +53.7 ms | 2.467, 1.768–3.444 |
+
+The allocation increase is localized: canonical Storage adds 9.12 MB and archive
+Storage 8.49 MB per capture while compact ingress and other nodes save allocation.
+These publishers restore and authenticate durable scene payload/sidecar/source
+identity before converging on one outbox record. Their additional transient
+allocation is a measured cost of that correctness contract. The complete lane's
+mean difference is +11.6 ms (interval −46.5 to +69.7 ms); capture itself contributes
++64.7 ms with substantial variation. Measured writes consistently fall from
+513.2–513.3 MB to 486.2–486.6 MB per thirty captures. Candidate peak RSS ranges
+415.7–461.3 MB across the five processes; baseline ranges 349.8–514.5 MB.
+
+### Runtime attribution and limits
+
+Long samples are not confined to scene publication. Candidate trial 2's 2.734 s
+sample contains 1.508 s in Preview (1.250 s process CPU); baseline trial 2's
+2.383 s sample contains 1.505 s in ingress (1.075 s CPU). Candidate trial 5's
+1.845 s sample contains 1.239 s in canonical Storage (1.188 s CPU). Their GC
+pauses of 16–19 ms do not explain them.
+
+A separate diagnostic pair used `dotnet-trace 10.0.745401` with runtime and sampled
+thread events. Both captures and their comparator passed. The traces ended with
+`Read past end of stream`; raw traces, conversion warnings and decoded events
+are retained, and are not treated as complete stack profiles. Before that boundary,
+the decoded events contain 918 candidate and 941 baseline matched background-JIT
+bursts, totaling 2.10 and 2.22 seconds of burst wall time. Thousands of methods
+remain queued near process end. This establishes ongoing tiered compilation,
+not the cause of an individual earlier sample.
+
+Two further diagnostic pairs changed only `DOTNET_TieredCompilation=0`, in opposite
+orders. No application source or production runtime setting changed. Both output
+comparators passed:
+
+| Diagnostic pair | Mean baseline → candidate | p95 baseline → candidate | Maximum baseline → candidate |
+| --- | --- | --- | --- |
+| Baseline first | 611.8 → 609.9 ms | 642.8 → 648.1 ms | 649.6 → 656.4 ms |
+| Candidate first | 635.4 → 635.5 ms | 696.7 → 705.4 ms | 707.1 → 735.3 ms |
+
+The first control still shows canonical Storage increasing from 18.2 to 37.4 ms,
+with other compact stages offsetting it. Allocation remains about 17 MB higher.
+Together with the runtime events, the controlled runs support tiering as a material
+contributor to the short-process variation. They do not replace default-runtime
+results, establish production steady state, or retroactively identify the original
+2.05-second sample's exact cause.
+
+The disposition is an explicit cost tradeoff: retain the approximately 6% transient
+allocation increase and required-publication stage cost in exchange for the single
+authenticated durable scene, smaller immutable metadata and lower write traffic.
+The default-runtime p95 increase remains a reported startup-tail regression;
+there is no unconditional speedup or equivalence claim. All observed default
+captures finish within 2.74 seconds against this fixture's configured 25-second
+arrival cadence, which provides workload headroom context, not a production SLO
+or full-host/backlog qualification. Original pairs, outliers, W3M retention costs,
+profiler limitations and all raw evidence remain retained. Independent correction
+review must assess this disposition before convergence.
