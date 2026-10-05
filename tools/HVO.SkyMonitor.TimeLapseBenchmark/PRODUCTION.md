@@ -121,3 +121,15 @@ Reproduce on an already qualified NVIDIA host with
 time-limited and pinned to one CPU. Commands, individual probes and joined
 probes are retained in that directory; [mixed-cadence-results.json](mixed-cadence-results.json)
 records the accepted result. No runtime or driver installation is performed.
+
+## Production browser playback
+
+The actual production mono1280, daytime1280, ASI174 1210×760, software color3552
+and NVIDIA color3552 MP4 files played through their 1.666667-second duration in
+T3/Electron 44.4.2 / Chrome 152 on the operator's Mac. The smaller outputs had
+zero dropped display frames; the initial native software pass reported two, and
+the native NVIDIA pass reported none. All completed without a media error.
+Native clips needed more buffering than the initial three-second probe allowed.
+This is qualification of that browser instance, not every browser or network.
+The [browser result](production-browser-results.json) retains dimensions, completion,
+frame counters and limitations separately from FFmpeg's exact packet/decode proof.
