@@ -102,8 +102,11 @@ public sealed class CentralProjectedSceneResolverTests
             "expired consumers do not retain scene geometry forever");
         var pendingPreview = new CentralArtifact
         {
-            Frame = frame, CentralFrameId = frame.Id, ArtifactId = Guid.NewGuid(),
-            Role = FrameArtifactRole.Preview, ObjectState = CentralArtifactObjectState.Pending
+            Frame = frame,
+            CentralFrameId = frame.Id,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview,
+            ObjectState = CentralArtifactObjectState.Pending
         };
         db.Add(pendingPreview);
         await db.SaveChangesAsync().ConfigureAwait(false);
