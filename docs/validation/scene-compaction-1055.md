@@ -3,7 +3,7 @@
 New scene-bearing captures use one explicit enabled `ProjectedScene` node. The
 node consumes `$raw`; every `Annotation` consumer declares that scene node in
 `dependsOn` and sets `requireProjectedSceneDependency: true`. Storage steps that
-upload scene metadata also declare the scene dependency. The shipped VirtualSky
+upload scene metadata or scene-bearing images also declare the scene dependency. The shipped VirtualSky
 profiles include these declarations. Configure the node before starting new
 captures; the acquisition graph rejects missing, disabled, or duplicate scene
 nodes and incomplete annotation dependencies.
@@ -26,7 +26,14 @@ identity are authenticated under the storage lifecycle gate before enqueueing.
 Both publishers use the committed producer identity and identical manifest bytes,
 so retries and optional Storage publication converge on one outbox record.
 Optional archive upload policy cannot suppress a compact raw upload's required
-scene dependency. Legacy inline captures retain their raw-only lane behavior.
+scene dependency. Storage image publishers likewise enqueue the canonical scene,
+even when the optional metadata upload policy is false or the ordinary upload
+lane is disabled. Legacy image manifests already transported geometry under that
+policy; the required dependency preserves the same information flow. With no
+image upload, the optional metadata mask still suppresses independent scene
+publication. Canonical image publication retains the committed producer identity
+so its outbox manifest equals its immutable sidecar. Legacy inline captures retain
+their raw-only lane behavior.
 A scene-specific retention guard checks remaining canonical consumers and every
 Storage root recorded in the capture's live/replay graph revisions. Those
 revision and execution rows survive canonical output expiry, so old archive

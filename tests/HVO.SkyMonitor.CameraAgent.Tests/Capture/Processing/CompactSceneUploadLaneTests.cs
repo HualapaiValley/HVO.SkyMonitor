@@ -149,6 +149,134 @@ public sealed class CompactSceneUploadLaneTests
         }
     }
 
+    [TestMethod]
+    [DataRow(true, true)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(false, false)]
+    public async Task StorageImageUploadIncludesSceneDespiteOptionalMetadataMask(
+        bool rawImage, bool uploadImages)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-storage-scene-upload", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateStorageProvider(root);
+            var config = CreateStorageConfiguration(root, rawImage, uploadImages, declareScene: true);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(provider.GetRequiredService<CaptureLanePolicy>().Definitions
+                .Single(static lane => lane.Name == "upload").Enabled);
+            var module = new VirtualSkyCameraModule(TimeProvider.System,
+                provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<IProjectedSceneStore>(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var moduleLifetime = module.ConfigureAwait(false);
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var request = new CaptureRequest(new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero),
+                TimeSpan.FromSeconds(5), CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
+            var capture = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+            var submission = new CaptureLoopSubmission(request, capture, request.RequestedStartUtc,
+                request.TargetInterval, TimeSpan.Zero);
+            Assert.IsNotNull(await ingress.AcceptAsync(config, submission, CancellationToken.None).ConfigureAwait(false));
+            var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static value => value.Name == "standard");
+            var lease = await ingress.ClaimAsync(lane, "storage-scene-test", config, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.IsTrue(lease.Context.RawCapture.Manifest.Scene?.RequiresProjectedScene);
+            var processed = await provider.GetRequiredService<StandardCaptureLaneHandler>()
+                .HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
+            await ingress.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            var outbox = provider.GetRequiredService<IArtifactOutbox>();
+            var records = await outbox.ReadRecentDeliveryAsync(root, 25, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(uploadImages ? 2 : 0, records);
+            var scene = await provider.GetRequiredService<CaptureProcessingPersistence>().FindCommittedSceneUploadAsync(
+                lease.Context.RawCapture.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(scene, "The canonical scene remains local even when uploads are disabled.");
+            var queued = await outbox.ReadAsync(root, scene.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+            if (uploadImages)
+            {
+                CollectionAssert.AreEquivalent(new FrameArtifactRole?[]
+                    { FrameArtifactRole.Metadata, rawImage ? FrameArtifactRole.Raw : FrameArtifactRole.Preview },
+                    records.Select(static item => item.Role).ToArray());
+                Assert.IsNotNull(queued);
+                CollectionAssert.AreEqual(StructuredProcessingProductManifestJson.Serialize(scene), queued.ManifestBytes.ToArray());
+                var imagePath = Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories)
+                    .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == (rawImage ? "Raw" : "Preview"));
+                var imageBytes = await File.ReadAllBytesAsync(imagePath).ConfigureAwait(false);
+                var imageManifest = CaptureContractJson.ParseManifest(imageBytes).Document!.Manifest;
+                var imageRecord = await outbox.ReadAsync(root, imageManifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(imageRecord);
+                CollectionAssert.AreEqual(imageBytes, imageRecord.ManifestBytes.ToArray());
+            }
+            else
+            {
+                Assert.IsNull(queued, "An optional metadata mask still suppresses independent scene publication.");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void StorageImageUploadRequiresAnExplicitSceneDependencyBeforeCapture(bool rawImage)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-storage-scene-validation", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateStorageProvider(root);
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var config = CreateStorageConfiguration(root, rawImage, uploadImages: true, declareScene: false);
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+            StringAssert.Contains(exception.Message, "must explicitly depend on ProjectedScene", StringComparison.Ordinal);
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")), "Invalid new publication never reaches raw commit.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static ServiceProvider CreateStorageProvider(string root)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = root,
+                ["CameraAgent:RawIngressReserveBytes"] = "0",
+                ["CameraAgent:AgentId"] = "scene-upload-agent",
+                ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
+                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
+            }).Build());
+        return services.BuildServiceProvider();
+    }
+
+    private static CameraModuleConfig CreateStorageConfiguration(
+        string root, bool rawImage, bool uploadImages, bool declareScene)
+    {
+        var dependencies = new List<string> { rawImage ? "$raw" : "preview" };
+        if (declareScene) dependencies.Add("scene");
+        return CreateConfiguration(root, withStorage: false) with
+        {
+            Pipeline = new CapturePipelineConfig([
+                new("ProjectedScene", "scene", DependsOn: ["$raw"]),
+                new("Preview", "preview", DependsOn: ["$raw"]),
+                new("Storage", "storage", Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
+                {
+                    StorageRoot = root,
+                    QueueForUpload = uploadImages,
+                    UpdateLatestFrame = false,
+                    Policies = declareScene ? [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] : []
+                }), DependsOn: dependencies)
+            ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+    }
+
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {
         internal DateTimeOffset Now { get; set; } = now;

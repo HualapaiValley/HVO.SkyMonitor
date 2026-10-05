@@ -314,6 +314,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Annotation step '{annotation.Step.Name}' must require and explicitly depend on ProjectedScene step '{sceneId}'.");
         }
+        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
+        {
+            var step = (FileStorageCaptureProcessingStep)storage.Step;
+            var dependencies = storage.Config.DependsOn ?? [];
+            var uploadsImages = dependencies.Any(IsRawDependency) && step.QueuesUpload(null, FrameArtifactRole.Raw, null, null) ||
+                configured.Where(item => item.Step is ICaptureProcessingGraphStep &&
+                        dependencies.Contains(item.Step.Name, StringComparer.OrdinalIgnoreCase))
+                    .Any(item => GetOutputs((ICaptureProcessingGraphStep)item.Step).Any(output =>
+                        output.Role != FrameArtifactRole.Metadata &&
+                        step.QueuesUpload(item.Step.Name, output.Role, output.Variant, output.RecipeName)));
+            if (uploadsImages && !dependencies.Contains(sceneId, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Storage step '{step.Name}' uploading scene-bearing images must explicitly depend on ProjectedScene step '{sceneId}'.");
+        }
     }
 
     private void ValidateExplicitConfiguration(IReadOnlyList<CaptureProcessingStepConfig> configuredSteps)
