@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -101,7 +102,8 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                 AgentId = "issue1055-production",
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled },
                 Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
-            }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+            }), NullLogger<FileCameraAgentConfigurationLoader>.Instance,
+                captureAgentIdentityProvider: new EvidenceIdentityProvider());
             var loaded = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             var moduleOptions = new VirtualSkyCameraModuleOptions
             {
@@ -290,6 +292,16 @@ public sealed class Issue1055SceneCompactionEvidenceTests
         };
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllBytesAsync(output, JsonSerializer.SerializeToUtf8Bytes(evidence, JsonOptions)).ConfigureAwait(false);
+    }
+
+    // This isolated fixture publishes only local outbox records; it never registers or uploads to a host.
+    private sealed class EvidenceIdentityProvider : ICaptureAgentIdentityProvider
+    {
+        public ValueTask<string?> GetAgentIdAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<string?>("issue1055-production");
+        }
     }
 
     private static object[] ReadFiles(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
