@@ -1036,7 +1036,8 @@ public sealed class CentralDerivativeWindowIntegrationTests
             var scheduler = new CentralDerivativeJobScheduler(
                 db,
                 new CentralDerivativeRecipeCatalog(options),
-                scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+                scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>(),
+                projectedScenes: scope.ServiceProvider.GetRequiredService<CentralProjectedSceneResolver>());
             var retrospective = new CentralTransientRetrospectiveScheduler(
                 db,
                 scheduler,
@@ -1134,7 +1135,8 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var scheduler = new CentralDerivativeJobScheduler(
             assertionDb,
             new CentralDerivativeRecipeCatalog(options),
-            assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+            assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>(),
+            projectedScenes: assertionScope.ServiceProvider.GetRequiredService<CentralProjectedSceneResolver>());
 
         (await scheduler.EnsureTransientContextConvergenceAsync(
             provisionalJobId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
@@ -1539,7 +1541,8 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var scheduler = new CentralDerivativeJobScheduler(
             db,
             new CentralDerivativeRecipeCatalog(options),
-            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>(),
+            projectedScenes: scope.ServiceProvider.GetRequiredService<CentralProjectedSceneResolver>());
         var recipeCatalog = new CentralDerivativeRecipeCatalog(options);
         var retrospective = new CentralTransientRetrospectiveScheduler(
             db,
@@ -2540,7 +2543,8 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var scheduler = new CentralDerivativeJobScheduler(
             db,
             new CentralDerivativeRecipeCatalog(options),
-            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>());
+            scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>(),
+            projectedScenes: scope.ServiceProvider.GetRequiredService<CentralProjectedSceneResolver>());
         await scheduler.EnsureRequiredJobsAsync(source, DateTimeOffset.UtcNow, CancellationToken.None)
             .ConfigureAwait(false);
     }

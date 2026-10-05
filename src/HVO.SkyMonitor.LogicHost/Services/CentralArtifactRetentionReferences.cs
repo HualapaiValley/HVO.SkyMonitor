@@ -29,8 +29,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
     {
-        if (await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false) ||
-            await DirectReferences(centralArtifactId).AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await HasDirectReferencesAsync(
+            DirectReferences(centralArtifactId), centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -59,9 +59,9 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
-        if (await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false) ||
-            await DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId)
-                .AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await HasDirectReferencesAsync(
+            DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId),
+            centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -104,6 +104,19 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.Leased
                 || job.Status == CentralDerivativeJobStatus.RetryableFailure
                 || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> HasDirectReferencesAsync(
+        IQueryable<int> directReferences, Guid centralArtifactId, CancellationToken cancellationToken)
+    {
+        // Preserve the ordinary image-release query budget. The union returns at most two sentinels;
+        // only an actual projected-scene product needs the source-bound compact-consumer check.
+        var referenceKinds = await directReferences.Concat(dbContext.CentralArtifacts
+            .Where(artifact => artifact.Id == centralArtifactId && artifact.Role == FrameArtifactRole.Metadata &&
+                artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            .Select(_ => 2)).Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        return referenceKinds.Contains(1) || referenceKinds.Contains(2) &&
+            await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> CompactSceneConsumersRemainAsync(Guid centralArtifactId, CancellationToken cancellationToken)

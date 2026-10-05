@@ -40,7 +40,7 @@ public sealed class RollingCombinationWindowLineageTests
         try
         {
             using var provider = CreateProvider(root);
-            var configuration = CreateConfiguration();
+            var configuration = CreateConfiguration(root);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             var (receipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
@@ -97,7 +97,7 @@ public sealed class RollingCombinationWindowLineageTests
         {
             var fault = new ArmableNodeFaultInjector(RollingNodeId);
             using var provider = CreateProvider(root, fault);
-            var configuration = CreateConfiguration(syntheticReferences: false);
+            var configuration = CreateConfiguration(root, syntheticReferences: false);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(
@@ -167,7 +167,7 @@ public sealed class RollingCombinationWindowLineageTests
         {
             var fault = new ArmableNodeFaultInjector("revision-barrier");
             using var provider = CreateProvider(root, fault);
-            var configuration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
+            var configuration = CreateRevisionBarrierConfiguration(root, SyntheticCalibration);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
@@ -204,7 +204,7 @@ public sealed class RollingCombinationWindowLineageTests
                     CancellationToken.None).ConfigureAwait(false));
             }
 
-            var shiftedConfiguration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
+            var shiftedConfiguration = CreateRevisionBarrierConfiguration(root, SyntheticCalibration);
             var shiftedPipeline = shiftedConfiguration.Pipeline with
             {
                 Steps = shiftedConfiguration.Pipeline.Steps.Select(static step =>
@@ -348,7 +348,7 @@ public sealed class RollingCombinationWindowLineageTests
         try
         {
             using var provider = CreateProvider(root);
-            var configuration = CreateConfiguration();
+            var configuration = CreateConfiguration(root);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             var (receipt, activeRevisionId) = await RunBacklogAsync(provider, configuration, module)
                 .ConfigureAwait(false);
@@ -437,7 +437,7 @@ public sealed class RollingCombinationWindowLineageTests
         try
         {
             using var provider = CreateProvider(root);
-            var configuration = CreateConfiguration();
+            var configuration = CreateConfiguration(root);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             var (excludedReceipt, _) = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             using var store = CreateStore(root);
@@ -496,7 +496,7 @@ public sealed class RollingCombinationWindowLineageTests
         {
             var fault = new ArmableNodeFaultInjector("revision-barrier");
             using var provider = CreateProvider(root, fault, maximumWindowInputs: 128);
-            var configuration = CreateRevisionBarrierConfiguration(SyntheticCalibration);
+            var configuration = CreateRevisionBarrierConfiguration(root, SyntheticCalibration);
             module = await CreateModuleAsync(provider, configuration).ConfigureAwait(false);
             _ = await RunBacklogAsync(provider, configuration, module).ConfigureAwait(false);
             using var store = CreateStore(root, maximumWindowInputs: 128);
@@ -600,7 +600,8 @@ public sealed class RollingCombinationWindowLineageTests
             TimeProvider.System,
             provider.GetRequiredService<ICelestialCatalog>(),
             provider.GetRequiredService<IProjectedSceneStore>(),
-            provider.GetRequiredService<IConstellationTopology>());
+            provider.GetRequiredService<IConstellationTopology>(),
+            stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
         await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
         return module;
     }
@@ -831,9 +832,9 @@ public sealed class RollingCombinationWindowLineageTests
     }
 
     private static CameraModuleConfig CreateRevisionBarrierConfiguration(
-        SyntheticCalibrationModelV1 syntheticCalibration)
+        string root, SyntheticCalibrationModelV1 syntheticCalibration)
     {
-        var configuration = CreateConfiguration();
+        var configuration = CreateConfiguration(root);
         return configuration with
         {
             Pipeline = configuration.Pipeline with
@@ -854,13 +855,14 @@ public sealed class RollingCombinationWindowLineageTests
                         "revision-barrier",
                         Order: 22,
                         DependsOn: ["calibration"]),
-                    configuration.Pipeline.Steps[1]
+                    configuration.Pipeline.Steps[1],
+                    .. configuration.Pipeline.Steps.Skip(2)
                 ]
             }
         };
     }
 
-    private static CameraModuleConfig CreateConfiguration(bool syntheticReferences = true)
+    private static CameraModuleConfig CreateConfiguration(string root, bool syntheticReferences = true)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(
@@ -900,7 +902,13 @@ public sealed class RollingCombinationWindowLineageTests
                         "RollingCombination",
                         RollingNodeId,
                         Options: JsonSerializer.SerializeToElement(new { windowSize = WindowSize }),
-                        DependsOn: ["calibration"])
+                        DependsOn: ["calibration"]),
+                    new CaptureProcessingStepConfig(
+                        "ProjectedScene", "scene", DependsOn: ["$raw"],
+                        Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal)),
+                    new CaptureProcessingStepConfig(
+                        "Storage", "storage", Order: 100, DependsOn: ["scene"],
+                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }))
                 ],
                 CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),
