@@ -7,7 +7,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
+public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposable
 {
     private const string AcquireTriggerId = "environment-acquire";
     private const string FocusFallbackId = "environment-refresh";
@@ -521,8 +521,8 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
 
     internal const string OutboxNotReadText = "Not read yet";
 
-    private static string OldestPendingText(EnvironmentalUiDelivery delivery)
-        => delivery.OldestPendingUtc is { } oldest ? FormatUtc(oldest)
+    private string OldestPendingText(EnvironmentalUiDelivery delivery)
+        => delivery.OldestPendingUtc is { } oldest ? FormatSiteTime(oldest)
             : delivery.ExportEnabled && delivery.PendingCount is null ? OutboxNotReadText
             : "None";
 
@@ -559,8 +559,7 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         _ => "failure",
     };
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     private static string FormatAge(double? seconds)
         => seconds is null ? "Never" : FormatDuration(seconds.Value);

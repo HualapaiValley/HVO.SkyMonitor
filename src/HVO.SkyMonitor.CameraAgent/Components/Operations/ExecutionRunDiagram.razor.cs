@@ -8,7 +8,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
-public sealed partial class ExecutionRunDiagram : ComponentBase, IAsyncDisposable
+public sealed partial class ExecutionRunDiagram : SiteTimeComponent, IAsyncDisposable
 {
     private const int NodeWidth = 204;
     private const int NodeHeight = 100;

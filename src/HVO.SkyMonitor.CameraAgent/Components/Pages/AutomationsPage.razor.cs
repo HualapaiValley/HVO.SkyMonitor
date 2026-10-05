@@ -967,12 +967,12 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         return markers;
     }
 
-    private string Clock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("HH:mm", Invariant);
+    private string Clock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("HH:mm zzz", Invariant);
 
     private string DayClock(DateTimeOffset? utc) => utc is { } value ? DayClock(value) : "Not started";
 
     private string DayClock(DateTimeOffset utc)
-        => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("ddd d MMM HH:mm", Invariant);
+        => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("ddd d MMM HH:mm zzz", Invariant);
 
     internal static string EditTriggerId(LocalAutomationDefinitionState definition)
         => $"automation-edit-{definition.Definition.DefinitionId}";

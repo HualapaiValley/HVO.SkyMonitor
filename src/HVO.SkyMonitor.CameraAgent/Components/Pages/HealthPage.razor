@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/health"
 @page "/operations/system"
 @page "/system"
@@ -57,7 +58,7 @@ else
                 <div><dt>Capture</dt><dd>@(summary is null ? "Unknown" : OperationsPage.SplitWords(summary.CaptureControl.Value.State))</dd></div>
                 <div><dt>Last start</dt><dd>@(summary?.CaptureTelemetry.Value.LatestCaptureStartedUtc is { } started ? $"{FormatAge(started)} ago" : "None yet")</dd></div>
                 <div><dt>Clock drift</dt><dd id="health-clock-drift" title="@ClockDriftTitle(health.Clock)">@ClockFormat.HealthFact(health.Clock)</dd></div>
-                <div><dt>Last failure</dt><dd>@(summary?.CaptureRuntime.Value.LastFailedUtc is { } failed ? FormatUtc(failed) : "None since start")</dd></div>
+                <div><dt>Last failure</dt><dd>@(summary?.CaptureRuntime.Value.LastFailedUtc is { } failed ? FormatSiteTime(failed) : "None since start")</dd></div>
             </dl>
         </section>
         <section class="ops-panel" aria-labelledby="health-processing-heading">

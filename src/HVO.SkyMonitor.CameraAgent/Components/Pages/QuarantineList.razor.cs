@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class QuarantineList : ComponentBase
+public sealed partial class QuarantineList : SiteTimeComponent
 {
     [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
 

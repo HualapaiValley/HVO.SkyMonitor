@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/focus"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -200,7 +201,7 @@
                 @foreach (var sample in RecentSamples)
                 {
                     <tr>
-                        <td><strong>#@sample.Sequence</strong> <small>@sample.MeasuredUtc.ToString("HH:mm:ss", Culture)</small></td>
+                        <td><strong>#@sample.Sequence</strong> <small>@SiteTime.Format(sample.MeasuredUtc, "HH:mm:ss")</small></td>
                         <td><span class="state-chip @StatusTone(sample.Measurement.Status)">@StatusText(sample.Measurement.Status)</span></td>
                         <td>@Value(sample.Measurement.HalfFluxDiameterPixels)</td>
                         <td>@Value(sample.Measurement.FwhmPixels)</td>

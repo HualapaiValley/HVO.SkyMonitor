@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// recorded on the receipt; restart is offered only where a supervisor brings CameraAgent back. Drain,
 /// upgrade and purge have no bounded in-app command, so they stay disabled with the reason.
 /// </summary>
-public sealed partial class ControlPage : ComponentBase, IAsyncDisposable
+public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const int ReasonMaxLength = 512;
     private const string FocusFallbackId = "control-heading";
@@ -402,7 +402,7 @@ public sealed partial class ControlPage : ComponentBase, IAsyncDisposable
         _ => "Schedule",
     };
 
-    private static string? OverrideWindow(SystemControlReceipt receipt)
+    private string? OverrideWindow(SystemControlReceipt receipt)
         => receipt is { OverrideStartUtc: { } start, OverrideEndUtc: { } end }
             ? $"{FormatReceiptTime(start)} to {FormatReceiptTime(end)}"
             : null;
@@ -435,8 +435,7 @@ public sealed partial class ControlPage : ComponentBase, IAsyncDisposable
         _ => new Chip("Pending", "pending"),
     };
 
-    private static string FormatReceiptTime(DateTimeOffset value)
-        => value.UtcDateTime.ToString("d MMM / HH:mm", CultureInfo.InvariantCulture);
+    private string FormatReceiptTime(DateTimeOffset value) => SiteTime.Format(value);
 
     private static string CreateIdempotencyKey() =>
         $"ui-{Convert.ToHexString(RandomNumberGenerator.GetBytes(32))}";
