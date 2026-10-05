@@ -38,7 +38,8 @@
   "pipeline": {
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
-    "steps": [{
+    "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },{
       "id": "Preview",
       "type": "Preview",
       "order": 50,
@@ -51,8 +52,9 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
-      "dependsOn": ["Preview"],
+      "dependsOn": ["Preview", "ProjectedScene"],
       "options": {
+          "requireProjectedSceneDependency": true,
         "drawLabels": true,
         "drawConstellationLines": false,
         "drawImageCircle": false,

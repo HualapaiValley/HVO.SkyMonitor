@@ -9,6 +9,9 @@ public interface ICaptureProcessingPipelineFactory
 
     CaptureProcessingGraph CreateGraph(CameraModuleConfig config);
 
+    /// <summary>Restores a frozen graph for retained evidence without applying new-acquisition configuration policy.</summary>
+    CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config) => CreateGraph(config);
+
     CaptureProcessingGraph CreateGraph(
         CameraModuleConfig config,
         string definitionName,

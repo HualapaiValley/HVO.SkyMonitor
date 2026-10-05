@@ -530,6 +530,20 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 throw new CentralDerivativeJobStateException("Processing graph sources must belong to one frame.");
             }
             var frame = anchor.Frame!;
+            CentralProjectedSceneSelection? projectedScene = null;
+            if (plan.Nodes.Any(static node => node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation) &&
+                CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson)?.RequiresProjectedScene == true)
+            {
+                projectedScene = await new CentralProjectedSceneResolver(dbContext, objectReader)
+                    .SelectAsync(frame, cancellationToken).ConfigureAwait(false);
+                if (projectedScene is null)
+                {
+                    rolledBack = true;
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return new(CentralProcessingGraphScheduleOutcome.AwaitingSources,
+                        ReasonCode: "projected-scene.awaiting-product");
+                }
+            }
             var installation = frame.LogicalCameraInstallation
                 ?? throw new CentralDerivativeJobStateException("The graph source installation is unavailable.");
             var environmentalInputs = await FreezeEnvironmentalInputsAsync(plan, frame, cancellationToken)
@@ -628,7 +642,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     primarySelector,
                     requestedIdentity,
                     auxiliaries,
-                    frame.SceneProvenanceJson);
+                    frame.SceneProvenanceJson,
+                    projectedScene?.Annotation);
                 var firstOutput = node.Definition.Outputs.FirstOrDefault();
                 var job = new CentralDerivativeJob
                 {
@@ -704,18 +719,22 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 AddDependencies(execution, node, jobs, sourceRows, plan, frame, now);
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
+                if (projectedScene is not null && node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation)
+                    CentralProjectedSceneResolver.AddRequirement(jobs[node.Definition.Id], projectedScene, now);
             }
             // Selection ran without holds, so retention may have expired a source since. Immediately before the rows
             // are persisted, fence every source on the row lock retention reserves under and revalidate the durable
             // state read under that lock. Retention's reservation runs after this lock and sees the sealed execution
             // reference; an expansion that loses the race fails here explicitly instead of sealing an execution whose
             // source is gone. The lock is taken this late so it is held only across persistence and the seal.
+            var retainedSources = orderedSources.Select(item => item.Artifact)
+                .Concat(projectedScene is null ? [] : new[] { projectedScene.Artifact }).ToArray();
             var fencedSources = await CentralArtifactRetentionLock.FenceAsync(
-                dbContext, orderedSources.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
-            if (orderedSources.Any(item => !fencedSources.TryGetValue(item.Artifact.Id, out var fenced) ||
+                dbContext, retainedSources.Select(item => item.Id), cancellationToken).ConfigureAwait(false);
+            if (retainedSources.Any(item => !fencedSources.TryGetValue(item.Id, out var fenced) ||
                     !IsUsable(fenced) ||
-                    !string.Equals(fenced.ChecksumSha256, item.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
-                    fenced.ByteLength != item.Artifact.ByteLength))
+                    !string.Equals(fenced.ChecksumSha256, item.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+                    fenced.ByteLength != item.ByteLength))
             {
                 if (logger is not null)
                 {
@@ -993,6 +1012,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             await MaterializeTransientOptionsAsync(transientJob, now, cancellationToken).ConfigureAwait(false);
         }
         var changed = true;
+        foreach (var job in execution.Jobs.Where(static job => job.Status == CentralDerivativeJobStatus.Waiting))
+            CentralProjectedSceneResolver.MaterializeReference(job, now);
         while (changed)
         {
             changed = false;
@@ -1581,7 +1602,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
         CancellationToken cancellationToken)
         => await dbContext.CentralProcessingGraphExecutions
             .Include(item => item.Sources).ThenInclude(source => source.Artifact)!.ThenInclude(artifact => artifact!.Frame)
-            .Include(item => item.Jobs).ThenInclude(job => job.InputRequirements)
+            .Include(item => item.Jobs).ThenInclude(job => job.InputRequirements).ThenInclude(requirement => requirement.ExpectedArtifact)!
+                .ThenInclude(artifact => artifact!.Frame)
             .Include(item => item.Jobs).ThenInclude(job => job.Attempts)
             .Include(item => item.Jobs).ThenInclude(job => job.Inputs)
             .Include(item => item.Jobs).ThenInclude(job => job.CanonicalInputs)
@@ -1757,8 +1779,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
     /// <summary>
     /// The recipe identity a node's runtime product must carry, frozen at expansion. Auxiliary inputs are bound
     /// here from the frozen plan and the anchor frame's environment. An annotation-bearing node also executes with
-    /// the anchor frame's scene provenance as a runtime <see cref="ProcessingAnnotationInput"/>: that provenance is
-    /// write-once ingest state on the frame (never rewritten once present), so when it is available at expansion the
+    /// the source-bound retained scene or legacy inline provenance as a runtime <see cref="ProcessingAnnotationInput"/>.
+    /// A compact capture waits for its retained product, which is pinned as an immutable input. At expansion the
     /// node's actual identity is known exactly and every dependent selector and projected output identity derives
     /// from it instead of the requested identity. Without provenance the expectation stays the requested identity,
     /// which durably freezes "no annotation" for the execution: <see
@@ -1773,7 +1795,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
         ProcessingInputSelector primarySelector,
         string requestedIdentity,
         IReadOnlyList<ProcessingAuxiliaryInput> auxiliaries,
-        string? sceneProvenanceJson)
+        string? sceneProvenanceJson,
+        ProcessingAnnotationInput? projectedAnnotation = null)
     {
         ArgumentNullException.ThrowIfNull(primarySelector);
         ArgumentNullException.ThrowIfNull(auxiliaries);
@@ -1782,7 +1805,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
             return requestedIdentity;
         }
         var annotation = string.Equals(stepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson)
+            ? projectedAnnotation ?? CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson)
             : null;
         return annotation is null && auxiliaries.Count == 0
             ? requestedIdentity

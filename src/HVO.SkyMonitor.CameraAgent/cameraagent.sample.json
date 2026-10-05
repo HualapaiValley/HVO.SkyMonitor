@@ -85,6 +85,11 @@
         "schemaVersion": "cameraagent-capture-pipeline-v2",
         "dependencyPolicy": "reject-enabled-dependent-v1",
         "steps": [{
+            "id": "ProjectedScene",
+            "type": "ProjectedScene",
+            "order": 15,
+            "dependsOn": ["$raw"]
+        },{
             "id": "RollingCombination",
             "type": "RollingCombination",
             "order": 25,
@@ -122,8 +127,9 @@
             "id": "Annotation",
             "type": "Annotation",
             "order": 75,
-            "dependsOn": ["Preview"],
+            "dependsOn": ["Preview", "ProjectedScene"],
             "options": {
+                "requireProjectedSceneDependency": true,
                 "markRadius": 6,
                 "markerValue": 144,
                 "drawLabels": true,
@@ -161,7 +167,7 @@
             "id": "LocalStorage",
             "type": "Storage",
             "order": 100,
-            "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview"],
+            "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
@@ -173,7 +179,7 @@
             "id": "ArchiveStorage",
             "type": "Storage",
             "order": 110,
-            "dependsOn": ["Annotation", "CalibratedPreview"],
+            "dependsOn": ["Annotation", "CalibratedPreview", "ProjectedScene"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,

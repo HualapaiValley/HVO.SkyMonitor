@@ -1638,7 +1638,8 @@ internal sealed partial class CentralDerivativeJobService(
             job.GraphExecution?.CentralPlanIdentitySha256,
             job.GraphExecution?.FrozenCentralPlanJson,
             job.GraphExecution?.DefinitionIdentitySha256,
-            job.GraphExecution?.FrozenDefinitionJson);
+            job.GraphExecution?.FrozenDefinitionJson,
+            CentralProjectedSceneResolver.ReadReference(job));
     }
 
     private static bool IsUsable(CentralArtifact? artifact)
@@ -1688,7 +1689,8 @@ internal sealed record CentralDerivativeJobLease(
     string? CentralPlanIdentitySha256 = null,
     string? FrozenCentralPlanJson = null,
     string? GraphDefinitionIdentitySha256 = null,
-    string? FrozenDefinitionJson = null);
+    string? FrozenDefinitionJson = null,
+    CentralProjectedSceneReference? ProjectedScene = null);
 
 internal sealed record CentralDerivativeJobLeaseInput(
     int Ordinal,

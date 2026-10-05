@@ -90,7 +90,7 @@ internal sealed class StandardCaptureLaneHandler(
                 if (_graph is null || !string.Equals(_pipelineKey, pipelineKey, StringComparison.Ordinal))
                 {
                     _graph?.DisposeSteps();
-                    _graph = _pipelineFactory.CreateGraph(item.Config);
+                    _graph = _pipelineFactory.CreateRetainedGraph(item.Config);
                     _pipelineKey = pipelineKey;
                 }
                 graph = _graph;

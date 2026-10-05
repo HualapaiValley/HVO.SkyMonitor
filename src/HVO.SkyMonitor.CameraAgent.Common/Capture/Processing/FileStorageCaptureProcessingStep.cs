@@ -78,6 +78,7 @@ internal sealed class FileStorageCaptureProcessingStep(
             return;
         }
         context.RecordConsumedArtifacts(selectedArtifacts, selectedProducts);
+        await QueueCanonicalScenesAsync(context, selectedProducts, allowAutomaticPublication, cancellationToken).ConfigureAwait(false);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -214,7 +215,8 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     queueForUpload = false;
                 }
-                if (metadataAlreadyStoredUnderRoot && !queueForUpload)
+                var isCanonicalScene = product.SchemaVersion == SceneProvenance.RetainedProjectedSceneSchemaVersion;
+                if (isCanonicalScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
                 {
                     continue;
                 }
@@ -222,8 +224,9 @@ internal sealed class FileStorageCaptureProcessingStep(
                 {
                     throw new InvalidOperationException("Layoutless metadata storage requires durable reconstruction context.");
                 }
+                var productRoot = Options.StorageRoot;
                 var output = await CaptureProcessingPersistence.CopyMetadataProductAsync(
-                    Options.StorageRoot,
+                    productRoot,
                     descriptor,
                     producerStepId ?? Name,
                     product,
@@ -231,7 +234,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                 if (queueForUpload)
                 {
                     await _artifactOutbox.EnqueueAsync(
-                        Options.StorageRoot,
+                        productRoot,
                         new StructuredProcessingProductManifestV1(
                             StructuredProcessingProductManifestV1.CurrentSchemaVersion,
                             new StructuredProcessingProductDescriptorV1(
@@ -276,6 +279,43 @@ internal sealed class FileStorageCaptureProcessingStep(
             }
         }
 
+    }
+
+    private async ValueTask QueueCanonicalScenesAsync(
+        CaptureProcessingContext context,
+        IReadOnlyList<ProcessingProduct> products,
+        bool allowAutomaticPublication,
+        CancellationToken cancellationToken)
+    {
+        if (!allowAutomaticPublication || !_centralIntegrationEnabled) return;
+        foreach (var product in products.Where(static product =>
+                     product.SchemaVersion == SceneProvenance.RetainedProjectedSceneSchemaVersion))
+        {
+            var producer = context.GetDependencyProducerStepId(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256));
+            if (!(ResolvePolicy(producer, product)?.QueueForUpload ?? Options.QueueForUpload)) continue;
+            if (_processingPersistence is null || context.ReconstructionDescriptor is not { } descriptor)
+                throw new InvalidOperationException("Canonical scene upload requires durable reconstruction context.");
+            var root = _processingPersistence.StorageRoot;
+            var gate = StorageLifecycleLock.ForRoot(root);
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var output = await _processingPersistence.RequireCommittedSceneAsync(
+                    descriptor.Capture.CaptureId, product, cancellationToken).ConfigureAwait(false);
+                await _artifactOutbox.EnqueueAsync(root,
+                    new StructuredProcessingProductManifestV1(
+                        StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+                        new StructuredProcessingProductDescriptorV1(
+                            descriptor, output.Artifact, product.OutputIdentitySha256, product.Algorithms,
+                            product.Compatibility, product.TotalIntegration.Ticks, product.Payload.Length,
+                            product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
+                        output.PayloadRelativePath, producer), cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
     }
 
     private static bool IsExplicitPipeline(CameraModuleConfig config)

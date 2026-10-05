@@ -31,6 +31,19 @@ internal sealed class CaptureProcessingPersistence(
     ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
+    internal string StorageRoot => _storageRoot;
+
+    internal async ValueTask<DurableProcessingOutput> RequireCommittedSceneAsync(
+        Guid captureId, ProcessingProduct product, CancellationToken cancellationToken)
+    {
+        var output = await RequireOutputAsync(
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), captureId, cancellationToken).ConfigureAwait(false);
+        if (output.OutputIdentitySha256 != product.OutputIdentitySha256 ||
+            output.Artifact.ChecksumSha256 != product.ChecksumSha256 ||
+            output.ContentIdentitySha256 != product.ContentIdentitySha256)
+            throw new InvalidDataException("The canonical scene differs from the committed processing product.");
+        return output;
+    }
     private readonly SqliteCaptureProcessingStore _store = store;
     private readonly IFrameStorageService _frameStorage = frameStorage;
     private readonly CaptureProcessingTelemetry _telemetry = telemetry;
@@ -286,10 +299,15 @@ internal sealed class CaptureProcessingPersistence(
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
         var deletedFiles = 0;
+        var sceneRetention = new ProjectedSceneRetentionGuard(_storageRoot, _store,
+            maximumCandidates: _lifecycleOptions.ReconciliationBatchSize);
+        var resume = await sceneRetention.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         foreach (var unavailable in new[] { false, true })
         {
-            long? cursorTimestamp = null;
-            string? cursorOutput = null;
+            long? cursorTimestamp = unavailable ? null : resume.Timestamp;
+            string? cursorOutput = unavailable ? null : resume.Identity;
+            var checkedTimestamp = cursorTimestamp;
+            var checkedOutput = cursorOutput;
             do
             {
                 var page = unavailable
@@ -307,7 +325,28 @@ internal sealed class CaptureProcessingPersistence(
                             : []
                         : new[] { ResolveSafePath(candidate.PayloadRelativePath), ResolveSafePath(candidate.SidecarRelativePath) }
                             .Where(File.Exists).ToArray();
-                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available") continue;
+                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available")
+                    {
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        continue;
+                    }
+                    if (!unavailable)
+                    {
+                        bool sceneHeld;
+                        try
+                        {
+                            sceneHeld = await sceneRetention.HasRetainedConsumerAsync(candidate, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (InvalidDataException)
+                        {
+                            await sceneRetention.SaveCursorAsync(checkedTimestamp, checkedOutput, cancellationToken).ConfigureAwait(false);
+                            throw;
+                        }
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        if (sceneHeld) continue;
+                    }
                     var operation = new ProcessingLifecycleOperation(
                         $"delete:{Guid.NewGuid():N}", "delete", candidate.OutputIdentitySha256,
                         sourcePaths.FirstOrDefault() is { } first ? Relative(first) : null,
@@ -323,6 +362,7 @@ internal sealed class CaptureProcessingPersistence(
                 cursorOutput = page.NextOutputIdentitySha256;
             }
             while (cursorTimestamp is not null);
+            if (!unavailable) sceneRetention.CompletePass();
         }
         long? diagnosticTimestamp = null;
         long? diagnosticId = null;

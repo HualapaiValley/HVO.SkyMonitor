@@ -73,6 +73,9 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             CollectionAssert.AreEqual(payload, staged.Result.Frame!.PixelData.ToArray());
             var provenance = staged.Result.Frame.Metadata.Scene;
             Assert.IsNotNull(provenance);
+            Assert.IsTrue(provenance.RequiresProjectedScene);
+            Assert.IsNull(provenance.Objects);
+            Assert.IsNull(provenance.Segments);
             Assert.AreEqual(StagedProjectedSceneDocument.CurrentSchemaVersion, provenance.ProjectedSceneStageSchemaVersion);
             Assert.HasCount(64, provenance.ProjectedSceneStageKey!);
             Assert.AreEqual(provenance.ProjectedSceneStageKey, provenance.SceneId);
@@ -543,14 +546,23 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging(bool compact)
     {
         var root = CreateRoot();
         try
         {
             using var staging = CreateStaging(root);
             var reader = new CountingStagingReader(staging);
-            var fixture = CreateContext(root, CreateStageProvenance(new string('5', 64), new string('E', 64)), CreateReplayExecution());
+            var provenance = CreateStageProvenance(new string('5', 64), new string('E', 64));
+            if (compact) provenance = provenance with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                SceneUtc = DateTimeOffset.UnixEpoch,
+                RigProfileHashSha256 = new string('A', 64)
+            };
+            var fixture = CreateContext(root, provenance, CreateReplayExecution());
             var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
             fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
             fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact]);
@@ -560,12 +572,48 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
             var outcome = fixture.Context.ProcessingOutcomes.Single();
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            Assert.AreEqual(frozen.Artifact.ArtifactId,
+                ProcessingIdentity.CreateArtifactId(outcome.Products.Single().OutputIdentitySha256));
+            CollectionAssert.AreEqual(frozen.Artifact.Payload.ToArray(), outcome.Products.Single().Payload.ToArray());
             Assert.AreEqual(0, reader.ReadCount, "replay must never consult the transient stage");
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CompactReplayCannotPublishAnotherSceneIdentity(bool changedVariant)
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var reader = new CountingStagingReader(staging);
+            var provenance = CreateStageProvenance(new string('5', 64), new string('E', 64)) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                SceneUtc = DateTimeOffset.UnixEpoch,
+                RigProfileHashSha256 = new string('A', 64)
+            };
+            var fixture = CreateContext(root, provenance, CreateReplayExecution());
+            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
+            fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
+            // The same-variant case deliberately uses a different immutable artifact identity; neither may duplicate geometry.
+            fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact with
+            { Variant = changedVariant ? "another-scene" : frozen.Artifact.Variant,
+                ArtifactId = changedVariant ? frozen.Artifact.ArtifactId : Guid.NewGuid() }]);
+            await CreateStep(staging, stagingReader: reader).ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+            var outcome = fixture.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, outcome.ReasonCode);
+            Assert.IsEmpty(outcome.Products);
+            Assert.AreEqual(0, reader.ReadCount);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [TestMethod]
@@ -646,8 +694,15 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             ProjectedSceneKind.VirtualRenderAuthoritative, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
             "projection-v1", "projection-v1");
         var payload = ProjectedSceneJson.Serialize(scene);
+        var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(BuiltInProcessingRecipes.ProjectedScene,
+            JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
+            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), auxiliaryInputs:
+            [new ProcessingAuxiliaryInput("scene", ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)]);
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "projected-scene-v1",
+            recipe.IdentitySha256, [descriptor.Artifact.ArtifactId]);
         var artifact = new ProcessingArtifact(
-            Guid.NewGuid(), FrameArtifactRole.Metadata, "projected-scene-v1", new string('c', 64),
+            ProcessingIdentity.CreateArtifactId(outputIdentity), FrameArtifactRole.Metadata, "projected-scene-v1", recipe.IdentitySha256,
             StructuredProcessingProductContracts.ProjectedSceneMediaType, null, payload, DateTimeOffset.UnixEpoch,
             TimeSpan.Zero, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
         {

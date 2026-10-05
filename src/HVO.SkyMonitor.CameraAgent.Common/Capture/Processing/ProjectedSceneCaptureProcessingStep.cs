@@ -121,10 +121,18 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
             ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
             AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
+        if (context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
+            outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
+                input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
+        {
+            // Compact captures have one immutable geometry artifact, including across replay/configuration changes.
+            context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
+            return;
+        }
         context.AddProcessingOutcome(outcome);
     }
 
-    private static bool TryReadFrozenScene(
+    private bool TryReadFrozenScene(
         CaptureDescriptorProcessingContext context,
         ProjectedSceneSource source,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ProjectedSceneV1? scene,
@@ -155,6 +163,12 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             return false;
         }
         var frozen = candidates[0];
+        if (context.SceneProvenance?.RequiresProjectedScene == true &&
+            !string.Equals(frozen.Variant, Options.OutputVariant, StringComparison.Ordinal))
+        {
+            failureReason = ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
         var parsed = ProjectedSceneJson.Parse(frozen.Payload);
         if (!parsed.IsValid || parsed.Scene is not { } candidate)
         {

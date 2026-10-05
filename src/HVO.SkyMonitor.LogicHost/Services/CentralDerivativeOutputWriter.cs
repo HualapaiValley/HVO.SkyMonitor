@@ -163,7 +163,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
                 lease.TargetVariant,
                 expectedRecipeIdentity,
                 lease.Inputs is { Count: > 0 }
-                    ? lease.Inputs.OrderBy(input => input.Ordinal).Select(input => input.ArtifactId).ToArray()
+                    ? CentralProjectedSceneResolver.RecipeInputs(lease).OrderBy(input => input.Ordinal).Select(input => input.ArtifactId).ToArray()
                     : [lease.SourceArtifactId])
             : null;
         var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
@@ -860,7 +860,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
                 StringComparison.OrdinalIgnoreCase)
             || !product.SourceArtifactIds.SequenceEqual(
                 lease.Inputs is { Count: > 0 }
-                    ? lease.Inputs.OrderBy(input => input.Ordinal).Select(input => input.ArtifactId)
+                    ? CentralProjectedSceneResolver.RecipeInputs(lease).OrderBy(input => input.Ordinal).Select(input => input.ArtifactId)
                     : [lease.SourceArtifactId])
             || product.Payload.Length != product.Layout?.ByteLength && product.Layout is not null
             || !string.Equals(ProcessingIdentity.ComputePayloadSha256(product.Payload), product.ChecksumSha256,
@@ -927,7 +927,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             return artifact.Sources.Count == 1
                 && artifact.Sources.Single().SourceArtifactId == lease.SourceArtifactId;
         }
-        var expected = lease.Inputs.OrderBy(input => input.Ordinal)
+        var expected = CentralProjectedSceneResolver.RecipeInputs(lease).OrderBy(input => input.Ordinal)
             .Select(input => (input.ArtifactId, CentralArtifactId: (Guid?)input.CentralArtifactId));
         return artifact.Sources.OrderBy(source => source.Ordinal)
             .Select(source => (source.SourceArtifactId, source.ResolvedCentralArtifactId))

@@ -1568,16 +1568,10 @@ internal sealed partial class ArtifactIngestService(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var shouldSchedule = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
-            artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId &&
-            artifact.ReconstructionState == CentralReconstructionState.Complete &&
-            (artifact.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion ||
-                artifact.Role == FrameArtifactRole.Raw), cancellationToken).ConfigureAwait(false);
-        if (shouldSchedule)
-        {
-            await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
-        }
+        var id = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId)
+            .Select(artifact => artifact.Id).SingleAsync(cancellationToken).ConfigureAwait(false);
+        await ScheduleDerivativesAfterObjectLockAsync(id, now, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ScheduleDerivativesAfterObjectLockAsync(
@@ -1589,15 +1583,31 @@ internal sealed partial class ArtifactIngestService(
             .Where(artifact => artifact.Id == centralArtifactId &&
                 artifact.ReconstructionState == CentralReconstructionState.Complete &&
                 (artifact.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion ||
-                    artifact.Role == FrameArtifactRole.Raw))
+                    artifact.Role == FrameArtifactRole.Raw ||
+                    artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType))
             .Select(artifact => new
             {
                 artifact.DevicePublicId,
-                artifact.ArtifactId
+                artifact.ArtifactId,
+                artifact.CentralFrameId,
+                artifact.MediaType
             })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (identity is not null)
         {
+            if (identity.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            {
+                var sources = await dbContext.CentralArtifacts.AsNoTracking()
+                    .Where(item => item.CentralFrameId == identity.CentralFrameId &&
+                        item.ObjectState == CentralArtifactObjectState.Available &&
+                        item.ReconstructionState == CentralReconstructionState.Complete &&
+                        (item.Role == FrameArtifactRole.Raw || item.Role == FrameArtifactRole.Calibrated))
+                    .Select(item => item.ArtifactId).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var sourceId in sources)
+                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                        identity.DevicePublicId, sourceId, now, cancellationToken).ConfigureAwait(false);
+                return;
+            }
             await derivativeJobScheduler.EnsureRequiredJobsAsync(
                 identity.DevicePublicId, identity.ArtifactId, now, cancellationToken).ConfigureAwait(false);
         }
@@ -2869,16 +2879,33 @@ internal sealed partial class ArtifactIngestService(
 
     private static void EnsureSceneProvenanceMatches(CentralFrame frame, ArtifactIngestManifest manifest)
     {
-        var scene = SerializeScene(manifest);
-        if (frame.SceneProvenanceJson is not null && scene is not null
-            && !string.Equals(frame.SceneProvenanceJson, scene, StringComparison.Ordinal))
+        var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
+        if (existing is not null && manifest.Scene is { } incoming && !SceneProvenanceMatches(existing, incoming))
         {
             throw new ArtifactIngestConflictException("The frame identity is already associated with different scene provenance.");
         }
     }
 
+    internal static bool SceneProvenanceMatches(SceneProvenance existing, SceneProvenance incoming)
+    {
+        static string Identity(SceneProvenance value) => CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(value with { Objects = null, Segments = null, ProjectedSceneSchemaVersion = null }));
+        if (Identity(existing) != Identity(incoming)) return false;
+        // Compact/full arrivals may enrich the central projection, but two reported geometries must agree.
+        if ((existing.Objects is not null || existing.Segments is not null) &&
+            (incoming.Objects is not null || incoming.Segments is not null))
+            return CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new { existing.Objects, existing.Segments })) ==
+                CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new { incoming.Objects, incoming.Segments }));
+        return true;
+    }
+
     private static void EnrichSceneProvenance(CentralFrame frame, ArtifactIngestManifest manifest)
-        => frame.SceneProvenanceJson ??= SerializeScene(manifest);
+    {
+        var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
+        if (existing is null || existing.Objects is null && existing.Segments is null &&
+            manifest.Scene is { } incoming && (incoming.Objects is not null || incoming.Segments is not null))
+            frame.SceneProvenanceJson = SerializeScene(manifest);
+    }
 
     private static string? SerializeScene(ArtifactIngestManifest manifest)
         => manifest.Scene is null ? null : JsonSerializer.Serialize(manifest.Scene);

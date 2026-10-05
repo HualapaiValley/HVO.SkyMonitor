@@ -57,7 +57,8 @@ internal sealed class CentralDerivativeJobScheduler(
     ICentralDerivativeWindowResolver windowResolver,
     IEnvironmentalObservationQueryService? environmentalQuery = null,
     ICentralProcessingPolicyService? processingPolicy = null,
-    ICentralProcessingGraphScheduler? graphScheduler = null) : ICentralDerivativeJobScheduler
+    ICentralProcessingGraphScheduler? graphScheduler = null,
+    CentralProjectedSceneResolver? projectedScenes = null) : ICentralDerivativeJobScheduler
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
@@ -330,6 +331,18 @@ internal sealed class CentralDerivativeJobScheduler(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifact);
+        if (artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType && IsUsable(artifact))
+        {
+            var sourceIds = await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(item => item.CentralFrameId == artifact.CentralFrameId &&
+                    (item.Role == FrameArtifactRole.Raw || item.Role == FrameArtifactRole.Calibrated) &&
+                    item.ObjectState == CentralArtifactObjectState.Available &&
+                    item.ReconstructionState == CentralReconstructionState.Complete)
+                .Select(item => item.ArtifactId).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var sourceId in sourceIds)
+                await EnsureRequiredJobsAsync(artifact.DevicePublicId, sourceId, now, cancellationToken).ConfigureAwait(false);
+            return;
+        }
         if (dbContext.Database.CurrentTransaction is not null)
         {
             throw new InvalidOperationException(
@@ -622,6 +635,12 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             return;
         }
+        var requiresProjectedScene = !transientOnly &&
+            CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson)?.RequiresProjectedScene == true;
+        var projectedScene = requiresProjectedScene
+            ? await (projectedScenes ?? throw new CentralDerivativeJobStateException("Projected scene resolution is unavailable."))
+                .SelectAsync(frame, cancellationToken).ConfigureAwait(false)
+            : null;
         var sourceRecipes = processingPolicy is null
             ? recipeCatalog.GetRequiredRecipes(artifact.Role)
             : await processingPolicy.ResolveRequiredRecipesAsync(
@@ -641,6 +660,8 @@ internal sealed class CentralDerivativeJobScheduler(
         {
             foreach (var recipe in sourceRecipes)
             {
+                if (recipe.RecipeName == BuiltInProcessingRecipes.Annotation && requiresProjectedScene && projectedScene is null)
+                    continue;
                 if (recipe.Window is not null && frame.CaptureSequence is null)
                 {
                     continue;
@@ -693,7 +714,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 {
                     if (existing is null)
                     {
-                        existing = CreateJob(artifact, recipe, result: null, now);
+                        existing = CreateJob(artifact, recipe, result: null, now, projectedScene);
                         dbContext.CentralDerivativeJobs.Add(existing);
                     }
                     var completedResult = existing.ResultCentralArtifactId is { } resultId
@@ -711,7 +732,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 {
                     var job = isCloudAssessment
                         ? await CreateCloudAssessmentJobAsync(artifact, recipe, now, cancellationToken).ConfigureAwait(false)
-                        : CreateJob(artifact, recipe, target, now);
+                        : CreateJob(artifact, recipe, target, now, projectedScene);
                     if (job is not null)
                     {
                         dbContext.CentralDerivativeJobs.Add(job);
@@ -762,6 +783,8 @@ internal sealed class CentralDerivativeJobScheduler(
             {
                 continue;
             }
+            if (recipe.RecipeName == BuiltInProcessingRecipes.Annotation && requiresProjectedScene && projectedScene is null)
+                continue;
             var canonicalTarget = await IsCanonicalTargetAsync(source, artifact, recipe, cancellationToken)
                 .ConfigureAwait(false);
             var requestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
@@ -773,7 +796,7 @@ internal sealed class CentralDerivativeJobScheduler(
                     cancellationToken).ConfigureAwait(false);
             if (job is null)
             {
-                job = CreateJob(source, recipe, canonicalTarget ? artifact : null, now);
+                job = CreateJob(source, recipe, canonicalTarget ? artifact : null, now, projectedScene);
                 dbContext.CentralDerivativeJobs.Add(job);
             }
             else if (IsInvalidationFailure(job))
@@ -791,7 +814,8 @@ internal sealed class CentralDerivativeJobScheduler(
         CentralArtifact source,
         CentralDerivativeRecipe recipe,
         CentralArtifact? result,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        CentralProjectedSceneSelection? projectedScene = null)
     {
         var frame = source.Frame!;
         var isWaiting = result is null && recipe.Window is not null;
@@ -882,6 +906,13 @@ internal sealed class CentralDerivativeJobScheduler(
         }
         if (recipe.Window is null)
         {
+            if (projectedScene is not null && recipe.RecipeName == BuiltInProcessingRecipes.Annotation)
+            {
+                job.ExpectedRecipeIdentitySha256 = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                    recipe.RecipeName, recipe.Options, recipe.InputSelector, projectedScene.Annotation).IdentitySha256;
+                CentralProjectedSceneResolver.AddRequirement(job, projectedScene, now);
+                CentralProjectedSceneResolver.MaterializeReference(job, now);
+            }
             job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
                 job.Inputs, job.CanonicalInputs);
         }

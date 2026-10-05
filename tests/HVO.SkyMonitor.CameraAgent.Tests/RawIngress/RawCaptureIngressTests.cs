@@ -1687,8 +1687,23 @@ public sealed class RawCaptureIngressTests
                     }
                 }
             };
+            // Seed evidence from an older producer; new acquisitions now require the supported compact contract.
+            var configuration = CreateConfiguration();
+            var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+            var descriptor = RawCaptureDescriptorFactory.Create(configuration, submission,
+                new RawCaptureIdentity(configuration.AgentId!, 1, ids.CaptureId, ids.ArtifactId),
+                PayloadChecksum.ComputeSha256(frame.PixelData.Span), DateTimeOffset.UtcNow);
+            var files = new RawIngressFileStore(root, new NullRawIngressFaultInjector());
+            var paths = files.GetPaths(descriptor.Timing.ExposureStartedUtc, ids.ArtifactId);
+            var retained = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion,
+                descriptor, paths.PayloadRelativePath, submission.Result.Frame!.Metadata.Scene);
+            var retainedBytes = CaptureContractJson.Serialize(retained);
+            await files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
+            await files.PublishSidecarAsync(paths, retainedBytes, CancellationToken.None).ConfigureAwait(false);
             using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
-            await ingress.AcceptAsync(CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+            var accepted = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(accepted);
+            CollectionAssert.AreEqual(retainedBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
 
             var owned = await ingress.GetOwnedStageKeysAsync(CancellationToken.None).ConfigureAwait(false);
 

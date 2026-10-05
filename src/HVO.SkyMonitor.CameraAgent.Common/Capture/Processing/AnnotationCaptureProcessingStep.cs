@@ -26,6 +26,8 @@ internal sealed class AnnotationCaptureProcessingStep(
 {
     public bool Enabled => Options.Enabled;
 
+    internal AnnotationProcessingStepOptions ConfiguredOptions => Options;
+
     public string RecipeName => BuiltInProcessingRecipes.Annotation;
 
     public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
@@ -83,7 +85,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 $"The declared projected-scene dependency is invalid at '{parsed.ErrorPath}'.");
             ValidateProjectedScene(context, artifacts.Raw.Frame, projectedSceneProduct, projectedScene);
         }
-        else if (Options.RequireProjectedSceneDependency)
+        else if (Options.RequireProjectedSceneDependency || provenance?.RequiresProjectedScene == true)
         {
             throw new InvalidOperationException("The declared projected-scene dependency is unavailable.");
         }

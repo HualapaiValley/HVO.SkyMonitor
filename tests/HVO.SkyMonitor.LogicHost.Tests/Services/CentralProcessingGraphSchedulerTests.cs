@@ -539,6 +539,29 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     [TestMethod]
+    public async Task CompactSceneWithoutRetainedProductWaitsBeforeFreezingAnyAnnotationGraph()
+    {
+        await using var context = CreateContext();
+        var now = DateTimeOffset.UnixEpoch.AddYears(56);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var source = AddAssignedArtifact(context, "compact", CreateAnnotationConsumerGraph(), registry, now);
+        source.Frame!.SceneProvenanceJson = JsonSerializer.Serialize(new SceneProvenance(
+            "scene", "rig", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            SceneUtc: now).WithoutProjectedGeometry());
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+
+        var result = await scheduler.ScheduleLiveAsync(source.Id, now, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.AwaitingSources, result.Outcome);
+        Assert.AreEqual("projected-scene.awaiting-product", result.ReasonCode);
+        Assert.AreEqual(0, await context.CentralProcessingGraphExecutions.CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(0, await context.CentralDerivativeJobs.CountAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public void ExpectedRecipeIdentityFreezesAnnotationOnlyForAnnotationBearingBuiltInNodes()
     {
         var provenance = JsonSerializer.Serialize(new SceneProvenance(
