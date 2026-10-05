@@ -188,6 +188,8 @@ to guess historical geometry or site.
 Discovery visits explicitly configured targets, freezes closed hours and builds
 a daily request from exact hourly job IDs. Late arrivals within the configured
 catch-up span create immutable successors; older products and links remain.
+This guarantee assumes compatible planner, renderer and encoding contract
+versions; it does not provide the algorithm-upgrade support described below.
 A small capture-count/reference-completion/latest-receipt check reuses unchanged
 requests without rereading full source descriptors. References arriving after a
 raw image trigger a successor when that image becomes reconstructable. Raw retention alone does not replace a finished
@@ -199,6 +201,18 @@ Generation value and restart with the updated configuration. This creates new
 requests from currently available inputs within the catch-up span and preserves
 the failed requests; it is not a mutation of their frozen input plans. The initial
 release has no central manual-retry UI.
+
+An hour rejected during discovery has no request row to show in the UI. Warning
+event 11313 (`Central time-lapse hour rejected`) identifies the device, UTC window
+and failure type; the daily request is withheld while that child is absent.
+Later hours and reporting periods are still discovered. Each scan retries the
+omitted hour while its reporting date remains within CatchUpDays (supported range
+1–7 days). Repair the invalid source/descriptor or configuration within that span;
+the next scan can enqueue the missing hour and daily without a Generation bump.
+The Generation recovery above applies when a retained terminal request also
+needs rebuilding. Once the date leaves the configured catch-up span, discovery
+does not retry it automatically. Check event 11313 when a daily has no request,
+as well as visible failed requests when an enqueued daily cannot finish.
 
 SQL owns the requests, leases, retention holds, dependencies and publications.
 An active lease renews every 20 seconds and expires after two minutes. At most
@@ -230,3 +244,19 @@ This change does not install FFmpeg, update a live CameraAgent, change GPU
 drivers/container runtimes, move hardware or alter installer/release tooling.
 Those operational adoption steps remain behind the operator's existing hold.
 Enabling a host requires an already qualified boundary and sufficient storage.
+
+There is no supported upgrade from time-lapse products created by earlier
+pre-merge algorithm versions. Read validation currently rebuilds an hourly
+timeline with the current planner; changing that planner's version can make
+older products unreadable, including an edge date listing containing one such
+product. Central discovery also does not automatically create new jobs merely
+because a planner or renderer version changed. Incrementing Generation can
+create new central requests within the catch-up span, but does not restore old
+products' readability or repair their links.
+
+Use a separate disposable instance with fresh storage for experiments across
+these pre-release versions, preserving existing data and evidence. A supported
+future algorithm upgrade must explicitly preserve old product validation and
+reads, version the central discovery contract, and qualify hourly/daily reuse
+across that boundary before adoption. Neither a Generation bump nor a routine
+binary replacement supplies that compatibility in this initial implementation.
