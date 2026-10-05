@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Common.Transients
 
@@ -66,8 +67,8 @@
                             {
                                 var stage = lane.Events[i];
                                 var x = TransientX(lane, i);
-                                <button type="button" class="graph-node transient run-diagram__transient-node @(!StageSucceeded(stage) ? "run-diagram__transient-node--attention" : "") @(SelectedTransientKey == StageKey(stage) ? "selected" : "")" style="left:@(x)px;top:@(lane.Y)px" aria-pressed="@((SelectedTransientKey == StageKey(stage)).ToString().ToLowerInvariant())" aria-label="@($"{TransientName(stage.StageKey)}: {stage.State}, {stage.RecordedUtc:u}")" @onclick="() => TransientSelected.InvokeAsync(stage)">
-                                    <span class="node-heading"><span class="status-icon @TransientStatus(stage)" aria-hidden="true"></span><span class="node-title"><strong>@TransientName(stage.StageKey)</strong><small>@stage.State</small></span><span class="node-duration">@stage.RecordedUtc.ToString("HH:mm:ss")</span></span><span class="node-footer"><span>Recorded milestone / UTC</span><span class="requirement optional">Independent</span></span>
+                                <button type="button" class="graph-node transient run-diagram__transient-node @(!StageSucceeded(stage) ? "run-diagram__transient-node--attention" : "") @(SelectedTransientKey == StageKey(stage) ? "selected" : "")" style="left:@(x)px;top:@(lane.Y)px" aria-pressed="@((SelectedTransientKey == StageKey(stage)).ToString().ToLowerInvariant())" aria-label="@($"{TransientName(stage.StageKey)}: {stage.State}, {SiteTime.Format(stage.RecordedUtc)}")" @onclick="() => TransientSelected.InvokeAsync(stage)">
+                                    <span class="node-heading"><span class="status-icon @TransientStatus(stage)" aria-hidden="true"></span><span class="node-title"><strong>@TransientName(stage.StageKey)</strong><small>@stage.State</small></span><span class="node-duration">@SiteTime.Format(stage.RecordedUtc)</span></span><span class="node-footer"><span>Recorded milestone / @SiteTime.Label</span><span class="requirement optional">Independent</span></span>
                                 </button>
                             }
                         }

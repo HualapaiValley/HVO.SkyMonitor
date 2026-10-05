@@ -28,10 +28,10 @@ public sealed class TimeSyncPanelTests
             Assert.AreEqual("pool.ntp.org, stratum 2", cut.Find("#time-server").TextContent);
             Assert.AreEqual("18 ms", cut.Find("#time-round-trip").TextContent);
             Assert.AreEqual("4m 0s ago", cut.Find("#time-measured").TextContent);
-            Assert.AreEqual("2026-07-23 11:56:00 UTC", cut.Find("#time-measured").GetAttribute("title"));
+            Assert.AreEqual("23 Jul 2026 11:56:00 +00:00 (UTC (site time zone unavailable))", cut.Find("#time-measured").GetAttribute("title"));
             Assert.AreEqual("500 mschecked every 30 min", cut.Find("#time-tolerance").TextContent);
             Assert.AreEqual("Synchronized, ±3 ms estimated", cut.Find("#time-kernel").TextContent);
-            Assert.AreEqual("2026-07-23 12:00:00", cut.Find("#time-agent-utc").TextContent);
+            StringAssert.Contains(cut.Find("#time-site time").TextContent, "05:00:00 -07:00 (America/Phoenix)", StringComparison.Ordinal);
             Assert.AreEqual("pool.ntp.org, time.example.org", cut.Find("#time-servers").GetAttribute("value"));
             Assert.IsNull(cut.Find("#time-check").GetAttribute("disabled"));
         });
@@ -275,7 +275,7 @@ public sealed class TimeSyncPanelTests
     [TestMethod]
     [DataRow(ClockCheckOutcome.Measured, "Clock checked.")]
     [DataRow(ClockCheckOutcome.Joined, "A check was already running; its result is shown.")]
-    [DataRow(ClockCheckOutcome.RateLimited, "The clock was checked less than 30 s ago, so that result is shown. Check again after 12:00:12 UTC.")]
+    [DataRow(ClockCheckOutcome.RateLimited, "The clock was checked less than 30 s ago, so that result is shown. Check again after 23 Jul 2026 12:00:12 +00:00 (UTC (site time zone unavailable)).")]
     public void CheckNow_ReportsHowItWasAnsweredAndReadsTheClockAgain(ClockCheckOutcome outcome, string expected)
     {
         using var context = new BunitContext();

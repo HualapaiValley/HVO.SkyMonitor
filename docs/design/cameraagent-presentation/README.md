@@ -26,6 +26,15 @@ publication decision.
   disconnection. Image freshness and system state are always reported
   independently.
 
+Operator clocks and human-facing timestamps use the active deployment site's explicit
+IANA time zone. Offsets distinguish repeated daylight-saving hours; datetime-local
+inputs are interpreted in the labeled site zone and reject skipped or repeated
+civil times. Missing or invalid deployment zones use a visibly labeled UTC
+fallback. API values, storage, query instants, HTML `datetime` attributes and
+schedule calculations retain UTC. Historical reporting periods and product
+windows retain their recorded site zone, date and immutable UTC endpoints. The
+advanced schedule JSON editor remains the explicit machine-contract view.
+
 Production implementation remains authenticated and CameraAgent-local. Public,
 kiosk, or anonymous access requires a separate threat model and approval.
 

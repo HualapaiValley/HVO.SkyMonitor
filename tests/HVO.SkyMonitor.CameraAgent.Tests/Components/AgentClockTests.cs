@@ -11,23 +11,20 @@ public sealed class AgentClockTests
     private static readonly DateTimeOffset Now = new(2026, 7, 23, 12, 0, 0, 250, TimeSpan.Zero);
 
     [TestMethod]
-    public void Clock_ShowsTheAgentsTimeInUtcAndAtTheSite()
+    public void Clock_ShowsTheAgentsTimeAtTheSiteAndPreservesUtcAttribute()
     {
         using var context = new BunitContext();
         Configure(context);
 
         var cut = context.Render<AgentClock>(parameters => parameters.Add(clock => clock.SiteTimeZoneId, "America/Phoenix"));
 
-        Assert.AreEqual("2026-07-23 12:00:00", cut.Find("#time-agent-utc").TextContent);
-        Assert.AreEqual("2026-07-23T12:00:00+00:00", cut.Find("#time-agent-utc time").GetAttribute("datetime"));
-        Assert.AreEqual("05:00:00", cut.Find("#time-site time").TextContent);
-        Assert.AreEqual("2026-07-23T05:00:00-07:00", cut.Find("#time-site time").GetAttribute("datetime"));
-        Assert.AreEqual("America/Phoenix, UTC−07:00", cut.Find("#time-site small").TextContent);
+        Assert.AreEqual("23 Jul 2026 05:00:00 -07:00 (America/Phoenix)", cut.Find("#time-site time").TextContent);
+        Assert.AreEqual(Now.ToUniversalTime().ToString("O"), cut.Find("#time-site time").GetAttribute("datetime"));
     }
 
     [TestMethod]
-    [DataRow(null, "No active location")]
-    [DataRow("Mars/Olympus_Mons", "Time zone not known to this host")]
+    [DataRow(null, "UTC (site time zone unavailable)")]
+    [DataRow("Mars/Olympus_Mons", "UTC (site time zone unavailable)")]
     public void Clock_WithoutAKnownZone_SaysWhy(string? zone, string expected)
     {
         using var context = new BunitContext();
@@ -35,8 +32,8 @@ public sealed class AgentClockTests
 
         var cut = context.Render<AgentClock>(parameters => parameters.Add(clock => clock.SiteTimeZoneId, zone));
 
-        Assert.AreEqual(expected, cut.Find("#time-site").TextContent.Trim());
-        Assert.AreEqual("2026-07-23 12:00:00", cut.Find("#time-agent-utc").TextContent);
+        StringAssert.Contains(cut.Find("#time-site").TextContent, expected, StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("#time-site").TextContent, "12:00:00 +00:00", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -54,9 +51,7 @@ public sealed class AgentClockTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.AreEqual("2026-07-23 12:00:01", cut.Find("#time-agent-utc").TextContent);
-            Assert.AreEqual("12:00:01", cut.Find("#time-site time").TextContent);
-            Assert.AreEqual("UTC, UTC+00:00", cut.Find("#time-site small").TextContent);
+            Assert.AreEqual("23 Jul 2026 12:00:01 +00:00 (UTC)", cut.Find("#time-site time").TextContent);
         });
     }
 
@@ -69,8 +64,7 @@ public sealed class AgentClockTests
 
         cut.Render(parameters => parameters.Add(clock => clock.SiteTimeZoneId, "Asia/Kolkata"));
 
-        Assert.AreEqual("17:30:00", cut.Find("#time-site time").TextContent);
-        Assert.AreEqual("Asia/Kolkata, UTC+05:30", cut.Find("#time-site small").TextContent);
+        Assert.AreEqual("23 Jul 2026 17:30:00 +05:30 (Asia/Kolkata)", cut.Find("#time-site time").TextContent);
     }
 
     [TestMethod]
@@ -85,7 +79,7 @@ public sealed class AgentClockTests
         clock.Tick();
 
         Assert.IsTrue(clock.TimerDisposed);
-        Assert.AreEqual("2026-07-23 12:00:00", cut.Find("#time-agent-utc").TextContent);
+        StringAssert.Contains(cut.Find("#time-site time").TextContent, "12:00:00 +00:00", StringComparison.Ordinal);
     }
 
     private static ManualClock Configure(BunitContext context)

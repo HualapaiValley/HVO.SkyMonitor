@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Services;
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 
@@ -589,6 +590,59 @@ public sealed class GalleryPageTests
                 .EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
             Assert.HasCount(0, cut.FindAll(".capture-card"));
         });
+    }
+
+    [TestMethod]
+    public void SiteLocalFilters_PreserveUtcQueryAndConvertBothBoundaries()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("Asia/Kolkata")));
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        navigation.NavigateTo("/gallery?from=2026-07-23T20%3A00%3A00Z");
+        var cut = context.Render<GalleryPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("2026-07-24T01:30:00", cut.Find("#galleryFrom").GetAttribute("value")));
+        cut.Find("#galleryFrom").Change("2026-07-24T02:30:00");
+        cut.Find("#galleryTo").Change("2026-07-24T04:30:00");
+        cut.Find("form.gallery-toolbar").Submit();
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(navigation.Uri).Query);
+        Assert.AreEqual("2026-07-23T21:00:00.0000000+00:00", query["from"].ToString());
+        Assert.AreEqual("2026-07-23T23:00:00.0000000+00:00", query["to"].ToString());
+    }
+
+    [TestMethod]
+    public void UnchangedFoldFilter_PreservesUtcOccurrenceAndFractionalSeconds()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("America/New_York")));
+        var recorded = "2026-11-01T06:30:00.1234567+00:00";
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        navigation.NavigateTo(navigation.GetUriWithQueryParameter("from", recorded));
+        var cut = context.Render<GalleryPage>();
+        cut.Find("form.gallery-toolbar").Submit();
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(navigation.Uri).Query);
+        Assert.AreEqual(recorded, query["from"].ToString());
+    }
+
+    [TestMethod]
+    [DataRow("2026-03-08T02:30:00", "does not exist")]
+    [DataRow("2026-11-01T01:30:00", "occurs twice")]
+    public void SiteLocalFilter_RejectsDstGapAndFold(string entered, string reason)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("America/New_York")));
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var before = navigation.Uri;
+        var cut = context.Render<GalleryPage>();
+        cut.Find("#galleryFrom").Change(entered);
+        cut.Find("form.gallery-toolbar").Submit();
+        Assert.AreEqual(before, navigation.Uri);
+        StringAssert.Contains(cut.Markup, reason, StringComparison.Ordinal);
     }
 
     private static TestOperatorUiService Configure(BunitContext context)

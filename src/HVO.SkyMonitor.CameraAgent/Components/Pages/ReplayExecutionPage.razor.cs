@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// dispose, artifact content is never prefetched, and no upload, promotion, or gallery-preference
 /// action is exposed.
 /// </summary>
-public sealed partial class ReplayExecutionPage : ComponentBase, IAsyncDisposable
+public sealed partial class ReplayExecutionPage : SiteTimeComponent, IAsyncDisposable
 {
     /// <summary>Replay progress polling never runs faster than this; live acquisition keeps priority.</summary>
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);

@@ -10,7 +10,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
+public sealed partial class CalibrationPage : SiteTimeComponent, IAsyncDisposable
 {
     private const int PageSize = 100;
     private const string SelectedReason = "calibration.library.selected";
@@ -37,6 +37,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
     private string? _cursor;
     private string? _message;
     private string? _reason;
+    private string? _inputZone;
     private string _effectiveFrom = string.Empty;
     private string _effectiveUntil = string.Empty;
     private double _gain = 82;
@@ -90,6 +91,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnInitializedAsync()
     {
+        _inputZone = SiteTime.Label;
         _effectiveFrom = FormatLocalInput(TimeProvider.GetUtcNow());
         await RefreshAsync().ConfigureAwait(false);
     }
@@ -469,6 +471,11 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
     {
         request = null!;
         error = null;
+        if (!string.Equals(_inputZone, SiteTime.Label, StringComparison.Ordinal))
+        {
+            error = "The site time zone changed while this form was open. Reload before entering times.";
+            return false;
+        }
         var exposures = new[] { _biasSeconds, _darkSeconds, _flatSeconds, _defectSeconds, _lightSeconds };
         if (!double.IsFinite(_gain) || _gain < 0 || !double.IsFinite(_offset) ||
             !double.IsFinite(_temperatureC) || exposures.Any(static value =>
@@ -481,7 +488,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         if (!TryParseUtc(_effectiveFrom, out var effectiveFrom) ||
             !string.IsNullOrWhiteSpace(_effectiveUntil) && !TryParseUtc(_effectiveUntil, out _))
         {
-            error = "Effective UTC boundaries are invalid.";
+            error = $"Effective boundaries in {SiteTime.Label} must be valid, unambiguous local times.";
             return false;
         }
         DateTimeOffset? effectiveUntil = null;
@@ -491,7 +498,7 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
             effectiveUntil = parsedUntil;
             if (effectiveUntil <= effectiveFrom)
             {
-                error = "Effective-until UTC must be later than effective-from UTC.";
+                error = "Effective-until must be later than effective-from.";
                 return false;
             }
         }
@@ -617,9 +624,9 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         };
     }
 
-    private static string ReviewDetail(CalibrationUiBundleSummary? active)
+    private string ReviewDetail(CalibrationUiBundleSummary? active)
         => active?.Applicability.EffectiveUntilUtc is { } until
-            ? $"Validity interval ends {until.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}"
+            ? $"Validity interval ends {SiteTime.Format(until)}"
             : active is null ? "No active bundle" : "Validity is open-ended";
 
     private static (string Label, string Detail, string Chip) Compatibility(string? reason) => reason switch
@@ -764,29 +771,25 @@ public sealed partial class CalibrationPage : ComponentBase, IAsyncDisposable
         (null, { } high) => $"up to {Seconds(high)}"
     };
 
-    private static string Validity(CalibrationApplicabilityV1 applicability)
+    private string Validity(CalibrationApplicabilityV1 applicability)
         => $"{When(applicability.EffectiveFromUtc)} to {(applicability.EffectiveUntilUtc is { } until ? When(until) : "open-ended")}";
 
-    private static string When(DateTimeOffset? value)
-        => value?.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture) ?? "never";
+    private string When(DateTimeOffset? value)
+        => SiteTime.Format(value, unavailable: "never");
 
-    private static bool TryParseUtc(string value, out DateTimeOffset result)
+    private bool TryParseUtc(string value, out DateTimeOffset result)
     {
-        if (DateTime.TryParse(
-                value,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                out var parsed))
+        if (SiteTime.TryInput(value, out var parsed, out _) && parsed is not null)
         {
-            result = DateTimeOffset.FromUnixTimeMilliseconds(new DateTimeOffset(parsed).ToUnixTimeMilliseconds());
+            result = parsed.Value;
             return true;
         }
         result = default;
         return false;
     }
 
-    private static string FormatLocalInput(DateTimeOffset value)
-        => value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture);
+    private string FormatLocalInput(DateTimeOffset value)
+        => SiteTime.Input(value);
 
     private static string NewKey() => $"ui-{Guid.NewGuid():N}{Guid.NewGuid():N}";
 

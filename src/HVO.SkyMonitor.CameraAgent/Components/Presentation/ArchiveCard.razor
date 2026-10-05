@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 
@@ -18,7 +19,7 @@
     <div class="capture-card-body">
         <header class="capture-card-heading">
             <div><strong>Capture #@Capture.CaptureSequence</strong><span>@ProductLabel</span></div>
-            <time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTimeUtc UTC</time>
+            <time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTime</time>
         </header>
         <p class="capture-card-meta">@ArtifactCountLabel</p>
         @if (CandidateIds.Count > 0)

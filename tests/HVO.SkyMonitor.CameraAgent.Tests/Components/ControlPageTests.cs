@@ -393,14 +393,14 @@ public sealed class ControlPageTests
             var rows = cut.FindAll(".control-receipts tbody tr");
             Assert.HasCount(5, rows);
             Assert.AreEqual(CameraAgentSystemUiService.MaxReceipts, limit);
-            AssertRow(rows[0], "23 Jul / 12:00", "Pause acquisition", "Local owner", "Maintenance (no note given)", "Completed");
-            AssertRow(rows[1], "23 Jul / 11:55", "Resume acquisition", "Installer", "Upgrade finished", "Already current");
-            AssertRow(rows[2], "23 Jul / 11:50", "Force open override created", "System",
+            AssertRow(rows[0], "23 Jul 2026 12:00:00 +00:00 (UTC (site time zone unavailable))", "Pause acquisition", "Local owner", "Maintenance (no note given)", "Completed");
+            AssertRow(rows[1], "23 Jul 2026 11:55:00 +00:00 (UTC (site time zone unavailable))", "Resume acquisition", "Installer", "Upgrade finished", "Already current");
+            AssertRow(rows[2], "23 Jul 2026 11:50:00 +00:00 (UTC (site time zone unavailable))", "Force open override created", "System",
                 "Carried over when the camera rig changed", "Completed");
-            Assert.AreEqual("23 Jul / 13:00 to 23 Jul / 15:00", rows[2].Children[1].QuerySelector("small")!.TextContent);
+            Assert.AreEqual("23 Jul 2026 13:00:00 +00:00 (UTC (site time zone unavailable)) to 23 Jul 2026 15:00:00 +00:00 (UTC (site time zone unavailable))", rows[2].Children[1].QuerySelector("small")!.TextContent);
             Assert.IsNull(rows[3].Children[1].QuerySelector("small"));
-            AssertRow(rows[3], "23 Jul / 11:45", "Force closed override used", "System", "Used by capture admission", "Completed");
-            AssertRow(rows[4], "23 Jul / 11:40", "Schedule override cleared", "Local owner", "None given", "Pending");
+            AssertRow(rows[3], "23 Jul 2026 11:45:00 +00:00 (UTC (site time zone unavailable))", "Force closed override used", "System", "Used by capture admission", "Completed");
+            AssertRow(rows[4], "23 Jul 2026 11:40:00 +00:00 (UTC (site time zone unavailable))", "Schedule override cleared", "Local owner", "None given", "Pending");
             Assert.IsFalse(cut.Markup.Contains("5f0c2a", StringComparison.Ordinal));
             Assert.IsFalse(cut.Markup.Contains(CameraAgentOperatorUiService.PauseReasonCode, StringComparison.Ordinal));
         });

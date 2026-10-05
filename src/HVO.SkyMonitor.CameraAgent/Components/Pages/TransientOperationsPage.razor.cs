@@ -8,7 +8,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class TransientOperationsPage : ComponentBase, IAsyncDisposable
+public sealed partial class TransientOperationsPage : SiteTimeComponent, IAsyncDisposable
 {
     private const string ProfileTriggerId = "transients-profile";
     private const string FocusFallbackId = "transients-refresh";
@@ -270,8 +270,7 @@ public sealed partial class TransientOperationsPage : ComponentBase, IAsyncDispo
 
     private static string Seconds(double value) => string.Create(CultureInfo.InvariantCulture, $"{value:0.##} s");
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     private static string FormatAge(TimeSpan age)
     {

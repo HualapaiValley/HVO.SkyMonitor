@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/transients"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -91,7 +92,7 @@ else
                                 var edge = EdgeOutcome(outcome);
                                 var lane = LaneState(outcome);
                                 <tr class="@(outcome.CaptureId == view.LatestEventRun?.CaptureId ? "current-row" : null)">
-                                    <td><strong>@Sequence(outcome.CaptureSequence)</strong><small>@FormatUtc(outcome.ExposureStartedUtc)</small></td>
+                                    <td><strong>@Sequence(outcome.CaptureSequence)</strong><small>@FormatSiteTime(outcome.ExposureStartedUtc)</small></td>
                                     <td>@edge.Text@if (edge.Detail is not null)
                                         {
                                             <small class="@(edge.Failed ? "failure" : null)">@edge.Detail</small>
@@ -121,7 +122,7 @@ else
             {
                 var latest = candidates[0];
                 <header class="ops-panel-heading">
-                    <div><h2 id="transients-latest-heading">Latest candidate</h2><p>Created @FormatUtc(latest.CreatedUtc) UTC / @Words(latest.WorkflowPhase)</p></div>
+                    <div><h2 id="transients-latest-heading">Latest candidate</h2><p>Created @FormatSiteTime(latest.CreatedUtc) / @Words(latest.WorkflowPhase)</p></div>
                     <span class="state-chip @EventChip(latest.EventState)">@Words(latest.EventState)</span>
                 </header>
                 <dl class="ops-facts">
@@ -153,12 +154,12 @@ else
             {
                 <div class="ops-table-wrap">
                     <table class="ops-table transients-candidate-table">
-                        <thead><tr><th>Created (UTC)</th><th>Event</th><th>Evidence</th></tr></thead>
+                        <thead><tr><th>Created (@SiteTime.Label)</th><th>Event</th><th>Evidence</th></tr></thead>
                         <tbody>
                             @foreach (var candidate in candidates)
                             {
                                 <tr>
-                                    <td><a href="@($"/transients/{candidate.CandidateId:D}")">@FormatUtc(candidate.CreatedUtc)</a><small>@Words(candidate.WorkflowPhase)</small></td>
+                                    <td><a href="@($"/transients/{candidate.CandidateId:D}")">@FormatSiteTime(candidate.CreatedUtc)</a><small>@Words(candidate.WorkflowPhase)</small></td>
                                     <td><span class="state-chip @EventChip(candidate.EventState)">@Words(candidate.EventState)</span></td>
                                     <td>
                                         <ul class="transients-stages">
@@ -205,7 +206,7 @@ else
         </section>
     </div>
 
-    <p class="transients-evaluated">Read @FormatUtc(view.EvaluatedUtc) UTC.</p>
+    <p class="transients-evaluated">Read @FormatSiteTime(view.EvaluatedUtc).</p>
 
     @if (_dialogOpen)
     {

@@ -21,7 +21,7 @@ public sealed record OperatorOutboxActionRequest(
 /// and runtime sources this CameraAgent reports. Facts no source reports (next-capture countdown,
 /// sensor temperature, cloud estimate) are stated as not reported rather than filled in.
 /// </summary>
-public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
+public sealed partial class OperationsPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
@@ -565,7 +565,7 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         : _schedule.PendingRevision is { } pending
             ? $"Revision r{pending.RevisionNumber} pending"
             : _schedule.Decision.NextTransitionUtc is { } next
-                ? $"Next transition {next.UtcDateTime.ToString("HH:mm", CultureInfo.InvariantCulture)} UTC"
+                ? $"Next transition {SiteTime.Format(next)}"
                 : "No transition scheduled";
 
     private string PipelineDetail => _pipeline is null
@@ -677,13 +677,9 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         _ => $"the {source} source"
     };
 
-    private string FormatChangeTime(DateTimeOffset value) =>
-        value.UtcDateTime.Date == TimeProvider.GetUtcNow().UtcDateTime.Date
-            ? FormatClock(value)
-            : value.UtcDateTime.ToString("MMM d", CultureInfo.InvariantCulture);
+    private string FormatChangeTime(DateTimeOffset value) => SiteTime.Format(value);
 
-    private static string FormatClock(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+    private string FormatClock(DateTimeOffset value) => SiteTime.Format(value, "HH:mm:ss");
 
     private static string FormatIso(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
@@ -704,10 +700,6 @@ public sealed partial class OperationsPage : ComponentBase, IAsyncDisposable
         }
         return FormattableString.Invariant($"{value:F1} {units[unit]}");
     }
-
-    internal static string FormatTime(DateTimeOffset? value) => value is null
-        ? "Never"
-        : value.Value.ToLocalTime().ToString("MMM d, HH:mm:ss", CultureInfo.InvariantCulture);
 
     /// <summary>The compact elapsed time since <paramref name="value"/>: 4s, 12 min, 3 h, 2 d.</summary>
     private string FormatAge(DateTimeOffset value)

@@ -1,5 +1,6 @@
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -111,7 +112,7 @@ public sealed class SchedulePageTests
             Assert.HasCount(1, clock.QuerySelectorAll(".schedule-segment.open"));
             StringAssert.Contains(clock.QuerySelector(".schedule-segment.open")!.GetAttribute("style")!, "left: 33.3", StringComparison.Ordinal);
             StringAssert.Contains(clock.QuerySelector(".schedule-now")!.GetAttribute("style")!, "left: 37.5", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find(".schedule-window-list").TextContent, "20:00 to 04:00", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".schedule-window-list").TextContent, "20:00 +00:00 to 04:00 +00:00", StringComparison.Ordinal);
             Assert.HasCount(7, cut.FindAll(".ops-week-row"));
             Assert.HasCount(1, cut.FindAll(".ops-week-row .schedule-segment.blackout"));
             StringAssert.Contains(cut.Find("#schedule-week-heading").ParentElement!.ParentElement!.TextContent, "6 of 7 open", StringComparison.Ordinal);
@@ -394,6 +395,69 @@ public sealed class SchedulePageTests
             Dispose();
             return ValueTask.CompletedTask;
         }
+    }
+
+    [TestMethod]
+    public void BlackoutSiteInputs_ConvertToUtcWithoutChangingScheduleSemantics()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("Asia/Kolkata")));
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
+        var times = cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]");
+        times[0].Change("2026-07-24T01:30:00");
+        cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[1].Change("2026-07-24T02:30:00");
+        SaveDraft(cut).Click();
+        Assert.HasCount(1, service.StageCommands);
+        var blackout = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.Blackouts!.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 7, 23, 20, 0, 0, TimeSpan.Zero), blackout.StartUtc);
+        Assert.AreEqual(TimeSpan.FromHours(1), blackout.EndUtc - blackout.StartUtc);
+    }
+
+    [TestMethod]
+    public void BlackoutEditingOneBoundary_PreservesExistingFoldInstantAndSubseconds()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("America/New_York")));
+        var start = new DateTimeOffset(2026, 11, 1, 5, 30, 0, TimeSpan.Zero).AddTicks(1234567);
+        var profile = Profile();
+        profile = profile with { Schedule = profile.Schedule with { Blackouts = [new CaptureScheduleBlackout("fold", start, start.AddHours(3))] } };
+        var state = State();
+        state = state with { ActiveRevision = state.ActiveRevision with { Profile = profile } };
+        var service = new RetryingScheduleUiService(state);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
+        cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[1].Change("2026-11-01T04:30:00");
+        SaveDraft(cut).Click();
+        Assert.HasCount(1, service.StageCommands);
+        var blackout = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.Blackouts!.Single();
+        Assert.AreEqual(start, blackout.StartUtc);
+        Assert.AreEqual(new DateTimeOffset(2026, 11, 1, 9, 30, 0, TimeSpan.Zero), blackout.EndUtc);
+    }
+
+    [TestMethod]
+    [DataRow("2026-03-08T02:30:00", "does not exist")]
+    [DataRow("2026-11-01T01:30:00", "occurs twice")]
+    public void BlackoutSiteInputs_RejectDstGapAndFoldBeforeSendingCommand(string entered, string expected)
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("America/New_York")));
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
+        cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[0].Change(entered);
+        SaveDraft(cut).Click();
+        Assert.HasCount(0, service.StageCommands);
+        StringAssert.Contains(cut.Markup, expected, StringComparison.Ordinal);
     }
 
     [TestMethod]
