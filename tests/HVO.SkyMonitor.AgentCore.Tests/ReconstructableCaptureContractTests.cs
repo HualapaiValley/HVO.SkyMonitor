@@ -48,6 +48,47 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    [DataRow("unsupported-product-schema")]
+    [DataRow("inline-segments")]
+    [DataRow("missing-scene-utc")]
+    [DataRow("unsupported-stage-schema")]
+    [DataRow("missing-stage-key")]
+    [DataRow("missing-rig-hash")]
+    [DataRow("invalid-rig-hash")]
+    public void ManifestV2_RejectsCompactSceneWithoutSupportedSourceBinding(string invalidField)
+    {
+        var scene = new SceneProvenance(
+            new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
+            "astronomy-v1", "sensor-v1", RigProfileHashSha256: new string('B', 64),
+            SceneUtc: DateTimeOffset.UnixEpoch, ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1",
+            ProjectedSceneStageKey: new string('C', 64)).WithoutProjectedGeometry();
+        var valid = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
+        Assert.IsTrue(valid.Validate().IsValid);
+        var invalid = valid with
+        {
+            Scene = invalidField switch
+            {
+                "unsupported-product-schema" => scene with { ProjectedSceneSchemaVersion = "projected-scene-v999" },
+                "inline-segments" => scene with { Segments = [] },
+                "missing-scene-utc" => scene with { SceneUtc = null },
+                "unsupported-stage-schema" => scene with { ProjectedSceneStageSchemaVersion = "projected-scene-stage-v999" },
+                "missing-stage-key" => scene with { ProjectedSceneStageKey = null },
+                "missing-rig-hash" => scene with { RigProfileHashSha256 = null },
+                "invalid-rig-hash" => scene with { RigProfileHashSha256 = new string('Z', 64) },
+                _ => throw new ArgumentOutOfRangeException(nameof(invalidField))
+            }
+        };
+        var expected = CaptureContractValidationResult.Failure(
+            CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
+        Assert.AreEqual(expected, invalid.Validate());
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(invalid));
+        Assert.IsFalse(parsed.IsValid);
+        Assert.AreEqual(expected, parsed.Validation);
+        Assert.AreEqual(valid.IdempotencyKey, invalid.IdempotencyKey,
+            "scene validation must not rewrite the immutable raw descriptor identity");
+    }
+
+    [TestMethod]
     public void SensorReadoutResolver_DerivesAsi174RoiAndRejectsImpossibleGeometry()
     {
         var sensor = new SensorProfile(
