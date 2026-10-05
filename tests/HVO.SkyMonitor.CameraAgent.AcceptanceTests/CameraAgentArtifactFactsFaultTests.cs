@@ -84,6 +84,8 @@ public sealed class CameraAgentArtifactFactsFaultTests
         if (boundary != "after-ready-commit")
             await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
                 CameraAgentHourlyArtifactFactsPrototypeTests.VerifySnapshotAsync(root, index)).ConfigureAwait(false);
+        else
+            await CameraAgentHourlyArtifactFactsPrototypeTests.VerifySnapshotAsync(root, index).ConfigureAwait(false);
         var beforeBytes = DirectoryBytes(root);
         using var process = Process.GetCurrentProcess();
         var rssBefore = process.WorkingSet64;
