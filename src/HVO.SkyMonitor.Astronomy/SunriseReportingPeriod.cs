@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 
-namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
+namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>
 /// One resolved source period. Its date names the starting sunrise, not the publication or capture civil date.

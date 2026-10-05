@@ -7,6 +7,7 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Video.FFmpeg\HVO.SkyMonitor.Video.FFmpeg.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\fixtures\processing\*.json" Link="Fixtures\%(Filename)%(Extension)">

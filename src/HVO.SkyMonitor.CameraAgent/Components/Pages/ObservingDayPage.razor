@@ -190,6 +190,12 @@
                                 </div>
                             </article>
                         }
+                        @if (_nightly.TimeLapses is { } videos && (videos.Jobs.Count > 0 || sample is null))
+                        {
+                            <TimeLapseDayProducts Day="@videos" Enabled="@_nightly.TimeLapseGenerationEnabled" />
+                        }
+                        else
+                        {
                         <article class="product-slot @(sample is null ? "product-slot--pending" : "product-slot--sample")" data-product-kind="time-lapse" aria-label="Night time-lapse">
                             @if (sample is not null)
                             {
@@ -209,6 +215,7 @@
                                 @if (sample is not null) { <span class="hvo-chip hvo-chip--info">Sample</span> }
                             </div>
                         </article>
+                        }
                     </div>
                     var viewed = _viewerKind is { } viewedKind ? cards.Find(card => card.Kind == viewedKind) : null;
                     var viewedId = viewed?.Product?.ProductId;

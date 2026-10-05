@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Collections.Immutable;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -154,40 +155,14 @@ public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider c
     private static ImmutableArray<LocalAutomationSourceWindow> ResolveCivilHours(
         SunriseReportingPeriod reporting, LocalAutomationSourceWindowPolicy policy)
     {
-        var zone = TimeZoneInfo.FindSystemTimeZoneById(reporting.Site.TimeZoneId);
-        if (!string.Equals(CaptureScheduleTimeZone.ComputeRuleSha256(zone), reporting.TimeZoneRulesSha256,
-                StringComparison.OrdinalIgnoreCase))
+        try
+        {
+            return SunriseReportingCalendar.PartitionCivilHours(reporting)
+                .Select(hour => LocalAutomationSourceWindow.Create(policy, reporting, hour.StartUtc, hour.EndUtc)).ToImmutableArray();
+        }
+        catch (InvalidOperationException)
         {
             throw new ReportingPeriodUnavailableException(reporting.ReportDate, "automation.time-zone-rules-changed");
         }
-        var boundaries = new SortedSet<DateTimeOffset> { reporting.StartUtc, reporting.EndUtc };
-        var civilStart = reporting.ReportDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
-        // Two civil dates contain both sunrises. Invalid top-of-hour instants are absent; both UTC
-        // instants of an ambiguous boundary are retained. Non-hour offset transitions may yield a
-        // longer/shorter civil hour. Sunrise clips only the first/last hour, preserving complete coverage.
-        for (var hour = 0; hour <= 48 && civilStart.Ticks <= DateTime.MaxValue.Ticks - hour * TimeSpan.TicksPerHour; hour++)
-        {
-            var local = civilStart.AddHours(hour);
-            if (zone.IsInvalidTime(local))
-            {
-                continue;
-            }
-            var offsets = zone.IsAmbiguousTime(local) ? zone.GetAmbiguousTimeOffsets(local) : [zone.GetUtcOffset(local)];
-            foreach (var offset in offsets)
-            {
-                if (local.Ticks < offset.Ticks || local.Ticks - offset.Ticks > DateTimeOffset.MaxValue.UtcTicks)
-                {
-                    continue;
-                }
-                var utc = new DateTimeOffset(local, offset).ToUniversalTime();
-                if (utc > reporting.StartUtc && utc < reporting.EndUtc)
-                {
-                    boundaries.Add(utc);
-                }
-            }
-        }
-        var values = boundaries.ToArray();
-        return values.Zip(values.Skip(1), (start, end) => LocalAutomationSourceWindow.Create(policy, reporting, start, end))
-            .ToImmutableArray();
     }
 }

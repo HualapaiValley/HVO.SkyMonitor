@@ -4,6 +4,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -17,10 +18,11 @@
     </nav>
     @if (!IsRetainedView)
     {
-        <PageHeader Eyebrow="Archive / multi-source derivatives" Title="Generated products" Lead="Nightly star trails and keograms of each evaluated sunrise-to-sunrise period, with their sources, span, and the automation that generated them. A period without a product keeps its recorded reason and shows no image.">
+        <PageHeader Eyebrow="Archive / multi-source derivatives" Title="Generated products" Lead="Nightly star trails, keograms and time-lapses of each evaluated sunrise-to-sunrise period, with their sources, span, and the automation that generated them. A period without a product keeps its recorded reason.">
             <a class="btn btn-outline-light" href="/operations/automations">Manage automations</a>
         </PageHeader>
         <GeneratedProductsView Type="@Type" Status="@Status" Day="@Day" Before="@Before" />
+        <TimeLapseLibraryView Before="@VideoBefore" />
     }
     else
     {

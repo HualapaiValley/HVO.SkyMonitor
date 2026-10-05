@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 
-namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
+namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>
 /// A retained source period and its fixed publication eligibility. The settle allowance belongs to this identity,

@@ -1,11 +1,9 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
-namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
+namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>
-/// CameraAgent reporting policy over the shared Astronomy solar contract. A calendar binds one immutable site and
+/// Host-neutral reporting policy over the shared Astronomy solar contract. A calendar binds one immutable site and
 /// time-zone rule set. The bounded cache also ensures neighbouring periods reuse precisely the same event boundary.
 /// </summary>
 public sealed class SunriseReportingCalendar
@@ -32,7 +30,7 @@ public sealed class SunriseReportingCalendar
         }
         Site = site;
         TimeZone = TimeZoneInfo.FindSystemTimeZoneById(site.TimeZoneId);
-        TimeZoneRulesSha256 = CaptureScheduleTimeZone.ComputeRuleSha256(TimeZone);
+        TimeZoneRulesSha256 = SiteTimeZone.ComputeRuleSha256(TimeZone);
         _solar = solar ?? new AstronomyEngineSolarEventCalculator();
     }
 
@@ -119,7 +117,7 @@ public sealed class SunriseReportingCalendar
             (DateTimeOffset StartUtc, DateTimeOffset EndUtc) civilDay;
             try
             {
-                civilDay = CaptureScheduleTimeZone.ResolveDay(date, TimeZone);
+                civilDay = SiteTimeZone.ResolveDay(date, TimeZone);
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -150,4 +148,49 @@ public sealed class SunriseReportingCalendar
             return result;
         }
     }
+
+    /// <summary>Exact adjacent civil hours clipped to the retained solar period, preserving DST folds and gaps.</summary>
+    public static IReadOnlyList<SunriseReportingHour> PartitionCivilHours(SunriseReportingPeriod reporting)
+    {
+        ArgumentNullException.ThrowIfNull(reporting);
+        if (!reporting.IsValid()) throw new ArgumentException("Invalid retained reporting period.", nameof(reporting));
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(reporting.Site.TimeZoneId);
+        if (!string.Equals(SiteTimeZone.ComputeRuleSha256(zone), reporting.TimeZoneRulesSha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The retained reporting period uses different time-zone rules.");
+        }
+        var boundaries = new SortedSet<DateTimeOffset> { reporting.StartUtc, reporting.EndUtc };
+        var civilStart = reporting.ReportDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
+        // Two civil dates contain both sunrises. Invalid top-of-hour instants are absent; both UTC
+        // instants of an ambiguous boundary are retained. Non-hour offset transitions may yield a
+        // longer/shorter civil hour. Sunrise clips only the first/last hour, preserving complete coverage.
+        for (var hour = 0; hour <= 48 && civilStart.Ticks <= DateTime.MaxValue.Ticks - hour * TimeSpan.TicksPerHour; hour++)
+        {
+            var local = civilStart.AddHours(hour);
+            if (zone.IsInvalidTime(local))
+            {
+                continue;
+            }
+            var offsets = zone.IsAmbiguousTime(local) ? zone.GetAmbiguousTimeOffsets(local) : [zone.GetUtcOffset(local)];
+            foreach (var offset in offsets)
+            {
+                if (local.Ticks < offset.Ticks || local.Ticks - offset.Ticks > DateTimeOffset.MaxValue.UtcTicks)
+                {
+                    continue;
+                }
+                var utc = new DateTimeOffset(local, offset).ToUniversalTime();
+                if (utc > reporting.StartUtc && utc < reporting.EndUtc)
+                {
+                    boundaries.Add(utc);
+                }
+            }
+        }
+        var values = boundaries.ToArray();
+        return values.Zip(values.Skip(1), (start, end) => new SunriseReportingHour(start, end))
+            .ToArray();
+    }
 }
+
+
+public sealed record SunriseReportingHour(DateTimeOffset StartUtc, DateTimeOffset EndUtc);
