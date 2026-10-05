@@ -651,7 +651,7 @@ internal sealed class RawCaptureIngress :
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var entry in await _journal.ReadUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var entry in _journal.EnumerateUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
             {
                 var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
                 if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)

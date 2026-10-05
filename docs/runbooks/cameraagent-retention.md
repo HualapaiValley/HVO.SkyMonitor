@@ -165,8 +165,8 @@ not copy the journal into temporary storage. All schema queries in an inspection
 share the same committed image; contention remains a transient startup failure,
 while canonical-schema drift and integrity failures still fail closed.
 
-Raw reconciliation and projected-scene stage ownership visit one retained
-manifest at a time. Reconciliation releases each SQLite reader before checking
+Raw reconciliation, projected-scene stage ownership, and recovered live-execution
+binding visit one retained manifest at a time. Reconciliation releases each SQLite reader before checking
 payload files or repairing state, so payload scanning does not pin a WAL reader
 for the whole history. Compact path and stage-key sets still scale with capture
 count; manifest bytes and decoded scene objects do not accumulate with history.
