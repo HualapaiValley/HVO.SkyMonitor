@@ -3,8 +3,8 @@
   "profiles": {
     "W0": {
       "sourcePath": "deploy/split-host/workloads/w0-virtual-mono16.json",
-      "sourceSha256": "821181f698134a5a2ec85312cba0f93c457726f8edb6581e3ba7e7322983f446",
-      "configurationIdentitySha256": "3d7ad03966ffd70ba2d0992c20efde1a57570dd7a72983bf5f03251b3fc8925f",
+      "sourceSha256": "dcd3b73d9ed69c9a2360156cabc9a98cf84c29ea1721ecbaad8bae18e7bcfc96",
+      "configurationIdentitySha256": "e9676d2f850eeb72104c44a2e9ec44a389275210feaf8693b0f812714e315fe1",
       "optionsSha256": "f7f898c02a9a93c19820dc658e55ae79a061e8fce2b0ba66275bd0b06dd5cda6",
       "width": 64,
       "height": 48,
@@ -16,8 +16,8 @@
     },
     "W1": {
       "sourcePath": "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json",
-      "sourceSha256": "dd5f429f32c2c12eee9e40e150b7f29e3052f9d86d301b0dd005d4546dc61c81",
-      "configurationIdentitySha256": "dd6a511243d56fa87180f35b5abee2ea05c9b9702bd252543c1e1ebd4574f319",
+      "sourceSha256": "c66e90b663338c4baec0a1f0a54ac01f0193a995fe7336ce4b390cce17afe4b2",
+      "configurationIdentitySha256": "27c750acf33029d3d9675ed7da8fb4be7f0da72732ba4de80d5d128d16524de7",
       "optionsSha256": "1357b00968e042c05dbf15891256851b6becd4e1f5046fd11e953839f638dc81",
       "width": 1936,
       "height": 1216,
@@ -29,8 +29,8 @@
     },
     "W2": {
       "sourcePath": "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json",
-      "sourceSha256": "deeb2f4d526333eec80ba1a6491851dfa32aa92a3ec1cdfe3a97b11cfc79f3b0",
-      "configurationIdentitySha256": "cb090f0e6c404a6ab2d44d6e1847c1402d694d3493449c6cd46e16c822c1ea9a",
+      "sourceSha256": "e437d6d27801998586f5138298bd70bb17d605aa146a4e5b9312dc3f86da813b",
+      "configurationIdentitySha256": "478c2cbd4369fe249b5d014ddfc5d2d38250832598e628ab2893e78238bed109",
       "optionsSha256": "c16047937126c65af558be08ab1dbc6d781a2705779d114b9d93a72082de56fb",
       "width": 3096,
       "height": 2080,
