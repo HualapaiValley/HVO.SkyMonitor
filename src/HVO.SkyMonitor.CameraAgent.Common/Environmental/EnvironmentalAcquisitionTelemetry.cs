@@ -120,7 +120,7 @@ public sealed class EnvironmentalAcquisitionTelemetry : IDisposable
         {
             "produced" or "duplicate" or "trigger-coalesced" or "source-timeout" or "source-failure" or
             "source-missing" or "virtual-source-failure" or "invalid-result" or "journal-unavailable" or
-            "capacity-exhausted" => reason,
+            "capacity-exhausted" or "deployment-location-not-effective" => reason,
             _ => "other"
         };
 
