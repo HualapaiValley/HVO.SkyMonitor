@@ -1,4 +1,5 @@
 @inherits SiteTimeComponent
+@using System.Globalization
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Common.Transients
 
@@ -24,7 +25,7 @@
                 {
                     <div class="ownership-zone" style="left:@(band.X)px;width:@(band.Width)px"><span>@band.Label</span></div>
                 }
-                <div class="transient-track-band" style="top:@(TransientTop)px"><span><strong>Fireball / transient track</strong><small>Independent durable lane / recorded milestones</small></span></div>
+                <div class="transient-track-band" style="top:@(TransientTop)px"><span><strong>Fireball / transient track</strong><small>Independent durable lane / recorded milestones in @SiteTime.Label</small></span></div>
                 <svg class="graph-edges" viewBox="0 0 @Width @Height" aria-hidden="true">
                     <defs><marker id="@ArrowId" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" /></marker></defs>
                     @* Highlighted dependencies paint last so a muted sibling sharing a single-port
@@ -68,7 +69,7 @@
                                 var stage = lane.Events[i];
                                 var x = TransientX(lane, i);
                                 <button type="button" class="graph-node transient run-diagram__transient-node @(!StageSucceeded(stage) ? "run-diagram__transient-node--attention" : "") @(SelectedTransientKey == StageKey(stage) ? "selected" : "")" style="left:@(x)px;top:@(lane.Y)px" aria-pressed="@((SelectedTransientKey == StageKey(stage)).ToString().ToLowerInvariant())" aria-label="@($"{TransientName(stage.StageKey)}: {stage.State}, {SiteTime.Format(stage.RecordedUtc)}")" @onclick="() => TransientSelected.InvokeAsync(stage)">
-                                    <span class="node-heading"><span class="status-icon @TransientStatus(stage)" aria-hidden="true"></span><span class="node-title"><strong>@TransientName(stage.StageKey)</strong><small>@stage.State</small></span><span class="node-duration">@SiteTime.Format(stage.RecordedUtc)</span></span><span class="node-footer"><span>Recorded milestone / @SiteTime.Label</span><span class="requirement optional">Independent</span></span>
+                                    <span class="node-heading"><span class="status-icon @TransientStatus(stage)" aria-hidden="true"></span><span class="node-title"><strong title="@TransientName(stage.StageKey)">@TransientName(stage.StageKey)</strong><small>@stage.State</small></span></span><span class="node-footer"><time class="node-recorded-time" datetime="@stage.RecordedUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)" title="@SiteTime.Format(stage.RecordedUtc)">@SiteTime.Local(stage.RecordedUtc).ToString("HH:mm:ss zzz", CultureInfo.InvariantCulture)</time><span class="requirement optional">Independent</span></span>
                                 </button>
                             }
                         }

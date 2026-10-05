@@ -35,7 +35,11 @@ or invalid deployment zones use a visibly labeled UTC
 fallback. API values, storage, query instants, HTML `datetime` attributes and
 schedule calculations retain UTC. Historical reporting periods and product
 windows retain their recorded site zone, date and immutable UTC endpoints. The
-advanced schedule JSON editor remains the explicit machine-contract view.
+advanced schedule JSON editor remains the explicit machine-contract view. Valid
+typed blackout edits update that view before raw JSON can become authoritative;
+invalid typed fields must be corrected before editing JSON. Diagram milestone
+cards show a compact site clock and offset, with the full date and zone in their
+tooltip and accessible label and the site zone named on the track.
 
 Production implementation remains authenticated and CameraAgent-local. Public,
 kiosk, or anonymous access requires a separate threat model and approval.

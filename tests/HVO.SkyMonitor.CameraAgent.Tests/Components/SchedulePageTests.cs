@@ -435,6 +435,8 @@ public sealed class SchedulePageTests
         OpenEditor(cut);
         Assert.AreEqual("2026-11-01T01:30:00.123", cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[0].GetAttribute("value"));
         cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[1].Change("2026-11-01T04:30:00");
+        // Moving to the canonical editor must carry the edited end and exact unchanged start.
+        cut.Find("textarea").Input(cut.Find("textarea").GetAttribute("value") + " ");
         SaveDraft(cut).Click();
         Assert.HasCount(1, service.StageCommands);
         var blackout = CameraAgentScheduleUiService.ParseProfile(service.StageCommands[0].Payload).Schedule.Blackouts!.Single();
@@ -456,9 +458,40 @@ public sealed class SchedulePageTests
         OpenEditor(cut);
         cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
         cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[0].Change(entered);
+        Assert.IsTrue(cut.Find("textarea").HasAttribute("disabled"), "Invalid local boundaries must not expose stale editable JSON.");
         SaveDraft(cut).Click();
         Assert.HasCount(0, service.StageCommands);
         StringAssert.Contains(cut.Markup, expected, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void BlackoutEdits_SurviveSubsequentCanonicalJsonEdits(bool editOtherSetting)
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("Asia/Kolkata")));
+        var service = new RetryingScheduleUiService(State());
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        OpenEditor(cut);
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Add blackout", StringComparison.Ordinal)).Click();
+        cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[0].Change("2026-07-24T01:30");
+        cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[1].Change("2026-07-24T02:30");
+        Assert.IsFalse(cut.Find("textarea").HasAttribute("disabled"));
+        var canonical = CameraAgentScheduleUiService.ParseProfile(cut.Find("textarea").GetAttribute("value")!);
+        if (editOtherSetting) canonical = canonical with
+        {
+            Schedule = canonical.Schedule with { SetpointProfiles = [canonical.Schedule.SetpointProfiles[0] with { Gain = 7 }] }
+        };
+        cut.Find("textarea").Input(CameraAgentScheduleUiService.SerializeProfile(canonical) + " ");
+        SaveDraft(cut).Click();
+        var staged = CameraAgentScheduleUiService.ParseProfile(service.StageCommands.Single().Payload);
+        var blackout = staged.Schedule.Blackouts!.Single();
+        Assert.AreEqual(new DateTimeOffset(2026, 7, 23, 20, 0, 0, TimeSpan.Zero), blackout.StartUtc);
+        Assert.AreEqual(TimeSpan.FromHours(1), blackout.EndUtc - blackout.StartUtc);
+        Assert.AreEqual(canonical.Schedule.SetpointProfiles[0].Gain, staged.Schedule.SetpointProfiles[0].Gain);
     }
 
     [TestMethod]

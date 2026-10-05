@@ -45,6 +45,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
     private CaptureProfileFormModel? _model;
     private LocalCaptureProfileDefinition? _basisProfile;
     private bool _jsonIsTruth;
+    private bool _typedInputsValid = true;
     private bool _editorDirty;
     private EditorStep _step = EditorStep.Policy;
     private string _overrideMode = "ForceClosed";
@@ -745,16 +746,21 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
     {
         _jsonIsTruth = false;
         EditorChanged();
+        _typedInputsValid = ResolveBlackoutInputs();
         // Keep the advanced view showing exactly what a command would send.
-        if (_model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
+        if (_typedInputsValid && _model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
         {
             _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        }
+        else
+        {
+            _typedInputsValid = false;
         }
     }
 
     private void JsonChanged()
     {
-        _jsonIsTruth = true;
+        _jsonIsTruth = _typedInputsValid;
         EditorChanged();
     }
 
@@ -787,8 +793,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
         var text = args.Value?.ToString();
         var draft = (Start: BlackoutInput(row, true), End: BlackoutInput(row, false));
         _blackoutInputs[row] = start ? (text, draft.End) : (draft.Start, text);
-        _jsonIsTruth = false;
-        EditorChanged();
+        FormChanged();
     }
 
     private bool ResolveBlackoutInputs()
@@ -837,6 +842,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
     {
         _blackoutInputZone = SiteTime.Label;
         _blackoutInputs.Clear();
+        _typedInputsValid = true;
         _basisProfile = profile;
         _model = CaptureProfileFormModel.FromProfile(profile);
         _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);

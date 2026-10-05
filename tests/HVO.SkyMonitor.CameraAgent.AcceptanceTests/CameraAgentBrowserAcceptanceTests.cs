@@ -9,9 +9,14 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Playwright;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
@@ -73,6 +78,47 @@ public sealed class CameraAgentBrowserAcceptanceTests
             await page.ScreenshotAsync(new() { Path = screenshot, FullPage = true }).ConfigureAwait(false);
             TestContext.AddResultFile(screenshot);
         }
+        // Render the real diagram with the host's site calendar and its actual stylesheets.
+        // A browser layout check catches fixed-card overflow that markup tests cannot detect.
+        var stylesheets = await page.Locator("link[rel=stylesheet]").EvaluateAllAsync<string[]>(
+            "links => links.map(link => link.href)").ConfigureAwait(false);
+        await using var renderingScope = host.Services.CreateAsyncScope();
+        await using var renderer = new HtmlRenderer(renderingScope.ServiceProvider, host.Services.GetRequiredService<ILoggerFactory>());
+        var diagram = await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var rendered = await renderer.RenderComponentAsync<ExecutionRunDiagram>(ParameterView.FromDictionary(
+                new Dictionary<string, object?>
+                {
+                    [nameof(ExecutionRunDiagram.Nodes)] = Array.Empty<HVO.SkyMonitor.CameraAgent.Services.CameraAgentProcessingNodeView>(),
+                    [nameof(ExecutionRunDiagram.TransientEnabled)] = true,
+                    [nameof(ExecutionRunDiagram.TransientEvents)] = new TransientStageEvent[]
+                    {
+                        new("frame-staged", null, "pending", "recorded", new DateTimeOffset(2026, 7, 23, 20, 0, 0, TimeSpan.Zero))
+                    }
+                })).ConfigureAwait(false);
+            return rendered.ToHtmlString();
+        }).ConfigureAwait(false);
+        var links = string.Join(string.Empty, stylesheets.Select(static href =>
+            $"<link rel=\"stylesheet\" href=\"{System.Net.WebUtility.HtmlEncode(href)}\">"));
+        await page.SetContentAsync($"<!doctype html><html data-theme=\"hvo-dark\"><head>{links}</head><body data-theme=\"hvo-dark\">{diagram}</body></html>").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => getComputedStyle(document.querySelector('.graph-node')).width === '204px'").ConfigureAwait(false);
+        var recorded = page.Locator(".run-diagram__transient-node time");
+        Assert.AreEqual("01:30:00 +05:30", await recorded.InnerTextAsync().ConfigureAwait(false));
+        Assert.Contains("24 Jul 2026 01:30:00 +05:30 (Asia/Kolkata)", (await recorded.GetAttributeAsync("title").ConfigureAwait(false))!, StringComparison.Ordinal);
+        Assert.IsTrue(await page.EvaluateAsync<bool>("""
+            () => {
+                const node = document.querySelector('.run-diagram__transient-node');
+                const bounds = node.getBoundingClientRect();
+                return [...node.querySelectorAll('.node-title strong, .node-title small, time, .requirement')].every(element => {
+                    const box = element.getBoundingClientRect();
+                    return element.scrollWidth <= element.clientWidth + 1 && box.left >= bounds.left &&
+                        box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom;
+                });
+            }
+            """).ConfigureAwait(false), "The site clock, stage title, state and badge must fit their 204px card.");
+        var diagramScreenshot = Path.Combine(output, "site-clock-diagram.png");
+        await page.ScreenshotAsync(new() { Path = diagramScreenshot, FullPage = true }).ConfigureAwait(false);
+        TestContext.AddResultFile(diagramScreenshot);
     }
 
     [TestMethod]
