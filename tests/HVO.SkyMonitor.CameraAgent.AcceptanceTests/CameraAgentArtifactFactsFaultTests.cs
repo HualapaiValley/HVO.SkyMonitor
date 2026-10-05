@@ -17,6 +17,7 @@ public sealed class CameraAgentArtifactFactsFaultTests
 {
     private const string WorkerRootVariable = "HVO_ISSUE1059_WORKER_ROOT";
     private const string WorkerBoundaryVariable = "HVO_ISSUE1059_WORKER_BOUNDARY";
+    private const string WorkerWatchdogVariable = "HVO_ISSUE1059_WORKER_WATCHDOG_SECONDS";
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -41,19 +42,7 @@ public sealed class CameraAgentArtifactFactsFaultTests
             .ProjectAsync(CancellationToken.None).ConfigureAwait(false);
         var expected = HashFacts(baselineRoot);
         var sourceBefore = await SourceDigestAsync(fixture.DatabasePath).ConfigureAwait(false);
-        var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
-        {
-            WorkingDirectory = fixture.Root,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        start.ArgumentList.Add("vstest");
-        start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
-        start.ArgumentList.Add("--TestCaseFilter:FullyQualifiedName=" + typeof(CameraAgentArtifactFactsFaultTests).FullName + ".ProjectorCrashWorker");
-        start.Environment[WorkerRootVariable] = fixture.Root;
-        start.Environment[WorkerBoundaryVariable] = boundary;
-        using var child = Process.Start(start);
+        using var child = Process.Start(WorkerStart(fixture.Root, boundary));
         Assert.IsNotNull(child);
         var stdout = child.StandardOutput.ReadToEndAsync(TestContext.CancellationToken);
         var stderr = child.StandardError.ReadToEndAsync(TestContext.CancellationToken);
@@ -67,8 +56,8 @@ public sealed class CameraAgentArtifactFactsFaultTests
             using var reached = JsonDocument.Parse(await File.ReadAllBytesAsync(signal, TestContext.CancellationToken)
                 .ConfigureAwait(false));
             Assert.AreEqual(boundary, reached.RootElement.GetProperty("Boundary").GetString());
-            child.Kill(entireProcessTree: true);
-            await child.WaitForExitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            await TerminateSignaledWorkerAsync(child, reached.RootElement, fixture.Root, deadline,
+                TestContext.CancellationToken).ConfigureAwait(false);
             TestContext.WriteLine("Interrupted worker: " + reached.RootElement.GetRawText());
         }
         finally
@@ -144,17 +133,114 @@ public sealed class CameraAgentArtifactFactsFaultTests
             {
                 Boundary = point,
                 ProcessId = Environment.ProcessId,
+                ProcessStartIdentity = ProcessStartIdentity(process),
                 Rss = process.WorkingSet64,
                 ProcessLifetimePeakRss = process.PeakWorkingSet64,
                 CpuMilliseconds = process.TotalProcessorTime.TotalMilliseconds,
                 RetainedBytesAtBoundary = DirectoryBytes(Path.Combine(root, "fault-shadow"))
             }));
             File.Move(signal + ".pending", signal);
-            // The parent kills this entire subprocess tree. No exception unwinding or disposal runs.
-            Thread.Sleep(TimeSpan.FromSeconds(90));
+            // Record expiry before any exception unwinding so it can never qualify as a kill.
+            var watchdogSeconds = int.Parse(Environment.GetEnvironmentVariable(WorkerWatchdogVariable) ?? "90",
+                CultureInfo.InvariantCulture);
+            Assert.IsTrue(watchdogSeconds is >= 1 and <= 90);
+            Thread.Sleep(TimeSpan.FromSeconds(watchdogSeconds));
+            File.WriteAllText(Path.Combine(root, "worker-watchdog-expired"), "Ordinary failure; not crash evidence.");
             throw new TimeoutException("Parent did not terminate the disposable crash worker.");
         }).ProjectAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.Fail("The requested fault point was not reached.");
+    }
+
+    [TestMethod]
+    public async Task ExpiredWorkerWatchdogCannotQualifyAsProcessInterruption()
+    {
+        using var fixture = await GalleryPerformanceFixture.CreateAsync(2, sceneBearingOutputs: true)
+            .ConfigureAwait(false);
+        var start = WorkerStart(fixture.Root, "after-staged-write");
+        start.Environment[WorkerWatchdogVariable] = "1";
+        using var child = Process.Start(start);
+        Assert.IsNotNull(child);
+        var stdout = child.StandardOutput.ReadToEndAsync(TestContext.CancellationToken);
+        var stderr = child.StandardError.ReadToEndAsync(TestContext.CancellationToken);
+        var elapsed = Stopwatch.StartNew();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            await child.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            Assert.AreNotEqual(0, child.ExitCode);
+            Assert.IsTrue(File.Exists(Path.Combine(fixture.Root, "worker-watchdog-expired")));
+            using var reached = JsonDocument.Parse(await File.ReadAllBytesAsync(
+                Path.Combine(fixture.Root, "fault-reached.json"), timeout.Token).ConfigureAwait(false));
+            var rejected = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                TerminateSignaledWorkerAsync(child, reached.RootElement, fixture.Root, elapsed, timeout.Token))
+                .ConfigureAwait(false);
+            StringAssert.Contains(rejected.Message, "watchdog expired", StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!child.HasExited) child.Kill(entireProcessTree: true);
+            await child.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            TestContext.WriteLine(await stdout.ConfigureAwait(false));
+            TestContext.WriteLine(await stderr.ConfigureAwait(false));
+        }
+    }
+
+    private static ProcessStartInfo WorkerStart(string root, string boundary)
+    {
+        var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
+        {
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add("vstest");
+        start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+        start.ArgumentList.Add("--TestCaseFilter:FullyQualifiedName=" + typeof(CameraAgentArtifactFactsFaultTests).FullName + ".ProjectorCrashWorker");
+        start.Environment[WorkerRootVariable] = root;
+        start.Environment[WorkerBoundaryVariable] = boundary;
+        start.Environment[WorkerWatchdogVariable] = "90";
+        return start;
+    }
+
+    private static string ProcessStartIdentity(Process process)
+    {
+        if (!OperatingSystem.IsLinux())
+            return process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+        // Linux StartTime converts boot-relative ticks using each observer's wall-clock estimate.
+        // Compare the kernel's raw start tick (stat field 22), which is stable across observers.
+        var stat = File.ReadAllText("/proc/" + process.Id.ToString(CultureInfo.InvariantCulture) + "/stat");
+        return stat[(stat.LastIndexOf(')') + 2)..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[19];
+    }
+
+    private static async Task TerminateSignaledWorkerAsync(Process launcher, JsonElement reached, string root,
+        Stopwatch elapsed, CancellationToken cancellationToken)
+    {
+        void RequireLiveRendezvous()
+        {
+            if (File.Exists(Path.Combine(root, "worker-watchdog-expired")))
+                throw new InvalidDataException("Worker watchdog expired; ordinary failure is not crash evidence.");
+            if (elapsed.Elapsed >= TimeSpan.FromSeconds(45))
+                throw new InvalidDataException("Worker rendezvous expired; delayed termination is not crash evidence.");
+        }
+
+        RequireLiveRendezvous();
+        if (launcher.HasExited)
+            throw new InvalidDataException("Worker launcher already exited before termination.");
+        using var worker = Process.GetProcessById(reached.GetProperty("ProcessId").GetInt32());
+        if (worker.HasExited || !string.Equals(ProcessStartIdentity(worker), reached.GetProperty("ProcessStartIdentity").GetString(), StringComparison.Ordinal))
+            throw new InvalidDataException("The signaled worker is no longer the live process being terminated.");
+        // Kill the actual signaled test host, rather than inferring its death from vstest's exit code.
+        worker.Kill();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        await worker.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        if (!worker.HasExited)
+            throw new InvalidDataException("The signaled worker did not terminate.");
+        RequireLiveRendezvous();
+        if (!launcher.HasExited) launcher.Kill(entireProcessTree: true);
+        await launcher.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
     }
 
     [TestMethod]

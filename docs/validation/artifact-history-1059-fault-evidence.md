@@ -27,9 +27,13 @@ segment and have no segment-offset contract.
 
 A parent launches the built acceptance assembly through `dotnet vstest`, selecting
 only `ProjectorCrashWorker`. The worker signals the exact reached boundary with
-its PID and resource counters and waits. The parent kills the whole child process
-tree; it does not simulate interruption by throwing an exception. A 45-second
-rendezvous deadline and 90-second worker watchdog bound failed orchestration.
+its PID, process start identity and resource counters and waits. The parent kills
+that exact live worker and observes its exit before cleaning up the launcher. A
+45-second rendezvous deadline is enforced before and after termination. The
+90-second worker watchdog writes an expiry marker before exception unwinding;
+any expiry rejects the crash evidence. A negative subprocess control deliberately
+expires a one-second watchdog and proves rejection despite a signal and nonzero
+launcher exit.
 The worker is Inconclusive when discovered outside that parent protocol.
 
 ## Checked boundaries
@@ -110,10 +114,11 @@ The first focused selection returned 19 passes, one expected worker skip, and
 one fixture failure: `Expired` is not an allowed authoritative availability
 state. Correcting that synthetic mutation to `Missing` passed the affected
 concurrency test separately (1/1). Both original reports are retained; no crash
-case or recovery threshold was weakened. Actual Manual discovery is 79 cases,
-up from 58; repository total is 188 before other concurrent branch changes.
+case or recovery threshold was weakened. Initial Manual discovery was 79 cases,
+up from 58; the watchdog negative control adds one more case (80 total, repository
+Manual total 189 before other concurrent branch changes).
 
-All ten process-kill cases produced 10 identical fact files after recovery,
+The initial matrix produced 10 identical fact files after recovery in each case,
 with two capture rows and eight output rows, and no remaining pending files.
 Recovery wall time ranged from 27.85 to 227.08 ms across the different boundaries;
 these are ten different failure cases, not repeated-trial percentiles. Worker
@@ -131,6 +136,11 @@ affected correction TRX SHA-256:
 `c3517bfc03a481444a223b24435c46016985394fbcbf74dfd1d722cfb5cf9d13`.
 These files include the original failed fixture attempt and per-boundary stdout;
 they are retained outside the source worktree, not committed artifact payloads.
+
+The independent initial review identified that a delayed parent could accept an
+ordinary watchdog exit as interruption. Therefore these initial measurements
+remain observations of the old harness; crash-authenticity acceptance relies on
+the corrected matrix and watchdog negative control below.
 
 ## Complete local candidate gate
 
@@ -160,3 +170,23 @@ additive count reconciliation during final synchronization.
 The protected profile is Development v1 Preflight and Build and Unit. These
 local results do not authorize full `ci.yml` dispatch, installed upgrades,
 production hourly storage adoption or closing #1059.
+
+## Independent-review correction
+
+Review finding F1 identified a false-positive interruption path: a delayed parent
+could accept a worker's ordinary watchdog failure. The corrected harness binds
+PID and process-start identity, terminates the actual worker, observes its exit,
+and rejects watchdog expiry or an elapsed rendezvous before and after that
+termination. Linux identity uses the stable kernel start tick; comparing the
+managed wall-clock conversion across observers initially rejected all ten cases.
+That failed report is retained. A dedicated real subprocess with a one-second
+watchdog proves that its signal and nonzero exit are rejected as crash evidence.
+
+The corrected selection passed **21 cases plus one expected worker skip**;
+acceptance Unit 27/27 and Integration 7/7 passed. The Release build passed with
+zero warnings. All ten kill cases retained the same ten exact reference facts,
+source digest above, and 3,459,346 shadow bytes after recovery. Single shared-host
+recovery observations ranged from 34.38 to 1,940.42 ms; worker RSS ranged from
+146,526,208 to 161,935,360 bytes. These observations do not establish a latency
+threshold or baseline/after regression result. Corrected Manual TRX SHA-256:
+`b549233a4d960b246d107bf83f10425c9010a7e3e29bb506752aa498f3605f8b`.
