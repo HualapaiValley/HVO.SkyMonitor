@@ -38,10 +38,13 @@ internal sealed class CentralProjectedSceneResolver(
     {
         var provenance = ReadProvenance(frame.SceneProvenanceJson);
         if (provenance?.RequiresProjectedScene != true) return null;
-        // Metadata/calibrated arrivals can precede raw. Freeze only after authenticating the raw identity.
+        // Metadata/calibrated arrivals can precede raw. A retention tombstone preserves
+        // authenticated source identity; a rejected/pending publication never supplies that evidence.
         if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(raw =>
                 raw.CentralFrameId == frame.Id && raw.Role == FrameArtifactRole.Raw &&
-                raw.ObjectState == CentralArtifactObjectState.Available &&
+                (raw.ObjectState == CentralArtifactObjectState.Available ||
+                    raw.ObjectState == CentralArtifactObjectState.Expired && raw.RetentionDeletionToken != null &&
+                    raw.StateReasonCode == "retention.expired") &&
                 raw.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false))
             return null;
         var candidates = await dbContext.CentralArtifacts
@@ -58,7 +61,9 @@ internal sealed class CentralProjectedSceneResolver(
         if (!await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(raw =>
                 raw.CentralFrameId == artifact.CentralFrameId && raw.Role == FrameArtifactRole.Raw &&
                 raw.ArtifactId == scene.Source.ArtifactId && raw.IdempotencyKey == scene.Source.ArtifactIdentitySha256 &&
-                raw.ObjectState == CentralArtifactObjectState.Available &&
+                (raw.ObjectState == CentralArtifactObjectState.Available ||
+                    raw.ObjectState == CentralArtifactObjectState.Expired && raw.RetentionDeletionToken != null &&
+                    raw.StateReasonCode == "retention.expired") &&
                 raw.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false))
             throw new CentralArtifactIntegrityException("projected-scene.raw-source-mismatch");
         ValidateSource(artifact, scene, frame.FrameId, provenance);
@@ -66,6 +71,52 @@ internal sealed class CentralProjectedSceneResolver(
         return new(artifact, new(artifact.Id, artifact.ArtifactId, frame.FrameId, artifact.ChecksumSha256,
             scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256), annotation);
     }
+
+    internal async Task ValidateInlineGeometryAsync(
+        CentralFrame frame, SceneProvenance inline, CancellationToken cancellationToken)
+    {
+        // Mixed representations are uncommon. Read only this capture's bounded canonical product;
+        // source-row reconciliation still gates scheduling when raw has not arrived yet.
+        var candidates = await dbContext.CentralArtifacts.AsNoTracking().Include(item => item.StructuredProduct)
+            .Where(item => item.CentralFrameId == frame.Id && item.Role == FrameArtifactRole.Metadata &&
+                item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
+                item.ObjectState == CentralArtifactObjectState.Available &&
+                item.ReconstructionState != CentralReconstructionState.Quarantined)
+            .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        if (candidates.Length == 0)
+            throw new ArtifactSceneReferencePendingException("Mixed scene provenance awaits its canonical projected scene.");
+        if (candidates.Length != 1)
+            throw new ArtifactIngestConflictException("The capture's canonical scene is ambiguous.");
+        var scene = await ReadAsync(candidates[0], cancellationToken).ConfigureAwait(false);
+        ValidateSource(candidates[0], scene, frame.FrameId, inline);
+        var objects = (inline.Objects ?? []).OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray();
+        var expectedObjects = scene.Objects.OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray();
+        var segments = (inline.Segments ?? []).OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)
+            .ThenBy(static item => item.FromObjectId, StringComparer.Ordinal).ThenBy(static item => item.ToObjectId, StringComparer.Ordinal)
+            .ThenBy(static item => item.PartIndex).ToArray();
+        var expectedSegments = scene.Segments.OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)
+            .ThenBy(static item => item.FromObjectId, StringComparer.Ordinal).ThenBy(static item => item.ToObjectId, StringComparer.Ordinal)
+            .ThenBy(static item => item.PartIndex).ToArray();
+        if (objects.Length != expectedObjects.Length || segments.Length != expectedSegments.Length ||
+            objects.Where((item, index) => item.Id != expectedObjects[index].Id ||
+                item.DisplayName != expectedObjects[index].DisplayName ||
+                !SameGeneratedNumber(item.PixelX, expectedObjects[index].Pixel.X) ||
+                !SameGeneratedNumber(item.PixelY, expectedObjects[index].Pixel.Y) ||
+                !SameGeneratedNumber(item.Magnitude, expectedObjects[index].Magnitude)).Any() ||
+            segments.Where((item, index) => item.ConstellationId != expectedSegments[index].ConstellationId ||
+                item.FromObjectId != expectedSegments[index].FromObjectId || item.ToObjectId != expectedSegments[index].ToObjectId ||
+                item.PartIndex != expectedSegments[index].PartIndex ||
+                !SameGeneratedNumber(item.FromPixelX, expectedSegments[index].FromPixel.X) ||
+                !SameGeneratedNumber(item.FromPixelY, expectedSegments[index].FromPixel.Y) ||
+                !SameGeneratedNumber(item.ToPixelX, expectedSegments[index].ToPixel.X) ||
+                !SameGeneratedNumber(item.ToPixelY, expectedSegments[index].ToPixel.Y)).Any())
+            throw new ArtifactIngestConflictException("Inline geometry differs from the canonical projected scene.");
+    }
+
+    // projected-scene-v1 normalizes generated geometry to twelve decimal places. Historical inline
+    // provenance preceded that serialization boundary; accept only exact or identically normalized values.
+    private static bool SameGeneratedNumber(double inline, double canonical)
+        => inline == canonical || Math.Round(inline, 12, MidpointRounding.ToEven) == canonical;
 
     public async Task<ProcessingAnnotationInput> ResolveAsync(
         CentralProjectedSceneReference reference, CancellationToken cancellationToken)

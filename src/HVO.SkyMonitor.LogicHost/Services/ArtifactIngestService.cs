@@ -464,7 +464,7 @@ internal sealed partial class ArtifactIngestService(
         {
             return null;
         }
-        EnsureManifestMatches(existing, manifest);
+        await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
         return await ReconcileExistingAsync(
             manifest, timeProvider.GetUtcNow(), ExistingArtifactReconciliationMode.StatusAcknowledgement, cancellationToken)
@@ -566,7 +566,7 @@ internal sealed partial class ArtifactIngestService(
             .ConfigureAwait(false);
         if (existing is not null)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             if (existing.ObjectState == CentralArtifactObjectState.Available)
             {
                 dbContext.ChangeTracker.Clear();
@@ -612,7 +612,7 @@ internal sealed partial class ArtifactIngestService(
             cancellationToken).ConfigureAwait(false);
         if (existingFrame is not null)
         {
-            EnsureFrameMatches(existingFrame, registration, manifest);
+            await EnsureFrameMatchesAsync(existingFrame, registration, manifest, cancellationToken).ConfigureAwait(false);
             await EnsureNoLogicalArtifactConflictAsync(existingFrame, manifest, cancellationToken)
                 .ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
@@ -812,7 +812,7 @@ internal sealed partial class ArtifactIngestService(
                 cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             if (existing.ObjectState == CentralArtifactObjectState.Quarantined)
             {
                 existing.ObjectState = CentralArtifactObjectState.Pending;
@@ -854,7 +854,7 @@ internal sealed partial class ArtifactIngestService(
         }
         else
         {
-            EnsureFrameMatches(frame, registration, manifest);
+            await EnsureFrameMatchesAsync(frame, registration, manifest, cancellationToken).ConfigureAwait(false);
             await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
         }
 
@@ -1118,7 +1118,7 @@ internal sealed partial class ArtifactIngestService(
                 throw new ArtifactIntegrityException("Stored artifact object is quarantined.");
             }
 
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             EnsureStructuredProductMatches(existing, manifest);
             EnrichSceneProvenance(existing.Frame!, manifest);
             await TryResolvePendingReferenceAsync(
@@ -1221,7 +1221,7 @@ internal sealed partial class ArtifactIngestService(
             {
                 throw new ExistingArtifactVerificationStaleException("retired");
             }
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             existing.ObjectVerifiedAtUtc = timeProvider.GetUtcNow();
             existing.ReconciledAtUtc = receivedAtUtc;
             existing.ObjectVerificationToken = null;
@@ -1368,7 +1368,7 @@ internal sealed partial class ArtifactIngestService(
                     .ConfigureAwait(false);
                 if (existing is not null)
                 {
-                    EnsureManifestMatches(existing, manifest);
+                    await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
                     EnsureStructuredProductMatches(existing, manifest);
                     if (!string.Equals(existing.StorageReference, storageReference, StringComparison.Ordinal))
                     {
@@ -1442,7 +1442,7 @@ internal sealed partial class ArtifactIngestService(
                 }
                 else
                 {
-                    EnsureFrameMatches(frame, registration, manifest);
+                    await EnsureFrameMatchesAsync(frame, registration, manifest, cancellationToken).ConfigureAwait(false);
                     await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -1474,7 +1474,7 @@ internal sealed partial class ArtifactIngestService(
                             || item.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey), cancellationToken).ConfigureAwait(false);
                     if (concurrent is not null)
                     {
-                        EnsureManifestMatches(concurrent, manifest);
+                        await EnsureManifestMatchesAsync(concurrent, manifest, cancellationToken).ConfigureAwait(false);
                         throw new ExistingArtifactRequiresCurrentObjectLockException(
                             concurrent.Id,
                             ExistingArtifactReconciliationMode.MultipartDuplicate,
@@ -2747,7 +2747,8 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
-    private static void EnsureManifestMatches(CentralArtifact existing, ArtifactIngestManifest manifest)
+    private async Task EnsureManifestMatchesAsync(
+        CentralArtifact existing, ArtifactIngestManifest manifest, CancellationToken cancellationToken)
     {
         var frame = existing.Frame ?? throw new InvalidOperationException("The central artifact frame was not loaded.");
         if (existing.ArtifactId != manifest.ArtifactId
@@ -2763,7 +2764,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIngestConflictException("The idempotency key is already associated with different artifact metadata.");
         }
-        EnsureSceneProvenanceMatches(frame, manifest);
+        await EnsureSceneProvenanceMatchesAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
     }
 
     private static void EnsureStructuredProductMatches(
@@ -2822,10 +2823,11 @@ internal sealed partial class ArtifactIngestService(
         => CanonicalizeStructuredDescriptor(
             StructuredProcessingProductManifestJson.ParseDescriptor(descriptorJson));
 
-    private static void EnsureFrameMatches(
+    private async Task EnsureFrameMatchesAsync(
         CentralFrame frame,
         DeviceRegistration registration,
-        ArtifactIngestManifest manifest)
+        ArtifactIngestManifest manifest,
+        CancellationToken cancellationToken)
     {
         if (frame.RegistrationId != registration.Id
             || frame.DevicePublicId != registration.DevicePublicId
@@ -2835,7 +2837,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIngestConflictException("The frame identity is already associated with different capture metadata.");
         }
-        EnsureSceneProvenanceMatches(frame, manifest);
+        await EnsureSceneProvenanceMatchesAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
         EnrichSceneProvenance(frame, manifest);
     }
 
@@ -2861,7 +2863,7 @@ internal sealed partial class ArtifactIngestService(
         }
         if (existing.ArtifactId == manifest.ArtifactId)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             EnsureStructuredProductMatches(existing, manifest);
             if (frame.CaptureSequence.HasValue && manifest.CaptureDescriptor is { } descriptor)
             {
@@ -2873,16 +2875,24 @@ internal sealed partial class ArtifactIngestService(
         }
         else
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private static void EnsureSceneProvenanceMatches(CentralFrame frame, ArtifactIngestManifest manifest)
+    private async Task EnsureSceneProvenanceMatchesAsync(
+        CentralFrame frame, ArtifactIngestManifest manifest, CancellationToken cancellationToken)
     {
         var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
         if (existing is not null && manifest.Scene is { } incoming && !SceneProvenanceMatches(existing, incoming))
         {
             throw new ArtifactIngestConflictException("The frame identity is already associated with different scene provenance.");
+        }
+        if (existing is not null && manifest.Scene is { } submitted &&
+            existing.RequiresProjectedScene != submitted.RequiresProjectedScene)
+        {
+            var inline = existing.RequiresProjectedScene ? submitted : existing;
+            await new CentralProjectedSceneResolver(dbContext, objectReader)
+                .ValidateInlineGeometryAsync(frame, inline, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2891,7 +2901,7 @@ internal sealed partial class ArtifactIngestService(
         static string Identity(SceneProvenance value) => CaptureContractJson.ComputeCanonicalJsonSha256(
             CaptureContractJson.SerializeToElement(value with { Objects = null, Segments = null, ProjectedSceneSchemaVersion = null }));
         if (Identity(existing) != Identity(incoming)) return false;
-        // Compact/full arrivals may enrich the central projection, but two reported geometries must agree.
+        // Mixed representation is authenticated separately; two reported inline geometries must agree.
         if ((existing.Objects is not null || existing.Segments is not null) &&
             (incoming.Objects is not null || incoming.Segments is not null))
             return CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new { existing.Objects, existing.Segments })) ==
@@ -2902,7 +2912,7 @@ internal sealed partial class ArtifactIngestService(
     private static void EnrichSceneProvenance(CentralFrame frame, ArtifactIngestManifest manifest)
     {
         var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
-        if (existing is null || existing.Objects is null && existing.Segments is null &&
+        if (existing is null || !existing.RequiresProjectedScene && existing.Objects is null && existing.Segments is null &&
             manifest.Scene is { } incoming && (incoming.Objects is not null || incoming.Segments is not null))
             frame.SceneProvenanceJson = SerializeScene(manifest);
     }
@@ -3162,4 +3172,11 @@ internal sealed class ArtifactIngestConflictException : Exception
     public ArtifactIngestConflictException(string message, Exception innerException) : base(message, innerException)
     {
     }
+}
+
+internal sealed class ArtifactSceneReferencePendingException : Exception
+{
+    public ArtifactSceneReferencePendingException() { }
+    public ArtifactSceneReferencePendingException(string message) : base(message) { }
+    public ArtifactSceneReferencePendingException(string message, Exception innerException) : base(message, innerException) { }
 }

@@ -19,6 +19,7 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -73,7 +74,11 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             ["CameraAgent:CentralIntegration:Mode"] = "Enabled"
         }).Build();
         var services = new ServiceCollection();
-        services.AddLogging();
+        using var stageProbe = new StageProbe(Environment.GetEnvironmentVariable("HVO_ISSUE1055_STAGE_PROBE") == "1");
+        services.AddLogging(builder =>
+        {
+            if (stageProbe.Enabled) builder.SetMinimumLevel(LogLevel.Debug).AddProvider(stageProbe);
+        });
         CatalogSnapshotResult? snapshot = null;
         if (mode == "capture")
         {
@@ -146,6 +151,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
             for (var ordinal = 0; ordinal < Warmup + Measured; ordinal++)
             {
+                stageProbe.Clear();
                 var beforeCpu = process.TotalProcessorTime;
                 var beforeAllocated = GC.GetTotalAllocatedBytes(precise: true);
                 var beforeIo = ReadIo();
@@ -153,17 +159,24 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                 var utc = SceneUtc.AddSeconds(ordinal * 25);
                 var request = new CaptureRequest(utc, TimeSpan.FromSeconds(25), CaptureMode.Still,
                     new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null));
+                var stageStart = stageProbe.Start();
                 var captured = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+                stageProbe.Record("capture", stageStart);
                 Assert.IsNotNull(captured.Frame);
+                stageStart = stageProbe.Start();
                 var submission = new CaptureLoopSubmission(request, captured, utc, request.TargetInterval, TimeSpan.Zero);
                 await ingress.EnsureCanAcceptAsync(captured.Frame.PixelData.Length, CancellationToken.None).ConfigureAwait(false);
                 var receipt = await ingress.AcceptAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+                stageProbe.Record("ingress", stageStart);
                 Assert.IsNotNull(receipt);
+                stageStart = stageProbe.Start();
                 var lease = await ingress.ClaimAsync(lane, "issue1055-evidence", config, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(lease);
                 var outcome = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
                 await ingress.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+                stageProbe.Record("lane-inclusive", stageStart);
+                if (stageProbe.Enabled) Assert.HasCount(8, stageProbe.Take(), "Three inclusive phases and five processing nodes are required.");
                 process.Refresh();
                 samples.Add(new
                 {
@@ -176,6 +189,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                     peakWorkingSetBytes = process.PeakWorkingSet64,
                     gc = ReadGc(),
                     io = IoDelta(beforeIo, ReadIo()),
+                    stages = stageProbe.Take(),
                     rawSha256 = PayloadChecksum.ComputeSha256(captured.Frame.PixelData.Span),
                     receipt.Manifest.Descriptor.Capture.CaptureSequence,
                     manifestBytes = CaptureContractJson.Serialize(receipt.Manifest).Length
@@ -278,6 +292,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             measured = mode == "cold" ? 1 : Measured,
             metadataStressRecords = mode == "retention" ? 10000 : 0,
             aggregateIncludesPreparation = true,
+            stageProbeEnabled = stageProbe.Enabled,
             timedOperation = mode switch { "capture" => "capture-to-archive", "cold" => "raw-ingress-initialize", _ => "canonical-derived-expiration" },
             coldMilliseconds,
             elapsedMilliseconds = timer.Elapsed.TotalMilliseconds,
@@ -296,6 +311,89 @@ public sealed class Issue1055SceneCompactionEvidenceTests
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllBytesAsync(output, JsonSerializer.SerializeToUtf8Bytes(evidence, JsonOptions)).ConfigureAwait(false);
     }
+
+    // Symmetric, opt-in test instrumentation. Node spans include persistence; lane spans include nodes.
+    // Process-wide counters measure this isolated harness, not exclusive CPU/allocations of an async call.
+    private sealed class StageProbe : ILoggerProvider, ILogger
+    {
+        private const string SnapshotKey = "issue1055.stage-snapshot";
+        private const string NameKey = "issue1055.stage-name";
+        private readonly Process _process = Process.GetCurrentProcess();
+        private readonly List<object> _samples = [];
+        private readonly ActivityListener? _listener;
+        private bool _disposed;
+
+        public StageProbe(bool enabled)
+        {
+            Enabled = enabled;
+            if (!enabled) return;
+            _listener = new ActivityListener
+            {
+                ShouldListenTo = source => source.Name == "HVO.SkyMonitor.CameraAgent.ProcessingGraph",
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+                ActivityStarted = activity =>
+                {
+                    if (activity.OperationName == "processing-step.execute")
+                        activity.SetCustomProperty(SnapshotKey, Start());
+                },
+                ActivityStopped = activity =>
+                {
+                    if (activity.GetCustomProperty(SnapshotKey) is StageSnapshot snapshot)
+                        Record("node:" + (activity.GetCustomProperty(NameKey) as string ?? "unknown"), snapshot);
+                }
+            };
+            ActivitySource.AddActivityListener(_listener);
+        }
+
+        public bool Enabled { get; }
+        public StageSnapshot? Start()
+        {
+            if (!Enabled) return null;
+            _process.Refresh();
+            return new(Stopwatch.GetTimestamp(), _process.TotalProcessorTime,
+                GC.GetTotalAllocatedBytes(precise: true), ReadIo());
+        }
+
+        public void Record(string name, StageSnapshot? before)
+        {
+            if (before is null) return;
+            Assert.AreNotEqual("node:unknown", name, "Processing node labels must come from the existing start event.");
+            var elapsed = Stopwatch.GetElapsedTime(before.Timestamp).TotalMilliseconds;
+            _process.Refresh();
+            var sample = new
+            {
+                name,
+                milliseconds = elapsed,
+                cpuMilliseconds = (_process.TotalProcessorTime - before.Cpu).TotalMilliseconds,
+                allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - before.Allocated,
+                io = IoDelta(before.Io, ReadIo())
+            };
+            lock (_samples) _samples.Add(sample);
+        }
+
+        public void Clear() { lock (_samples) _samples.Clear(); }
+        public object[] Take() { lock (_samples) return [.. _samples]; }
+        public ILogger CreateLogger(string categoryName) => this;
+        public bool IsEnabled(LogLevel logLevel) => Enabled && logLevel == LogLevel.Debug;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id != 2065 || Activity.Current?.OperationName != "processing-step.execute" ||
+                state is not IEnumerable<KeyValuePair<string, object?>> values) return;
+            Activity.Current.SetCustomProperty(NameKey, values.FirstOrDefault(item => item.Key == "Step").Value as string);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _listener?.Dispose();
+            _process.Dispose();
+        }
+    }
+
+    private sealed record StageSnapshot(long Timestamp, TimeSpan Cpu, long Allocated, Dictionary<string, long> Io);
 
     // This isolated fixture publishes only local outbox records; it never registers or uploads to a host.
     private sealed class EvidenceIdentityProvider : ICaptureAgentIdentityProvider

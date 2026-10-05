@@ -87,7 +87,11 @@ public sealed class CentralProjectedSceneResolverTests
             ObjectState = CentralArtifactObjectState.Available,
             ReconstructionState = CentralReconstructionState.Complete
         };
+        rawArtifact.ObjectState = CentralArtifactObjectState.Pending;
         db.Add(rawArtifact);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false));
+        rawArtifact.ObjectState = CentralArtifactObjectState.Available;
         await db.SaveChangesAsync().ConfigureAwait(false);
         var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selected);
@@ -98,6 +102,15 @@ public sealed class CentralProjectedSceneResolverTests
             .ConfigureAwait(false));
         rawArtifact.ObjectState = CentralArtifactObjectState.Expired;
         await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false),
+            "an expired rejected intent is not authenticated source evidence");
+        rawArtifact.RetentionDeletionToken = Guid.NewGuid();
+        rawArtifact.StateReasonCode = "retention.expired";
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var selectedAfterExpiry = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(selectedAfterExpiry, "new work can freeze the authenticated source identity after pixel expiry");
+        Assert.AreEqual(selected.Reference, selectedAfterExpiry.Reference);
+        Assert.AreEqual(selected.Annotation.ProvenanceSha256, selectedAfterExpiry.Annotation.ProvenanceSha256);
         Assert.IsFalse(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
             "expired consumers do not retain scene geometry forever");
         var pendingPreview = new CentralArtifact
