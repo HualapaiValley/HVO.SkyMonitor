@@ -13,6 +13,9 @@ supported speed is 300×: one hour occupies 12 seconds. This changes presentatio
 timestamps, not the rate of celestial motion in the source images. A 24-hour
 window occupies eight minutes at 180× or 4.8 minutes at 300×. Sunrise reporting
 periods can differ from 24 hours; their actual UTC bounds determine the duration.
+Partial hours at sunrise are retained even below one 60-fps frame. Boundaries
+round to media microseconds; a positive sub-microsecond window uses one tick.
+Daily duration is the sum of these independently rounded hourly durations.
 
 Capture start timestamps determine each image's hold. Exposure and stack
 integration remain separate recorded facts. A 20-second cadence gets four times
@@ -35,7 +38,8 @@ The default night display uses a rolling unaligned three-frame arithmetic mean
 and the existing linear stretch/demosaic algorithms. The first two images record
 one- and two-frame warmup. Changes to layout, exposure/gain compatibility,
 location, day/night regime or a cadence gap over one minute reset the stack.
-StackCount=1 disables stacking. Daytime uses the fixed display transfer, selected
+StackCount=1 disables stacking. Daytime always uses one source frame and the fixed
+display transfer, selected
 at solar altitude at least −6 degrees. Exposure normalization/deflicker and
 arbitrary processing-graph filter adoption are not part of this first preset.
 
@@ -43,8 +47,9 @@ Selected cardinal directions, four corner metadata blocks and the image circle
 are composited through the existing typed presentation renderer. Text scales
 with the image, the corner plates meet the left/right margins, and provenance
 and burned metadata distinguish source dimensions, video dimensions, exposure,
-stack size and total integration. Non-square cameras retain their aspect ratio:
-1936×1216 becomes 1210×760 under the edge limit. CameraAgent defaults to a 1280
+stack size and total integration. Non-square cameras use proportional sizing
+rounded to the nearest even pixel: 1936×1216 becomes 1280×804 and 3096×2080
+becomes 1280×860 under the edge limit. CameraAgent defaults to a 1280
 maximum dimension; LogicHost preserves native dimensions up to 4096, with the
 existing 16-million-pixel Bayer reconstruction limit. There is no
 upscaling.
@@ -74,10 +79,21 @@ prepared-image checksums, packet checksums and timing. Every output is probed
 and fully decoded before publication. Daily assembly additionally proves ordered
 packet-payload equality with its hourly inputs.
 
+Software fallback occurs during capability qualification. A qualified NVENC
+profile remains pinned for the process lifetime; a later device/driver failure
+ends the affected job as Unavailable without switching its retained profile.
+After repairing the device, restart LogicHost and increment the target Generation
+to rediscover failed retained hours. To recover using software, set PreferNvidia
+to false, increment Generation and restart. Existing produced hours remain intact;
+new daily products use only compatible hours from the new generation. A later
+qualification success can also select a different profile for a new scan and
+create additional hourly/daily revisions; earlier immutable products are retained.
+Use PreferNvidia=false when a consistently available software profile is wanted.
+
 Only one encoder runs per host process/scratch lease. Edge has an exclusive
 worker file lease; central SQL leases fence the lane across replicas. Child
 processes run on one allowed CPU at nice 19 and idle I/O priority, with file-size,
-CPU-time, address-space and descriptor limits. RSS, temporary bytes, pipe output,
+CPU-time, address-space and descriptor limits; core dumps are disabled. RSS, temporary bytes, pipe output,
 wall time and cancellation are bounded. Cancellation kills and reaps the child
 before reusing the slot. A dedicated creating thread remains alive until child
 exit because [Linux parent-death signals track that thread](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html). Managed preparation is a single sequential worker with

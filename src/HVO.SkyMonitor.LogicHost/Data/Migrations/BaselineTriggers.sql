@@ -11,12 +11,18 @@ BEGIN
         WHERE i.Id IS NULL OR i.DevicePublicId <> d.DevicePublicId OR i.ObservatoryId <> d.ObservatoryId
             OR i.ReportDate <> d.ReportDate OR i.StartUtc <> d.StartUtc OR i.EndUtc <> d.EndUtc
             OR i.IsDaily <> d.IsDaily OR i.CreatedUtc <> d.CreatedUtc
+            OR (i.DiscoveryIdentity IS NULL AND d.DiscoveryIdentity IS NOT NULL)
+            OR (i.DiscoveryIdentity IS NOT NULL AND d.DiscoveryIdentity IS NULL)
+            OR ISNULL(i.DiscoveryIdentity, '') COLLATE Latin1_General_100_BIN2 <> ISNULL(d.DiscoveryIdentity, '') COLLATE Latin1_General_100_BIN2
             OR i.RequestSha256 COLLATE Latin1_General_100_BIN2 <> d.RequestSha256 COLLATE Latin1_General_100_BIN2
             OR i.RequestJson COLLATE Latin1_General_100_BIN2 <> d.RequestJson COLLATE Latin1_General_100_BIN2
             OR DATALENGTH(i.RequestJson) <> DATALENGTH(d.RequestJson)
     ) THROW 51000, 'Central time-lapse request identity is immutable.', 1;
     IF EXISTS (
         SELECT 1 FROM inserted i WHERE ISJSON(i.RequestJson) <> 1 OR i.EndUtc <= i.StartUtc
+            OR (i.DiscoveryIdentity IS NULL AND JSON_VALUE(i.RequestJson, '$.discoveryIdentity') IS NOT NULL)
+            OR (i.DiscoveryIdentity IS NOT NULL AND JSON_VALUE(i.RequestJson, '$.discoveryIdentity') IS NULL)
+            OR ISNULL(i.DiscoveryIdentity, '') COLLATE Latin1_General_100_BIN2 <> ISNULL(JSON_VALUE(i.RequestJson, '$.discoveryIdentity'), '') COLLATE Latin1_General_100_BIN2
             OR i.State NOT IN (N'Queued', N'Working', N'Produced', N'NoSources', N'Unavailable', N'Failed')
             OR i.AttemptCount < 0 OR i.AttemptCount > 3
             OR (i.State = N'Working' AND (i.LeaseToken IS NULL OR i.LeaseExpiresUtc IS NULL))

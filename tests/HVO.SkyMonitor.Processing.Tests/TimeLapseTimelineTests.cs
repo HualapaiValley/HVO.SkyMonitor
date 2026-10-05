@@ -11,6 +11,26 @@ public sealed class TimeLapseTimelineTests
     private static readonly DateTimeOffset Origin = new(2026, 10, 1, 7, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    [DataRow(180)]
+    [DataRow(300)]
+    public void VeryShortSunrisePartitionsRetainPositiveContiguousMediaTime(int compression)
+    {
+        foreach (var seconds in new[] { .0000001, .0183828, .5323656, 1.9411429, 2.5524336 })
+        {
+            var end = Origin.AddSeconds(seconds);
+            var expected = Math.Max(1L, (long)Math.Round(seconds / compression * 1_000_000, MidpointRounding.AwayFromZero));
+            foreach (var sources in new[] { Array.Empty<TimeLapseSource>(), new[] { Source(0, .001) } })
+            {
+                var result = TimeLapseTimelinePlanner.Create(Origin, end, sources, new(compression));
+                Assert.AreEqual(expected, result.DurationTicks);
+                Assert.HasCount(1, result.Intervals);
+                Assert.AreEqual(expected, result.Intervals[0].EndTick);
+                Assert.AreEqual(sources.Length > 0, result.HasSources);
+            }
+        }
+    }
+
+    [TestMethod]
     public void HoldsFollowCaptureClockRegardlessOfExposureOrIntegration()
     {
         var sources = new[] { Source(0, 20), Source(20, .001), Source(25, .005), Source(30, 20) };

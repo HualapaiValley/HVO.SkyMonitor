@@ -5630,6 +5630,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     StartUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     EndUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     IsDaily = table.Column<bool>(type: "bit", nullable: false),
+                    DiscoveryIdentity = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: true),
                     RequestJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
                     RequestSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: false),
                     State = table.Column<string>(type: "nvarchar(24)", maxLength: 24, nullable: false),
@@ -5738,6 +5739,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_CreatedUtc",
                 table: "CentralTimeLapseJobs",
                 columns: new[] { "DevicePublicId", "ReportDate", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_DiscoveryIdentity_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralTimeLapseJobs_State_IsDaily_CreatedUtc",

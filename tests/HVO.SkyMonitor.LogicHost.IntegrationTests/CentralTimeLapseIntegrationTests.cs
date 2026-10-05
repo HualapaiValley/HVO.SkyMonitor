@@ -1,12 +1,19 @@
+using System.Data.Common;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.TimeLapses;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Video.FFmpeg;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -15,6 +22,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralTimeLapseIntegrationTests
 {
+    private static readonly string[] DiscoveryIndexColumns = ["DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc"];
+    private static readonly JsonSerializerOptions RigJson = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
     [TestMethod]
     public async Task ConcurrentClaimsAndExpiredLeaseCannotCompleteAnotherAttempt()
     {
@@ -144,14 +153,158 @@ public sealed class CentralTimeLapseIntegrationTests
         Assert.AreEqual(successorId, await store.FindDiscoveredAsync(template.DevicePublicId, template.Period.ReportDate, completedIdentity, CancellationToken.None));
     }
 
+    [TestMethod]
+    public async Task BadHourDoesNotStarveLaterDiscoveryAndIndexedIdentityRemainsImmutable()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var fixtureDb = services.GetRequiredService<ApplicationDbContext>();
+        var interceptor = new RejectSecondInventory();
+        await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(fixtureDb.Database.GetConnectionString()).AddInterceptors(interceptor).Options);
+        var request = CreateRequest();
+        var target = await SeedDiscoveryTargetAsync(db, request);
+        var clock = new VideoClock(new DateTimeOffset(2026, 8, 22, 20, 0, 0, TimeSpan.Zero));
+        var store = new CentralTimeLapseStore(db, clock);
+        var sources = new CentralTimeLapseSources(db, services.GetRequiredService<ICentralArtifactObjectReader>());
+        using var encoder = new FFmpegTimeLapseEncoder(new()
+        {
+            ExecutablePath = "/missing-1130-ffmpeg",
+            ScratchDirectory = Path.Combine(Path.GetTempPath(), "unused-video-" + Guid.NewGuid().ToString("N"))
+        });
+        var options = Options.Create(new CentralTimeLapseOptions { Targets = [target], PreferNvidia = false, CatchUpDays = 2 });
+        var scheduler = new CentralTimeLapseScheduler(store, sources, encoder, options, clock, NullLogger<CentralTimeLapseScheduler>.Instance);
+        await scheduler.ScanAsync(target, CancellationToken.None);
+        var rows = await db.CentralTimeLapseJobs.AsNoTracking().Where(job => job.DevicePublicId == target.DevicePublicId).ToArrayAsync();
+        Assert.IsTrue(interceptor.Rejected);
+        Assert.IsTrue(rows.Any(job => job.ReportDate == request.Period.ReportDate && job.StartUtc == request.Period.StartUtc),
+            "The sub-second sunrise hour must be admitted.");
+        Assert.IsFalse(rows.Any(job => job.ReportDate == request.Period.ReportDate && job.IsDaily),
+            "A rejected hour must not be silently omitted from a daily request.");
+        Assert.IsTrue(rows.Any(job => job.ReportDate == request.Period.ReportDate.AddDays(1) && job.IsDaily),
+            "A bad older window must not prevent a later complete day from being discovered.");
+        var known = rows.First(job => !job.IsDaily);
+        Assert.IsNotNull(known.DiscoveryIdentity);
+        Assert.AreEqual(known.Id, await store.FindDiscoveredAsync(target.DevicePublicId, known.ReportDate, known.DiscoveryIdentity, CancellationToken.None));
+        Assert.IsNotNull(interceptor.DiscoverySql);
+        Assert.IsFalse(interceptor.DiscoverySql.Contains("JSON_VALUE", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(interceptor.DiscoverySql.Contains("RequestJson", StringComparison.Ordinal));
+        var index = db.Model.FindEntityType(typeof(CentralTimeLapseJob))!.GetIndexes().Single(index =>
+            index.Properties.Any(property => property.Name == nameof(CentralTimeLapseJob.DiscoveryIdentity)));
+        CollectionAssert.AreEqual(DiscoveryIndexColumns, index.Properties.Select(property => property.Name).ToArray());
+        await Assert.ThrowsExactlyAsync<SqlException>(async () => await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [CentralTimeLapseJobs] SET [DiscoveryIdentity]=NULL WHERE [Id]={known.Id}"));
+        known.DiscoveryIdentity = new string('0', 64);
+        Assert.ThrowsExactly<InvalidDataException>(() => CentralTimeLapseStore.ReadRequest(known));
+        // The input fault is transient; the next scan fills precisely the missing hour/day and reuses the rest.
+        await scheduler.ScanAsync(target, CancellationToken.None);
+        var repaired = await db.CentralTimeLapseJobs.AsNoTracking().Where(job => job.DevicePublicId == target.DevicePublicId).ToArrayAsync();
+        Assert.AreEqual(rows.Length + 2, repaired.Length);
+        Assert.IsTrue(repaired.Any(job => job.ReportDate == request.Period.ReportDate && job.IsDaily));
+        while (await store.ClaimAsync(CancellationToken.None) is { } lease)
+            await store.CompleteAsync(lease, CentralTimeLapseState.NoSources, "test.finished", null, CancellationToken.None);
+    }
+
+    private static async Task<CentralTimeLapseTarget> SeedDiscoveryTargetAsync(ApplicationDbContext db, CentralTimeLapseRequest request)
+    {
+        var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email);
+        var site = request.Period.Site;
+        var observatory = new Observatory { Id = request.ObservatoryId, OwnerUserId = owner.Id, Name = "Time-lapse discovery", CreatedAtUtc = DateTimeOffset.UtcNow };
+        var authority = new ObservatoryLocationVersion
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            Version = 1,
+            CanonicalSha256 = new string('A', 64),
+            EffectiveFromUtc = site.EffectiveFromUtc,
+            LatitudeDegrees = site.LatitudeDegrees,
+            LongitudeDegrees = site.LongitudeDegrees,
+            ElevationMeters = site.ElevationMeters,
+            TimeZoneId = site.TimeZoneId,
+            RecordedAtUtc = DateTimeOffset.UtcNow,
+            RecordedBy = owner.Id
+        };
+        var registration = new DeviceRegistration
+        {
+            Observatory = observatory,
+            ObservatoryId = observatory.Id,
+            DevicePublicId = request.DevicePublicId,
+            DeviceId = $"video-{request.DevicePublicId:N}",
+            OwnerUserId = owner.Id,
+            Status = DeviceRegistrationStatus.Active,
+            VerificationCodeHash = new string('B', 64),
+            IssuedAtUtc = DateTimeOffset.UtcNow
+        };
+        var rigSha = RigProjectionContextFactory.CreateProfileHashSha256(request.Preset.Rig);
+        db.DeviceRigProfiles.Add(new()
+        {
+            Registration = registration,
+            RegistrationId = registration.Id,
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = observatory.Id,
+            Version = 1,
+            ConfigHash = rigSha,
+            ProfileSha256 = rigSha,
+            ConfigJson = JsonSerializer.Serialize(request.Preset.Rig, RigJson),
+            ProfileName = "time-lapse-test",
+            ProfileVersion = "1",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            EffectiveFromUtc = site.EffectiveFromUtc
+        });
+        db.DeviceDeploymentLocationVersions.Add(new()
+        {
+            Registration = registration,
+            RegistrationId = registration.Id,
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = observatory.Id,
+            ObservatoryLocationVersion = authority,
+            ObservatoryLocationVersionId = authority.Id,
+            ObservatoryLocationVersionNumber = authority.Version,
+            ObservatoryLocationCanonicalSha256 = authority.CanonicalSha256,
+            LocationId = site.LocationId,
+            Version = site.Version,
+            CanonicalSha256 = site.CanonicalSha256,
+            Source = site.Source,
+            SourceKind = DeploymentLocationSourceKind.Manual,
+            EffectiveFromUtc = site.EffectiveFromUtc,
+            LatitudeDegrees = site.LatitudeDegrees,
+            LongitudeDegrees = site.LongitudeDegrees,
+            ElevationMeters = site.ElevationMeters,
+            TimeZoneId = site.TimeZoneId,
+            Status = DeploymentLocationResolutionStatus.Acknowledged,
+            ProposedAtUtc = DateTimeOffset.UtcNow,
+            ResolvedAtUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        return new(request.DevicePublicId, rigSha, site.LocationId, site.Version);
+    }
+
+    private sealed class RejectSecondInventory : DbCommandInterceptor
+    {
+        private int _inventories;
+        internal bool Rejected { get; private set; }
+        internal string? DiscoverySql { get; private set; }
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("Time-lapse source inventory", StringComparison.Ordinal) && ++_inventories == 2)
+            {
+                Rejected = true;
+                throw new InvalidDataException("Injected invalid source-window data.");
+            }
+            if (command.CommandText.Contains("[DiscoveryIdentity] =", StringComparison.Ordinal)) DiscoverySql = command.CommandText;
+            return ValueTask.FromResult(result);
+        }
+    }
+
     internal static CentralTimeLapseRequest CreateRequest()
     {
-        var site = DeploymentLocationSnapshot.Create("video-test", 1, "test", null, DateTimeOffset.UnixEpoch, null, 35, -114, 900, "America/Phoenix");
-        var period = new SunriseReportingCalendar(site).Resolve(new DateOnly(2026, 6, 1)).Period!;
+        var site = DeploymentLocationSnapshot.Create("video-test", 1, "test", null, DateTimeOffset.UnixEpoch, null, 35.2, -114, 1000, "America/Phoenix");
+        var period = new SunriseReportingCalendar(site).Resolve(new DateOnly(2026, 8, 20)).Period!;
         var rig = new CameraRigConfig(new("Virtual test", 512, 512, 2, SensorColorMode.Mono, CameraPixelFormat.Mono16),
             new("EquidistantFisheye", 0, 180, 0, LensKind.Fisheye, 256, 256, 250, CalibrationVersion: "test"),
             new(90, 0, 0), new(TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(.1), TimeSpan.FromSeconds(20), 0, 0));
-        var hour = SunriseReportingCalendar.PartitionCivilHours(period)[1];
+        var hour = SunriseReportingCalendar.PartitionCivilHours(period).Single(hour => hour.StartUtc.Hour == 5);
         return new(Guid.NewGuid(), Guid.NewGuid(), period, hour.StartUtc, hour.EndUtc, hour.EndUtc.AddMinutes(10), false,
             new(rig, new(), new(), 512, TimeLapseEncoderProfile.Software, new string('A', 64)), [], new Dictionary<string, int>(), []);
     }

@@ -21,7 +21,7 @@ internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralA
         DateTimeOffset start, DateTimeOffset end, TimeSpan settle, CentralTimeLapsePreset preset, CancellationToken token)
     {
         var historyStart = start.AddMinutes(-1);
-        var inventory = await db.CentralArtifacts.AsNoTracking().Where(item => item.DevicePublicId == deviceId &&
+        var inventory = await db.CentralArtifacts.AsNoTracking().TagWith("Time-lapse source inventory").Where(item => item.DevicePublicId == deviceId &&
                 item.Frame!.ObservatoryId == observatoryId && item.Role == FrameArtifactRole.Raw &&
                 item.Frame.Timing!.ExposureStartedUtc >= historyStart && item.Frame.Timing.ExposureStartedUtc < end)
             .GroupBy(static _ => 1).Select(group => new Inventory(group.Count(),
@@ -94,7 +94,12 @@ internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralA
                 if (row.Frame!.Timing!.ExposureStartedUtc >= start) exclusions[reason] = exclusions.GetValueOrDefault(reason) + 1;
                 continue;
             }
-            var descriptor = CentralReconstructionDescriptorFactory.Create(row.Frame!, row);
+            ReconstructionDescriptor descriptor;
+            try { descriptor = CentralReconstructionDescriptorFactory.Create(row.Frame!, row); }
+            catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException or KeyNotFoundException)
+            {
+                throw new InvalidDataException("A retained central descriptor cannot be reconstructed.", exception);
+            }
             if (!descriptor.Validate().IsValid) throw new InvalidDataException("A retained central descriptor is invalid.");
             sources.Add(new(row.Id, descriptor, row.StorageReference, row.ByteLength));
         }

@@ -26,14 +26,20 @@ public sealed class TimeLapseGenerationTests
 {
     [TestMethod]
     [TestCategory("Manual")]
-    public async Task ActualIngressToVideo_RetainsStackCadenceChecksumsAndNeverPublishesAnUploadArtifact()
+    [DataRow(180)]
+    [DataRow(300)]
+    public async Task ActualIngressToVideo_RetainsStackCadenceChecksumsAndNeverPublishesAnUploadArtifact(int compression)
     {
         if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/ffmpeg")) Assert.Inconclusive("Requires qualified Linux FFmpeg.");
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-generate");
         try
         {
-            using var provider = Provider(root);
-            var (occurrence, captures) = await CaptureAsync(provider);
+            var site = DeploymentLocationSnapshot.Create("short-sunrise", 1, "test", null, DateTimeOffset.UnixEpoch, null,
+                35.2, -114, 1000, "America/Phoenix");
+            var calendar = ObservingDayCalendar.ForDeployment(site);
+            var date = new DateOnly(2026, 8, 20);
+            using var provider = Provider(root, calendar: calendar, compression: compression, observatory: new(35.2, -114, 1000, "America/Phoenix"));
+            var (occurrence, captures) = await CaptureAsync(provider, date: date);
             var store = provider.GetRequiredService<SqliteTimeLapseStore>();
             using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
             var adapter = provider.GetServices<ILocalAutomationWindowTaskAdapter>().Single(adapter => adapter is TimeLapseAutomationAdapter);
@@ -54,7 +60,7 @@ public sealed class TimeLapseGenerationTests
                 "Changing exposure resets the compatibility-bound stack.");
             Assert.AreEqual(TimeSpan.FromSeconds(60), product.Frames[2].TotalIntegration);
             Assert.AreEqual(TimeSpan.FromMilliseconds(1), product.Frames[3].TotalIntegration);
-            Assert.AreEqual(20_000_000L, product.Encoding.Media.DurationTicks);
+            Assert.AreEqual(3_600_000_000L / compression, product.Encoding.Media.DurationTicks);
             using var file = await store.OpenVideoAsync(product.ProductId, CancellationToken.None);
             Assert.IsNotNull(file);
             Assert.IsGreaterThan(1000L, file.Length);
@@ -72,7 +78,9 @@ public sealed class TimeLapseGenerationTests
             var dailyOccurrence = LocalAutomationWindowPlanner.CreateOccurrence(new(definition, 1,
                 LocalAutomationContract.ComputeRevisionSha256(definition), null, null), dailyWindow);
             Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await adapter.ExecuteAsync(dailyOccurrence, CancellationToken.None)).Outcome);
-            var expectedHours = planner.ResolveWindows(dailyWindow.ReportingPeriod, policy with { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour }).Count;
+            var hourlyWindows = planner.ResolveWindows(dailyWindow.ReportingPeriod, policy with { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour });
+            Assert.IsLessThan(TimeSpan.FromSeconds(1), hourlyWindows[0].EndUtc - hourlyWindows[0].StartUtc);
+            var expectedHours = hourlyWindows.Count;
             for (var index = 0; index <= expectedHours; index++)
             {
                 var next = await store.ClaimAsync(CancellationToken.None);
@@ -88,6 +96,12 @@ public sealed class TimeLapseGenerationTests
             using var dailyBytes = await store.OpenVideoAsync(daily.ProductId, CancellationToken.None);
             Assert.IsNotNull(dailyBytes);
             Assert.AreEqual(daily.Encoding.PayloadBytes, dailyBytes.Length);
+            await dailyBytes.DisposeAsync();
+            var path = Path.Combine(root, ".time-lapses", "products", daily.ProductId.ToString("N") + ".mp4");
+            var corrupted = await File.ReadAllBytesAsync(path);
+            corrupted[100] ^= 1;
+            await File.WriteAllBytesAsync(path, corrupted);
+            await TimeLapseAccessTests.VerifyCorruptMediaAsync(store, daily);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -146,7 +160,8 @@ public sealed class TimeLapseGenerationTests
         finally { Directory.Delete(root, true); }
     }
 
-    private static ServiceProvider Provider(string root, bool missingEncoder = false, int? saturationGate = null, long publicationBudget = 32L * 1024 * 1024 * 1024)
+    private static ServiceProvider Provider(string root, bool missingEncoder = false, int? saturationGate = null, long publicationBudget = 32L * 1024 * 1024 * 1024,
+        ObservingDayCalendar? calendar = null, int compression = 180, ObservatoryLocation? observatory = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -157,31 +172,33 @@ public sealed class TimeLapseGenerationTests
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:TimeLapses:Enabled"] = "true",
+            ["CameraAgent:TimeLapses:Timing:Compression"] = compression.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:RigProfileSha256"] = RigProjectionContextFactory.CreateProfileHashSha256(Rig()),
             ["CameraAgent:TimeLapses:Frames:MaximumSaturatedMillionths"] = saturationGate?.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:MaximumPublishedBytes"] = publicationBudget.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:Encoder:ExecutablePath"] = missingEncoder ? Path.Combine(root, "missing-ffmpeg") : "/usr/bin/ffmpeg"
         }).Build());
-        services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar));
+        services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar ?? NightlyProductFixture.Calendar));
         var provider = services.BuildServiceProvider();
-        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(Configuration());
+        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(Configuration() with { Observatory = observatory ?? NightlyProductFixture.Observatory });
         return provider;
     }
 
-    private static async Task<(LocalAutomationOccurrence Occurrence, RawCaptureReceipt[] Captures)> CaptureAsync(ServiceProvider provider, bool saturated = false)
+    private static async Task<(LocalAutomationOccurrence Occurrence, RawCaptureReceipt[] Captures)> CaptureAsync(ServiceProvider provider, bool saturated = false, DateOnly? date = null)
     {
         var options = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.TimeLapses;
         var policy = new LocalAutomationSourceWindowPolicy(LocalAutomationSourceWindowPolicy.CurrentVersion,
             LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceSelection.AllActualSources, TimeSpan.FromMinutes(5));
-        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar));
-        var window = planner.ResolveWindows(NightlyProductFixture.ObservingDate, policy).Single(window => window.StartUtc.Hour == 5);
+        var planner = new LocalAutomationWindowPlanner(provider.GetRequiredService<IObservingDayCalendarProvider>());
+        var window = planner.ResolveWindows(date ?? NightlyProductFixture.ObservingDate, policy).Single(window => window.StartUtc.Hour == 5);
         var definition = new LocalAutomationDefinition("video-test", "Video", true, LocalAutomationTaskKind.TimeLapseGeneration,
             options.Target, LocalAutomationTriggerKind.SourceWindowClosed, 1, window.StartUtc, policy);
         var occurrence = LocalAutomationWindowPlanner.CreateOccurrence(new(definition, 1,
             LocalAutomationContract.ComputeRevisionSha256(definition), null, null), window);
+        var configuration = await provider.GetRequiredService<ICameraAgentConfigurationAccessor>().WaitForConfigurationAsync(CancellationToken.None);
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None);
-        await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().EnsureConfiguredBasicAsync(Configuration(), CancellationToken.None);
+        await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>().EnsureConfiguredBasicAsync(configuration, CancellationToken.None);
         var receipts = new RawCaptureReceipt[4];
         for (var index = 3; index >= 0; index--)
         {
@@ -192,7 +209,7 @@ public sealed class TimeLapseGenerationTests
             for (var pixel = 0; pixel < pixels.Length / 2; pixel++)
                 BinaryPrimitives.WriteUInt16LittleEndian(pixels.AsSpan(pixel * 2), saturated ? ushort.MaxValue : (ushort)(100 + (pixel * 7 + index * 73) % 4000));
             var frame = new CameraFrame(utc, 512, 512, CameraPixelFormat.Mono16, pixels, new FrameMetadata(exposure, 1, 10, "virtual-fixture"));
-            receipts[index] = (await ingress.AcceptAsync(Configuration(), new CaptureLoopSubmission(
+            receipts[index] = (await ingress.AcceptAsync(configuration, new CaptureLoopSubmission(
                 new CaptureRequest(utc, exposure, CaptureMode.Still, setpoint),
                 new CaptureResult(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false)
                 { AcquisitionTiming = new(utc, utc.Add(exposure), utc.Add(exposure)) }, utc, exposure, exposure), CancellationToken.None))!;

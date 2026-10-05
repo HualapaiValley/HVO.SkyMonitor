@@ -23,17 +23,18 @@ public partial class OperationsTimeLapseDetail : ComponentBase
         var id = ProductId;
         Loading = true;
         Available = false;
-        var product = await Catalog.GetAsync((await AuthenticationStateTask).User, id, CancellationToken.None);
+        CentralTimeLapseProduct? product = null;
         var available = false;
-        if (product is { IsGapFiller: false })
+        try
         {
-            try
+            product = await Catalog.GetAsync((await AuthenticationStateTask).User, id, CancellationToken.None);
+            if (product is { IsGapFiller: false })
             {
                 await using var stream = await Objects.OpenAsync(product, CancellationToken.None);
                 available = true;
             }
-            catch (Exception exception) when (exception is ObjectStoreException or IOException) { }
         }
+        catch (Exception exception) when (exception is ObjectStoreException or IOException or InvalidDataException or System.Text.Json.JsonException) { }
         if (generation != _generation) return;
         Product = product;
         Available = available;

@@ -34,9 +34,7 @@ public sealed partial class FFmpegTimeLapseEncoder
                 segment.Evidence.Media.StreamIdentitySha256 != first.Media.StreamIdentitySha256 ||
                 segment.Evidence.Media.Width != first.Media.Width || segment.Evidence.Media.Height != first.Media.Height ||
                 segment.Evidence.PayloadBytes <= 0 || segment.Evidence.PayloadBytes > _options.MaximumOutputBytes ||
-                Math.Abs(segment.Evidence.Media.DurationTicks -
-                    (decimal)(segment.EndUtc - segment.StartUtc).Ticks * TimeLapseTimeline.TicksPerSecond /
-                    (TimeSpan.TicksPerSecond * compression)) > .5m) ||
+                segment.Evidence.Media.DurationTicks != TimeLapseTimeline.QuantizeDuration(segment.EndUtc - segment.StartUtc, compression)) ||
             segments.Zip(segments.Skip(1)).Any(pair => pair.First.EndUtc != pair.Second.StartUtc) ||
             segments[^1].EndUtc - segments[0].StartUtc > TimeSpan.FromHours(48))
             throw new TimeLapseEncodingException("timelapse.incompatible-segments", "Daily segments are discontinuous or have incompatible retained profiles.");

@@ -40,7 +40,7 @@ internal sealed class BoundedMediaProcess(FFmpegOptions options)
             "--as=" + options.MaximumAddressSpaceBytes.ToString(CultureInfo.InvariantCulture),
             "--fsize=" + options.MaximumOutputBytes.ToString(CultureInfo.InvariantCulture),
             "--cpu=" + ((long)Math.Ceiling(options.Timeout.TotalSeconds)).ToString(CultureInfo.InvariantCulture),
-            "--nofile=128", "--", "/usr/bin/taskset", oneCpu.ToString("X", CultureInfo.InvariantCulture),
+            "--nofile=128", "--core=0", "--", "/usr/bin/taskset", oneCpu.ToString("X", CultureInfo.InvariantCulture),
             "/usr/bin/nice", "-n", "19", "/usr/bin/ionice", "-c", "3",
             "/usr/bin/setpriv", "--pdeathsig", "KILL", "--no-new-privs", "--", executable
         }) start.ArgumentList.Add(item);

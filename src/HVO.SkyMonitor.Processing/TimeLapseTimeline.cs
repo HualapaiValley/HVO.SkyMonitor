@@ -25,7 +25,7 @@ public sealed record TimeLapseTimingOptions(
 
 /// <summary>
 /// A complete planned wall-clock axis, including gaps. No paths, processes or host storage identities belong here.
-/// Integer cumulative rounding bounds error to half a video tick, rather than accumulating per-frame drift.
+/// Cumulative rounding avoids per-frame drift. A positive window shorter than one media tick retains one tick.
 /// </summary>
 public sealed record TimeLapseTimeline(
     DateTimeOffset StartUtc,
@@ -37,13 +37,22 @@ public sealed record TimeLapseTimeline(
     long DurationTicks,
     string IdentitySha256)
 {
-    public const string Version = "hvo-timelapse-timestamp-holds-v1";
+    public const string Version = "hvo-timelapse-timestamp-holds-v2";
     public const int TicksPerSecond = 1_000_000;
     public const int MaximumSources = 40_000;
     public const int MaximumFramesPerSecond = 60;
 
     public bool HasSources => Intervals.Any(static interval => interval.SourceOrdinal.HasValue);
     public bool HasGaps => Intervals.Any(static interval => interval.SourceOrdinal is null);
+
+    /// <summary>Round a positive source window to media microseconds, retaining even a sub-tick boundary as one tick.</summary>
+    public static long QuantizeDuration(TimeSpan sourceDuration, int compression)
+    {
+        if (sourceDuration <= TimeSpan.Zero || compression is not (180 or 300))
+            throw new ArgumentOutOfRangeException(nameof(sourceDuration));
+        return Math.Max(1, checked((long)decimal.Round((decimal)sourceDuration.Ticks * TicksPerSecond /
+            (TimeSpan.TicksPerSecond * compression), 0, MidpointRounding.AwayFromZero)));
+    }
 }
 
 /// <summary>Bounded timestamp selection, with a measured-cadence tail and visible gaps after the hold limit.</summary>
@@ -71,13 +80,11 @@ public static class TimeLapseTimelinePlanner
                 source.ExclusionReasonCode is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128)))
             throw new ArgumentException("Time-lapse sources exceed the bound or contain invalid captured facts.", nameof(sources));
 
-        long Tick(DateTimeOffset utc) => checked((long)decimal.Round(
+        var duration = TimeLapseTimeline.QuantizeDuration(endUtc - startUtc, options.Compression);
+        long Tick(DateTimeOffset utc) => utc == endUtc ? duration : checked((long)decimal.Round(
             (decimal)(utc - startUtc).Ticks * TimeLapseTimeline.TicksPerSecond /
             (TimeSpan.TicksPerSecond * options.Compression), 0, MidpointRounding.AwayFromZero));
 
-        var duration = Tick(endUtc);
-        if (duration < TimeLapseTimeline.TicksPerSecond / TimeLapseTimeline.MaximumFramesPerSecond)
-            throw new ArgumentException("The planned video must span at least one presentation frame.");
         var intervals = ImmutableArray.CreateBuilder<TimeLapseInterval>();
         var sampledOut = ImmutableArray.CreateBuilder<int>();
         var selected = new List<int>();

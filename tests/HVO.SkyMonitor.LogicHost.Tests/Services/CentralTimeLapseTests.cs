@@ -1,14 +1,18 @@
+using Bunit;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Components.Pages.Operations;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.TimeLapses;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Video.FFmpeg;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
@@ -142,6 +146,69 @@ public sealed class CentralTimeLapseTests
         db.ObservatoryMemberships.Remove(membership);
         await db.SaveChangesAsync();
         Assert.AreEqual(0, await CentralTimeLapseCatalog.Allowed(db, owner).CountAsync());
+    }
+
+    [TestMethod]
+    [DataRow("chunk")]
+    [DataRow("checksum")]
+    [DataRow("json")]
+    public async Task DetailContainsCorruptMediaOrMetadataWithoutFaultingThePage(string failure)
+    {
+        using var context = new BunitContext();
+        var database = Guid.NewGuid().ToString();
+        context.Services.AddDbContext<ApplicationDbContext>(options => options.UseInMemoryDatabase(database));
+        context.Services.AddScoped<CentralTimeLapseCatalog>();
+        var store = new DeterministicObjectStore();
+        var names = new CentralObjectStorageNames();
+        store.AddBucket(names.ArtifactBucket);
+        context.Services.AddSingleton(new CentralTimeLapseObjects(store, names));
+        var request = Request();
+        var sourceId = Guid.NewGuid();
+        var sha = new string('A', 64);
+        var timeline = TimeLapseTimelinePlanner.Create(request.StartUtc, request.EndUtc,
+            [new(sourceId, sha, request.StartUtc, TimeSpan.FromMilliseconds(1))]);
+        var media = new TimeLapseMediaProof(128, 128, timeline.DurationTicks, sha,
+            timeline.Intervals.Select(interval => new TimeLapsePacket(interval.StartTick, interval.StartTick, interval.DurationTicks, "SHA256:" + sha)).ToArray());
+        var payload = new byte[16];
+        var payloadSha = Convert.ToHexString(SHA256.HashData(payload));
+        var evidence = new TimeLapseEncodingEvidence(FFmpegTimeLapseEncoder.ProfileVersion, TimeLapseEncoderProfile.Software,
+            new(true, null, "test", sha, sha), timeline.IdentitySha256, sha, new Dictionary<int, string> { [0] = sha }, payloadSha, payload.Length, media);
+        var key = $"time-lapses/{request.JobId:N}/01/{request.JobId:N}/{payloadSha}/0000-{payloadSha}.part";
+        var product = new CentralTimeLapseProduct(Guid.Empty, request.JobId, request.DevicePublicId, request.ObservatoryId,
+            request.Period, request.StartUtc, request.EndUtc, false, false, true, request.Identity, timeline,
+            [new(sourceId, sha, [sourceId], [sha], TimeSpan.FromMilliseconds(1))], [], new Dictionary<string, int>(), evidence,
+            [new(key, payload.Length, payloadSha)], DateTimeOffset.UtcNow, request.JobId, 1);
+        product = product with { ProductId = CentralTimeLapseProductIdentity.Compute(product) };
+        CentralTimeLapseProductIdentity.Validate(product);
+        using (var content = new MemoryStream(payload[..^1]))
+            await store.PutAsync(names.ArtifactBucket, key, content, content.Length, "application/octet-stream", CancellationToken.None);
+        await using (var scope = context.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.Observatories.Add(new() { Id = request.ObservatoryId, OwnerUserId = "video-owner" });
+            db.Users.Add(new() { Id = "video-owner", AccountType = AccountType.User });
+            db.ObservatoryMemberships.Add(new() { ObservatoryId = request.ObservatoryId, UserId = "video-owner", Role = ObservatoryMembershipRole.Owner });
+            var json = CentralTimeLapseJson.Serialize(product);
+            db.CentralTimeLapseVideos.Add(new()
+            {
+                Id = product.ProductId,
+                JobId = request.JobId,
+                DevicePublicId = request.DevicePublicId,
+                ObservatoryId = request.ObservatoryId,
+                ReportDate = request.Period.ReportDate,
+                PayloadBytes = payload.Length,
+                ProductJson = failure == "json" ? "{" : json,
+                ProductSha256 = failure == "checksum" ? new string('0', 64) : CentralTimeLapseJson.Hash(json)
+            });
+            await db.SaveChangesAsync();
+        }
+        var owner = new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "video-owner"), new("account_type", "User")], IdentityConstants.ApplicationScheme));
+        var cut = context.Render<OperationsTimeLapseDetail>(parameters => parameters
+            .Add(page => page.ProductId, product.ProductId).AddCascadingValue(Task.FromResult(new AuthenticationState(owner))));
+        cut.WaitForAssertion(() => Assert.Contains("unavailable", cut.Markup));
+        Assert.IsEmpty(cut.FindAll("video"));
+        if (failure == "chunk") Assert.HasCount(1, cut.FindAll("a[href$='/provenance']"));
+        Assert.DoesNotContain("Exception", cut.Markup);
     }
 
     private static CentralTimeLapseRequest Request()

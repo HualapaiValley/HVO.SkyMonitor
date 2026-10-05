@@ -32,7 +32,7 @@ public sealed record TimeLapseRenderedFrame(
 /// </summary>
 public static class TimeLapseFrameRenderer
 {
-    public const string Version = "hvo-timelapse-stack-display-v1";
+    public const string Version = "hvo-timelapse-stack-display-v2";
     public const string OverlayVersion = "hvo-timelapse-proportional-overlays-v1";
     public const int MaximumColorSourcePixels = LinearBayerReconstruction.MaximumSupportedPixels;
 
@@ -75,7 +75,7 @@ public static class TimeLapseFrameRenderer
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(rig);
         Validate(options);
-        if (sources.Count < 1 || sources.Count > options.StackCount || outputWidth is < 2 or > 4096 || outputHeight is < 2 or > 4096 ||
+        if (sources.Count < 1 || sources.Count > options.StackCount || daytime && sources.Count != 1 || outputWidth is < 2 or > 4096 || outputHeight is < 2 or > 4096 ||
             outputWidth % 2 != 0 || outputHeight % 2 != 0 || additionalLayers?.Count > 12)
             throw new ArgumentException("A time-lapse frame requires one to three bounded sources and even output dimensions.");
         var latest = sources[^1];
@@ -148,19 +148,17 @@ public static class TimeLapseFrameRenderer
             sources.Select(static source => source.ArtifactId).ToArray(), checksums, integration, selected.Select(static layer => layer.Payload).ToArray());
     }
 
-    /// <summary>Largest exact-aspect even size within the requested bound, with a pixel-rounded fallback for coprime sensors.</summary>
+    /// <summary>Use the available bound without upscaling, rounding the proportional dimensions to the nearest legal even pixel.</summary>
     public static (int Width, int Height) Fit(int width, int height, int maximumDimension)
     {
         if (width is < 2 or > 4096 || height is < 2 or > 4096 || maximumDimension is < 128 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(maximumDimension));
-        var a = width;
-        var b = height;
-        while (b != 0) (a, b) = (b, a % b);
-        var factor = Math.Min(a, maximumDimension / Math.Max(width / a, height / a));
-        if ((width / a * factor) % 2 != 0 || (height / a * factor) % 2 != 0) factor--;
-        if (factor > 0) return (width / a * factor, height / a * factor);
-        var scale = Math.Min(1d, (double)maximumDimension / Math.Max(width, height));
-        return (Math.Max(2, (int)(width * scale) / 2 * 2), Math.Max(2, (int)(height * scale) / 2 * 2));
+        var major = Math.Min(maximumDimension, Math.Max(width, height));
+        major -= major % 2;
+        var scale = (double)major / Math.Max(width, height);
+        int Even(int dimension) => Math.Max(2, Math.Min(dimension - dimension % 2,
+            (int)Math.Round(dimension * scale / 2, MidpointRounding.AwayFromZero) * 2));
+        return (Even(width), Even(height));
     }
 
     public static byte[] GapImage(int width, int height)

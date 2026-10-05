@@ -105,7 +105,7 @@ internal sealed class CameraAgentNightlyProductUiService(
                 using var stream = await timeLapses!.OpenVideoAsync(productId, cancellationToken).ConfigureAwait(false);
                 return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, stream is not null));
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or InvalidDataException)
             {
                 return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, false));
             }

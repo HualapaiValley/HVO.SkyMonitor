@@ -22,7 +22,9 @@ public sealed class CentralTimeLapseNativeTests
 {
     private static readonly int[] ExpectedStackCounts = [1, 2, 3];
     [TestMethod]
-    public async Task ReceivedRawSourcesProduceIndependentHourAndDailyWithLateArrivalSuccessor()
+    [DataRow(180)]
+    [DataRow(300)]
+    public async Task ReceivedRawSourcesProduceIndependentHourAndDailyWithLateArrivalSuccessor(int compression)
     {
         if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/ffmpeg")) Assert.Inconclusive("Requires qualified Linux FFmpeg.");
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -35,7 +37,7 @@ public sealed class CentralTimeLapseNativeTests
         var capability = await services.GetRequiredService<FFmpegTimeLapseEncoder>().QualifyAsync(TimeLapseEncoderProfile.Software, CancellationToken.None);
         Assert.IsTrue(capability.Available, capability.ReasonCode);
         var template = CentralTimeLapseIntegrationTests.CreateRequest();
-        template = template with { Preset = template.Preset with { CapabilityIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(capability) } };
+        template = template with { Preset = template.Preset with { CapabilityIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(capability), Timing = new(compression) } };
         var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email);
         db.Observatories.Add(new() { Id = template.ObservatoryId, OwnerUserId = owner.Id, Name = "Time-lapse test", CreatedAtUtc = DateTimeOffset.UtcNow });
         db.ObservatoryMemberships.Add(new() { ObservatoryId = template.ObservatoryId, UserId = owner.Id, Role = ObservatoryMembershipRole.Owner, AddedAtUtc = DateTimeOffset.UtcNow });
@@ -64,7 +66,7 @@ public sealed class CentralTimeLapseNativeTests
         Assert.IsNotNull(original);
         Assert.HasCount(3, original.Frames);
         CollectionAssert.AreEqual(ExpectedStackCounts, original.Frames.Select(static frame => frame.StackSourceIds.Count).ToArray());
-        Assert.AreEqual(20_000_000L, original.Encoding.Media.DurationTicks);
+        Assert.AreEqual(3_600_000_000L / compression, original.Encoding.Media.DurationTicks);
         Assert.IsTrue(original.HasGaps);
         Assert.IsFalse(await holds.IsHeldAsync(sourceIds[0], CancellationToken.None));
         var successorId = await store.EnqueueAsync(Freeze, CancellationToken.None);
@@ -80,6 +82,7 @@ public sealed class CentralTimeLapseNativeTests
         await VerifyVideoAsync(objects, successor);
 
         var hours = SunriseReportingCalendar.PartitionCivilHours(template.Period);
+        Assert.IsLessThan(TimeSpan.FromSeconds(1), hours[0].EndUtc - hours[0].StartUtc);
         var children = new List<Guid>();
         foreach (var hour in hours)
         {

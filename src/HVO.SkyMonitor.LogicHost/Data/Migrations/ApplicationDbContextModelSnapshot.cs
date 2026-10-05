@@ -2911,6 +2911,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<Guid>("DevicePublicId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("DiscoveryIdentity")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
                     b.Property<DateTimeOffset>("EndUtc")
                         .HasColumnType("datetimeoffset");
 
@@ -2976,6 +2981,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("DevicePublicId", "ReportDate", "CreatedUtc");
 
                     b.HasIndex("State", "IsDaily", "CreatedUtc");
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc");
 
                     b.ToTable("CentralTimeLapseJobs", null, t =>
                         {

@@ -92,6 +92,8 @@ public sealed class FFmpegTimeLapseTests
         try
         {
             var process = new BoundedMediaProcess(new() { ScratchDirectory = root, Timeout = TimeSpan.FromSeconds(20) });
+            Assert.AreEqual("0", (await process.RunAsync("/bin/sh", ["-c", "ulimit -c"], root, CancellationToken.None)
+                .ConfigureAwait(false)).Trim(), "An encoder failure must not create an unbounded core dump.");
             using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
             var started = Stopwatch.StartNew();
             await Assert.ThrowsAsync<OperationCanceledException>(() => process.RunAsync("/bin/sleep", ["10"], root, cancel.Token))
@@ -160,6 +162,49 @@ public sealed class FFmpegTimeLapseTests
             var incompatible = await Assert.ThrowsExactlyAsync<TimeLapseEncodingException>(() =>
                 encoder.AssembleAsync(segments, 180, Open, CancellationToken.None)).ConfigureAwait(false);
             Assert.AreEqual("timelapse.incompatible-segments", incompatible.ReasonCode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [TestCategory("Manual")]
+    [DataRow(180)]
+    [DataRow(300)]
+    public async Task SubFrameSunriseSegmentsEncodeAndAssembleWithExactPacketTiming(int compression)
+    {
+        var root = NewDirectory();
+        try
+        {
+            using var encoder = new FFmpegTimeLapseEncoder(new() { ScratchDirectory = root });
+            var segments = new List<TimeLapseAssemblySegment>();
+            var payloads = new List<byte[]>();
+            var start = DateTimeOffset.UnixEpoch;
+            foreach (var seconds in new[] { .0000001, .0183828, .5323656, 2.5524336, 3600 })
+            {
+                var end = start.AddSeconds(seconds);
+                var timeline = TimeLapseTimelinePlanner.Create(start, end, [], new(compression));
+                var encoded = await encoder.EncodeAsync(timeline, 512, 512, TimeLapseEncoderProfile.Software,
+                    (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(Image(null)), CancellationToken.None).ConfigureAwait(false);
+                await using (encoded.ConfigureAwait(false))
+                {
+                    Assert.AreEqual(timeline.DurationTicks, encoded.Evidence.Media.DurationTicks);
+                    Assert.HasCount(1, encoded.Evidence.Media.Packets);
+                    using var input = encoded.OpenRead();
+                    using var buffer = new MemoryStream();
+                    await input.CopyToAsync(buffer).ConfigureAwait(false);
+                    payloads.Add(buffer.ToArray());
+                    segments.Add(new(start, end, encoded.Evidence));
+                }
+                start = end;
+            }
+            var daily = await encoder.AssembleAsync(segments, compression,
+                (index, _) => ValueTask.FromResult<Stream>(new MemoryStream(payloads[index], writable: false)), CancellationToken.None).ConfigureAwait(false);
+            await using (daily.ConfigureAwait(false))
+            {
+                Assert.AreEqual(segments.Sum(segment => segment.Evidence.Media.DurationTicks), daily.Evidence.Media.DurationTicks);
+                CollectionAssert.AreEqual(segments.SelectMany(segment => segment.Evidence.Media.Packets).Select(packet => packet.Sha256).ToArray(),
+                    daily.Evidence.Media.Packets.Select(packet => packet.Sha256).ToArray());
+            }
         }
         finally { Directory.Delete(root, recursive: true); }
     }

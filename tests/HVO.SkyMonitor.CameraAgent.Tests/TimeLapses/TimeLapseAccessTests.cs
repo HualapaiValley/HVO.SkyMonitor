@@ -89,6 +89,38 @@ public sealed class TimeLapseAccessTests
         CollectionAssert.AreEqual(expected, ((MemoryStream)context.Response.Body).ToArray());
     }
 
+    internal static async Task VerifyCorruptMediaAsync(ICameraAgentTimeLapseCatalog catalog, CameraAgentTimeLapseProduct product)
+    {
+        var auth = new Mock<IAuthorizationService>();
+        auth.Setup(value => value.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), null, It.IsAny<string>()))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var result = await Service(auth.Object, catalog, Mock.Of<ICameraAgentTimeLapseCommands>())
+            .GetTimeLapseAsync(product.ProductId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        Assert.IsNotNull(result.Value);
+        Assert.AreEqual(product.ProductId, result.Value.Product.ProductId);
+        Assert.IsFalse(result.Value.VerifiedAvailable);
+        using var app = App(catalog);
+        foreach (var name in new[] { "GetCameraAgentTimeLapseVideo", "GetCameraAgentTimeLapseProvenance" })
+        {
+            var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
+                .Single(value => value.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName == name);
+            var context = new DefaultHttpContext { RequestServices = app.Services };
+            context.Request.Method = HttpMethods.Get;
+            context.Request.RouteValues["productId"] = product.ProductId.ToString("D");
+            using var body = new MemoryStream();
+            context.Response.Body = body;
+            await endpoint.RequestDelegate!(context).ConfigureAwait(false);
+            Assert.AreEqual(name.EndsWith("Video", StringComparison.Ordinal) ? 503 : 200, context.Response.StatusCode);
+            if (context.Response.StatusCode == 503)
+            {
+                var message = System.Text.Encoding.UTF8.GetString(body.ToArray());
+                Assert.Contains("temporarily unavailable", message);
+                Assert.DoesNotContain("immutable checksum", message);
+            }
+        }
+    }
+
     private static WebApplication App(ICameraAgentTimeLapseCatalog catalog)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });

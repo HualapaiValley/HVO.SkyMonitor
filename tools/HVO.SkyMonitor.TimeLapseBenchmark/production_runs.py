@@ -77,14 +77,14 @@ def main():
     parser.add_argument('root', type=Path)
     parser.add_argument('binary', type=Path)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--mode', choices=['edge', 'native', 'gpu', 'daytime', 'contention', 'contention-video'], required=True)
+    parser.add_argument('--mode', choices=['edge', 'native', 'gpu', 'daytime', 'contention', 'contention-video', 'correction', 'day-contention'], required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    if args.mode in ['contention', 'contention-video']:
-        for video in ([False, True] if args.mode == 'contention' else [True]):
+    if args.mode in ['contention', 'contention-video', 'day-contention']:
+        for video in ([False, True] if args.mode in ['contention', 'day-contention'] else [True]):
             name = 'foreground-video' if video else 'foreground-baseline'
             run(args.root, args.binary, args.output, name,
-                ['production-contend', str(args.root / 'color3552'), str(args.output / name), str(video).lower()])
+                ['production-contend', str(args.root / ('day3552' if args.mode == 'day-contention' else 'color3552')), str(args.output / name), str(video).lower()])
         return
     scenarios = [(case, 1280, 'Software', 180, 3) for case in ['mono3552', 'color3552', 'day3552', 'asi174-v2']]
     if args.mode == 'native':
@@ -93,6 +93,8 @@ def main():
         scenarios = [('color3552', 3552, profile, 180, 3) for profile in ['Software', 'Nvidia']]
     if args.mode == 'daytime':
         scenarios = [('day3552', 1280, 'Software', 180, 3)]
+    if args.mode == 'correction':
+        scenarios = [(case, 1280, 'Software', 180, 3) for case in ['day3552', 'asi174-v2']]
     for case, dimension, profile, compression, stack in scenarios:
         name = f'{case}-{dimension}-{profile}-{compression}x-stack{stack}'
         run(args.root, args.binary, args.output, name, ['production', str(args.root / case), str(args.output / name),

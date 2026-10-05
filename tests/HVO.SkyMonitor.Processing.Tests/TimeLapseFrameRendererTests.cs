@@ -11,12 +11,16 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed class TimeLapseFrameRendererTests
 {
     [TestMethod]
-    [DataRow(1936, 1216, 1210, 760)]
+    [DataRow(1936, 1216, 1280, 804)]
+    [DataRow(3096, 2080, 1280, 860)]
+    [DataRow(1304, 976, 1280, 958)]
+    [DataRow(1216, 1936, 804, 1280)]
     [DataRow(3552, 3552, 1280, 1280)]
-    public void OutputFitPreservesEvenExactAspect(int width, int height, int expectedWidth, int expectedHeight)
+    [DataRow(513, 301, 512, 300)]
+    public void OutputFitUsesAvailableBoundWithEvenProportionalDimensions(int width, int height, int expectedWidth, int expectedHeight)
     {
         Assert.AreEqual((expectedWidth, expectedHeight), TimeLapseFrameRenderer.Fit(width, height, 1280));
-        Assert.AreEqual((width, height), TimeLapseFrameRenderer.Fit(width, height, 4096));
+        Assert.AreEqual((width - width % 2, height - height % 2), TimeLapseFrameRenderer.Fit(width, height, 4096));
     }
 
     [TestMethod]
@@ -49,7 +53,7 @@ public sealed class TimeLapseFrameRendererTests
     public void RectangularOverlaysHaveFourCardinalsAndCornerPlatesMeetImageMargins()
     {
         var rig = Rig(1936, 1216, false);
-        var frame = TimeLapseFrameRenderer.Render([Source(rig, 0)], rig, new(), false, 1210, 760);
+        var frame = TimeLapseFrameRenderer.Render([Source(rig, 0)], rig, new(), false, 1280, 804);
         var blocks = frame.Layers.SelectMany(static layer => layer.TextBlocks).ToArray();
         Assert.AreEqual(4, blocks.Count(static block => block.Anchor == PresentationTextAnchor.Point));
         Assert.AreEqual(4, blocks.Count(static block => block.Anchor != PresentationTextAnchor.Point));
@@ -81,6 +85,36 @@ public sealed class TimeLapseFrameRendererTests
             (_, _) => ValueTask.FromResult(actual with { RecipeIdentitySha256 = new string('B', 64) }), _ => false);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await changed.RenderAsync(actual.ArtifactId, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DaytimeUsesOnlyCurrentSourceAndNightWarmsUpWithoutDayHistory(bool color)
+    {
+        var rig = Rig(128, 128, color);
+        var sources = Enumerable.Range(0, 6).Select(index => Source(rig, index)).ToArray();
+        var descriptions = sources.Select(source => source with { Payload = ReadOnlyMemory<byte>.Empty }).ToArray();
+        var restored = new List<Guid>();
+        var sequence = new TimeLapseFrameSequence(descriptions, rig, new(), 128, 128,
+            (id, _) =>
+            {
+                restored.Add(id);
+                return ValueTask.FromResult(sources.Single(source => source.ArtifactId == id));
+            }, utc => utc < DateTimeOffset.UnixEpoch.AddSeconds(60));
+        var day = await sequence.RenderAsync(sources[2].ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { sources[2].ArtifactId }, restored);
+        CollectionAssert.AreEqual(new[] { sources[2].ArtifactId }, day.StackSourceIds.ToArray());
+        Assert.AreEqual(sources[2].Integration, day.TotalIntegration);
+        var expected = TimeLapseFrameRenderer.Render([sources[2]], rig, new(), true, 128, 128);
+        Assert.IsTrue(expected.Jpeg.Span.SequenceEqual(day.Jpeg.Span));
+        Assert.ThrowsExactly<ArgumentException>(() => TimeLapseFrameRenderer.Render(sources[..3], rig, new(), true, 128, 128));
+        for (var index = 3; index < sources.Length; index++)
+        {
+            var night = await sequence.RenderAsync(sources[index].ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(sources[3..(index + 1)].Select(source => source.ArtifactId).ToArray(), night.StackSourceIds.ToArray());
+            Assert.AreEqual(TimeSpan.FromSeconds((index - 2) * 20), night.TotalIntegration);
+        }
     }
 
     [TestMethod]

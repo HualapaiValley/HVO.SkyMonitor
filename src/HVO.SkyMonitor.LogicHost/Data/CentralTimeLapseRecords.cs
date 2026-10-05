@@ -12,6 +12,7 @@ internal sealed class CentralTimeLapseJob
     public DateTimeOffset StartUtc { get; set; }
     public DateTimeOffset EndUtc { get; set; }
     public bool IsDaily { get; set; }
+    public string? DiscoveryIdentity { get; set; }
     public string RequestJson { get; set; } = string.Empty;
     public string RequestSha256 { get; set; } = string.Empty;
     public CentralTimeLapseState State { get; set; }
@@ -70,10 +71,12 @@ internal static class CentralTimeLapseConfiguration
         job.Property(static item => item.State).HasConversion<string>().HasMaxLength(24);
         job.Property(static item => item.ReasonCode).HasMaxLength(128);
         job.Property(static item => item.RequestSha256).HasMaxLength(64).IsFixedLength();
+        job.Property(static item => item.DiscoveryIdentity).HasMaxLength(64).IsFixedLength();
         job.Property(static item => item.ExclusionsSha256).HasMaxLength(64).IsFixedLength();
         job.Property(static item => item.RowVersion).IsRowVersion();
         job.HasIndex(static item => new { item.State, item.IsDaily, item.CreatedUtc });
         job.HasIndex(static item => new { item.DevicePublicId, item.ReportDate, item.CreatedUtc });
+        job.HasIndex(static item => new { item.DevicePublicId, item.ReportDate, item.DiscoveryIdentity, item.CreatedUtc });
         var input = builder.Entity<CentralTimeLapseInput>();
         input.ToTable("CentralTimeLapseInputs", table => table.HasTrigger("TR_CentralTimeLapseInputs_Immutable"));
         input.HasKey(static item => new { item.JobId, item.CentralArtifactId });

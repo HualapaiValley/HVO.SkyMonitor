@@ -6,13 +6,57 @@ retains exact commands, binary identities, input-manifest hashes, media checksum
 CPU, allocations, sampled I/O and individual foreground timings. The
 [runbook](../../docs/runbooks/time-lapse-generation.md) describes configuration.
 
+## Corrections after independent review
+
+The current preset uses a three-frame mean at night and a **single frame during
+daytime**. Proportional sizing now rounds to the nearest even pixel, so ASI174MM
+fills 1280×804 under the edge limit. The affected runs were repeated on identical
+raw input manifests; [correction evidence](production-correction-results.json)
+retains resource traces, exact binary hashes, packet proofs and one-source daytime
+lineage. Older rows below remain historical measurements of the earlier preset.
+
+| Corrected five-minute case | NVMe Pi5 elapsed | Local elapsed | Pi sampled aggregate RSS |
+| --- | ---: | ---: | ---: |
+| Daytime 3552×3552 → 1280×1280, single source | 43.535 s | 21.858 s | 0.837 GiB |
+| ASI174MM 1936×1216 → 1280×804, rolling three | 4.816 s | 3.008 s | 0.314 GiB |
+
+Pi daytime elapsed fell 15.3% from the earlier 51.371-second stacked run. Local
+elapsed was within 1% of its earlier 21.658 seconds; sampled RSS fell on both
+hosts. These are individual runs, not percentile timing estimates. Scaling Pi
+elapsed by twelve suggests about 8.7 minutes per source hour; that is a projection,
+not a full-hour measurement or a guarantee under live acquisition.
+
+A fresh daytime contention pair on each host used the actual EncodedPreview
+recipe: five warmups, then 30 arrivals at five-second cadence. Foreground output
+hashes matched between baseline and concurrent video, with **zero deadline misses**.
+Pi response p95 was 1.305319 s alone and 1.327035 s with video (+21.7 ms / 1.7%).
+Local p95 was 0.519324 s and 0.622265 s (+102.9 ms / 19.8%). The single managed
+render worker still competes for CPU and allocation/GC resources; background
+encoding priority does not eliminate that measured cost. Aggregate sampled RSS
+with video was 1.59 GiB on Pi and 1.47 GiB locally. Pi ended at 45.2 °C with
+`throttled=0x0`. This remains recipe contention, not the full capture/ingest/outbox
+pipeline or a thermal soak.
+
+Short sunrise segments now retain their positive duration, including intervals
+below one 60-fps frame. [Native protocol evidence](short-segment-results.json)
+verifies one-microsecond through normal cadence segments with both libx264 and
+RTX 5070 NVENC at 180× and 300×, preserving packet payloads and timing during
+assembly. Reproduce with `mixed_cadence.py <fresh-directory> --short-segments
+--compression 180` (or 300). Both hosts' native application tests also assemble
+the complete Phoenix 2026-08-20 reporting period, including its 0.532-second first
+hour. The updated daytime and ASI174 clips are served at `/production.html`.
+[Browser checks](production-correction-browser-results.json) completed both at
+1.666667 seconds with no media errors or dropped display frames; ASI174 reports
+1280×804 and daytime 1280×1280. Stars, circle and margin-aligned overlays remain
+visible in the rectangular sample.
+
 ## Inputs and boundary
 
 Each trial uses five genuine source minutes from the full 119,625-row HYG catalog:
 15 fresh night images at 20-second cadence, or 60 daytime images at five-second
 cadence with 37.514 ms exposures. ASI174MM uses its 1936×1216 rig and 5.86 µm sensor
 model. Source/celestial clocks and raw hashes advance independently. Output is
-180×, with rolling-three mean, stretch/fixed daytime transfer and the accepted
+180×, with rolling-three night mean, single-source fixed daytime transfer and the accepted
 cardinal, corner-data and image-circle overlays.
 
 Timing includes verified raw reads, production rendering, bounded FFmpeg,

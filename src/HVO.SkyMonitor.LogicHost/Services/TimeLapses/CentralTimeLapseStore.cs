@@ -11,11 +11,9 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
     internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(2);
 
     internal async Task<Guid?> FindDiscoveredAsync(Guid deviceId, DateOnly reportDate, string identity, CancellationToken token)
-        => await db.CentralTimeLapseJobs.FromSqlInterpolated($"""
-            SELECT * FROM [CentralTimeLapseJobs]
-            WHERE [DevicePublicId]={deviceId} AND [ReportDate]={reportDate}
-              AND JSON_VALUE([RequestJson], '$.discoveryIdentity')={identity}
-            """).AsNoTracking().OrderBy(job => job.CreatedUtc).Select(job => (Guid?)job.Id).FirstOrDefaultAsync(token).ConfigureAwait(false);
+        => await db.CentralTimeLapseJobs.AsNoTracking()
+            .Where(job => job.DevicePublicId == deviceId && job.ReportDate == reportDate && job.DiscoveryIdentity == identity)
+            .OrderBy(job => job.CreatedUtc).Select(job => (Guid?)job.Id).FirstOrDefaultAsync(token).ConfigureAwait(false);
 
     internal Task<Guid> EnqueueAsync(Func<CancellationToken, Task<CentralTimeLapseRequest>> freeze, CancellationToken token)
         => LockedAsync(async () =>
@@ -43,6 +41,7 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
                 StartUtc = request.StartUtc,
                 EndUtc = request.EndUtc,
                 IsDaily = request.IsDaily,
+                DiscoveryIdentity = request.DiscoveryIdentity,
                 RequestJson = json,
                 RequestSha256 = sha,
                 State = CentralTimeLapseState.Queued,
@@ -176,7 +175,8 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
         var request = CentralTimeLapseJson.Read<CentralTimeLapseRequest>(job.RequestJson, job.RequestSha256);
         Validate(request);
         if (request.JobId != job.Id || request.DevicePublicId != job.DevicePublicId || request.ObservatoryId != job.ObservatoryId ||
-            request.StartUtc != job.StartUtc || request.EndUtc != job.EndUtc || request.IsDaily != job.IsDaily || request.Period.ReportDate != job.ReportDate)
+            request.StartUtc != job.StartUtc || request.EndUtc != job.EndUtc || request.IsDaily != job.IsDaily || request.Period.ReportDate != job.ReportDate ||
+            request.DiscoveryIdentity != job.DiscoveryIdentity)
             throw new InvalidDataException("Invalid retained time-lapse request identity.");
         return request;
     }

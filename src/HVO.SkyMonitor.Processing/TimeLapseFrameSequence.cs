@@ -41,7 +41,7 @@ public sealed class TimeLapseFrameSequence
         var latest = _descriptions[index];
         var daytime = _daytime(latest.ObservationStartedUtc!.Value);
         var start = index;
-        while (start > 0 && index - start + 1 < _options.StackCount)
+        while (!daytime && start > 0 && index - start + 1 < _options.StackCount)
         {
             var candidate = _descriptions[start - 1];
             if (candidate.Compatibility != latest.Compatibility || candidate.Layout != latest.Layout ||

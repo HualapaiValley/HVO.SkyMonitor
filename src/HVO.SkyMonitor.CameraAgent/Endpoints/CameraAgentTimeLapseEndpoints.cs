@@ -47,7 +47,7 @@ internal static class CameraAgentTimeLapseEndpoints
     private static async Task<IResult> ReadAsync(Func<Task<IResult>> read)
     {
         try { return await read().ConfigureAwait(false); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or SqliteException or JsonException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or SqliteException or JsonException)
         {
             return Results.Problem("The time-lapse catalog or verified media is temporarily unavailable.", statusCode: StatusCodes.Status503ServiceUnavailable);
         }
