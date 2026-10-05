@@ -85,11 +85,15 @@ rewritten into a claimed producer benchmark.
 
 `tests/HVO.SkyMonitor.CameraAgent.Tests/Issue1055SceneCompactionEvidenceTests.cs`
 is the same source in candidate and the baseline harness-only branch. Its current
-SHA-256 is `83253ce8d2ed23298b563f08c825a80fe2edc21549ef79a987928252a42157bf`;
-baseline commit `9d8bfc421abc0c82fcfff83b384d68f551a539a1` retains production
+SHA-256 is `5712296770cdb929a94288b788c980819449bf3b2284f9ee4df06727a4e46073`;
+baseline commit `f6745ab6a38c5c01d3ce074b707e6c0502343bd7` retains production
 `fead5666bae05f3a51affee94847de93141c56cd`. The earlier harness-only commit
 `1021fc798c0f6b6dd7af95bb81e16a651e7fdbab` was corrected before any workload run. A later whitespace-only harness commit
 normalizes repository formatting; neither revision has produced measured evidence.
+
+The harness also renders each retained scene through the real presentation-layer
+producer and compositor outside timing, recording a raster checksum independent
+of capture GUIDs. This checks layer pixel equivalence alongside annotation output.
 
 The harness uses real VirtualSky capture, raw ingress, durable standard-lane graph,
 scene/preview/annotation kernels, canonical raw upload and archive derivative

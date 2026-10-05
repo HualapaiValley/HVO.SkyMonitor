@@ -13,6 +13,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -363,9 +365,18 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             var descriptor = raw[scene.Source.CaptureId];
             Assert.AreEqual(descriptor.Artifact.ArtifactId, scene.Source.ArtifactId);
             Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), scene.Source.ArtifactIdentitySha256);
+            // Render the real presentation producer/compositor outside timed capture work. The source-bound
+            // scene identity varies with capture GUIDs, but rendered layer pixels must remain identical.
+            var layer = PresentationLayerProducers.FromProjectedScene(scene,
+                new PresentationAnnotationStyleV1(ConstellationIds: Constellations));
+            var layerLayout = new ImageLayout(scene.ImageTransform.OutputWidthPixels,
+                scene.ImageTransform.OutputHeightPixels, CameraPixelFormat.Mono8, scene.ImageTransform.OutputWidthPixels);
+            var layerPixels = PresentationLayerCompositor.Composite(layerLayout, new byte[layerLayout.RequiredByteLength],
+                [new(layer, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
             scenes.Add(new
             {
                 descriptor.Capture.CaptureSequence,
+                layerRasterSha256 = PayloadChecksum.ComputeSha256(layerPixels),
                 path = Path.GetRelativePath(root, path),
                 bytes = bytes.Length,
                 objects = scene.Objects.Count,
