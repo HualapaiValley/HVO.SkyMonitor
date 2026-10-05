@@ -249,7 +249,7 @@ internal sealed class RawCaptureIngress :
         CancellationToken cancellationToken)
     {
         var owned = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in await _journal.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!string.Equals(entry.State, "committed", StringComparison.Ordinal)) continue;
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
@@ -651,7 +651,7 @@ internal sealed class RawCaptureIngress :
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var entry in await _journal.ReadUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var entry in _journal.EnumerateUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
             {
                 var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
                 if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)

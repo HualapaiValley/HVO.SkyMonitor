@@ -2186,17 +2186,20 @@ public sealed class ProcessingGraphOperationsTests
         try
         {
             var configuration = CreateConfiguration();
-            Guid captureId;
+            var captureIds = new List<Guid>();
             using (var provider = CreateProvider(root))
             {
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 _ = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
                     .EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-                var receipt = await ingress.AcceptAsync(
-                    configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(receipt);
-                captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                for (var index = 0; index < 3; index++)
+                {
+                    var receipt = await ingress.AcceptAsync(
+                        configuration, CreateSubmission(sequenceOffset: index), CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(receipt);
+                    captureIds.Add(receipt.Manifest.Descriptor.Capture.CaptureId);
+                }
             }
             SqliteConnection.ClearAllPools();
             using (var connection = new SqliteConnection(
@@ -2205,7 +2208,7 @@ public sealed class ProcessingGraphOperationsTests
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var removeExecution = connection.CreateCommand();
                 removeExecution.CommandText = "DELETE FROM processing_executions WHERE execution_class = 'Live';";
-                Assert.AreEqual(1, await removeExecution.ExecuteNonQueryAsync().ConfigureAwait(false));
+                Assert.AreEqual(3, await removeExecution.ExecuteNonQueryAsync().ConfigureAwait(false));
             }
 
             using (var provider = CreateProvider(root))
@@ -2218,8 +2221,11 @@ public sealed class ProcessingGraphOperationsTests
 
                 var executions = await operations.ReadExecutionsAsync(
                     ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false);
-                Assert.HasCount(1, executions);
-                Assert.AreEqual(captureId, executions[0].CaptureId);
+                Assert.HasCount(3, executions);
+                CollectionAssert.AreEquivalent(captureIds, executions.Select(execution => execution.CaptureId).ToArray());
+                await ingress.BindRecoveredLiveExecutionsAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(3, await operations.ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false));
                 var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
                 await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
                 var lease = await laneStore.ClaimAsync(
@@ -2230,7 +2236,8 @@ public sealed class ProcessingGraphOperationsTests
                     CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(lease);
                 Assert.IsNotNull(lease.Context.Execution);
-                Assert.AreEqual(executions[0].ExecutionId, lease.Context.Execution.ExecutionId);
+                Assert.AreEqual(executions.Single(execution => execution.CaptureId == lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId).ExecutionId,
+                    lease.Context.Execution.ExecutionId);
             }
         }
         finally

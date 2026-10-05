@@ -2259,7 +2259,6 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             return await SqliteInspectionSnapshot.InspectAsync(
                 databasePath,
                 busyTimeoutSeconds,
-                "hvo-transient-runtime-inspection-",
                 () => EnsureDatabaseFilesArePhysical(root, databasePath),
                 async (connection, token) =>
                 {
