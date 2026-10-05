@@ -433,6 +433,7 @@ public sealed class SchedulePageTests
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
         var cut = context.Render<SchedulePage>();
         OpenEditor(cut);
+        Assert.AreEqual("2026-11-01T01:30:00.123", cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[0].GetAttribute("value"));
         cut.FindAll("section[aria-labelledby='schedule-step-blackouts'] input[type=datetime-local]")[1].Change("2026-11-01T04:30:00");
         SaveDraft(cut).Click();
         Assert.HasCount(1, service.StageCommands);

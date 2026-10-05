@@ -15,12 +15,21 @@ public sealed class CameraAgentSiteTimeTests
     {
         var clock = new CameraAgentSiteTime(ObservingDayCalendar.Create("Asia/Kolkata"));
         var instant = new DateTimeOffset(2026, 7, 23, 20, 0, 0, TimeSpan.Zero);
-        Assert.AreEqual("2026-07-24T01:30:00", clock.Input(instant));
+        Assert.AreEqual("2026-07-24T01:30", clock.Input(instant));
         Assert.AreEqual("24 Jul 2026 01:30:00 +05:30 (Asia/Kolkata)", clock.Format(instant));
         Assert.IsTrue(clock.TryInput("2026-07-24T01:30:00", out var utc, out var error));
         Assert.AreEqual(instant, utc);
         Assert.IsNull(error);
         Assert.AreEqual(TimeSpan.Zero, utc!.Value.Offset);
+    }
+
+    [TestMethod]
+    [DataRow(1L, "2026-07-24T01:30")]
+    [DataRow(1234567L, "2026-07-24T01:30:00.123")]
+    public void Input_UsesBrowserRepresentablePrecision(long ticks, string expected)
+    {
+        var clock = new CameraAgentSiteTime(ObservingDayCalendar.Create("Asia/Kolkata"));
+        Assert.AreEqual(expected, clock.Input(new DateTimeOffset(2026, 7, 23, 20, 0, 0, TimeSpan.Zero).AddTicks(ticks)));
     }
 
     [TestMethod]

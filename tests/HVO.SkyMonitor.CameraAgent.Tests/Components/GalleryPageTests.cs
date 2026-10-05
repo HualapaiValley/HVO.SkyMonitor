@@ -602,7 +602,7 @@ public sealed class GalleryPageTests
         var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
         navigation.NavigateTo("/gallery?from=2026-07-23T20%3A00%3A00Z");
         var cut = context.Render<GalleryPage>();
-        cut.WaitForAssertion(() => Assert.AreEqual("2026-07-24T01:30:00", cut.Find("#galleryFrom").GetAttribute("value")));
+        cut.WaitForAssertion(() => Assert.AreEqual("2026-07-24T01:30", cut.Find("#galleryFrom").GetAttribute("value")));
         cut.Find("#galleryFrom").Change("2026-07-24T02:30:00");
         cut.Find("#galleryTo").Change("2026-07-24T04:30:00");
         cut.Find("form.gallery-toolbar").Submit();
@@ -622,6 +622,7 @@ public sealed class GalleryPageTests
         var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
         navigation.NavigateTo(navigation.GetUriWithQueryParameter("from", recorded));
         var cut = context.Render<GalleryPage>();
+        Assert.AreEqual("2026-11-01T01:30:00.123", cut.Find("#galleryFrom").GetAttribute("value"));
         cut.Find("form.gallery-toolbar").Submit();
         var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(navigation.Uri).Query);
         Assert.AreEqual(recorded, query["from"].ToString());

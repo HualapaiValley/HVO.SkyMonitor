@@ -29,7 +29,9 @@ publication decision.
 Operator clocks and human-facing timestamps use the active deployment site's explicit
 IANA time zone. Offsets distinguish repeated daylight-saving hours; datetime-local
 inputs are interpreted in the labeled site zone and reject skipped or repeated
-civil times. Missing or invalid deployment zones use a visibly labeled UTC
+civil times. Inputs display browser-supported millisecond precision; unchanged
+gallery and blackout boundaries retain their exact original UTC ticks. Missing
+or invalid deployment zones use a visibly labeled UTC
 fallback. API values, storage, query instants, HTML `datetime` attributes and
 schedule calculations retain UTC. Historical reporting periods and product
 windows retain their recorded site zone, date and immutable UTC endpoints. The

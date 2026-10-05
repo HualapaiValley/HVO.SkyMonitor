@@ -47,13 +47,16 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }).ConfigureAwait(false);
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
-        await page.GotoAsync("/gallery?from=2026-07-23T20%3A00%3A00Z").ConfigureAwait(false);
+        await page.GotoAsync("/gallery?from=2026-07-23T20%3A00%3A00.1234567Z").ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        Assert.AreEqual(new DateTime(2026, 7, 24, 1, 30, 0), DateTime.Parse(await page.Locator("#galleryFrom").InputValueAsync().ConfigureAwait(false), CultureInfo.InvariantCulture));
+        Assert.AreEqual("2026-07-24T01:30:00.123", await page.Locator("#galleryFrom").InputValueAsync().ConfigureAwait(false));
         Assert.Contains("Asia/Kolkata", await page.Locator("label:has(#galleryFrom)").InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         var footer = page.Locator(".global-footer time");
         Assert.Contains("+05:30 (Asia/Kolkata)", await footer.InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         Assert.IsTrue((await footer.GetAttributeAsync("datetime").ConfigureAwait(false))!.EndsWith("+00:00", StringComparison.Ordinal));
+        await page.Locator("#gallerySearch").FillAsync("updated filter").ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => new URL(location.href).searchParams.get('from') === '2026-07-23T20:00:00.1234567+00:00'").ConfigureAwait(false);
         await page.Locator("#galleryFrom").FillAsync("2026-07-24T02:30").ConfigureAwait(false);
         await page.Locator("#galleryTo").FillAsync("2026-07-24T04:30").ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync().ConfigureAwait(false);

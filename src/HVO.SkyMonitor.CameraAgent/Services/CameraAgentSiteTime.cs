@@ -17,7 +17,14 @@ public sealed class CameraAgentSiteTime(ObservingDayCalendar calendar)
         return $"{local.ToString(format, CultureInfo.InvariantCulture)} {local.ToString("zzz", CultureInfo.InvariantCulture)} ({Label})";
     }
 
-    public string Input(DateTimeOffset instant) => Local(instant).ToString("yyyy-MM-ddTHH:mm:ss.FFFFFFF", CultureInfo.InvariantCulture);
+    public string Input(DateTimeOffset instant)
+    {
+        var local = Local(instant);
+        // HTML datetime-local supports milliseconds and normalizes zero seconds away.
+        // Callers retain the original instant when this displayed boundary is unchanged.
+        return local.ToString(local.Second == 0 && local.Millisecond == 0
+            ? "yyyy-MM-ddTHH:mm" : "yyyy-MM-ddTHH:mm:ss.FFF", CultureInfo.InvariantCulture);
+    }
 
     public bool TryInput(string? text, out DateTimeOffset? utc, out string? error)
     {
