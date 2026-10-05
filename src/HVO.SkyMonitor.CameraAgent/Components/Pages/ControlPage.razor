@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/control"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -113,7 +114,7 @@ else
 <TimeSyncPanel Generation="@_timeGeneration" />
 
 <section class="ops-panel ops-grid" aria-labelledby="control-receipts-heading">
-    <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>UTC</span></header>
+    <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>@SiteTime.Label</span></header>
     @if (_receiptsError is not null)
     {
         <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_receiptsError</span></div>

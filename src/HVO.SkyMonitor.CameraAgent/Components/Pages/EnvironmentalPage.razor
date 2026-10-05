@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/environmental"
 @page "/operations/environment"
 @layout OperationsLayout
@@ -63,8 +64,8 @@ else
                     <div><dt>Outcome</dt><dd>@OperationsPage.SplitWords(receipt.Disposition.ToString())</dd></div>
                     <div><dt>Disposition reason</dt><dd>@receipt.Reason</dd></div>
                     <div><dt>Observation</dt><dd>@(receipt.ObservationId?.ToString() ?? "No observation committed")</dd></div>
-                    <div><dt>Started</dt><dd>@FormatUtc(receipt.StartedUtc)</dd></div>
-                    <div><dt>Completed</dt><dd>@FormatUtc(receipt.CompletedUtc)</dd></div>
+                    <div><dt>Started</dt><dd>@FormatSiteTime(receipt.StartedUtc)</dd></div>
+                    <div><dt>Completed</dt><dd>@FormatSiteTime(receipt.CompletedUtc)</dd></div>
                 </dl>
             }
             @if (_commandRefreshWarning is not null)
@@ -142,7 +143,7 @@ else
                 <div><dt>Retention</dt><dd>@_status.RetentionDays days</dd></div>
                 <div><dt>Capacity rejections</dt><dd>@_status.OverflowCount.ToString("N0", CultureInfo.InvariantCulture)</dd></div>
                 <div><dt>Oldest pending</dt><dd>@OldestPendingText(_status.Delivery)</dd></div>
-                <div class="full"><dt>Last acknowledgment</dt><dd>@(_status.Delivery.LastAcknowledgedUtc is { } acknowledged ? FormatUtc(acknowledged) : _status.Delivery.ExportEnabled ? "Not yet acknowledged" : "Export disabled")</dd></div>
+                <div class="full"><dt>Last acknowledgment</dt><dd>@(_status.Delivery.LastAcknowledgedUtc is { } acknowledged ? FormatSiteTime(acknowledged) : _status.Delivery.ExportEnabled ? "Not yet acknowledged" : "Export disabled")</dd></div>
             </dl>
         </section>
     </div>
@@ -168,12 +169,12 @@ else
         {
             <div class="ops-table-wrap">
                 <table class="ops-table environment-history-table">
-                    <thead><tr><th scope="col">Observed (UTC)</th><th scope="col">Kind</th><th scope="col">Value</th><th scope="col">Source</th><th scope="col">Quality</th></tr></thead>
+                    <thead><tr><th scope="col">Observed (@SiteTime.Label)</th><th scope="col">Kind</th><th scope="col">Value</th><th scope="col">Source</th><th scope="col">Quality</th></tr></thead>
                     <tbody>
                         @foreach (var item in _history.Items)
                         {
                             <tr>
-                                <td><time datetime="@item.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@FormatUtc(item.ObservedAtUtc)</time></td>
+                                <td><time datetime="@item.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@FormatSiteTime(item.ObservedAtUtc)</time></td>
                                 <td>@OperationsPage.SplitWords(item.Kind.ToString())</td>
                                 <td><strong>@FormatReading(item)</strong>@if (item.Unit == EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond)
                                 {<small>@SkyBrightnessUnit</small>}</td>
@@ -203,12 +204,12 @@ else
         {
             <div class="ops-table-wrap">
                 <table class="ops-table environment-attempt-table">
-                    <thead><tr><th scope="col">Completed (UTC)</th><th scope="col">Source</th><th scope="col">Trigger</th><th scope="col">Outcome</th></tr></thead>
+                    <thead><tr><th scope="col">Completed (@SiteTime.Label)</th><th scope="col">Source</th><th scope="col">Trigger</th><th scope="col">Outcome</th></tr></thead>
                     <tbody>
                         @foreach (var attempt in _status.Attempts)
                         {
                             <tr>
-                                <td><time datetime="@attempt.CompletedUtc.ToString("O", CultureInfo.InvariantCulture)">@FormatUtc(attempt.CompletedUtc)</time></td>
+                                <td><time datetime="@attempt.CompletedUtc.ToString("O", CultureInfo.InvariantCulture)">@FormatSiteTime(attempt.CompletedUtc)</time></td>
                                 <td>@attempt.SourceId
                                     @if (attempt.CaptureId is { } captureId)
                                     {

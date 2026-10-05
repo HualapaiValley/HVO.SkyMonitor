@@ -9,8 +9,11 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
+public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
 {
+    private string? _blackoutInputZone;
+    private readonly Dictionary<CaptureProfileFormModel.BlackoutRow, (string? Start, string? End)> _blackoutInputs = [];
+
     private const int CalendarNights = 7;
     private static readonly TimeSpan CalendarRefreshInterval = TimeSpan.FromMinutes(5);
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
@@ -42,6 +45,7 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     private CaptureProfileFormModel? _model;
     private LocalCaptureProfileDefinition? _basisProfile;
     private bool _jsonIsTruth;
+    private bool _typedInputsValid = true;
     private bool _editorDirty;
     private EditorStep _step = EditorStep.Policy;
     private string _overrideMode = "ForceClosed";
@@ -742,16 +746,21 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     {
         _jsonIsTruth = false;
         EditorChanged();
+        _typedInputsValid = ResolveBlackoutInputs();
         // Keep the advanced view showing exactly what a command would send.
-        if (_model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
+        if (_typedInputsValid && _model is not null && _basisProfile is not null && _model.TryApply(_basisProfile, out var profile, out _))
         {
             _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
+        }
+        else
+        {
+            _typedInputsValid = false;
         }
     }
 
     private void JsonChanged()
     {
-        _jsonIsTruth = true;
+        _jsonIsTruth = _typedInputsValid;
         EditorChanged();
     }
 
@@ -771,6 +780,55 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         FormChanged();
     }
 
+    private string? BlackoutInput(CaptureProfileFormModel.BlackoutRow row, bool start)
+    {
+        if (_blackoutInputs.TryGetValue(row, out var draft)) return start ? draft.Start : draft.End;
+        var value = start ? row.StartUtc : row.EndUtc;
+        return DateTimeOffset.TryParse(value, Invariant, DateTimeStyles.AssumeUniversal, out var utc)
+            ? SiteTime.Input(utc) : value;
+    }
+
+    private void SetBlackoutInput(CaptureProfileFormModel.BlackoutRow row, bool start, ChangeEventArgs args)
+    {
+        var text = args.Value?.ToString();
+        var draft = (Start: BlackoutInput(row, true), End: BlackoutInput(row, false));
+        _blackoutInputs[row] = start ? (text, draft.End) : (draft.Start, text);
+        FormChanged();
+    }
+
+    private bool ResolveBlackoutInputs()
+    {
+        if (_blackoutInputs.Count > 0 && !string.Equals(_blackoutInputZone, SiteTime.Label, StringComparison.Ordinal))
+        {
+            SetMessage("The site time zone changed while the blackout editor was open. Reopen it before entering times.", error: true);
+            return false;
+        }
+        foreach (var row in (_model?.Blackouts ?? []).Where(_blackoutInputs.ContainsKey))
+        {
+            var draft = _blackoutInputs[row];
+            if (!ResolveBlackoutBoundary(row.StartUtc, draft.Start, out var start) ||
+                !ResolveBlackoutBoundary(row.EndUtc, draft.End, out var end)) return false;
+            row.StartUtc = start;
+            row.EndUtc = end;
+        }
+        return true;
+    }
+
+    private bool ResolveBlackoutBoundary(string recordedUtc, string? entered, out string resolvedUtc)
+    {
+        resolvedUtc = recordedUtc;
+        // The existing instant already disambiguates a fold and may contain subsecond precision.
+        if (DateTimeOffset.TryParse(recordedUtc, Invariant, DateTimeStyles.AssumeUniversal, out var recorded) &&
+            string.Equals(entered, SiteTime.Input(recorded), StringComparison.Ordinal)) return true;
+        if (!SiteTime.TryInput(entered, out var instant, out var error) || instant is null)
+        {
+            SetMessage(error ?? "Both blackout times are required.", error: true);
+            return false;
+        }
+        resolvedUtc = instant.Value.ToString("O", Invariant);
+        return true;
+    }
+
     private void AddBlackout() { _model?.AddBlackout(); FormChanged(); }
 
     private void RemoveSetpoint(CaptureProfileFormModel.SetpointProfileRow row) { _model?.Setpoints.Remove(row); FormChanged(); }
@@ -782,6 +840,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
     /// <summary>Loads a sanitized profile into both the typed form and the canonical JSON view.</summary>
     private void LoadEditor(LocalCaptureProfileDefinition profile)
     {
+        _blackoutInputZone = SiteTime.Label;
+        _blackoutInputs.Clear();
+        _typedInputsValid = true;
         _basisProfile = profile;
         _model = CaptureProfileFormModel.FromProfile(profile);
         _editorJson = CameraAgentScheduleUiService.SerializeProfile(profile);
@@ -799,6 +860,11 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         {
             editorJson = _editorJson;
             return true;
+        }
+        if (!ResolveBlackoutInputs())
+        {
+            editorJson = string.Empty;
+            return false;
         }
         if (!_model.TryApply(_basisProfile, out var profile, out var errors))
         {
@@ -856,9 +922,9 @@ public sealed partial class SchedulePage : ComponentBase, IAsyncDisposable
         return new DateTime(local.Year, local.Month, local.Day, local.Hour, local.Minute, 0, DateTimeKind.Unspecified);
     }
 
-    private string Clock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("HH:mm", Invariant);
+    private string Clock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("HH:mm zzz", Invariant);
 
-    private string DayClock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("ddd d MMM HH:mm", Invariant);
+    private string DayClock(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, _timeZone).ToString("ddd d MMM HH:mm zzz", Invariant);
 
     private static string? SegmentClass(CameraAgentScheduleSegment segment) => segment switch
     {

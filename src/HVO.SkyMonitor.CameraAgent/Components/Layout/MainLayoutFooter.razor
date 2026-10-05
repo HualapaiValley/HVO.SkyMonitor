@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 <footer class="global-footer">
     <section class="global-footer__section global-footer__section--left">
         <span class="footer-chip" title="Local CameraAgent workspace, not a health indicator">
@@ -9,7 +10,7 @@
     <section class="global-footer__section global-footer__section--center">
         <span class="footer-chip" title="@LocalTimeTooltip">
             <i class="bi bi-clock-history me-2"></i>
-            @LocalTimeDisplay
+            <time datetime="@_clockInstantUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture)">@LocalTimeDisplay</time>
         </span>
     </section>
 

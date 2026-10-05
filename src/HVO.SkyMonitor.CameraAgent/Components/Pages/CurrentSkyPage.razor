@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/"
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
@@ -18,7 +19,7 @@
             <h1 id="current-sky-heading" tabindex="-1">@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</h1>
             @if (IsArchived)
             {
-                <p><time datetime="@ArchivedView!.Capture.ExposureStartedUtc.ToString("O")">@ArchivedView.Capture.ExposureStartedUtc.ToString("yyyy-MM-dd HH:mm:ss.fff") UTC</time>. This view stays on the selected capture as new images arrive.</p>
+                <p><time datetime="@ArchivedView!.Capture.ExposureStartedUtc.ToString("O")">@SiteTime.Format(ArchivedView.Capture.ExposureStartedUtc)</time>. This view stays on the selected capture as new images arrive.</p>
             }
             else
             {
@@ -63,7 +64,7 @@
             <div><dt>@(IsArchived ? "Selected capture" : "Current capture")</dt><dd>@(_presentation?.LatestCapture is { } latest ? $"#{latest.CaptureSequence}" : "Unavailable")</dd></div>
             @if (IsArchived)
             {
-                <div><dt>Captured UTC</dt><dd>@ArchivedView!.Capture.ExposureStartedUtc.ToString("HH:mm:ss")</dd></div>
+                <div><dt>Captured</dt><dd>@SiteTime.Format(ArchivedView!.Capture.ExposureStartedUtc)</dd></div>
             }
             else
             {
@@ -298,7 +299,7 @@
                     <dl>
                         <div><dt>Exposure</dt><dd>@FormatExposure(_facts?.ExposureMilliseconds)</dd></div>
                         <div><dt>Gain</dt><dd>@(_facts?.Gain?.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable")</dd></div>
-                        <div><dt>Exposure start</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToString("HH:mm:ss.fff") UTC</time></dd></div>
+                        <div><dt>Exposure start</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@SiteTime.Format(capture.ExposureStartedUtc)</time></dd></div>
                         <div><dt>Sensor temperature</dt><dd>@(_facts?.SensorTemperatureC is { } temperature ? FormattableString.Invariant($"{temperature:0.#} C") : "Unavailable")</dd></div>
                         <div><dt>Dimensions</dt><dd>@(_facts is { Width: { } width, Height: { } height } ? $"{width} x {height}" : "Unavailable")</dd></div>
                         <div><dt>Presentation</dt><dd>@StageFactLabel</dd></div>
@@ -310,7 +311,7 @@
                     @if (!IsArchived) { <p class="summary-copy">@SummaryMessage</p> }
                     @if (_facts?.CombinedLineageUnavailable == true) { <p class="facts-unavailable" role="status">Combined stage lineage is not available in this bounded view.</p> }
                     @if (_factsUnavailableReason is not null) { <p class="facts-unavailable" role="status">@_factsUnavailableReason</p> }
-                    @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p> }
+                    @if (_presentation?.System.NextTransitionUtc is { } nextTransition) { <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@SiteTime.Format(nextTransition)</time>.</p> }
                     @if (!IsArchived) { <a class="inline-action layers-link" href="@DetailUrl">View immutable raw source</a> }
                 }
                 else

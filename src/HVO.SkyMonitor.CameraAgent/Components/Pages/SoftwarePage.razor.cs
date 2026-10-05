@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// snapshot it validated at startup. Availability checks and on-demand checksum verification have no bounded
 /// in-app command, so they stay disabled with the reason; install, select and rollback remain installer driven.
 /// </summary>
-public sealed partial class SoftwarePage : ComponentBase, IDisposable
+public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
 {
     private const string AvailabilityUnavailableReason =
         "This page never contacts a package source. hvo-skymonitor status reports what is installed, and hvo-skymonitor catalog install adds a package.";
@@ -64,8 +64,7 @@ public sealed partial class SoftwarePage : ComponentBase, IDisposable
 
     private static string Number(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("d MMM yyyy, HH:mm 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     public void Dispose()
     {

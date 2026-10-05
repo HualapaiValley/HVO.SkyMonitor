@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/schedule"
 @page "/operations/schedule"
 @layout OperationsLayout
@@ -417,7 +418,7 @@ else
 
             <section class="schedule-step" hidden="@(_step != EditorStep.Blackouts)" aria-labelledby="schedule-step-blackouts">
                 <h3 id="schedule-step-blackouts" class="visually-hidden">Blackouts</h3>
-                <p class="dialog-intro">A blackout closes capture for a fixed span regardless of windows and overrides. Enter instants in UTC, for example 2026-10-05T18:00:00Z.</p>
+                <p class="dialog-intro">A blackout closes capture for a fixed span regardless of windows and overrides. Enter dates and times in @SiteTime.Label. Repeated or skipped daylight-saving hours cannot identify one instant.</p>
                 <fieldset class="editor-group" disabled="@_busy">
                     <legend>Blackouts</legend>
                     @if (_model.Blackouts.Count == 0)
@@ -429,8 +430,8 @@ else
                         {
                             <li class="editor-card" @key="blackout">
                                 <label class="ops-field">Identifier<input @bind="blackout.Id" @bind:after="FormChanged" /></label>
-                                <label class="ops-field">Start UTC<input @bind="blackout.StartUtc" @bind:after="FormChanged" /></label>
-                                <label class="ops-field">End UTC<input @bind="blackout.EndUtc" @bind:after="FormChanged" /></label>
+                                <label class="ops-field">Start (@SiteTime.Label)<input type="datetime-local" step="any" value="@BlackoutInput(blackout, true)" @onchange="args => SetBlackoutInput(blackout, true, args)" /></label>
+                                <label class="ops-field">End (@SiteTime.Label)<input type="datetime-local" step="any" value="@BlackoutInput(blackout, false)" @onchange="args => SetBlackoutInput(blackout, false, args)" /></label>
                                 <button type="button" class="button secondary small" aria-label="Remove blackout @blackout.Id" @onclick="() => RemoveBlackout(blackout)">Remove</button>
                             </li>
                         }
@@ -504,7 +505,11 @@ else
                 <details class="editor-advanced">
                     <summary>Advanced canonical JSON</summary>
                     <p class="editor-note">Edits here replace the typed fields until you change a typed field, which rewrites this text from the form. Opaque module and step options are restored from the basis revision by the server.</p>
-                    <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="JsonChanged" disabled="@_busy" spellcheck="false"></textarea>
+                    @if (!_typedInputsValid)
+                    {
+                        <p class="editor-note">Correct the typed fields before editing canonical JSON so those changes are preserved.</p>
+                    }
+                    <textarea aria-label="Local profile JSON" @bind="_editorJson" @bind:event="oninput" @bind:after="JsonChanged" disabled="@(_busy || !_typedInputsValid)" spellcheck="false"></textarea>
                     <span>@_editorJson.Length chars</span>
                 </details>
             </section>

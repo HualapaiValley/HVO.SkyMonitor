@@ -6,7 +6,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
+public sealed partial class StoragePage : SiteTimeComponent, IAsyncDisposable
 {
     private const string PolicyTriggerId = "storage-policy";
     private const string FocusFallbackId = "storage-refresh";
@@ -80,7 +80,7 @@ public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
         {
             var oldest = Holds.Where(static hold => hold.OldestUtc is not null).MinBy(static hold => hold.OldestUtc);
             return oldest?.OldestUtc is { } value
-                ? $"{FormatUtc(value)}, {oldest.Label}"
+                ? $"{FormatSiteTime(value)}, {oldest.Label}"
                 : "Nothing is waiting";
         }
     }
@@ -109,7 +109,7 @@ public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
                 var problems = raw.Quarantined + raw.MissingEvidence + raw.IndexProjectionFailures;
                 yield return new ReconciliationLine(problems > 0 ? "failed" : string.Empty, string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Raw ingress at startup, {FormatUtc(raw.CompletedUtc)}: {Count(raw.Inspected, "frame", "frames")} inspected, {raw.Recovered} recovered, {raw.Cleaned} cleaned up."));
+                    $"Raw ingress at startup, {FormatSiteTime(raw.CompletedUtc)}: {Count(raw.Inspected, "frame", "frames")} inspected, {raw.Recovered} recovered, {raw.Cleaned} cleaned up."));
                 if (raw.Quarantined > 0 || raw.MissingEvidence > 0)
                 {
                     yield return new ReconciliationLine("failed", string.Create(
@@ -131,14 +131,14 @@ public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
             }
             else if (!derived.Succeeded)
             {
-                yield return new ReconciliationLine("failed", $"Derived products: the check at {FormatUtc(derived.CompletedUtc)} failed. It runs again within 5 minutes.");
+                yield return new ReconciliationLine("failed", $"Derived products: the check at {FormatSiteTime(derived.CompletedUtc)} failed. It runs again within 5 minutes.");
             }
             else
             {
                 var problems = derived.Missing + derived.Quarantined;
                 yield return new ReconciliationLine(problems > 0 ? "failed" : string.Empty, string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Derived products, {FormatUtc(derived.CompletedUtc)}: {Count(derived.Inspected, "product", "products")} inspected, {derived.Recoverable} recoverable, {derived.Cleaned} cleaned up."));
+                    $"Derived products, {FormatSiteTime(derived.CompletedUtc)}: {Count(derived.Inspected, "product", "products")} inspected, {derived.Recoverable} recoverable, {derived.Cleaned} cleaned up."));
                 if (problems > 0)
                 {
                     yield return new ReconciliationLine("failed", string.Create(
@@ -315,8 +315,7 @@ public sealed partial class StoragePage : ComponentBase, IAsyncDisposable
     private static string Count(long value, string singular, string plural)
         => string.Create(CultureInfo.InvariantCulture, $"{value:N0} {(value == 1 ? singular : plural)}");
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("MMM d, HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     public async ValueTask DisposeAsync()
     {

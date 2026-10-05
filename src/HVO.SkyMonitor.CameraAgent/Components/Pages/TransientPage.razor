@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/transients"
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -21,8 +22,8 @@
             else if (_errorMessage is not null) { <strong>Unavailable</strong><small>The latest candidate could not be read</small> }
             else if (Latest is { } latest)
             {
-                <strong>@TimeZoneInfo.ConvertTime(RecordedUtc(latest), _calendar.TimeZone).ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</strong>
-                <small>@ObservingDateLabel(latest) reporting date · @UtcTime(RecordedUtc(latest))</small>
+                <strong>@TimeZoneInfo.ConvertTime(RecordedUtc(latest), _calendar.TimeZone).ToString("HH:mm:ss zzz", System.Globalization.CultureInfo.InvariantCulture)</strong>
+                <small>@ObservingDateLabel(latest) reporting date · @SiteTimestamp(RecordedUtc(latest))</small>
             }
             else { <strong>Unavailable</strong><small>No retained candidate on this page</small> }
         </article>
@@ -72,7 +73,7 @@
                             <span>@day.Day</span>
                             @foreach (var candidate in matches)
                             {
-                                <a href="@DetailUrl(candidate.CandidateId)" aria-label="@($"Open {CameraAgentEventFacts.Title(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence)} on observing date {day:yyyy-MM-dd}")">@CameraAgentEventFacts.Classification(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence) · @TimeZoneInfo.ConvertTime(RecordedUtc(candidate), _calendar.TimeZone).ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)</a>
+                                <a href="@DetailUrl(candidate.CandidateId)" aria-label="@($"Open {CameraAgentEventFacts.Title(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence)} on observing date {day:yyyy-MM-dd}")">@CameraAgentEventFacts.Classification(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence) · @TimeZoneInfo.ConvertTime(RecordedUtc(candidate), _calendar.TimeZone).ToString("HH:mm:ss zzz", System.Globalization.CultureInfo.InvariantCulture)</a>
                             }
                         </div>
                     }
@@ -95,7 +96,7 @@
                         <a class="event-card-media" href="@DetailUrl(candidate.CandidateId)" aria-label="Open exact candidate evidence">
                             @if (evidence?.Reference?.Image is { } image && !_failedPreviews.Contains(candidate.CandidateId)) { <RetainedPreviewImage Source="@image.PreviewUrl!.OriginalString" Alt="Exact candidate source frame; extracted event media is unavailable" OnFailure="() => MarkPreviewFailed(candidate.CandidateId)" /> }
                             else { <div class="event-media-placeholder">Candidate source image unavailable</div> }
-                            <span>@UtcTime(RecordedUtc(candidate)) @(evidence?.Reference?.Source is null ? "· candidate recorded" : "· source observed")</span>
+                            <span>@SiteTimestamp(RecordedUtc(candidate)) @(evidence?.Reference?.Source is null ? "· candidate recorded" : "· source observed")</span>
                         </a>
                         <div class="event-card-main">
                             <header><div><p class="eyebrow">@ObservingDateLabel(candidate) reporting date / Local camera</p><h2>@CameraAgentEventFacts.Title(assessment)</h2></div><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(assessment)">@CameraAgentEventFacts.Classification(assessment)</span></header>

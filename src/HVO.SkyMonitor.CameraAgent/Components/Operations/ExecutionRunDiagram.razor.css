@@ -47,6 +47,8 @@
 .node-title strong { overflow:hidden; font-size:.76rem; text-overflow:ellipsis; white-space:nowrap; }
 .node-title small { margin-top:.23rem; overflow:hidden; color:var(--muted); font-size:.59rem; letter-spacing:.02em; text-overflow:ellipsis; white-space:nowrap; }
 .node-duration { color:var(--hvo-muted-strong); font:650 .62rem ui-monospace,monospace; white-space:nowrap; }
+.run-diagram__transient-node .node-heading { grid-template-columns:auto minmax(0,1fr); }
+.node-recorded-time { color:var(--hvo-muted-strong); font:.56rem ui-monospace,monospace; white-space:nowrap; }
 .node-footer { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-top:.75rem; padding-top:.52rem; border-top:1px solid rgba(58,74,96,.55); color:var(--muted); font-size:.56rem; }
 .requirement { padding:.12rem .3rem; border:1px solid var(--border); border-radius:999px; text-transform:uppercase; }
 .requirement.optional { border-style:dashed; }

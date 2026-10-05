@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingGraphDetailPage : ComponentBase
+public sealed partial class ProcessingGraphDetailPage : SiteTimeComponent
 {
     private CameraAgentProcessingGraphRevisionDetail? _detail;
     private string? _message;
