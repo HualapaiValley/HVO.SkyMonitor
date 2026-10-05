@@ -2211,6 +2211,9 @@ public sealed class ProcessingGraphOperationsTests
                     CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
                 };
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await operations.EnsureConfiguredBasicAsync(CreateConfiguration(), CancellationToken.None).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => operations.EnsureConfiguredBasicAsync(
+                    retained, CancellationToken.None).AsTask()).ConfigureAwait(false);
                 _ = await operations.EnsureConfiguredBasicAsync(current, CancellationToken.None).ConfigureAwait(false);
                 await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);
                 await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);

@@ -43,6 +43,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private CameraModuleConfig? _baseConfiguration;
     private string? _configuredPipelineIdentity;
     private bool _configuredPipelineRetained;
+    private string? _configuredModuleType;
 
     public ProcessingGraphOperationsCoordinator(
         ICaptureProcessingPipelineFactory pipelineFactory,
@@ -79,7 +80,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             Volatile.Write(ref _baseConfiguration, configuration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
             if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
-                _configuredPipelineRetained == retainedCapture)
+                _configuredPipelineRetained == retainedCapture &&
+                string.Equals(_configuredModuleType, configuration.ModuleType, StringComparison.OrdinalIgnoreCase))
             {
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -109,6 +111,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
             _configuredPipelineIdentity = pipelineIdentity;
             _configuredPipelineRetained = retainedCapture;
+            _configuredModuleType = configuration.ModuleType;
             return state;
         }
         finally
