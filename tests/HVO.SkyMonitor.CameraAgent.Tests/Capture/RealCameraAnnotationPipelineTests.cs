@@ -19,7 +19,7 @@ public sealed class RealCameraAnnotationPipelineTests
     private static readonly string[] ExpectedConstellationIds = ["TST"];
 
     [TestMethod]
-    public async Task ConfiguredPipeline_AnnotatesOnlyRealFrameDerivativeWithClippedConstellationGeometry()
+    public async Task RetainedPipeline_AnnotatesOnlyRealFrameDerivativeWithClippedConstellationGeometry()
     {
         var catalog = CreateCatalog();
         var topology = new InMemoryConstellationTopology([
@@ -30,7 +30,11 @@ public sealed class RealCameraAnnotationPipelineTests
             new string('A', 64), "CC0", "fixture-v1"));
         var config = CreateConfig();
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+        // This legacy-v1 retained graph preserves its inline geometry behavior. New acquisition is covered
+        // by PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage.
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        var pipeline = factory.CreateRetainedGraph(config).Nodes
             .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[checked(200 * 200 * 2)];
         var expectedRawBytes = rawBytes.ToArray();
@@ -101,7 +105,7 @@ public sealed class RealCameraAnnotationPipelineTests
     }
 
     [TestMethod]
-    public async Task ConfiguredPipeline_AnnotatesBayerPreviewWithoutChangingRawPhotosites()
+    public async Task RetainedPipeline_AnnotatesBayerPreviewWithoutChangingRawPhotosites()
     {
         var catalog = CreateCatalog();
         var topology = new InMemoryConstellationTopology([
@@ -109,7 +113,9 @@ public sealed class RealCameraAnnotationPipelineTests
         ]);
         var config = CreateConfig(pixelFormat: CameraPixelFormat.BayerRggb16);
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        var pipeline = factory.CreateRetainedGraph(config).Nodes
             .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[200 * 200 * 2];
         var expectedRawBytes = rawBytes.ToArray();

@@ -352,16 +352,23 @@ public sealed class ManualFocusSessionCoordinatorTests
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
         await fixture.PublishVirtualSkyAsync().ConfigureAwait(false);
-        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System,
+        // Advance only the observer clock: cold renderer/JIT work must not consume a synthetic heartbeat.
+        // Sampling and its cancellation timers remain real, so the capture admission/release path is exercised.
+        var clock = new ObserverTimeProvider();
+        using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, clock,
             Limits(observerTimeout: TimeSpan.FromMilliseconds(400)));
         var session = await coordinator.StartAsync(new(Gain20, 560), "alice", CancellationToken.None).ConfigureAwait(false);
 
         for (var beat = 0; beat < 12; beat++)
         {
-            await Task.Delay(100).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromMilliseconds(100));
             coordinator.Observe(session.SessionId, "alice");
+            var previousSamples = coordinator.Snapshot.TotalSamples;
+            await FocusWait.UntilAsync(coordinator, snapshot => snapshot.TotalSamples > previousSamples,
+                "a sample after the heartbeat").ConfigureAwait(false);
         }
         var watched = coordinator.Snapshot;
+        clock.Advance(TimeSpan.FromMilliseconds(401));
         var ended = await FocusWait.EndedAsync(coordinator).ConfigureAwait(false);
 
         Assert.AreEqual(ManualFocusSessionState.Running, watched.State, "Observing must keep the session alive.");
@@ -722,4 +729,14 @@ public sealed class ManualFocusSessionCoordinatorTests
         await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(() =>
             unretained.SaveAsync(transient.SessionId, "alice", CancellationToken.None)).ConfigureAwait(false);
     }
+
+    private sealed class ObserverTimeProvider : TimeProvider
+    {
+        private long _utcTicks = DateTimeOffset.UtcNow.UtcTicks;
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan elapsed) => Interlocked.Add(ref _utcTicks, elapsed.Ticks);
+    }
+
 }
