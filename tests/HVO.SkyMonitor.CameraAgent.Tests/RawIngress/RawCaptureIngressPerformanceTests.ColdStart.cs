@@ -155,8 +155,15 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Health = health.Status.ToString(),
             Logs = logger.Events,
             Spans = spans,
-            Sqlite = new { telemetry.LockWaitSamples, LockWaitMilliseconds = telemetry.TotalLockWait.TotalMilliseconds,
-                telemetry.TransactionCount, telemetry.TransactionFailureCount, telemetry.CheckpointCount, telemetry.CheckpointFailureCount },
+            Sqlite = new
+            {
+                telemetry.LockWaitSamples,
+                LockWaitMilliseconds = telemetry.TotalLockWait.TotalMilliseconds,
+                telemetry.TransactionCount,
+                telemetry.TransactionFailureCount,
+                telemetry.CheckpointCount,
+                telemetry.CheckpointFailureCount
+            },
             Reconciliation = state.LastReconciliation,
             StageOwners = stages.Count,
             Fingerprint = fingerprint,

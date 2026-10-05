@@ -150,6 +150,16 @@ location keys, identity and provisioning state are all disposable copies.
 
 ## Immutable measured binaries
 
+After these measurements, a correctness audit extended the cursor from a
+zero-based exclusive lower bound to an inclusive `Int64.MinValue` lower bound,
+then advances to `rowId + 1` with an explicit `Int64.MaxValue` stop. The canonical
+schema permits zero and negative keys; a valid-schema regression checks minimum,
+zero and maximum keys. On this fixture's positive integer keys, each subsequent
+`rowId >= previous + 1` selects exactly the same rows as `rowId > previous`.
+The key range/order/one-row limit, manifest work, cache bounds and reader lifetime
+are unchanged. The measured binaries below remain immutable; these measurements
+are not represented as a new execution of that later boundary correction.
+
 SHA-256 values:
 
 - baseline Common: `b047a91b784ef4236b3a16e421cf1c65c1f97ec577c563a414d6b7c64e6963ca`

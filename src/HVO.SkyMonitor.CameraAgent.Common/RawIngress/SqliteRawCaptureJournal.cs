@@ -535,7 +535,7 @@ internal sealed class SqliteRawCaptureJournal(
     /// <summary>
     /// Visits one manifest at a time using the primary-key cursor. Each reader closes before the caller
     /// validates payloads or repairs state, so slow file I/O cannot pin the WAL for the entire history.
-    /// The initial high-water mark excludes captures committed after enumeration starts.
+    /// The initial high-water mark bounds the scan while each reader remains short-lived.
     /// </summary>
     internal IAsyncEnumerable<RawIngressJournalEntry> EnumerateAsync(CancellationToken cancellationToken)
         => EnumerateCoreAsync(unboundLiveOnly: false, cancellationToken);
@@ -564,7 +564,7 @@ internal sealed class SqliteRawCaptureJournal(
                                              AND work.lane_name = 'standard'
                 LEFT JOIN processing_executions execution ON execution.capture_id = raw.capture_id
                                                            AND execution.execution_class = 'Live'
-                WHERE raw.raw_capture_row_id > $cursor AND raw.raw_capture_row_id <= $maximum
+                WHERE raw.raw_capture_row_id >= $cursor AND raw.raw_capture_row_id <= $maximum
                   AND raw.state = 'committed' AND work.state IN ('pending', 'leased', 'retry_wait')
                   AND execution.execution_id IS NULL
                 ORDER BY raw.raw_capture_row_id LIMIT 1;
@@ -579,23 +579,27 @@ internal sealed class SqliteRawCaptureJournal(
                        exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold, evidence_origin,
                        raw_capture_row_id
                 FROM raw_captures
-                WHERE raw_capture_row_id > $cursor AND raw_capture_row_id <= $maximum
+                WHERE raw_capture_row_id >= $cursor AND raw_capture_row_id <= $maximum
                 ORDER BY raw_capture_row_id LIMIT 1;
                 """;
         }
-        var cursor = command.Parameters.AddWithValue("$cursor", 0L);
+        // INTEGER PRIMARY KEY permits every Int64 value, including zero and negative retained keys.
+        var cursor = command.Parameters.AddWithValue("$cursor", long.MinValue);
         command.Parameters.AddWithValue("$maximum", maximumRowId);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             RawIngressJournalEntry entry;
+            long rowId;
             using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) yield break;
                 entry = ReadEntry(reader);
-                cursor.Value = reader.GetInt64(16);
+                rowId = reader.GetInt64(16);
             }
             yield return entry;
+            if (rowId == long.MaxValue) yield break;
+            cursor.Value = rowId + 1;
         }
     }
 
