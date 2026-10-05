@@ -9,9 +9,15 @@ internal static class CentralTimeLapseProductIdentity
     internal static Guid Compute(CentralTimeLapseProduct product)
         => ProcessingIdentity.CreateArtifactId(CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            request = product.RequestIdentity, product.Encoding.EncodingIdentitySha256, product.Encoding.PayloadSha256,
-            timeline = product.Timeline, frames = product.Frames, segments = product.SegmentProductIds,
-            exclusions = product.Exclusions, gaps = product.HasGaps, gap = product.IsGapFiller
+            request = product.RequestIdentity,
+            product.Encoding.EncodingIdentitySha256,
+            product.Encoding.PayloadSha256,
+            timeline = product.Timeline,
+            frames = product.Frames,
+            segments = product.SegmentProductIds,
+            exclusions = product.Exclusions,
+            gaps = product.HasGaps,
+            gap = product.IsGapFiller
         }));
 
     internal static void Validate(CentralTimeLapseProduct product)

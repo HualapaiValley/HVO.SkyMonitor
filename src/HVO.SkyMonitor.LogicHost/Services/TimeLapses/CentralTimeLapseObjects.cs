@@ -153,8 +153,10 @@ internal sealed class CentralTimeLapseObjects(IObjectStore objects, CentralObjec
             ObjectDisposedException.ThrowIf(_disposed, this);
             var position = origin switch
             {
-                SeekOrigin.Begin => offset, SeekOrigin.Current => checked(_position + offset),
-                SeekOrigin.End => checked(length + offset), _ => throw new ArgumentOutOfRangeException(nameof(origin))
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => checked(_position + offset),
+                SeekOrigin.End => checked(length + offset),
+                _ => throw new ArgumentOutOfRangeException(nameof(origin))
             };
             if (position < 0 || position > length) throw new IOException("Video range is outside the retained payload.");
             return _position = position;

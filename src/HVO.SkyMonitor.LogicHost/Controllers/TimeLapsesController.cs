@@ -50,7 +50,8 @@ internal sealed class TimeLapsesController(CentralTimeLapseCatalog catalog, Cent
             Response.Headers["X-Artifact-SHA256"] = product.Encoding.PayloadSha256;
             return new FileStreamResult(stream, "video/mp4")
             {
-                EnableRangeProcessing = true, EntityTag = new EntityTagHeaderValue($"\"{product.Encoding.PayloadSha256}\""),
+                EnableRangeProcessing = true,
+                EntityTag = new EntityTagHeaderValue($"\"{product.Encoding.PayloadSha256}\""),
                 FileDownloadName = download ? $"time-lapse-{productId:D}.mp4" : null
             };
         }

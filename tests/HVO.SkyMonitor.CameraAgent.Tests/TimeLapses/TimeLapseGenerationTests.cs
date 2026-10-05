@@ -209,8 +209,11 @@ public sealed class TimeLapseGenerationTests
         Sensor = NightlyProductFixture.Rig.Sensor with { WidthPixels = 512, HeightPixels = 512, StrideBytes = 1024 },
         Optics = NightlyProductFixture.Rig.Optics with
         {
-            PrincipalPointX = 256, PrincipalPointY = 256, ImageCircleRadiusPixels = 255,
-            FocalLengthXPixels = 510 / Math.PI, FocalLengthYPixels = 510 / Math.PI
+            PrincipalPointX = 256,
+            PrincipalPointY = 256,
+            ImageCircleRadiusPixels = 255,
+            FocalLengthXPixels = 510 / Math.PI,
+            FocalLengthYPixels = 510 / Math.PI
         }
     };
 }

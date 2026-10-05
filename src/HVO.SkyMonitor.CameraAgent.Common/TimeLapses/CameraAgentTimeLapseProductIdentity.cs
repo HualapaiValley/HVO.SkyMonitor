@@ -9,10 +9,18 @@ internal static class CameraAgentTimeLapseProductIdentity
     internal static string Compute(CameraAgentTimeLapseProduct product)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            version = "hvo-cameraagent-timelapse-product-v1", product.JobId, window = product.WindowIdentitySha256,
-            preset = product.PresetIdentitySha256, timeline = product.Timeline, frames = product.Frames,
-            segments = product.SegmentProductIds, exclusions = product.Exclusions,
-            product.Encoding.EncodingIdentitySha256, product.Encoding.PayloadSha256, gaps = product.HasGaps, gapFiller = product.IsGapFiller
+            version = "hvo-cameraagent-timelapse-product-v1",
+            product.JobId,
+            window = product.WindowIdentitySha256,
+            preset = product.PresetIdentitySha256,
+            timeline = product.Timeline,
+            frames = product.Frames,
+            segments = product.SegmentProductIds,
+            exclusions = product.Exclusions,
+            product.Encoding.EncodingIdentitySha256,
+            product.Encoding.PayloadSha256,
+            gaps = product.HasGaps,
+            gapFiller = product.IsGapFiller
         });
 
     internal static void Validate(CameraAgentTimeLapseProduct product)

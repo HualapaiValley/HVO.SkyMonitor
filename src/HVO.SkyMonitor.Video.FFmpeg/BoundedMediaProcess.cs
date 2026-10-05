@@ -29,8 +29,11 @@ internal sealed class BoundedMediaProcess(FFmpegOptions options)
         var oneCpu = affinity & (~affinity + 1);
         var start = new ProcessStartInfo("/usr/bin/prlimit")
         {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, WorkingDirectory = directory
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = directory
         };
         foreach (var item in new[]
         {

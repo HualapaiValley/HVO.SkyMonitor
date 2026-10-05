@@ -88,11 +88,15 @@ public sealed partial class FFmpegTimeLapseEncoder
             var path = Path.Combine(directory, "video.mp4");
             var timelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
             {
-                schema = "hvo-timelapse-hourly-assembly-v1", compression,
+                schema = "hvo-timelapse-hourly-assembly-v1",
+                compression,
                 segments = segments.Select(segment => new
                 {
-                    segment.StartUtc, segment.EndUtc, segment.Evidence.TimelineIdentitySha256,
-                    segment.Evidence.EncodingIdentitySha256, segment.Evidence.PayloadSha256
+                    segment.StartUtc,
+                    segment.EndUtc,
+                    segment.Evidence.TimelineIdentitySha256,
+                    segment.Evidence.EncodingIdentitySha256,
+                    segment.Evidence.PayloadSha256
                 })
             });
             var evidence = new TimeLapseEncodingEvidence(ProfileVersion, first.Profile, capability, timelineIdentity,

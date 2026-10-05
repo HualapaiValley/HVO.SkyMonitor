@@ -90,8 +90,14 @@ public sealed class CentralTimeLapseNativeTests
                 children.Add(await store.EnqueueAsync(_ => Task.FromResult(empty), CancellationToken.None));
             }
         }
-        var dailyRequest = template with { StartUtc = template.Period.StartUtc, EndUtc = template.Period.EndUtc,
-            EligibleUtc = template.Period.EndUtc.AddMinutes(10), IsDaily = true, HourlyJobIds = children };
+        var dailyRequest = template with
+        {
+            StartUtc = template.Period.StartUtc,
+            EndUtc = template.Period.EndUtc,
+            EligibleUtc = template.Period.EndUtc.AddMinutes(10),
+            IsDaily = true,
+            HourlyJobIds = children
+        };
         var dailyId = await store.EnqueueAsync(_ => Task.FromResult(dailyRequest), CancellationToken.None);
         for (var count = 0; count < hours.Count; count++)
         {
@@ -168,9 +174,16 @@ public sealed class CentralTimeLapseNativeTests
         var descriptor = ProcessingConformanceFixture.CreateDescriptor();
         var frame = new CentralFrame
         {
-            RegistrationId = Guid.NewGuid(), DevicePublicId = request.DevicePublicId, ObservatoryId = request.ObservatoryId,
-            AgentId = $"video-{request.DevicePublicId:N}", FrameId = Guid.NewGuid(), CaptureSequence = index + 1, RigId = "video-rig",
-            CapturedAtUtc = utc, FirstReceivedAtUtc = DateTimeOffset.UtcNow, LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+            RegistrationId = Guid.NewGuid(),
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = request.ObservatoryId,
+            AgentId = $"video-{request.DevicePublicId:N}",
+            FrameId = Guid.NewGuid(),
+            CaptureSequence = index + 1,
+            RigId = "video-rig",
+            CapturedAtUtc = utc,
+            FirstReceivedAtUtc = DateTimeOffset.UtcNow,
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
             Timing = new() { RequestedStartUtc = utc, ExposureStartedUtc = utc, ExposureEndedUtc = utc + exposure, ReadoutCompletedUtc = utc + exposure, DurableIngressUtc = utc + exposure },
             Control = new() { RequestedExposureTicks = exposure.Ticks, EffectiveExposureTicks = exposure.Ticks, RequestedGain = 150, EffectiveGain = 150 },
             Location = new() { LocationId = request.Period.Site.LocationId, Version = request.Period.Site.Version, Source = request.Period.Site.Source, EffectiveFromUtc = request.Period.Site.EffectiveFromUtc }
@@ -186,16 +199,48 @@ public sealed class CentralTimeLapseNativeTests
         var recipe = descriptor.Artifact.Recipe;
         var artifact = new CentralArtifact
         {
-            Id = id, Frame = frame, CentralFrameId = frame.Id, ArtifactId = Guid.NewGuid(), DevicePublicId = request.DevicePublicId,
-            Role = FrameArtifactRole.Raw, RecipeVersion = "raw-v1", ManifestSchemaVersion = "v2", MediaType = "application/x-hvo-frame",
-            ByteLength = pixels.Length, ChecksumSha256 = Convert.ToHexString(SHA256.HashData(pixels)), StorageReference = names.ArtifactPrefix + key,
-            ReceivedAtUtc = DateTimeOffset.UtcNow, IdempotencyKey = Convert.ToHexString(SHA256.HashData(id.ToByteArray())), SourceId = "VirtualSky", Variant = "source",
-            CreatedUtc = utc + exposure, ObjectState = CentralArtifactObjectState.Available, ReconstructionState = CentralReconstructionState.Complete,
-            Layout = new() { Width = 512, Height = 512, StrideBytes = 1024, PixelFormat = nameof(CameraPixelFormat.Mono16),
-                ByteOrder = nameof(FrameByteOrder.LittleEndian), SampleDepthBits = 16, ContainerDepthBits = 16, Packing = nameof(FrameSamplePacking.ByteAligned),
-                CfaPattern = nameof(ColorFilterArrayPattern.None), BlackLevel = 0, WhiteLevel = 65535, ByteLength = pixels.Length },
-            Recipe = new() { Name = recipe.Name, SemanticVersion = recipe.SemanticVersion, ImplementationVersion = recipe.ImplementationVersion,
-                OptionsJson = JsonSerializer.Serialize(recipe.Options), OptionsSha256 = recipe.OptionsSha256 }
+            Id = id,
+            Frame = frame,
+            CentralFrameId = frame.Id,
+            ArtifactId = Guid.NewGuid(),
+            DevicePublicId = request.DevicePublicId,
+            Role = FrameArtifactRole.Raw,
+            RecipeVersion = "raw-v1",
+            ManifestSchemaVersion = "v2",
+            MediaType = "application/x-hvo-frame",
+            ByteLength = pixels.Length,
+            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(pixels)),
+            StorageReference = names.ArtifactPrefix + key,
+            ReceivedAtUtc = DateTimeOffset.UtcNow,
+            IdempotencyKey = Convert.ToHexString(SHA256.HashData(id.ToByteArray())),
+            SourceId = "VirtualSky",
+            Variant = "source",
+            CreatedUtc = utc + exposure,
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete,
+            Layout = new()
+            {
+                Width = 512,
+                Height = 512,
+                StrideBytes = 1024,
+                PixelFormat = nameof(CameraPixelFormat.Mono16),
+                ByteOrder = nameof(FrameByteOrder.LittleEndian),
+                SampleDepthBits = 16,
+                ContainerDepthBits = 16,
+                Packing = nameof(FrameSamplePacking.ByteAligned),
+                CfaPattern = nameof(ColorFilterArrayPattern.None),
+                BlackLevel = 0,
+                WhiteLevel = 65535,
+                ByteLength = pixels.Length
+            },
+            Recipe = new()
+            {
+                Name = recipe.Name,
+                SemanticVersion = recipe.SemanticVersion,
+                ImplementationVersion = recipe.ImplementationVersion,
+                OptionsJson = JsonSerializer.Serialize(recipe.Options),
+                OptionsSha256 = recipe.OptionsSha256
+            }
         };
         db.CentralArtifacts.Add(artifact);
         await db.SaveChangesAsync();

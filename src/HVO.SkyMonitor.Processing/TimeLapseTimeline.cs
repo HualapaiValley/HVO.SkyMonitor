@@ -122,10 +122,20 @@ public static class TimeLapseTimelinePlanner
         }
         var result = new TimeLapseTimeline(startUtc, endUtc, options, ordered, coalesced.ToImmutable(),
             sampledOut.ToImmutable(), duration, string.Empty);
-        return result with { IdentitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        return result with
         {
-            TimeLapseTimeline.Version, result.StartUtc, result.EndUtc, result.Options, result.Sources,
-            result.Intervals, result.SampledOutOrdinals, result.DurationTicks, TimeLapseTimeline.TicksPerSecond
-        }) };
+            IdentitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                TimeLapseTimeline.Version,
+                result.StartUtc,
+                result.EndUtc,
+                result.Options,
+                result.Sources,
+                result.Intervals,
+                result.SampledOutOrdinals,
+                result.DurationTicks,
+                TimeLapseTimeline.TicksPerSecond
+            })
+        };
     }
 }

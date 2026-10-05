@@ -16,7 +16,8 @@ public sealed class FFmpegTimeLapseTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-video-" + Guid.NewGuid().ToString("N"));
         using var encoder = new FFmpegTimeLapseEncoder(new()
         {
-            ScratchDirectory = root, ExecutablePath = Path.Combine(root, "missing-ffmpeg")
+            ScratchDirectory = root,
+            ExecutablePath = Path.Combine(root, "missing-ffmpeg")
         });
         var result = await encoder.QualifyAsync(TimeLapseEncoderProfile.Software, CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(result.Available);

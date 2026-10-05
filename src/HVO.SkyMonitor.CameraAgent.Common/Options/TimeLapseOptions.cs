@@ -39,11 +39,15 @@ public sealed class TimeLapseOptions : IValidatableObject
 
     private static string Identity(string? rig, int dimension, TimeLapseTimingOptions timing, TimeLapseFrameOptions frames)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new
-    {
-        version = "hvo-cameraagent-timelapse-preset-v1", RigProfileSha256 = rig?.ToUpperInvariant(),
-        MaximumDimension = dimension, Timing = timing, Frames = frames,
-        renderer = TimeLapseFrameRenderer.RecipeIdentity(frames), FFmpegTimeLapseEncoder.ProfileVersion
-    });
+        {
+            version = "hvo-cameraagent-timelapse-preset-v1",
+            RigProfileSha256 = rig?.ToUpperInvariant(),
+            MaximumDimension = dimension,
+            Timing = timing,
+            Frames = frames,
+            renderer = TimeLapseFrameRenderer.RecipeIdentity(frames),
+            FFmpegTimeLapseEncoder.ProfileVersion
+        });
 
     internal static bool Matches(CameraAgentTimeLapsePreset preset) => preset.Rig is not null &&
         !string.IsNullOrWhiteSpace(preset.AgentId) && preset.AgentId.Length <= 128 &&

@@ -50,7 +50,8 @@ public sealed class GeneratedTimeLapsePagesTests
         var window = occurrence.SourceWindow!;
         var preset = new TimeLapseOptions().Freeze(NightlyProductFixture.Configuration());
         var failed = new CameraAgentTimeLapseJob(Guid.NewGuid(), occurrence, window, null, preset,
-            CameraAgentTimeLapseState.Failed, window.EndUtc, "timelapse.timeout", null) { Revision = 7 };
+            CameraAgentTimeLapseState.Failed, window.EndUtc, "timelapse.timeout", null)
+        { Revision = 7 };
         var empty = failed with { JobId = Guid.NewGuid(), ParentJobId = failed.JobId, State = CameraAgentTimeLapseState.NoSources, ReasonCode = "empty" };
         var cut = context.Render<TimeLapseDayProducts>(parameters => parameters
             .Add(page => page.Day, new CameraAgentTimeLapseDay(window.ReportingPeriod.ReportDate, [failed, empty], []))

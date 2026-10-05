@@ -408,7 +408,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" }) root.Verify(path + suffix, "open-video-store");
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false,
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
             DefaultTimeout = options.Value.RawIngressSqliteBusyTimeoutSeconds
         }.ToString());
         await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(connection, async (configured, cancellationToken) =>
@@ -428,9 +430,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         Deserialize<CameraAgentTimeLapsePreset>(reader.GetString(4)), Enum.Parse<CameraAgentTimeLapseState>(reader.GetString(5)),
         new(reader.GetInt64(6), TimeSpan.Zero), reader.IsDBNull(7) ? null : reader.GetString(7),
         reader.IsDBNull(8) ? null : Guid.ParseExact(reader.GetString(8), "N"))
-    {
-        Revision = reader.GetInt64(9),
-        Exclusions = reader.IsDBNull(10) ? new Dictionary<string, int>() : DeserializeVerified<Dictionary<string, int>>(reader.GetString(10), reader.GetString(11))
+        {
+            Revision = reader.GetInt64(9),
+            Exclusions = reader.IsDBNull(10) ? new Dictionary<string, int>() : DeserializeVerified<Dictionary<string, int>>(reader.GetString(10), reader.GetString(11))
         };
         if (!job.Occurrence.IsValid() || !job.Window.IsValid() || !TimeLapseOptions.Matches(job.Preset) ||
             job.JobId != JobId(job.Occurrence, job.Window) || !Enum.IsDefined(job.State) || job.Revision < 1 ||

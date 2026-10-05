@@ -27,9 +27,14 @@ public sealed class CentralTimeLapseTests
         Assert.AreEqual(request.Identity, copy.Identity);
         var row = new CentralTimeLapseJob
         {
-            Id = request.JobId, DevicePublicId = request.DevicePublicId, ObservatoryId = request.ObservatoryId,
-            ReportDate = request.Period.ReportDate, StartUtc = request.StartUtc, EndUtc = request.EndUtc,
-            RequestJson = json, RequestSha256 = CentralTimeLapseJson.Hash(json)
+            Id = request.JobId,
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = request.ObservatoryId,
+            ReportDate = request.Period.ReportDate,
+            StartUtc = request.StartUtc,
+            EndUtc = request.EndUtc,
+            RequestJson = json,
+            RequestSha256 = CentralTimeLapseJson.Hash(json)
         };
         Assert.AreEqual(request.JobId, CentralTimeLapseStore.ReadRequest(row).JobId);
         row.DevicePublicId = Guid.NewGuid();

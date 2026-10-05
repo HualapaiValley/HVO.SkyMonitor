@@ -73,8 +73,11 @@ public sealed class CentralTimeLapseIntegrationTests
         }
         var daily = template with
         {
-            StartUtc = template.Period.StartUtc, EndUtc = template.Period.EndUtc, EligibleUtc = template.Period.EndUtc.AddMinutes(10),
-            IsDaily = true, HourlyJobIds = ids
+            StartUtc = template.Period.StartUtc,
+            EndUtc = template.Period.EndUtc,
+            EligibleUtc = template.Period.EndUtc.AddMinutes(10),
+            IsDaily = true,
+            HourlyJobIds = ids
         };
         await store.EnqueueAsync(_ => Task.FromResult(daily), CancellationToken.None);
         foreach (var unused in ids)

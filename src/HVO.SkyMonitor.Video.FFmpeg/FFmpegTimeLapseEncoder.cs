@@ -165,7 +165,14 @@ public sealed partial class FFmpegTimeLapseEncoder : IDisposable
             throw new TimeLapseEncodingException("timelapse.output-bound", "The encoded video exceeds its bound.");
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            ProfileVersion, profile, capability, timeline.IdentitySha256, width, height, images, arguments
+            ProfileVersion,
+            profile,
+            capability,
+            timeline.IdentitySha256,
+            width,
+            height,
+            images,
+            arguments
         });
         return new(ProfileVersion, profile, capability, timeline.IdentitySha256, identity, images,
             await HashFileAsync(file, token).ConfigureAwait(false), length, media);

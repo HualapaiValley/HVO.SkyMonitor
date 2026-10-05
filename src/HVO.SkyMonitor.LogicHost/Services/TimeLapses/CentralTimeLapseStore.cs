@@ -36,10 +36,18 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
                 throw new InvalidOperationException("The central time-lapse queue is full.");
             var job = new CentralTimeLapseJob
             {
-                Id = id, DevicePublicId = request.DevicePublicId, ObservatoryId = request.ObservatoryId,
-                ReportDate = request.Period.ReportDate, StartUtc = request.StartUtc, EndUtc = request.EndUtc,
-                IsDaily = request.IsDaily, RequestJson = json, RequestSha256 = sha,
-                State = CentralTimeLapseState.Queued, CreatedUtc = clock.GetUtcNow(), UpdatedUtc = clock.GetUtcNow()
+                Id = id,
+                DevicePublicId = request.DevicePublicId,
+                ObservatoryId = request.ObservatoryId,
+                ReportDate = request.Period.ReportDate,
+                StartUtc = request.StartUtc,
+                EndUtc = request.EndUtc,
+                IsDaily = request.IsDaily,
+                RequestJson = json,
+                RequestSha256 = sha,
+                State = CentralTimeLapseState.Queued,
+                CreatedUtc = clock.GetUtcNow(),
+                UpdatedUtc = clock.GetUtcNow()
             };
             foreach (var source in request.Sources)
                 job.Inputs.Add(new() { JobId = id, CentralArtifactId = source.CentralArtifactId });
@@ -128,10 +136,17 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
             var json = CentralTimeLapseJson.Serialize(product);
             db.CentralTimeLapseVideos.Add(new()
             {
-                Id = product.ProductId, JobId = product.JobId, DevicePublicId = product.DevicePublicId,
-                ObservatoryId = product.ObservatoryId, ReportDate = product.Period.ReportDate, IsDaily = product.IsDaily,
-                IsGapFiller = product.IsGapFiller, ProductJson = json, ProductSha256 = CentralTimeLapseJson.Hash(json),
-                PayloadBytes = product.Encoding.PayloadBytes, CreatedUtc = product.CreatedUtc
+                Id = product.ProductId,
+                JobId = product.JobId,
+                DevicePublicId = product.DevicePublicId,
+                ObservatoryId = product.ObservatoryId,
+                ReportDate = product.Period.ReportDate,
+                IsDaily = product.IsDaily,
+                IsGapFiller = product.IsGapFiller,
+                ProductJson = json,
+                ProductSha256 = CentralTimeLapseJson.Hash(json),
+                PayloadBytes = product.Encoding.PayloadBytes,
+                CreatedUtc = product.CreatedUtc
             });
             await db.SaveChangesAsync(token).ConfigureAwait(false);
             return product;

@@ -111,7 +111,9 @@ internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralA
             throw new InvalidDataException("Invalid bounded central video source.");
         var artifact = new CentralArtifact
         {
-            Id = source.CentralArtifactId, StorageReference = source.StorageReference, ByteLength = source.ByteLength,
+            Id = source.CentralArtifactId,
+            StorageReference = source.StorageReference,
+            ByteLength = source.ByteLength,
             ChecksumSha256 = source.Descriptor.Artifact.ChecksumSha256
         };
         var snapshot = await reader.VerifyAsync(artifact, token).ConfigureAwait(false);

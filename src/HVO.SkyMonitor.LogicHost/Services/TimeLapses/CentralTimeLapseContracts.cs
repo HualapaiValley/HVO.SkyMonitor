@@ -23,8 +23,10 @@ internal sealed class CentralTimeLapseOptions
     public int CatchUpDays { get; set; } = 2;
     public FFmpegOptions Encoder { get; set; } = new()
     {
-        ScratchDirectory = "/tmp/hvo-central-time-lapses", Timeout = TimeSpan.FromMinutes(30),
-        MaximumOutputBytes = 16L * 1024 * 1024 * 1024, MaximumScratchBytes = 48L * 1024 * 1024 * 1024
+        ScratchDirectory = "/tmp/hvo-central-time-lapses",
+        Timeout = TimeSpan.FromMinutes(30),
+        MaximumOutputBytes = 16L * 1024 * 1024 * 1024,
+        MaximumScratchBytes = 48L * 1024 * 1024 * 1024
     };
 
     internal void Validate()

@@ -41,7 +41,9 @@ public static class TimeLapseFrameRenderer
         Validate(options);
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            Version, OverlayVersion, options,
+            Version,
+            OverlayVersion,
+            options,
             mean = Linear16ArithmeticMean.AlgorithmVersion,
             stretch = Mono16DisplayStretch.AlgorithmVersion,
             demosaic = BayerRggb16Demosaicer.AlgorithmVersion,
@@ -111,11 +113,20 @@ public static class TimeLapseFrameRenderer
         var recipeIdentity = RecipeIdentity(options);
         var baseIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            recipeIdentity, rigIdentity, sourceIds = sources.Select(static source => source.ArtifactId), checksums,
-            latest.ObservationStartedUtc, daytime, outputWidth, outputHeight,
+            recipeIdentity,
+            rigIdentity,
+            sourceIds = sources.Select(static source => source.ArtifactId),
+            checksums,
+            latest.ObservationStartedUtc,
+            daytime,
+            outputWidth,
+            outputHeight,
             selectedLayers = additionalLayers?.Select(layer => new
             {
-                layer.Payload.ContentIdentitySha256, layer.Enabled, layer.BlendMode, layer.OpacityMillionths
+                layer.Payload.ContentIdentitySha256,
+                layer.Enabled,
+                layer.BlendMode,
+                layer.OpacityMillionths
             })
         });
         var facts = new PresentationMetadataFactsV1(baseIdentity,
@@ -130,7 +141,8 @@ public static class TimeLapseFrameRenderer
         var composed = PresentationLayerCompositor.CompositeDisplay(imageLayout, pixels, selected, cancellationToken);
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            baseIdentity, layers = layers.Select(static layer => layer.ContentIdentitySha256)
+            baseIdentity,
+            layers = layers.Select(static layer => layer.ContentIdentitySha256)
         });
         return new(JpegImageCodec.EncodeToJpeg(composed.Layout, composed.Pixels, options.JpegQuality, cancellationToken), identity, recipeIdentity,
             sources.Select(static source => source.ArtifactId).ToArray(), checksums, integration, selected.Select(static layer => layer.Payload).ToArray());
