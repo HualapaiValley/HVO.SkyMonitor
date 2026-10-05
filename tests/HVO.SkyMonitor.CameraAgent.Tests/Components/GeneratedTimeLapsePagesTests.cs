@@ -1,5 +1,6 @@
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
@@ -24,7 +25,9 @@ public sealed class GeneratedTimeLapsePagesTests
         using var context = new BunitContext();
         TimeLapsePlayerTestSupport.Configure(context);
         var product = Product();
-        var service = new TestNightlyProductUiService { VideoHandler = _ => OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, available)) };
+        var window = NightlyDayFixture.Daily(NightlyProductKind.Keogram).SourceWindow!;
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new CurrentSite());
+        var service = new TestNightlyProductUiService { VideoHandler = _ => OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, available, window)) };
         context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
         var cut = context.Render<TimeLapseDetailPage>(parameters => parameters.Add(page => page.ProductId, product.ProductId));
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "partial capture coverage", StringComparison.Ordinal));
@@ -32,6 +35,11 @@ public sealed class GeneratedTimeLapsePagesTests
         Assert.AreEqual(TimeLapseLinks.Provenance(product.ProductId), cut.Find("a[href$='/provenance']").GetAttribute("href"));
         StringAssert.Contains(cut.Markup, "1920", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "timelapse.solar-excluded", StringComparison.Ordinal);
+        var periodText = cut.FindAll("dt").Single(node => node.TextContent == "Planned capture period").NextElementSibling!.TextContent;
+        StringAssert.Contains(periodText, window.ReportingPeriod.Site.TimeZoneId, StringComparison.Ordinal);
+        Assert.IsFalse(periodText.Contains("Asia/Kolkata", StringComparison.Ordinal));
+        var generationText = cut.FindAll("dt").Single(node => node.TextContent == "Generation").NextElementSibling!.TextContent;
+        StringAssert.Contains(generationText, "+05:30 (Asia/Kolkata)", StringComparison.Ordinal);
         if (available)
         {
             Assert.AreEqual(TimeLapseLinks.Video(product.ProductId), cut.Find("video source").GetAttribute("src"));
@@ -45,6 +53,7 @@ public sealed class GeneratedTimeLapsePagesTests
     {
         using var context = new BunitContext();
         var service = new TestNightlyProductUiService();
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new CurrentSite());
         context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
         var occurrence = NightlyDayFixture.Daily(NightlyProductKind.Keogram);
         var window = occurrence.SourceWindow!;
@@ -58,6 +67,8 @@ public sealed class GeneratedTimeLapsePagesTests
             .Add(page => page.Enabled, true));
         StringAssert.Contains(cut.Markup, "Generation failed", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "No admitted images", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find("small").TextContent, window.ReportingPeriod.Site.TimeZoneId, StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("small").TextContent.Contains("Asia/Kolkata", StringComparison.Ordinal));
         Assert.IsEmpty(cut.FindAll("video"));
         cut.Find("button").Click();
         cut.WaitForAssertion(() => Assert.AreEqual((failed.JobId, 7L), service.VideoRetries.Single()));
@@ -82,6 +93,11 @@ public sealed class GeneratedTimeLapsePagesTests
         Assert.AreEqual("/archive/products?videoBefore=2026-09-05", cut.Find("a[href*='videoBefore']").GetAttribute("href"));
         StringAssert.Contains(cut.Markup, "Final with capture gaps", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll("video"));
+    }
+
+    private sealed class CurrentSite : IObservingDayCalendarProvider
+    {
+        public ObservingDayCalendar Current => ObservingDayCalendar.Create("Asia/Kolkata");
     }
 
     private static CameraAgentTimeLapseProduct Product()

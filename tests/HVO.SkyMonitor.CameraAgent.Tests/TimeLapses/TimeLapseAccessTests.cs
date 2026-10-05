@@ -67,6 +67,12 @@ public sealed class TimeLapseAccessTests
 
     internal static async Task VerifyActualMediaAsync(ICameraAgentTimeLapseCatalog catalog, CameraAgentTimeLapseProduct product)
     {
+        var window = await catalog.GetWindowAsync(product.ProductId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(window);
+        Assert.AreEqual(product.WindowIdentitySha256, window.IdentitySha256);
+        Assert.AreEqual(product.ReportingPeriodIdentitySha256, window.ReportingPeriod.IdentitySha256);
+        Assert.AreEqual(product.StartUtc, window.StartUtc);
+        Assert.AreEqual(product.EndUtc, window.EndUtc);
         using var app = App(catalog);
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
             .Single(value => value.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName == "GetCameraAgentTimeLapseVideo");
@@ -99,6 +105,8 @@ public sealed class TimeLapseAccessTests
         Assert.IsTrue(result.IsSuccess);
         Assert.IsNotNull(result.Value);
         Assert.AreEqual(product.ProductId, result.Value.Product.ProductId);
+        Assert.IsNotNull(result.Value.Window);
+        Assert.AreEqual(product.WindowIdentitySha256, result.Value.Window.IdentitySha256);
         Assert.IsFalse(result.Value.VerifiedAvailable);
         using var app = App(catalog);
         foreach (var name in new[] { "GetCameraAgentTimeLapseVideo", "GetCameraAgentTimeLapseProvenance" })

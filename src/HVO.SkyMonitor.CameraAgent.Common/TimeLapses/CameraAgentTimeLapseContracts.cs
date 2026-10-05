@@ -85,6 +85,7 @@ public interface ICameraAgentTimeLapseCatalog
 {
     ValueTask<CameraAgentTimeLapseDay> GetDayAsync(DateOnly reportDate, CancellationToken cancellationToken);
     ValueTask<CameraAgentTimeLapseProduct?> GetAsync(Guid productId, CancellationToken cancellationToken);
+    ValueTask<LocalAutomationSourceWindow?> GetWindowAsync(Guid productId, CancellationToken cancellationToken);
     ValueTask<Stream?> OpenVideoAsync(Guid productId, CancellationToken cancellationToken);
     ValueTask<IReadOnlyList<CameraAgentTimeLapseSummary>> ListDailyAsync(DateOnly? before, int limit, CancellationToken cancellationToken);
     ValueTask<IReadOnlyList<CameraAgentTimeLapseDateSummary>> SummarizeAsync(DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken);

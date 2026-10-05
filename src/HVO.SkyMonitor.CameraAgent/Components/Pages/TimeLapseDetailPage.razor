@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @using HVO.SkyMonitor.CameraAgent.Services
 @page "/archive/products/time-lapse/{ProductId:guid}"
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -27,7 +28,7 @@
             <dt>Planned capture period</dt><dd>@WindowLabel(product.StartUtc, product.EndUtc)</dd>
             <dt>Video</dt><dd>@product.Encoding.Media.Width × @product.Encoding.Media.Height · @DurationLabel(product.Encoding.Media.DurationTicks) · @product.Encoding.Media.Packets.Count frames</dd>
             <dt>Capture timing</dt><dd>Frame holds follow capture timestamps. Exposure and rolling-stack integration do not set playback speed.</dd>
-            <dt>Generation</dt><dd>@product.CreatedUtc.ToString("u") · @product.Encoding.Profile</dd>
+            <dt>Generation</dt><dd>@SiteTime.Format(product.CreatedUtc) · @product.Encoding.Profile</dd>
             <dt>Checksum readiness</dt><dd>@(view.VerifiedAvailable ? "Published checksum verified against the retained file" : "Published checksum recorded; retained file unverified")</dd>
             <dt>SHA-256</dt><dd class="checksum">@product.Encoding.PayloadSha256</dd>
         </dl>

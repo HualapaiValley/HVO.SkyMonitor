@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -36,6 +37,9 @@ public sealed partial class TimeLapseDayProducts : ComponentBase
         _ => "Queued"
     };
 
-    private static string WindowLabel(CameraAgentTimeLapseJob job) =>
-        FormattableString.Invariant($"{job.Window.StartUtc:yyyy-MM-dd HH:mm:ss}–{job.Window.EndUtc:yyyy-MM-dd HH:mm:ss} UTC");
+    private static string WindowLabel(CameraAgentTimeLapseJob job)
+    {
+        var clock = new CameraAgentSiteTime(ObservingDayCalendar.Create(job.Window.ReportingPeriod.Site.TimeZoneId));
+        return $"{clock.Format(job.Window.StartUtc)}–{clock.Format(job.Window.EndUtc)}";
+    }
 }

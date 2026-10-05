@@ -300,6 +300,16 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             ? DeserializeVerified<CameraAgentTimeLapseProduct>(reader.GetString(0), reader.GetString(1)) : null;
     }
 
+    public async ValueTask<LocalAutomationSourceWindow?> GetWindowAsync(Guid productId, CancellationToken cancellationToken)
+    {
+        var product = await GetAsync(productId, cancellationToken).ConfigureAwait(false);
+        if (product is null) return null;
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var job = await ReadJobAsync(connection, product.JobId, cancellationToken).ConfigureAwait(false);
+        RequireProductWindow(product, job);
+        return job.Window;
+    }
+
     internal async ValueTask<CameraAgentTimeLapseProduct?> FindWindowAsync(CameraAgentTimeLapseJob job, LocalAutomationSourceWindow window, CancellationToken token)
     {
         using var connection = await OpenAsync(token).ConfigureAwait(false);

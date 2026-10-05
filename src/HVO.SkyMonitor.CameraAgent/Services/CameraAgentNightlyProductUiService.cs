@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
@@ -23,7 +24,8 @@ internal sealed record CameraAgentNightlyDayView(NightlyProductDay Day, CameraAg
     internal bool TimeLapseGenerationEnabled { get; init; }
 }
 
-internal sealed record CameraAgentTimeLapsePresentation(CameraAgentTimeLapseProduct Product, bool VerifiedAvailable);
+internal sealed record CameraAgentTimeLapsePresentation(CameraAgentTimeLapseProduct Product, bool VerifiedAvailable,
+    LocalAutomationSourceWindow? Window = null);
 
 /// <summary>Authorized, sanitized reads of the nightly product catalog for the archive pages.</summary>
 internal interface ICameraAgentNightlyProductUiService
@@ -100,14 +102,15 @@ internal sealed class CameraAgentNightlyProductUiService(
             var product = timeLapses is null ? null : await timeLapses.GetAsync(productId, cancellationToken).ConfigureAwait(false);
             if (product is null || product.IsGapFiller)
                 return OperatorUiResult<CameraAgentTimeLapsePresentation>.Failure(OperatorUiResultKind.NotFound, "The requested time-lapse was not found.");
+            var window = await timeLapses!.GetWindowAsync(productId, cancellationToken).ConfigureAwait(false);
             try
             {
                 using var stream = await timeLapses!.OpenVideoAsync(productId, cancellationToken).ConfigureAwait(false);
-                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, stream is not null));
+                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, stream is not null, window));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException)
             {
-                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, false));
+                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, false, window));
             }
         }, cancellationToken);
 
