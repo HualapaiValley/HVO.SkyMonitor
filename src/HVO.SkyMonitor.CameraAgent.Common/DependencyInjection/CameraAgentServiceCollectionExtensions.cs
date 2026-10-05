@@ -19,6 +19,8 @@ using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
+using HVO.SkyMonitor.Video.FFmpeg;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Replay;
@@ -299,6 +301,22 @@ public static class CameraAgentServiceCollectionExtensions
             () => provider.GetService<IDeploymentLocationStore>(),
             provider.GetRequiredService<TimeProvider>()));
         services.AddSingleton<ILocalAutomationWindowTaskAdapter, NightlyProductAutomationTaskRegistry>();
+        services.AddSingleton<SqliteTimeLapseStore>();
+        services.AddSingleton<ICameraAgentTimeLapseCatalog>(static provider => provider.GetRequiredService<SqliteTimeLapseStore>());
+        services.AddSingleton<ICameraAgentTimeLapseCommands>(static provider => provider.GetRequiredService<SqliteTimeLapseStore>());
+        services.AddSingleton(static provider => new FFmpegTimeLapseEncoder(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.TimeLapses.Encoder with
+            {
+                ScratchDirectory = Path.Combine(Path.GetFullPath(provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot),
+                    ".time-lapses", "encoder")
+            }));
+        services.AddSingleton(static provider => new TimeLapseSourceReader(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), provider.GetRequiredService<RawCaptureIngress>(),
+            provider.GetRequiredService<SqliteCaptureProcessingStore>(), provider.GetRequiredService<SqliteTimeLapseStore>(),
+            () => provider.GetService<IDeploymentLocationStore>(), provider.GetRequiredService<IPlanetEphemeris>()));
+        services.AddSingleton<TimeLapseGenerator>();
+        services.AddSingleton<ILocalAutomationWindowTaskAdapter, TimeLapseAutomationAdapter>();
+        services.AddHostedService<TimeLapseWorker>();
         services.AddSingleton<ICameraAgentPresentationMaterializer, CameraAgentPresentationMaterializer>();
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
@@ -313,7 +331,8 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<CaptureProcessingPersistence>(),
                 provider.GetRequiredService<CameraAgentClearReferenceLoader>(),
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
-                provider.GetService<IAcceptanceRetentionControl>()));
+                provider.GetService<IAcceptanceRetentionControl>(),
+                provider.GetRequiredService<SqliteTimeLapseStore>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         var replayProfile = configuration.GetValue(
             "CameraAgent:ProcessingGraphs:ReplayProfile",

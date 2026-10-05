@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 
@@ -28,6 +29,24 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
 
     internal Func<NightlyProductLibraryQuery, OperatorUiResult<NightlyProductLibraryPage>> LibraryHandler { get; set; } =
         static _ => OperatorUiResult<NightlyProductLibraryPage>.Success(new([], null, null));
+
+    internal Func<Guid, OperatorUiResult<CameraAgentTimeLapsePresentation>> VideoHandler { get; set; } =
+        static _ => OperatorUiResult<CameraAgentTimeLapsePresentation>.Failure(OperatorUiResultKind.NotFound, "Video not found.");
+
+    internal IReadOnlyList<CameraAgentTimeLapseSummary> VideoSummaries { get; set; } = [];
+    internal List<(Guid JobId, long Revision)> VideoRetries { get; } = [];
+
+    public ValueTask<OperatorUiResult<CameraAgentTimeLapsePresentation>> GetTimeLapseAsync(Guid productId, CancellationToken cancellationToken)
+        => ValueTask.FromResult(VideoHandler(productId));
+
+    public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success(VideoSummaries));
+
+    public ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
+    {
+        VideoRetries.Add((jobId, expectedRevision));
+        return ValueTask.FromResult(OperatorUiResult<bool>.Success(true));
+    }
 
     public ValueTask<OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummarizeAsync(
         DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)

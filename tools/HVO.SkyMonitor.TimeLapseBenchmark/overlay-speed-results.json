@@ -1,0 +1,1786 @@
+{
+  "schema": "hvo-1130-overlay-speed-checkpoint-v1",
+  "date": "2026-10-05",
+  "base": "7cc97ec3969ae53aacab20baac90c47d14c99a7c",
+  "ffmpeg": "6.1.1-3ubuntu5",
+  "sdk": "10.0.401",
+  "priorCheckpointSha256": "ace605e79e87533e4f80560f6485424471f0660469d5fb6131947740afdf62cc",
+  "selectedStartingDefaults": {
+    "nightSource": "stretched rolling-three arithmetic mean",
+    "timelineCompression": 180,
+    "additionalAcceptedSpeed": 300,
+    "dayCaptureCadenceSeconds": 5,
+    "productionImplementation": "after reserved requirements discussion"
+  },
+  "scope": "Bounded overlay processing and separately prepared input encoding. Same compressed images retimed for standalone downloads. Not full capture-pipeline or installer qualification. Original measured overlay binaries remain frozen; overlay-sample diagnostic CLI and usage were added after timings without changing the measured operation.",
+  "sourceManifests": {
+    "display-prefix/stack3/sequence.json": {
+      "sha256": "949f4463ec379f3d1c006dfd9c2ba63bc9e04dbf9a1c76b1a054e1572dbbc23e",
+      "bytes": 18587
+    },
+    "overlay-inputs/color-stack3-overlay/sequence.json": {
+      "sha256": "5a68fd416f79caa027954ac179f0f0a8b231d4a328b7c56dca9e0671479720f0",
+      "bytes": 3927152
+    },
+    "overlay-inputs/color-stack3-overlay/geometry.json": {
+      "sha256": "8d9133e16acd9742888eadad1d7c2f751248785ab75c266184b4e9b8f0003425",
+      "bytes": 1978
+    },
+    "overlay-prefix/stack3-overlay/sequence.json": {
+      "sha256": "06525593d3b64d3ff0deb968cf8747cbb66a2e82eb8bcc3c5605c9501788ead7",
+      "bytes": 327334
+    }
+  },
+  "sourceFiles": {
+    "repository/Program.cs": "b421acf343148687bef6e6d8fc4edb8abbfb27110c00d9b83f7d115d35b4dcca",
+    "repository/OverlayComparison.cs": "55e10d89ab7fdac4a26c7e8a0152b9abf7a1b8613cb9860f7a7becf920243bb3",
+    "repository/retime.py": "e2479331350d836ea0e5f76c0f3a320c708a8b177f5eea3e244e5f4fdb9fac3c",
+    "repository/README.md": "de8b07570637ed9dca13460a4d75a0f2671ee2b73d3c778322301f4d77e6e29e",
+    "repository/RESULTS.md": "56451f7fd37971bc746d2cdf3990d988e73161d9fabbd97aa67f2656d2418f2c",
+    "private/encode.py": "fba4c8b2348b5208869dcafc5b57c550ab2ac6744745634699b8a769a9281f68",
+    "private/retime-v1.py": "e2479331350d836ea0e5f76c0f3a320c708a8b177f5eea3e244e5f4fdb9fac3c",
+    "private/pi-overlay-runs.py": "96638c8b67cffaaa7362ba5f1ac8ccfe034caca83c5dc4e02636b5577a3ace27",
+    "private/speed-downloads.py": "f70a9ccefa22e1cc88eac5348c0ac32ee9a39fbb5a34bc70e08960001f190da9",
+    "private/overlay-preview.py": "9caab26f7b9899d6c0dfd31f6c03b8ab71df79a3e21d3bd0de321df561cd304c",
+    "private/compare-overlay-pixels.py": "9a51c07fdd08a6491ad5c89420b6cf2b4bbaa1dd0543446e7341827f90dde67b",
+    "private/update-review-page.py": "ee67665506223c0821b707e2e8a90095a1d04c3789e9cb89428d58536ccdddd6",
+    "private/serve-review.py": "7dec84731b5c43f178db2a6b0a01e20f316eb1478345421bb9808528caf25d4b",
+    "private/review/gallery.js": "0aadc501e2604df55c4cd38ec8f084b333fd827598227e8606312ad4de0f50c9"
+  },
+  "binaries": {
+    "bin/overlay-linux-x64": {
+      "HVO.SkyMonitor.TimeLapseBenchmark.dll": "ee90fa3af9592b3594d9c5298da73ffa9b5da349101129d146dcc216e994306b",
+      "HVO.SkyMonitor.Imaging.dll": "fce049105c3ecad08a444ba24d0322a280357ae9e642b506114398127d39e490",
+      "HVO.SkyMonitor.Processing.dll": "3d7f1f79c79117ab7a80eb436b9320a6619ad24c798101fe08be9ed1ea29aa8c",
+      "libSkiaSharp.so": "a0a0e56abd30e6a87af488fb9fb29bf8a66a912c36f512e8c1bcb99f2c0d873f"
+    },
+    "bin/overlay-diagnostic-linux-x64": {
+      "HVO.SkyMonitor.TimeLapseBenchmark.dll": "1738e328f905cddf6e4cb86a0d19664b3425430fd26e7c1c7c53e8c869b7f18a",
+      "HVO.SkyMonitor.Imaging.dll": "fce049105c3ecad08a444ba24d0322a280357ae9e642b506114398127d39e490",
+      "HVO.SkyMonitor.Processing.dll": "3d7f1f79c79117ab7a80eb436b9320a6619ad24c798101fe08be9ed1ea29aa8c",
+      "libSkiaSharp.so": "a0a0e56abd30e6a87af488fb9fb29bf8a66a912c36f512e8c1bcb99f2c0d873f"
+    },
+    "bin/overlay-linux-arm64": {
+      "HVO.SkyMonitor.TimeLapseBenchmark.dll": "02d37cf599284875d2504ce230ace0a5f1645982824e13a3dfc84e0d0a88e885",
+      "HVO.SkyMonitor.Imaging.dll": "fce049105c3ecad08a444ba24d0322a280357ae9e642b506114398127d39e490",
+      "HVO.SkyMonitor.Processing.dll": "3d7f1f79c79117ab7a80eb436b9320a6619ad24c798101fe08be9ed1ea29aa8c",
+      "libSkiaSharp.so": "3648fe51b4895914862b668e544016957cc162be4507bd695c6fa2e9b2fe60fc"
+    },
+    "bin/overlay-diagnostic-linux-arm64": {
+      "HVO.SkyMonitor.TimeLapseBenchmark.dll": "ff5d50b33327ad78dec69fcace547688e20533a7ba332372c6f2175669517eda",
+      "HVO.SkyMonitor.Imaging.dll": "fce049105c3ecad08a444ba24d0322a280357ae9e642b506114398127d39e490",
+      "HVO.SkyMonitor.Processing.dll": "3d7f1f79c79117ab7a80eb436b9320a6619ad24c798101fe08be9ed1ea29aa8c",
+      "libSkiaSharp.so": "3648fe51b4895914862b668e544016957cc162be4507bd695c6fa2e9b2fe60fc"
+    }
+  },
+  "summaries": {
+    "local/local-overlay-processing/jpeg-control.json": {
+      "medianSeconds": 0.25135425000000006,
+      "p95Seconds": 0.2779079000000002,
+      "maximumSeconds": 0.2932104,
+      "overlayStageMedianSeconds": 3e-07
+    },
+    "local/local-overlay-processing/overlays.json": {
+      "medianSeconds": 0.29040240000000006,
+      "p95Seconds": 0.3529613000000005,
+      "maximumSeconds": 0.36838709999999997,
+      "overlayStageMedianSeconds": 0.025908300000000002
+    },
+    "pi//data/results/pi-overlay-processing/jpeg-control.json": {
+      "medianSeconds": 0.34181355000000013,
+      "p95Seconds": 0.3831541,
+      "maximumSeconds": 0.3932738000000011,
+      "overlayStageMedianSeconds": 2e-07
+    },
+    "pi//data/results/pi-overlay-processing/overlays.json": {
+      "medianSeconds": 0.43163584999999993,
+      "p95Seconds": 0.5442017999999997,
+      "maximumSeconds": 0.5693786000000003,
+      "overlayStageMedianSeconds": 0.07914915
+    }
+  },
+  "records": {
+    "local/local-overlay-processing/jpeg-control.json": {
+      "enabled": false,
+      "sampleCount": 30,
+      "warmups": 5,
+      "uniqueSourceCount": 15,
+      "samples": [
+        {
+          "index": 0,
+          "rowIndex": 0,
+          "seconds": 0.2932104,
+          "overlaySeconds": 6e-07,
+          "jpegSha256": "CE13D80EEEB38FEC17F090BED793EDC87FF786D557B106BAD12FF4C9558A47C2",
+          "jpegBytes": 3233629,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 1,
+          "rowIndex": 1,
+          "seconds": 0.2521732,
+          "overlaySeconds": 7e-07,
+          "jpegSha256": "8DE71B9E786E0DD6F536D65034F2CAC3A7A8AC545AA0E4552A7DD5E6D3D8731A",
+          "jpegBytes": 2639739,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 2,
+          "rowIndex": 2,
+          "seconds": 0.26202210000000004,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "4BB1354C853240F79F8EB883F040E3E324BB77789702E4407F7EABDC792A1D56",
+          "jpegBytes": 2430151,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 3,
+          "rowIndex": 3,
+          "seconds": 0.24422449999999996,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "A83CEF8BD7DE4B242E6C1C81196C256ACC94B00A186E4ED6D2A2EFE435051FD7",
+          "jpegBytes": 2431085,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 4,
+          "rowIndex": 4,
+          "seconds": 0.2557904,
+          "overlaySeconds": 5e-07,
+          "jpegSha256": "52568F035B544D7D5DBBB40AA07E575FDFF41887A06ECF48F1F8775A07C61359",
+          "jpegBytes": 2431331,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 5,
+          "rowIndex": 5,
+          "seconds": 0.2505353000000001,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "DB2E52D6863EF33479CF337200179305E0CD30D95B3A610919C4F4EAD6E4FCA9",
+          "jpegBytes": 2431775,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 6,
+          "rowIndex": 6,
+          "seconds": 0.26313929999999996,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "E97BFEBEE03B7853FE76771B16032BC4F0C2D174142C3C7F4B27C4E18B38000F",
+          "jpegBytes": 2430763,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 7,
+          "rowIndex": 7,
+          "seconds": 0.2715114999999999,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "279F79AE3A99D63DDE450CC0222519F40511B69B5B92C8FE35025BE7CC03C060",
+          "jpegBytes": 2429264,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 8,
+          "rowIndex": 8,
+          "seconds": 0.2774046000000001,
+          "overlaySeconds": 8.5e-06,
+          "jpegSha256": "33E1C42FB333B121BCEE7910059E4A24F440F18DC89D5E1147698941EDFA4F07",
+          "jpegBytes": 2428817,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 9,
+          "rowIndex": 9,
+          "seconds": 0.2625704,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "2B3C01F5CFB1FEAFBA65E93F2C80B4A4DE8CC30F1C41A644C9ABAD824998C29E",
+          "jpegBytes": 2429779,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 10,
+          "rowIndex": 10,
+          "seconds": 0.2779079000000002,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "C4F1193601E70BE09385849D3C5B5351CB2A4668C5106B4851F4AD07742418CB",
+          "jpegBytes": 2430136,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 11,
+          "rowIndex": 11,
+          "seconds": 0.26691580000000004,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "101281A84D67143EB352EDBB7299A61CA933F28F7C02D6EECC0CBC5EEE3A9443",
+          "jpegBytes": 2430091,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 12,
+          "rowIndex": 12,
+          "seconds": 0.27462490000000006,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "46E4509CC4F65FC7066F0B64C5D185C37B42210BE733DE3FD574D6517212E320",
+          "jpegBytes": 2429915,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 13,
+          "rowIndex": 13,
+          "seconds": 0.2688691000000003,
+          "overlaySeconds": 5e-07,
+          "jpegSha256": "CD2F304828DC64E65852F41D9CBA42643700B7A426AE1DDEA17DA3A480EE8F41",
+          "jpegBytes": 2444237,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 14,
+          "rowIndex": 14,
+          "seconds": 0.24321139999999986,
+          "overlaySeconds": 7e-07,
+          "jpegSha256": "5FE6C800B3EA4FE0E767881F3250CD5148717212263681C18FB3A9F58E004BB7",
+          "jpegBytes": 2431196,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        },
+        {
+          "index": 15,
+          "rowIndex": 0,
+          "seconds": 0.26979560000000014,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "CE13D80EEEB38FEC17F090BED793EDC87FF786D557B106BAD12FF4C9558A47C2",
+          "jpegBytes": 3233629,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 16,
+          "rowIndex": 1,
+          "seconds": 0.24639340000000054,
+          "overlaySeconds": 5e-07,
+          "jpegSha256": "8DE71B9E786E0DD6F536D65034F2CAC3A7A8AC545AA0E4552A7DD5E6D3D8731A",
+          "jpegBytes": 2639739,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 17,
+          "rowIndex": 2,
+          "seconds": 0.23710369999999958,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "4BB1354C853240F79F8EB883F040E3E324BB77789702E4407F7EABDC792A1D56",
+          "jpegBytes": 2430151,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 18,
+          "rowIndex": 3,
+          "seconds": 0.24639970000000044,
+          "overlaySeconds": 8e-06,
+          "jpegSha256": "A83CEF8BD7DE4B242E6C1C81196C256ACC94B00A186E4ED6D2A2EFE435051FD7",
+          "jpegBytes": 2431085,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 19,
+          "rowIndex": 4,
+          "seconds": 0.2388223000000007,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "52568F035B544D7D5DBBB40AA07E575FDFF41887A06ECF48F1F8775A07C61359",
+          "jpegBytes": 2431331,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 20,
+          "rowIndex": 5,
+          "seconds": 0.23703649999999943,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "DB2E52D6863EF33479CF337200179305E0CD30D95B3A610919C4F4EAD6E4FCA9",
+          "jpegBytes": 2431775,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 21,
+          "rowIndex": 6,
+          "seconds": 0.2354067000000004,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "E97BFEBEE03B7853FE76771B16032BC4F0C2D174142C3C7F4B27C4E18B38000F",
+          "jpegBytes": 2430763,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 22,
+          "rowIndex": 7,
+          "seconds": 0.24002639999999964,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "279F79AE3A99D63DDE450CC0222519F40511B69B5B92C8FE35025BE7CC03C060",
+          "jpegBytes": 2429264,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 23,
+          "rowIndex": 8,
+          "seconds": 0.23735380000000017,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "33E1C42FB333B121BCEE7910059E4A24F440F18DC89D5E1147698941EDFA4F07",
+          "jpegBytes": 2428817,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 24,
+          "rowIndex": 9,
+          "seconds": 0.23966899999999924,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "2B3C01F5CFB1FEAFBA65E93F2C80B4A4DE8CC30F1C41A644C9ABAD824998C29E",
+          "jpegBytes": 2429779,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 25,
+          "rowIndex": 10,
+          "seconds": 0.26910789999999984,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "C4F1193601E70BE09385849D3C5B5351CB2A4668C5106B4851F4AD07742418CB",
+          "jpegBytes": 2430136,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 26,
+          "rowIndex": 11,
+          "seconds": 0.24259300000000028,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "101281A84D67143EB352EDBB7299A61CA933F28F7C02D6EECC0CBC5EEE3A9443",
+          "jpegBytes": 2430091,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 27,
+          "rowIndex": 12,
+          "seconds": 0.25369440000000054,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "46E4509CC4F65FC7066F0B64C5D185C37B42210BE733DE3FD574D6517212E320",
+          "jpegBytes": 2429915,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 28,
+          "rowIndex": 13,
+          "seconds": 0.23934790000000028,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "CD2F304828DC64E65852F41D9CBA42643700B7A426AE1DDEA17DA3A480EE8F41",
+          "jpegBytes": 2444237,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 29,
+          "rowIndex": 14,
+          "seconds": 0.23664269999999998,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "5FE6C800B3EA4FE0E767881F3250CD5148717212263681C18FB3A9F58E004BB7",
+          "jpegBytes": 2431196,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        }
+      ],
+      "allocatedBytes": 4315412680,
+      "cpuSeconds": 7.648898,
+      "peakWorkingSet64": 640614400,
+      "boundary": "One-CPU, low-priority worker. Warm source JPEG read, production decode, optional per-row layers and compositor, production JPEG92 encode. Output hashing and disk writes excluded. Control re-encodes without layers; this is not the whole capture pipeline."
+    },
+    "local/local-overlay-processing/overlays.json": {
+      "enabled": true,
+      "sampleCount": 30,
+      "warmups": 5,
+      "uniqueSourceCount": 15,
+      "samples": [
+        {
+          "index": 0,
+          "rowIndex": 0,
+          "seconds": 0.2944554,
+          "overlaySeconds": 0.0264545,
+          "jpegSha256": "8B8D7FF84C082E80CD77CDAA7643AE5744DEE6F117ED953CCAE916022704CE91",
+          "jpegBytes": 3360283,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 1,
+          "rowIndex": 1,
+          "seconds": 0.36838709999999997,
+          "overlaySeconds": 0.0253596,
+          "jpegSha256": "E6776692BABAB8AC32E54F7458D46B979ECF2ACA79FD08D0B7BCCE6D8680D112",
+          "jpegBytes": 2771855,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 2,
+          "rowIndex": 2,
+          "seconds": 0.26778270000000004,
+          "overlaySeconds": 0.0260062,
+          "jpegSha256": "2A197554B16E92A93FB965C79FF178EB17FA18F8F245A25F58ED02F483CFAA89",
+          "jpegBytes": 2564220,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 3,
+          "rowIndex": 3,
+          "seconds": 0.2769470999999999,
+          "overlaySeconds": 0.0313999,
+          "jpegSha256": "EDCEBCE983C7C1661ED469BA2E14982E73C1405F8844CAA9E7FA3AAB362F13D6",
+          "jpegBytes": 2565190,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 4,
+          "rowIndex": 4,
+          "seconds": 0.26627060000000013,
+          "overlaySeconds": 0.0279657,
+          "jpegSha256": "E9E3F719F4A0650F18FE3248C30DBC317D7415F7D157B230F363B814F2555A3A",
+          "jpegBytes": 2565238,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 5,
+          "rowIndex": 5,
+          "seconds": 0.29617320000000014,
+          "overlaySeconds": 0.0278056,
+          "jpegSha256": "C0F946654C756992BE15441411E54639CC494DBDC6C7B04944327EBB4A062787",
+          "jpegBytes": 2565018,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 6,
+          "rowIndex": 6,
+          "seconds": 0.3046708,
+          "overlaySeconds": 0.0457871,
+          "jpegSha256": "B43589C1F8A76CF97701C80E9BFF30DE9505637E0A00C332F22CF2979A6FD33B",
+          "jpegBytes": 2564974,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 7,
+          "rowIndex": 7,
+          "seconds": 0.30921189999999976,
+          "overlaySeconds": 0.0342752,
+          "jpegSha256": "22E5809077B32C3385F14F8131B89AD7BBF1337B200997CC964C9D4B4CABD2C2",
+          "jpegBytes": 2563517,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 8,
+          "rowIndex": 8,
+          "seconds": 0.2913888,
+          "overlaySeconds": 0.0254171,
+          "jpegSha256": "C9200EB1D4EF6B420D80F7D529DD6BB9E253151C4446F0A83228F4854FF177C7",
+          "jpegBytes": 2562901,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 9,
+          "rowIndex": 9,
+          "seconds": 0.2904064000000002,
+          "overlaySeconds": 0.0299719,
+          "jpegSha256": "D8C790F674147180C02B9F301D4C8126A428EC7DE2B3A8EAEFEC40BE3CB719A6",
+          "jpegBytes": 2563928,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 10,
+          "rowIndex": 10,
+          "seconds": 0.2943009000000001,
+          "overlaySeconds": 0.0258344,
+          "jpegSha256": "17DB74E76156FAAF1369847E467E369872456B6C49F205BC463194F6B22F40EF",
+          "jpegBytes": 2564059,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 11,
+          "rowIndex": 11,
+          "seconds": 0.3015315999999997,
+          "overlaySeconds": 0.0260431,
+          "jpegSha256": "12CF41C1943E4940153A75DFC91310D98E0FBC27EF90F151C62DB12AEAAAD69E",
+          "jpegBytes": 2564075,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 12,
+          "rowIndex": 12,
+          "seconds": 0.29073420000000016,
+          "overlaySeconds": 0.0255298,
+          "jpegSha256": "61A96E7C2EDA8EACF62956A6CA78AC66A811DCDEFBD92D540CB17AE0482D0C58",
+          "jpegBytes": 2563926,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 13,
+          "rowIndex": 13,
+          "seconds": 0.3034062999999998,
+          "overlaySeconds": 0.0256821,
+          "jpegSha256": "17488ED258A9556D1C4EF84009F7CFA501A16532E56D0A84DFBA15FB156BB244",
+          "jpegBytes": 2578157,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 14,
+          "rowIndex": 14,
+          "seconds": 0.2889571999999996,
+          "overlaySeconds": 0.0260641,
+          "jpegSha256": "42B45CC891AD54956107109E6DA47D4AAC4C49ACEF11E757DB69921680309FB1",
+          "jpegBytes": 2565134,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        },
+        {
+          "index": 15,
+          "rowIndex": 0,
+          "seconds": 0.3529613000000005,
+          "overlaySeconds": 0.0265546,
+          "jpegSha256": "8B8D7FF84C082E80CD77CDAA7643AE5744DEE6F117ED953CCAE916022704CE91",
+          "jpegBytes": 3360283,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 16,
+          "rowIndex": 1,
+          "seconds": 0.28385689999999997,
+          "overlaySeconds": 0.0257674,
+          "jpegSha256": "E6776692BABAB8AC32E54F7458D46B979ECF2ACA79FD08D0B7BCCE6D8680D112",
+          "jpegBytes": 2771855,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 17,
+          "rowIndex": 2,
+          "seconds": 0.28704269999999976,
+          "overlaySeconds": 0.0256887,
+          "jpegSha256": "2A197554B16E92A93FB965C79FF178EB17FA18F8F245A25F58ED02F483CFAA89",
+          "jpegBytes": 2564220,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 18,
+          "rowIndex": 3,
+          "seconds": 0.2792547000000001,
+          "overlaySeconds": 0.0256754,
+          "jpegSha256": "EDCEBCE983C7C1661ED469BA2E14982E73C1405F8844CAA9E7FA3AAB362F13D6",
+          "jpegBytes": 2565190,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 19,
+          "rowIndex": 4,
+          "seconds": 0.29039839999999995,
+          "overlaySeconds": 0.0259084,
+          "jpegSha256": "E9E3F719F4A0650F18FE3248C30DBC317D7415F7D157B230F363B814F2555A3A",
+          "jpegBytes": 2565238,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 20,
+          "rowIndex": 5,
+          "seconds": 0.3270388999999998,
+          "overlaySeconds": 0.0256813,
+          "jpegSha256": "C0F946654C756992BE15441411E54639CC494DBDC6C7B04944327EBB4A062787",
+          "jpegBytes": 2565018,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 21,
+          "rowIndex": 6,
+          "seconds": 0.28141139999999965,
+          "overlaySeconds": 0.0258674,
+          "jpegSha256": "B43589C1F8A76CF97701C80E9BFF30DE9505637E0A00C332F22CF2979A6FD33B",
+          "jpegBytes": 2564974,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 22,
+          "rowIndex": 7,
+          "seconds": 0.2712505000000007,
+          "overlaySeconds": 0.0255194,
+          "jpegSha256": "22E5809077B32C3385F14F8131B89AD7BBF1337B200997CC964C9D4B4CABD2C2",
+          "jpegBytes": 2563517,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 23,
+          "rowIndex": 8,
+          "seconds": 0.2679209,
+          "overlaySeconds": 0.0258807,
+          "jpegSha256": "C9200EB1D4EF6B420D80F7D529DD6BB9E253151C4446F0A83228F4854FF177C7",
+          "jpegBytes": 2562901,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 24,
+          "rowIndex": 9,
+          "seconds": 0.3506108000000001,
+          "overlaySeconds": 0.0450223,
+          "jpegSha256": "D8C790F674147180C02B9F301D4C8126A428EC7DE2B3A8EAEFEC40BE3CB719A6",
+          "jpegBytes": 2563928,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 25,
+          "rowIndex": 10,
+          "seconds": 0.30751289999999987,
+          "overlaySeconds": 0.0259621,
+          "jpegSha256": "17DB74E76156FAAF1369847E467E369872456B6C49F205BC463194F6B22F40EF",
+          "jpegBytes": 2564059,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 26,
+          "rowIndex": 11,
+          "seconds": 0.2675985000000001,
+          "overlaySeconds": 0.0259082,
+          "jpegSha256": "12CF41C1943E4940153A75DFC91310D98E0FBC27EF90F151C62DB12AEAAAD69E",
+          "jpegBytes": 2564075,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 27,
+          "rowIndex": 12,
+          "seconds": 0.2731514999999991,
+          "overlaySeconds": 0.0295071,
+          "jpegSha256": "61A96E7C2EDA8EACF62956A6CA78AC66A811DCDEFBD92D540CB17AE0482D0C58",
+          "jpegBytes": 2563926,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 28,
+          "rowIndex": 13,
+          "seconds": 0.2744976000000001,
+          "overlaySeconds": 0.0253506,
+          "jpegSha256": "17488ED258A9556D1C4EF84009F7CFA501A16532E56D0A84DFBA15FB156BB244",
+          "jpegBytes": 2578157,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 29,
+          "rowIndex": 14,
+          "seconds": 0.2663764000000004,
+          "overlaySeconds": 0.0254598,
+          "jpegSha256": "42B45CC891AD54956107109E6DA47D4AAC4C49ACEF11E757DB69921680309FB1",
+          "jpegBytes": 2565134,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        }
+      ],
+      "allocatedBytes": 5475710432,
+      "cpuSeconds": 8.839277,
+      "peakWorkingSet64": 891019264,
+      "boundary": "One-CPU, low-priority worker. Warm source JPEG read, production decode, optional per-row layers and compositor, production JPEG92 encode. Output hashing and disk writes excluded. Control re-encodes without layers; this is not the whole capture pipeline."
+    },
+    "local/local-overlay/stack3-overlay.result.json": {
+      "dataset": "color-stack3-overlay",
+      "mode": "vfr",
+      "preset": "veryfast",
+      "threads": 1,
+      "repeat": 1,
+      "plannedDuration": 60,
+      "sourceSeconds": 3600,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        "/data/results/local-overlay/stack3-overlay.ffconcat",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-threads",
+        "1",
+        "-x264-params",
+        "lookahead_threads=1:threads=1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "60000",
+        "-fps_mode",
+        "vfr",
+        "-enc_time_base",
+        "1:60",
+        "-bf",
+        "0",
+        "-t",
+        "60",
+        "/data/results/local-overlay/stack3-overlay.mp4"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 50.754147228988586,
+      "resources": {
+        "wallSeconds": 50.71,
+        "userSeconds": 50.02,
+        "systemSeconds": 0.58,
+        "maxRssKiB": 739368,
+        "inputBlocks": 0,
+        "outputBlocks": 823960,
+        "voluntarySwitches": 730,
+        "involuntarySwitches": 492,
+        "exitCode": 0
+      },
+      "verified": true,
+      "width": 3552,
+      "height": 3552,
+      "output": "/data/results/local-overlay/stack3-overlay.mp4",
+      "bytes": 278455825,
+      "sha256": "50d443ac6c0e2aadc45bfcb5c0b819775058063d74acd470ac043346e73beda2",
+      "decodedFrames": 181,
+      "actualDuration": 60.0,
+      "lastFramePts": 59.983333,
+      "verification": "exact PTS/count, codec/dimensions, complete hard-fail decode"
+    },
+    "local/speed-downloads/stack3-180x-native.retime.json": {
+      "source": "/data/review/color-stack3-stretched-native.mp4",
+      "sourceSha256": "13f2e5ec25e72c17750a30b702de53397a64e72222dc733129fe7d42c4069af1",
+      "output": "/data/results/speed-downloads/stack3-180x-native.mp4",
+      "outputSha256": "a5461bfdefb8232578ad741aff08b9f289557bf7a6a58c4f958938942b9e5d90",
+      "factor": 3,
+      "sourceCompression": 60,
+      "compression": 180,
+      "duration": 20.0,
+      "bytes": 287954113,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-native.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/3:dts=DTS*TB/TB_OUT/3:duration=DURATION*TB/TB_OUT/3:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-180x-native.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/speed-downloads/stack3-300x-preview.retime.json": {
+      "source": "/data/review/color-stack3-stretched-preview.mp4",
+      "sourceSha256": "b4533eff947beb4a7628dc89879f5451010bd422514314e976f3cc604e413d82",
+      "output": "/data/results/speed-downloads/stack3-300x-preview.mp4",
+      "outputSha256": "b7ba6ea755471e4bb0f2c73241a903a17f8d0034a50d0141765083f2d1db6c4e",
+      "factor": 5,
+      "sourceCompression": 60,
+      "compression": 300,
+      "duration": 12.0,
+      "bytes": 52295847,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-preview.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/5:dts=DTS*TB/TB_OUT/5:duration=DURATION*TB/TB_OUT/5:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-300x-preview.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/speed-downloads/stack3-180x-preview.retime.json": {
+      "source": "/data/review/color-stack3-stretched-preview.mp4",
+      "sourceSha256": "b4533eff947beb4a7628dc89879f5451010bd422514314e976f3cc604e413d82",
+      "output": "/data/results/speed-downloads/stack3-180x-preview.mp4",
+      "outputSha256": "ce5a3bf14570adc0771e2a8b94e0ec87697a035f46cb5e6f3f5d6abe8188a0b9",
+      "factor": 3,
+      "sourceCompression": 60,
+      "compression": 180,
+      "duration": 20.0,
+      "bytes": 52295847,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-preview.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/3:dts=DTS*TB/TB_OUT/3:duration=DURATION*TB/TB_OUT/3:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-180x-preview.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/speed-downloads/stack3-120x-preview.retime.json": {
+      "source": "/data/review/color-stack3-stretched-preview.mp4",
+      "sourceSha256": "b4533eff947beb4a7628dc89879f5451010bd422514314e976f3cc604e413d82",
+      "output": "/data/results/speed-downloads/stack3-120x-preview.mp4",
+      "outputSha256": "e9e2790a0939b5a7e0f899edf249427e9f824d35af51651ae66b861744696394",
+      "factor": 2,
+      "sourceCompression": 60,
+      "compression": 120,
+      "duration": 30.0,
+      "bytes": 52295847,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-preview.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/2:dts=DTS*TB/TB_OUT/2:duration=DURATION*TB/TB_OUT/2:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-120x-preview.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/speed-downloads/stack3-300x-native.retime.json": {
+      "source": "/data/review/color-stack3-stretched-native.mp4",
+      "sourceSha256": "13f2e5ec25e72c17750a30b702de53397a64e72222dc733129fe7d42c4069af1",
+      "output": "/data/results/speed-downloads/stack3-300x-native.mp4",
+      "outputSha256": "9b496e6cbd82b5c48b4506c650eed197f55cb32c8c0ed383a78b892c913c5d42",
+      "factor": 5,
+      "sourceCompression": 60,
+      "compression": 300,
+      "duration": 12.0,
+      "bytes": 287954113,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-native.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/5:dts=DTS*TB/TB_OUT/5:duration=DURATION*TB/TB_OUT/5:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-300x-native.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/speed-downloads/stack3-120x-native.retime.json": {
+      "source": "/data/review/color-stack3-stretched-native.mp4",
+      "sourceSha256": "13f2e5ec25e72c17750a30b702de53397a64e72222dc733129fe7d42c4069af1",
+      "output": "/data/results/speed-downloads/stack3-120x-native.mp4",
+      "outputSha256": "959cf31c42e4361605d8c71cfc40bf30217e0f7d8342cbbcd3e03f7e1fe30a4a",
+      "factor": 2,
+      "sourceCompression": 60,
+      "compression": 120,
+      "duration": 30.0,
+      "bytes": 287954113,
+      "packets": 181,
+      "maximumTimingErrorSeconds": 0.0,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-i",
+        "/data/review/color-stack3-stretched-native.mp4",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "copy",
+        "-bsf:v",
+        "setts=pts=PTS*TB/TB_OUT/2:dts=DTS*TB/TB_OUT/2:duration=DURATION*TB/TB_OUT/2:time_base=1/1800000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "1800000",
+        "/data/results/speed-downloads/stack3-120x-native.mp4"
+      ],
+      "verified": true,
+      "verification": "Every compressed packet hash unchanged; PTS, DTS and duration divided by factor; complete hard-fail decode."
+    },
+    "local/overlay-diagnostic/comparison.json": {
+      "width": 3552,
+      "height": 3552,
+      "sourceIdentityMatches": true,
+      "typedLayerPayloadsMatch": true,
+      "changedPixels": 157221,
+      "changedPixelFraction": 0.012461336970416362,
+      "maximumChannelDifference": 14,
+      "meanAbsoluteChannelDifference": 0.015250892784676569,
+      "changedBounds": [
+        0,
+        16,
+        3535,
+        3535
+      ],
+      "changedCentralFieldPixels": 0,
+      "psnrYuv": "n:1 mse_avg:0.02 mse_y:0.02 mse_u:0.01 mse_v:0.01 psnr_avg:65.89 psnr_y:65.36 psnr_u:68.18 psnr_v:66.41",
+      "scope": "First source only, both JPEGs decoded by the same local FFmpeg to RGB24. No cross-architecture byte identity claimed."
+    },
+    "pi//data/results/pi-overlay-processing/jpeg-control.json": {
+      "enabled": false,
+      "sampleCount": 30,
+      "warmups": 5,
+      "uniqueSourceCount": 15,
+      "samples": [
+        {
+          "index": 0,
+          "rowIndex": 0,
+          "seconds": 0.3831541,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "CE13D80EEEB38FEC17F090BED793EDC87FF786D557B106BAD12FF4C9558A47C2",
+          "jpegBytes": 3233629,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 1,
+          "rowIndex": 1,
+          "seconds": 0.3448435,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "8DE71B9E786E0DD6F536D65034F2CAC3A7A8AC545AA0E4552A7DD5E6D3D8731A",
+          "jpegBytes": 2639739,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 2,
+          "rowIndex": 2,
+          "seconds": 0.3451934,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "4BB1354C853240F79F8EB883F040E3E324BB77789702E4407F7EABDC792A1D56",
+          "jpegBytes": 2430151,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 3,
+          "rowIndex": 3,
+          "seconds": 0.3397804000000002,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "A83CEF8BD7DE4B242E6C1C81196C256ACC94B00A186E4ED6D2A2EFE435051FD7",
+          "jpegBytes": 2431085,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 4,
+          "rowIndex": 4,
+          "seconds": 0.3486990000000001,
+          "overlaySeconds": 5e-07,
+          "jpegSha256": "52568F035B544D7D5DBBB40AA07E575FDFF41887A06ECF48F1F8775A07C61359",
+          "jpegBytes": 2431331,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 5,
+          "rowIndex": 5,
+          "seconds": 0.3422584999999998,
+          "overlaySeconds": 5e-07,
+          "jpegSha256": "DB2E52D6863EF33479CF337200179305E0CD30D95B3A610919C4F4EAD6E4FCA9",
+          "jpegBytes": 2431775,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 6,
+          "rowIndex": 6,
+          "seconds": 0.3511656999999997,
+          "overlaySeconds": 4e-07,
+          "jpegSha256": "E97BFEBEE03B7853FE76771B16032BC4F0C2D174142C3C7F4B27C4E18B38000F",
+          "jpegBytes": 2430763,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 7,
+          "rowIndex": 7,
+          "seconds": 0.3343689999999997,
+          "overlaySeconds": 0,
+          "jpegSha256": "279F79AE3A99D63DDE450CC0222519F40511B69B5B92C8FE35025BE7CC03C060",
+          "jpegBytes": 2429264,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 8,
+          "rowIndex": 8,
+          "seconds": 0.34437130000000016,
+          "overlaySeconds": 1.19e-05,
+          "jpegSha256": "33E1C42FB333B121BCEE7910059E4A24F440F18DC89D5E1147698941EDFA4F07",
+          "jpegBytes": 2428817,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 9,
+          "rowIndex": 9,
+          "seconds": 0.3349806000000002,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "2B3C01F5CFB1FEAFBA65E93F2C80B4A4DE8CC30F1C41A644C9ABAD824998C29E",
+          "jpegBytes": 2429779,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 10,
+          "rowIndex": 10,
+          "seconds": 0.35543900000000006,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "C4F1193601E70BE09385849D3C5B5351CB2A4668C5106B4851F4AD07742418CB",
+          "jpegBytes": 2430136,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 11,
+          "rowIndex": 11,
+          "seconds": 0.34136860000000047,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "101281A84D67143EB352EDBB7299A61CA933F28F7C02D6EECC0CBC5EEE3A9443",
+          "jpegBytes": 2430091,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 12,
+          "rowIndex": 12,
+          "seconds": 0.34261119999999945,
+          "overlaySeconds": 0,
+          "jpegSha256": "46E4509CC4F65FC7066F0B64C5D185C37B42210BE733DE3FD574D6517212E320",
+          "jpegBytes": 2429915,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 13,
+          "rowIndex": 13,
+          "seconds": 0.3379183999999995,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "CD2F304828DC64E65852F41D9CBA42643700B7A426AE1DDEA17DA3A480EE8F41",
+          "jpegBytes": 2444237,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 14,
+          "rowIndex": 14,
+          "seconds": 0.3393280000000001,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "5FE6C800B3EA4FE0E767881F3250CD5148717212263681C18FB3A9F58E004BB7",
+          "jpegBytes": 2431196,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        },
+        {
+          "index": 15,
+          "rowIndex": 0,
+          "seconds": 0.3710103,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "CE13D80EEEB38FEC17F090BED793EDC87FF786D557B106BAD12FF4C9558A47C2",
+          "jpegBytes": 3233629,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 16,
+          "rowIndex": 1,
+          "seconds": 0.34706360000000025,
+          "overlaySeconds": 0,
+          "jpegSha256": "8DE71B9E786E0DD6F536D65034F2CAC3A7A8AC545AA0E4552A7DD5E6D3D8731A",
+          "jpegBytes": 2639739,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 17,
+          "rowIndex": 2,
+          "seconds": 0.33437170000000016,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "4BB1354C853240F79F8EB883F040E3E324BB77789702E4407F7EABDC792A1D56",
+          "jpegBytes": 2430151,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 18,
+          "rowIndex": 3,
+          "seconds": 0.3407416000000003,
+          "overlaySeconds": 1.05e-05,
+          "jpegSha256": "A83CEF8BD7DE4B242E6C1C81196C256ACC94B00A186E4ED6D2A2EFE435051FD7",
+          "jpegBytes": 2431085,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 19,
+          "rowIndex": 4,
+          "seconds": 0.33401420000000037,
+          "overlaySeconds": 0,
+          "jpegSha256": "52568F035B544D7D5DBBB40AA07E575FDFF41887A06ECF48F1F8775A07C61359",
+          "jpegBytes": 2431331,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 20,
+          "rowIndex": 5,
+          "seconds": 0.3366631,
+          "overlaySeconds": 0,
+          "jpegSha256": "DB2E52D6863EF33479CF337200179305E0CD30D95B3A610919C4F4EAD6E4FCA9",
+          "jpegBytes": 2431775,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 21,
+          "rowIndex": 6,
+          "seconds": 0.3340455999999996,
+          "overlaySeconds": 0,
+          "jpegSha256": "E97BFEBEE03B7853FE76771B16032BC4F0C2D174142C3C7F4B27C4E18B38000F",
+          "jpegBytes": 2430763,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 22,
+          "rowIndex": 7,
+          "seconds": 0.3422628000000003,
+          "overlaySeconds": 0,
+          "jpegSha256": "279F79AE3A99D63DDE450CC0222519F40511B69B5B92C8FE35025BE7CC03C060",
+          "jpegBytes": 2429264,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 23,
+          "rowIndex": 8,
+          "seconds": 0.3341056,
+          "overlaySeconds": 0,
+          "jpegSha256": "33E1C42FB333B121BCEE7910059E4A24F440F18DC89D5E1147698941EDFA4F07",
+          "jpegBytes": 2428817,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 24,
+          "rowIndex": 9,
+          "seconds": 0.3393560999999998,
+          "overlaySeconds": 0,
+          "jpegSha256": "2B3C01F5CFB1FEAFBA65E93F2C80B4A4DE8CC30F1C41A644C9ABAD824998C29E",
+          "jpegBytes": 2429779,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 25,
+          "rowIndex": 10,
+          "seconds": 0.3932738000000011,
+          "overlaySeconds": 0,
+          "jpegSha256": "C4F1193601E70BE09385849D3C5B5351CB2A4668C5106B4851F4AD07742418CB",
+          "jpegBytes": 2430136,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 26,
+          "rowIndex": 11,
+          "seconds": 0.3591180000000005,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "101281A84D67143EB352EDBB7299A61CA933F28F7C02D6EECC0CBC5EEE3A9443",
+          "jpegBytes": 2430091,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 27,
+          "rowIndex": 12,
+          "seconds": 0.35078790000000026,
+          "overlaySeconds": 1e-07,
+          "jpegSha256": "46E4509CC4F65FC7066F0B64C5D185C37B42210BE733DE3FD574D6517212E320",
+          "jpegBytes": 2429915,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 28,
+          "rowIndex": 13,
+          "seconds": 0.3400585000000014,
+          "overlaySeconds": 3e-07,
+          "jpegSha256": "CD2F304828DC64E65852F41D9CBA42643700B7A426AE1DDEA17DA3A480EE8F41",
+          "jpegBytes": 2444237,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 29,
+          "rowIndex": 14,
+          "seconds": 0.3337135999999994,
+          "overlaySeconds": 2e-07,
+          "jpegSha256": "5FE6C800B3EA4FE0E767881F3250CD5148717212263681C18FB3A9F58E004BB7",
+          "jpegBytes": 2431196,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        }
+      ],
+      "allocatedBytes": 4315403808,
+      "cpuSeconds": 10.426238,
+      "peakWorkingSet64": 637108224,
+      "boundary": "One-CPU, low-priority worker. Warm source JPEG read, production decode, optional per-row layers and compositor, production JPEG92 encode. Output hashing and disk writes excluded. Control re-encodes without layers; this is not the whole capture pipeline."
+    },
+    "pi//data/results/pi-overlay-processing/overlays.json": {
+      "enabled": true,
+      "sampleCount": 30,
+      "warmups": 5,
+      "uniqueSourceCount": 15,
+      "samples": [
+        {
+          "index": 0,
+          "rowIndex": 0,
+          "seconds": 0.507055,
+          "overlaySeconds": 0.0755624,
+          "jpegSha256": "41BAFF462EA56546E762815D8F049451C27319F33AE7064881B98E466B629EB5",
+          "jpegBytes": 3360270,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 1,
+          "rowIndex": 1,
+          "seconds": 0.4934299000000001,
+          "overlaySeconds": 0.0732381,
+          "jpegSha256": "877D6170B400678CF9D20BC363C57639F083DC2F45850568598A50BC41B29D25",
+          "jpegBytes": 2772061,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 2,
+          "rowIndex": 2,
+          "seconds": 0.4317614000000001,
+          "overlaySeconds": 0.0917302,
+          "jpegSha256": "2AC8EC0AB705B9A60D70A559973BB7482088532AD2E3B43867A2F3BBD3ADD3CA",
+          "jpegBytes": 2564336,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 3,
+          "rowIndex": 3,
+          "seconds": 0.45862939999999996,
+          "overlaySeconds": 0.1130134,
+          "jpegSha256": "BBB8BC70D9F93AD64091B6565537A834454CE5E6F7974967629CC684C13CD1A8",
+          "jpegBytes": 2565156,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 4,
+          "rowIndex": 4,
+          "seconds": 0.4315102999999998,
+          "overlaySeconds": 0.0916856,
+          "jpegSha256": "7E54151FF16895C2055E1EDFA507CF35270AE408BC2CFDA1492A75BA6C9D9880",
+          "jpegBytes": 2565198,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 5,
+          "rowIndex": 5,
+          "seconds": 0.4990693999999998,
+          "overlaySeconds": 0.1289566,
+          "jpegSha256": "E5EF1A5BFFE71DD75988DD50256027F39038550CFB90E25FB04F8C635448E8EC",
+          "jpegBytes": 2565297,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 6,
+          "rowIndex": 6,
+          "seconds": 0.4545879000000004,
+          "overlaySeconds": 0.1173848,
+          "jpegSha256": "74714D3F927C7677FB4E72EE6DF8866563AEA3F43BC16DBF2D2A863AAE8A2D78",
+          "jpegBytes": 2565163,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 7,
+          "rowIndex": 7,
+          "seconds": 0.4535456,
+          "overlaySeconds": 0.0940559,
+          "jpegSha256": "C337004714563ACD12C0CAB8E71C58B70682B6D1947BFBDFBAFDDAD210108309",
+          "jpegBytes": 2563553,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 8,
+          "rowIndex": 8,
+          "seconds": 0.4292651000000003,
+          "overlaySeconds": 0.0719234,
+          "jpegSha256": "BEE407C22CE2FC250B18DB4F4BFFE88FAC0FDB4CD1B2C5CF6C1F950DC9A02031",
+          "jpegBytes": 2562955,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 9,
+          "rowIndex": 9,
+          "seconds": 0.4502531000000003,
+          "overlaySeconds": 0.1029944,
+          "jpegSha256": "90B0BCD4106AE9944648F95A2544A77D567019B3698B6AFF6B1B0329584C6EF1",
+          "jpegBytes": 2563945,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 10,
+          "rowIndex": 10,
+          "seconds": 0.4469208,
+          "overlaySeconds": 0.0831171,
+          "jpegSha256": "7CA06E6D8D7FA70A1C1D634FCCD0EF1DA8F3EC52217EE82EC19CAF273CF7CDD5",
+          "jpegBytes": 2564276,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 11,
+          "rowIndex": 11,
+          "seconds": 0.4525332999999998,
+          "overlaySeconds": 0.1035029,
+          "jpegSha256": "A9457E40F0A04D7F3872A19202436C65D3A3A76F5D035503579034DA7071169F",
+          "jpegBytes": 2564136,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 12,
+          "rowIndex": 12,
+          "seconds": 0.4193359000000001,
+          "overlaySeconds": 0.0757717,
+          "jpegSha256": "D5DB3784432EBCC27C07667A7576552C888B4C9D8C1A37BBAF7CD146AB05CB86",
+          "jpegBytes": 2564197,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 13,
+          "rowIndex": 13,
+          "seconds": 0.44150139999999993,
+          "overlaySeconds": 0.0707821,
+          "jpegSha256": "FAAF69FE332F86E0F4C39237B0F198401FA90BCA894A9775EF1F08CC205CE0BE",
+          "jpegBytes": 2578089,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 14,
+          "rowIndex": 14,
+          "seconds": 0.4260704000000004,
+          "overlaySeconds": 0.0858829,
+          "jpegSha256": "3E6D0004CB5369ABEA783FCA72B47E8278DB87A4BF5606DE49561960F710D836",
+          "jpegBytes": 2565145,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        },
+        {
+          "index": 15,
+          "rowIndex": 0,
+          "seconds": 0.5693786000000003,
+          "overlaySeconds": 0.1330359,
+          "jpegSha256": "41BAFF462EA56546E762815D8F049451C27319F33AE7064881B98E466B629EB5",
+          "jpegBytes": 3360270,
+          "sourceIdentity": "643FA88F82F5F0741080E6D756A61366E7578DFCD018AADFCC2B16CAC7AB00B0"
+        },
+        {
+          "index": 16,
+          "rowIndex": 1,
+          "seconds": 0.41667450000000006,
+          "overlaySeconds": 0.0725253,
+          "jpegSha256": "877D6170B400678CF9D20BC363C57639F083DC2F45850568598A50BC41B29D25",
+          "jpegBytes": 2772061,
+          "sourceIdentity": "C1D0AAA56F01984FE54A3E4B305B376BBC5FE1FAAB8974C8842456B303319B8B"
+        },
+        {
+          "index": 17,
+          "rowIndex": 2,
+          "seconds": 0.404932800000001,
+          "overlaySeconds": 0.0664595,
+          "jpegSha256": "2AC8EC0AB705B9A60D70A559973BB7482088532AD2E3B43867A2F3BBD3ADD3CA",
+          "jpegBytes": 2564336,
+          "sourceIdentity": "B69B0A82A3DC161F9F65609D7185E7D94EEF879272F7AFB3FF97B9C43924C0A2"
+        },
+        {
+          "index": 18,
+          "rowIndex": 3,
+          "seconds": 0.412352499999999,
+          "overlaySeconds": 0.0735222,
+          "jpegSha256": "BBB8BC70D9F93AD64091B6565537A834454CE5E6F7974967629CC684C13CD1A8",
+          "jpegBytes": 2565156,
+          "sourceIdentity": "35366123D331D0860D55CEE34A39E9BE4F8293769E899676F8FDB4FDE2D759CB"
+        },
+        {
+          "index": 19,
+          "rowIndex": 4,
+          "seconds": 0.41799050000000015,
+          "overlaySeconds": 0.0698925,
+          "jpegSha256": "7E54151FF16895C2055E1EDFA507CF35270AE408BC2CFDA1492A75BA6C9D9880",
+          "jpegBytes": 2565198,
+          "sourceIdentity": "02C365ED529E8FB03B24E4121C54FA44AEFFFA798A880C19D0808A16483D5F43"
+        },
+        {
+          "index": 20,
+          "rowIndex": 5,
+          "seconds": 0.4983801999999997,
+          "overlaySeconds": 0.0812074,
+          "jpegSha256": "E5EF1A5BFFE71DD75988DD50256027F39038550CFB90E25FB04F8C635448E8EC",
+          "jpegBytes": 2565297,
+          "sourceIdentity": "E15C9B7F821DFA73F2CAFB5E6C1319D8C3754451C7E288A0A6BE925869B9992E"
+        },
+        {
+          "index": 21,
+          "rowIndex": 6,
+          "seconds": 0.40920809999999896,
+          "overlaySeconds": 0.0709268,
+          "jpegSha256": "74714D3F927C7677FB4E72EE6DF8866563AEA3F43BC16DBF2D2A863AAE8A2D78",
+          "jpegBytes": 2565163,
+          "sourceIdentity": "B251AA668D3DE1F44E8FAD4094670FFA6287C835E60F4E29BA35C3E829D67D50"
+        },
+        {
+          "index": 22,
+          "rowIndex": 7,
+          "seconds": 0.42059200000000097,
+          "overlaySeconds": 0.0833747,
+          "jpegSha256": "C337004714563ACD12C0CAB8E71C58B70682B6D1947BFBDFBAFDDAD210108309",
+          "jpegBytes": 2563553,
+          "sourceIdentity": "3E55D8028FF31EC51C459A92F6E649C08CE262DA3493C94DBEDAC49A4CA91F4E"
+        },
+        {
+          "index": 23,
+          "rowIndex": 8,
+          "seconds": 0.4027251000000014,
+          "overlaySeconds": 0.0741646,
+          "jpegSha256": "BEE407C22CE2FC250B18DB4F4BFFE88FAC0FDB4CD1B2C5CF6C1F950DC9A02031",
+          "jpegBytes": 2562955,
+          "sourceIdentity": "9F173A512C0F3EBDE9CBF81CB41D2C49482AA2111A79CF987D01425C0606F71F"
+        },
+        {
+          "index": 24,
+          "rowIndex": 9,
+          "seconds": 0.5442017999999997,
+          "overlaySeconds": 0.1539146,
+          "jpegSha256": "90B0BCD4106AE9944648F95A2544A77D567019B3698B6AFF6B1B0329584C6EF1",
+          "jpegBytes": 2563945,
+          "sourceIdentity": "E8ACAD9AB3EB292E41EC0C00FC0D3D2C3B53613AB18A49C92D6BE86F1199A38B"
+        },
+        {
+          "index": 25,
+          "rowIndex": 10,
+          "seconds": 0.5368689,
+          "overlaySeconds": 0.1279795,
+          "jpegSha256": "7CA06E6D8D7FA70A1C1D634FCCD0EF1DA8F3EC52217EE82EC19CAF273CF7CDD5",
+          "jpegBytes": 2564276,
+          "sourceIdentity": "A6EB697784BDF9B64064536849645528EBA608547BD8BD75AC0A56090DAF6C17"
+        },
+        {
+          "index": 26,
+          "rowIndex": 11,
+          "seconds": 0.4079706999999999,
+          "overlaySeconds": 0.0770909,
+          "jpegSha256": "A9457E40F0A04D7F3872A19202436C65D3A3A76F5D035503579034DA7071169F",
+          "jpegBytes": 2564136,
+          "sourceIdentity": "33EBB1645B04BFCBCCAB0EB9B5F58C61D9D8E6D85E59EAD6B63FBD30804D25B9"
+        },
+        {
+          "index": 27,
+          "rowIndex": 12,
+          "seconds": 0.3990703,
+          "overlaySeconds": 0.0698097,
+          "jpegSha256": "D5DB3784432EBCC27C07667A7576552C888B4C9D8C1A37BBAF7CD146AB05CB86",
+          "jpegBytes": 2564197,
+          "sourceIdentity": "E708B1EFB63340C9733D262C68430B67FBDBE44F11ACF27B1CB327675F9A385A"
+        },
+        {
+          "index": 28,
+          "rowIndex": 13,
+          "seconds": 0.40622440000000104,
+          "overlaySeconds": 0.0741626,
+          "jpegSha256": "FAAF69FE332F86E0F4C39237B0F198401FA90BCA894A9775EF1F08CC205CE0BE",
+          "jpegBytes": 2578089,
+          "sourceIdentity": "9A5C0259373A9125F66FD35756E431E5C936C9A8EB9A0F8A039CAAB01D3C332E"
+        },
+        {
+          "index": 29,
+          "rowIndex": 14,
+          "seconds": 0.3987324000000001,
+          "overlaySeconds": 0.0691942,
+          "jpegSha256": "3E6D0004CB5369ABEA783FCA72B47E8278DB87A4BF5606DE49561960F710D836",
+          "jpegBytes": 2565145,
+          "sourceIdentity": "BDC362991026B01C06B58572F660B97C26D647353A7A44AF0BEA74EEB1DBDC3B"
+        }
+      ],
+      "allocatedBytes": 5475713576,
+      "cpuSeconds": 13.497675,
+      "peakWorkingSet64": 897073152,
+      "boundary": "One-CPU, low-priority worker. Warm source JPEG read, production decode, optional per-row layers and compositor, production JPEG92 encode. Output hashing and disk writes excluded. Control re-encodes without layers; this is not the whole capture pipeline."
+    },
+    "pi//data/results/pi-overlay-environment.json": {
+      "machine": "aarch64",
+      "cpuMax": "100000 100000",
+      "controllers": "cpuset cpu io pids",
+      "files": {
+        "/data/display-prefix/stack3/sequence.json": "949f4463ec379f3d1c006dfd9c2ba63bc9e04dbf9a1c76b1a054e1572dbbc23e",
+        "/data/overlay-prefix/stack3-overlay/sequence.json": "06525593d3b64d3ff0deb968cf8747cbb66a2e82eb8bcc3c5605c9501788ead7",
+        "/data/overlay-prefix/stack3-overlay/geometry.json": "8d9133e16acd9742888eadad1d7c2f751248785ab75c266184b4e9b8f0003425",
+        "/data/bin/overlay-linux-arm64/HVO.SkyMonitor.TimeLapseBenchmark.dll": "02d37cf599284875d2504ce230ace0a5f1645982824e13a3dfc84e0d0a88e885"
+      }
+    },
+    "pi//data/results/pi-overlay/stack3-overlay.result.json": {
+      "dataset": "stack3-overlay",
+      "mode": "vfr",
+      "preset": "veryfast",
+      "threads": 1,
+      "repeat": 1,
+      "plannedDuration": 5,
+      "sourceSeconds": 300,
+      "command": [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-n",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        "/data/results/pi-overlay/stack3-overlay.ffconcat",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-threads",
+        "1",
+        "-x264-params",
+        "lookahead_threads=1:threads=1",
+        "-movflags",
+        "+faststart",
+        "-video_track_timescale",
+        "60000",
+        "-fps_mode",
+        "vfr",
+        "-enc_time_base",
+        "1:60",
+        "-bf",
+        "0",
+        "-t",
+        "5",
+        "/data/results/pi-overlay/stack3-overlay.mp4"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 11.182067450135946,
+      "resources": {
+        "wallSeconds": 11.17,
+        "userSeconds": 11.02,
+        "systemSeconds": 0.13,
+        "maxRssKiB": 721184,
+        "inputBlocks": 0,
+        "outputBlocks": 49632,
+        "voluntarySwitches": 69,
+        "involuntarySwitches": 176,
+        "exitCode": 0
+      },
+      "verified": true,
+      "width": 3552,
+      "height": 3552,
+      "output": "/data/results/pi-overlay/stack3-overlay.mp4",
+      "bytes": 25385305,
+      "sha256": "ccdef268f29ca28b958b97aa1fcfd17060acf416d48f5568b823550de846cbd4",
+      "decodedFrames": 16,
+      "actualDuration": 5.0,
+      "lastFramePts": 4.983333,
+      "verification": "exact PTS/count, codec/dimensions, complete hard-fail decode"
+    },
+    "pi//data/results/pi-overlay/stack3-overlay.probe.json": {
+      "frames": [
+        {
+          "best_effort_timestamp_time": "0.000000",
+          "pkt_duration_time": "0.333333",
+          "side_data_list": [
+            {
+              "side_data_type": "H.26[45] User Data Unregistered SEI message"
+            }
+          ]
+        },
+        {
+          "best_effort_timestamp_time": "0.333333",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "0.666667",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "1.000000",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "1.333333",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "1.666667",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "2.000000",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "2.333333",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "2.666667",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "3.000000",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "3.333333",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "3.666667",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "4.000000",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "4.333333",
+          "pkt_duration_time": "0.333333"
+        },
+        {
+          "best_effort_timestamp_time": "4.666667",
+          "pkt_duration_time": "0.316667"
+        },
+        {
+          "best_effort_timestamp_time": "4.983333",
+          "pkt_duration_time": "0.016667"
+        }
+      ],
+      "programs": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "width": 3552,
+          "height": 3552,
+          "time_base": "1/60000",
+          "duration": "5.000000",
+          "nb_frames": "16",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc60.31.102 libx264"
+          }
+        }
+      ],
+      "format": {
+        "duration": "5.000000",
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf60.16.100"
+        }
+      }
+    }
+  },
+  "review": {
+    "url": "http://192.168.1.14:8096/",
+    "speedDownloadDurations": [
+      30,
+      20,
+      12
+    ],
+    "downloadRangeChecks": "All six speed variants and both overlay files returned206 and attachment headers; byte ranges matched originals.",
+    "browser": "Speed variants report30/20/12seconds at rate1 and matched download URLs. 300x reachedend with no decode error but buffering/droppedframes occurred. Overlay metadata60s/1280square; full native and preview FFmpeg decode passed.",
+    "overlaySampleCompression": 60
+  }
+}

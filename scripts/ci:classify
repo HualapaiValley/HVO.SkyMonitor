@@ -199,6 +199,7 @@ shared_projects=(
   HVO.SkyMonitor.Fleet.Contracts
   HVO.SkyMonitor.Imaging
   HVO.SkyMonitor.Processing
+  HVO.SkyMonitor.Video.FFmpeg
   HVO.SkyMonitor.ProcessingRunner
   HVO.SkyMonitor.ProcessingRunner.Contracts
   HVO.SkyMonitor.Storage.FileSystem

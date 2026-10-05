@@ -37,7 +37,8 @@ internal sealed class CompositeProcessingRetentionHolds(
     CaptureProcessingPersistence persistence,
     CameraAgentClearReferenceLoader clearReferences,
     SqliteCalibrationLibraryStore calibrationLibrary,
-    IAcceptanceRetentionControl? acceptanceControl = null) :
+    IAcceptanceRetentionControl? acceptanceControl = null,
+    TimeLapses.SqliteTimeLapseStore? timeLapses = null) :
     IProcessingRetentionHolds,
     IRawIngressLifecycleProcessingRetentionHolds,
     IProcessingOutputExpiration
@@ -66,7 +67,8 @@ internal sealed class CompositeProcessingRetentionHolds(
         var acceptance = acceptanceControl is null
             ? []
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
-        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Distinct().ToArray();
+        var videos = timeLapses is null ? [] : await timeLapses.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
+        return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Distinct().ToArray();
     }
 
     public ValueTask<int> ExpireOutputsAsync(

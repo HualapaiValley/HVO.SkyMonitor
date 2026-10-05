@@ -104,6 +104,7 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 
     private IQueryable<int> DirectReferences(Guid centralArtifactId)
         => CurrentPublicReleases(centralArtifactId)
+            .Concat(ActiveTimeLapseReferences(centralArtifactId))
             .Concat(dbContext.CentralClearReferenceDesignations
                 .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
             .Concat(dbContext.CentralTransientObservations
@@ -122,6 +123,7 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralArtifactId,
         Guid centralTransientEventId)
         => CurrentPublicReleases(centralArtifactId)
+            .Concat(ActiveTimeLapseReferences(centralArtifactId))
             .Concat(dbContext.CentralClearReferenceDesignations
                 .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
             .Concat(dbContext.CentralTransientObservations.Where(item =>
@@ -144,6 +146,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 item.CentralArtifactId == centralArtifactId
                 && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
             .Concat(ActiveGraphExecutionReferences(centralArtifactId));
+
+    private IQueryable<int> ActiveTimeLapseReferences(Guid centralArtifactId)
+        => dbContext.CentralTimeLapseInputs.Where(input => input.CentralArtifactId == centralArtifactId &&
+            (input.Job!.State == TimeLapses.CentralTimeLapseState.Queued || input.Job.State == TimeLapses.CentralTimeLapseState.Working)).Select(_ => 1);
 
     private IQueryable<int> ActiveGraphExecutionReferences(Guid centralArtifactId)
         => dbContext.CentralProcessingGraphExecutions.Where(execution =>

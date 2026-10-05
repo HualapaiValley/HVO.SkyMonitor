@@ -115,95 +115,16 @@ public sealed class CaptureScheduleValidationException : ArgumentException
     public string ReasonCode { get; }
 }
 
+/// <summary>Compatibility facade for the shared site time-zone rules.</summary>
 public static class CaptureScheduleTimeZone
 {
-    public static DateTimeOffset Resolve(
-        DateOnly date,
-        TimeOnly time,
-        TimeZoneInfo timeZone,
-        LocalBoundaryRole role)
-    {
-        ArgumentNullException.ThrowIfNull(timeZone);
-        var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
-        if (timeZone.IsInvalidTime(local))
-        {
-            local = AdvanceToFirstValid(local, timeZone);
-        }
+    public static DateTimeOffset Resolve(DateOnly date, TimeOnly time, TimeZoneInfo timeZone, LocalBoundaryRole role)
+        => SiteTimeZone.Resolve(date, time, timeZone, (SiteLocalBoundaryRole)role);
 
-        TimeSpan offset;
-        if (timeZone.IsAmbiguousTime(local))
-        {
-            var offsets = timeZone.GetAmbiguousTimeOffsets(local);
-            offset = role == LocalBoundaryRole.Start ? offsets.Max() : offsets.Min();
-        }
-        else
-        {
-            offset = timeZone.GetUtcOffset(local);
-        }
-        return new DateTimeOffset(local, offset).ToUniversalTime();
-    }
+    public static (DateTimeOffset StartUtc, DateTimeOffset EndUtc) ResolveDay(DateOnly date, TimeZoneInfo timeZone)
+        => SiteTimeZone.ResolveDay(date, timeZone);
 
-    public static (DateTimeOffset StartUtc, DateTimeOffset EndUtc) ResolveDay(
-        DateOnly date,
-        TimeZoneInfo timeZone)
-        => (Resolve(date, TimeOnly.MinValue, timeZone, LocalBoundaryRole.Start),
-            Resolve(date.AddDays(1), TimeOnly.MinValue, timeZone, LocalBoundaryRole.Start));
-
-    public static string ComputeRuleSha256(TimeZoneInfo timeZone)
-    {
-        ArgumentNullException.ThrowIfNull(timeZone);
-        return CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            timeZone.Id,
-            BaseUtcOffsetTicks = timeZone.BaseUtcOffset.Ticks,
-            timeZone.SupportsDaylightSavingTime,
-            Rules = timeZone.GetAdjustmentRules().Select(static rule => new
-            {
-                DateStart = DateOnly.FromDateTime(rule.DateStart),
-                DateEnd = DateOnly.FromDateTime(rule.DateEnd),
-                DaylightDeltaTicks = rule.DaylightDelta.Ticks,
-                BaseUtcOffsetDeltaTicks = rule.BaseUtcOffsetDelta.Ticks,
-                Start = ToCanonical(rule.DaylightTransitionStart),
-                End = ToCanonical(rule.DaylightTransitionEnd)
-            }).ToArray()
-        });
-    }
-
-    private static object ToCanonical(TimeZoneInfo.TransitionTime value) => new
-    {
-        value.IsFixedDateRule,
-        value.Month,
-        value.Week,
-        value.Day,
-        value.DayOfWeek,
-        TimeOfDayTicks = value.TimeOfDay.TimeOfDay.Ticks
-    };
-
-    private static DateTime AdvanceToFirstValid(DateTime invalid, TimeZoneInfo timeZone)
-    {
-        var valid = invalid.AddHours(4);
-        while (timeZone.IsInvalidTime(valid))
-        {
-            valid = valid.AddHours(4);
-        }
-
-        var lowerTicks = invalid.Ticks;
-        var upperTicks = valid.Ticks;
-        while (upperTicks - lowerTicks > 1)
-        {
-            var middleTicks = lowerTicks + (upperTicks - lowerTicks) / 2;
-            var middle = new DateTime(middleTicks, DateTimeKind.Unspecified);
-            if (timeZone.IsInvalidTime(middle))
-            {
-                lowerTicks = middleTicks;
-            }
-            else
-            {
-                upperTicks = middleTicks;
-            }
-        }
-        return new DateTime(upperTicks, DateTimeKind.Unspecified);
-    }
+    public static string ComputeRuleSha256(TimeZoneInfo timeZone) => SiteTimeZone.ComputeRuleSha256(timeZone);
 }
 
 public static class CaptureScheduleIntervalExpander

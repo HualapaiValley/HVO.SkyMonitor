@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -16,7 +17,13 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 internal sealed record CameraAgentTimeLapseSampleView(string Url, string MediaType, int Width, int Height);
 
 /// <summary>A report date's recorded nightly evaluations and products, and the time-lapse sample when configured.</summary>
-internal sealed record CameraAgentNightlyDayView(NightlyProductDay Day, CameraAgentTimeLapseSampleView? TimeLapseSample);
+internal sealed record CameraAgentNightlyDayView(NightlyProductDay Day, CameraAgentTimeLapseSampleView? TimeLapseSample)
+{
+    internal CameraAgentTimeLapseDay? TimeLapses { get; init; }
+    internal bool TimeLapseGenerationEnabled { get; init; }
+}
+
+internal sealed record CameraAgentTimeLapsePresentation(CameraAgentTimeLapseProduct Product, bool VerifiedAvailable);
 
 /// <summary>Authorized, sanitized reads of the nightly product catalog for the archive pages.</summary>
 internal interface ICameraAgentNightlyProductUiService
@@ -30,6 +37,18 @@ internal interface ICameraAgentNightlyProductUiService
 
     ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
         NightlyProductLibraryQuery query, CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentTimeLapsePresentation>> GetTimeLapseAsync(Guid productId, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentTimeLapsePresentation>.Failure(OperatorUiResultKind.Unavailable, "Time-lapses are unavailable."));
+
+    ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success([]));
+
+    ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<bool>.Failure(OperatorUiResultKind.Unavailable, "Video retry is unavailable."));
+
+    ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>> SummarizeTimeLapsesAsync(DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>.Success([]));
 }
 
 internal sealed class CameraAgentNightlyProductUiService(
@@ -37,10 +56,30 @@ internal sealed class CameraAgentNightlyProductUiService(
     IAuthorizationService authorizationService,
     INightlyProductCatalog catalog,
     IOptions<CameraAgentHostOptions> options,
-    ILogger<CameraAgentNightlyProductUiService> logger) : ICameraAgentNightlyProductUiService
+    ILogger<CameraAgentNightlyProductUiService> logger,
+    ICameraAgentTimeLapseCatalog? timeLapses = null,
+    ICameraAgentTimeLapseCommands? videoCommands = null) : ICameraAgentNightlyProductUiService
 {
     private const string UnavailableMessage = "Nightly products are temporarily unavailable.";
     private const string SummaryBoundMessage = "The requested date range is outside the nightly product summary bound.";
+
+    public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>> SummarizeTimeLapsesAsync(DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
+        => ReadAsync(async () => OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseDateSummary>>.Success(timeLapses is null ? [] :
+            await timeLapses.SummarizeAsync(firstDate, lastDate, cancellationToken).ConfigureAwait(false)), cancellationToken);
+
+    public ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
+        => ReadAsync(async () =>
+        {
+            var state = await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false);
+            var actor = CameraAgentCredentialAccess.GetOwnerId(state.User);
+            if (actor is null || !(await authorizationService.AuthorizeAsync(state.User, null,
+                    CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded)
+                return OperatorUiResult<bool>.Failure(OperatorUiResultKind.Unauthorized, "Local operator access is required.");
+            if (videoCommands is null) return OperatorUiResult<bool>.Failure(OperatorUiResultKind.Unavailable, "Video retry is unavailable.");
+            return await videoCommands.RetryAsync(jobId, expectedRevision, requestId, actor, "Retry generation using retained inputs.", cancellationToken).ConfigureAwait(false)
+                ? OperatorUiResult<bool>.Success(true)
+                : OperatorUiResult<bool>.Failure(OperatorUiResultKind.Invalid, "The job changed, its retry limit was reached, or the queue is full. Refresh this day.");
+        }, cancellationToken);
 
     public ValueTask<OperatorUiResult<IReadOnlyList<NightlyProductDateSummary>>> SummarizeAsync(
         DateOnly firstDate, DateOnly lastDate, CancellationToken cancellationToken)
@@ -49,7 +88,32 @@ internal sealed class CameraAgentNightlyProductUiService(
 
     public ValueTask<OperatorUiResult<CameraAgentNightlyDayView>> GetDayAsync(DateOnly observingDate, CancellationToken cancellationToken)
         => ReadAsync(async () => OperatorUiResult<CameraAgentNightlyDayView>.Success(new CameraAgentNightlyDayView(
-            await catalog.GetDayAsync(observingDate, cancellationToken).ConfigureAwait(false), TimeLapseSample())), cancellationToken);
+            await catalog.GetDayAsync(observingDate, cancellationToken).ConfigureAwait(false), TimeLapseSample())
+        {
+            TimeLapses = timeLapses is null ? null : await timeLapses.GetDayAsync(observingDate, cancellationToken).ConfigureAwait(false),
+            TimeLapseGenerationEnabled = options.Value.TimeLapses.Enabled
+        }), cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentTimeLapsePresentation>> GetTimeLapseAsync(Guid productId, CancellationToken cancellationToken)
+        => ReadAsync(async () =>
+        {
+            var product = timeLapses is null ? null : await timeLapses.GetAsync(productId, cancellationToken).ConfigureAwait(false);
+            if (product is null || product.IsGapFiller)
+                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Failure(OperatorUiResultKind.NotFound, "The requested time-lapse was not found.");
+            try
+            {
+                using var stream = await timeLapses!.OpenVideoAsync(productId, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, stream is not null));
+            }
+            catch (IOException)
+            {
+                return OperatorUiResult<CameraAgentTimeLapsePresentation>.Success(new(product, false));
+            }
+        }, cancellationToken);
+
+    public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
+        => ReadAsync(async () => OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success(timeLapses is null ? [] :
+            await timeLapses.ListDailyAsync(before, 31, cancellationToken).ConfigureAwait(false)), cancellationToken);
 
     public ValueTask<OperatorUiResult<NightlyProductPresentation>> GetPresentationAsync(Guid productId, CancellationToken cancellationToken)
         => ReadAsync(async () => await catalog.GetPresentationAsync(productId, cancellationToken).ConfigureAwait(false) is { } presentation

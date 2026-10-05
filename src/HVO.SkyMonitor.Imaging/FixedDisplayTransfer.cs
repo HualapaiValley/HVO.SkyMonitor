@@ -46,6 +46,11 @@ public static class FixedDisplayTransfer
             }
             return display;
         }
+        // Integer black levels make every bilinear value an exact quarter of a native sample.
+        // A small transfer table preserves the existing numerical result without four full-size
+        // double planes and validity masks. Keep the scientific path for fractional black levels.
+        if ((long)layout.Width * layout.Height >= 4096 && options.BlackLevel == Math.Truncate(options.BlackLevel))
+            return ApplyIntegerBlackLevel(layout, pixels, options, cancellationToken);
         var values = new double[checked(layout.Width * layout.Height)];
         for (var row = 0; row < layout.Height; row++)
         {
@@ -79,6 +84,60 @@ public static class FixedDisplayTransfer
         }
         return rgb;
     }
+
+    private static byte[] ApplyIntegerBlackLevel(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> pixels,
+        FixedDisplayTransferOptions options, CancellationToken token)
+    {
+        var color = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
+        if (color && (layout.Width < 3 || layout.Height < 3 || (long)layout.Width * layout.Height > LinearBayerReconstruction.MaximumSupportedPixels))
+            throw new ArgumentException("Fixed Bayer display exceeds the supported reconstruction dimensions.", nameof(layout));
+        var transfer = new byte[ushort.MaxValue * 4 + 1];
+        for (var quarter = 0; quarter < transfer.Length; quarter++)
+        {
+            if ((quarter & 1023) == 0) token.ThrowIfCancellationRequested();
+            transfer[quarter] = Transfer(quarter / 4d - options.BlackLevel, options);
+        }
+        var output = new byte[checked(layout.Width * layout.Height * (color ? 3 : 1))];
+        var raw = pixels.Span;
+        for (var y = color ? 1 : 0; y < layout.Height - (color ? 1 : 0); y++)
+        {
+            token.ThrowIfCancellationRequested();
+            for (var x = color ? 1 : 0; x < layout.Width - (color ? 1 : 0); x++)
+            {
+                var offset = y * layout.StrideBytes + x * 2;
+                var center = Sample(raw, offset) * 4;
+                if (!color)
+                {
+                    output[y * layout.Width + x] = transfer[center];
+                    continue;
+                }
+                var horizontal = (Sample(raw, offset - 2) + Sample(raw, offset + 2)) * 2;
+                var vertical = (Sample(raw, offset - layout.StrideBytes) + Sample(raw, offset + layout.StrideBytes)) * 2;
+                int red, green, blue;
+                if ((x & 1) == (y & 1))
+                {
+                    var diagonal = Sample(raw, offset - layout.StrideBytes - 2) + Sample(raw, offset - layout.StrideBytes + 2)
+                        + Sample(raw, offset + layout.StrideBytes - 2) + Sample(raw, offset + layout.StrideBytes + 2);
+                    green = (horizontal + vertical) / 2;
+                    red = (y & 1) == 0 ? center : diagonal;
+                    blue = (y & 1) == 0 ? diagonal : center;
+                }
+                else
+                {
+                    green = center;
+                    red = (y & 1) == 0 ? horizontal : vertical;
+                    blue = (y & 1) == 0 ? vertical : horizontal;
+                }
+                var destination = (y * layout.Width + x) * 3;
+                output[destination] = transfer[red];
+                output[destination + 1] = transfer[green];
+                output[destination + 2] = transfer[blue];
+            }
+        }
+        return output;
+    }
+
+    private static int Sample(ReadOnlySpan<byte> pixels, int offset) => BinaryPrimitives.ReadUInt16LittleEndian(pixels.Slice(offset, 2));
 
     private static byte Transfer(double value, FixedDisplayTransferOptions options) =>
         (byte)Math.Round(255 * Math.Pow(Math.Clamp(value / (options.WhiteLevel - options.BlackLevel), 0, 1), 1 / options.Gamma));

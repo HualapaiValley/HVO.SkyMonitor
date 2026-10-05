@@ -1,0 +1,22 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
+
+<section class="video-library" aria-label="Daily time-lapse library">
+    <h2>Daily time-lapses</h2>
+    <p>Latest published video for each sunrise report date. Open a video for its hourly sources, capture coverage and download.</p>
+    @if (_loading) { <p role="status">Loading time-lapses…</p> }
+    else if (_message is not null) { <p role="status">@_message</p> }
+    else if (_products.Count == 0) { <p>No daily time-lapses have been generated in this page.</p> }
+    else
+    {
+        <ul>@foreach (var product in _products)
+            {
+                <li><a href="@TimeLapseLinks.Detail(product.ProductId)">@product.ReportDate.ToString("yyyy-MM-dd")</a>
+                    · @product.Width × @product.Height
+                    · @(product.HasGaps ? "Final with capture gaps" : "Final")
+                </li>
+            }
+        </ul>
+        @if (_products.Count == 31) { <a href="@OlderUrl">Older daily videos</a> }
+    }
+</section>

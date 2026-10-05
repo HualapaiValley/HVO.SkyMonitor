@@ -1,3 +1,86 @@
+-- TR_CentralTimeLapseJobs_Identity ON CentralTimeLapseJobs
+CREATE TRIGGER [TR_CentralTimeLapseJobs_Identity]
+ON [CentralTimeLapseJobs]
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    IF (ROWCOUNT_BIG() = 0) RETURN;
+    SET NOCOUNT ON;
+    IF EXISTS (
+        SELECT 1 FROM deleted d LEFT JOIN inserted i ON i.Id = d.Id
+        WHERE i.Id IS NULL OR i.DevicePublicId <> d.DevicePublicId OR i.ObservatoryId <> d.ObservatoryId
+            OR i.ReportDate <> d.ReportDate OR i.StartUtc <> d.StartUtc OR i.EndUtc <> d.EndUtc
+            OR i.IsDaily <> d.IsDaily OR i.CreatedUtc <> d.CreatedUtc
+            OR i.RequestSha256 COLLATE Latin1_General_100_BIN2 <> d.RequestSha256 COLLATE Latin1_General_100_BIN2
+            OR i.RequestJson COLLATE Latin1_General_100_BIN2 <> d.RequestJson COLLATE Latin1_General_100_BIN2
+            OR DATALENGTH(i.RequestJson) <> DATALENGTH(d.RequestJson)
+    ) THROW 51000, 'Central time-lapse request identity is immutable.', 1;
+    IF EXISTS (
+        SELECT 1 FROM inserted i WHERE ISJSON(i.RequestJson) <> 1 OR i.EndUtc <= i.StartUtc
+            OR i.State NOT IN (N'Queued', N'Working', N'Produced', N'NoSources', N'Unavailable', N'Failed')
+            OR i.AttemptCount < 0 OR i.AttemptCount > 3
+            OR (i.State = N'Working' AND (i.LeaseToken IS NULL OR i.LeaseExpiresUtc IS NULL))
+            OR (i.State <> N'Working' AND (i.LeaseToken IS NOT NULL OR i.LeaseExpiresUtc IS NOT NULL))
+            OR (i.State = N'Produced' AND i.ProductId IS NULL)
+            OR (i.ProductId IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM CentralTimeLapseVideos v WHERE v.Id = i.ProductId AND v.JobId = i.Id))
+    ) THROW 51000, 'Invalid central time-lapse job state.', 1;
+END
+GO
+
+-- TR_CentralTimeLapseInputs_Immutable ON CentralTimeLapseInputs
+CREATE TRIGGER [TR_CentralTimeLapseInputs_Immutable]
+ON [CentralTimeLapseInputs]
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    IF (ROWCOUNT_BIG() = 0) RETURN;
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51000, 'Central time-lapse source references are immutable.', 1;
+    IF EXISTS (
+        SELECT 1 FROM inserted i JOIN CentralTimeLapseJobs j ON j.Id = i.JobId
+        WHERE j.State <> N'Queued' OR NOT EXISTS (
+            SELECT 1 FROM OPENJSON(j.RequestJson, '$.sources') s
+            WHERE TRY_CONVERT(uniqueidentifier, JSON_VALUE(s.value, '$.centralArtifactId')) = i.CentralArtifactId)
+    ) THROW 51000, 'Central time-lapse source is outside its frozen request.', 1;
+END
+GO
+
+-- TR_CentralTimeLapseDependencies_Immutable ON CentralTimeLapseDependencies
+CREATE TRIGGER [TR_CentralTimeLapseDependencies_Immutable]
+ON [CentralTimeLapseDependencies]
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    IF (ROWCOUNT_BIG() = 0) RETURN;
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted)
+        THROW 51000, 'Central time-lapse dependencies are immutable.', 1;
+    IF EXISTS (
+        SELECT 1 FROM inserted i JOIN CentralTimeLapseJobs j ON j.Id = i.JobId
+        JOIN CentralTimeLapseJobs h ON h.Id = i.HourlyJobId
+        WHERE j.State <> N'Queued' OR j.IsDaily <> 1 OR h.IsDaily <> 0
+            OR j.DevicePublicId <> h.DevicePublicId OR j.ObservatoryId <> h.ObservatoryId
+            OR h.StartUtc < j.StartUtc OR h.EndUtc > j.EndUtc OR NOT EXISTS (
+                SELECT 1 FROM OPENJSON(j.RequestJson, '$.hourlyJobIds') s
+                WHERE TRY_CONVERT(uniqueidentifier, s.value) = i.HourlyJobId)
+    ) THROW 51000, 'Central time-lapse dependency is outside its frozen request.', 1;
+END
+GO
+
+-- TR_CentralTimeLapseVideos_Immutable ON CentralTimeLapseVideos
+CREATE TRIGGER [TR_CentralTimeLapseVideos_Immutable]
+ON [CentralTimeLapseVideos]
+AFTER UPDATE, DELETE
+AS
+BEGIN
+    IF (ROWCOUNT_BIG() = 0) RETURN;
+    SET NOCOUNT ON;
+    THROW 51000, 'Central time-lapse video provenance is immutable.', 1;
+END
+GO
+
 -- TR_CentralArtifactDownloadAuthorizations_Immutable ON CentralArtifactDownloadAuthorizations
 CREATE TRIGGER [TR_CentralArtifactDownloadAuthorizations_Immutable]
 ON [CentralArtifactDownloadAuthorizations]
