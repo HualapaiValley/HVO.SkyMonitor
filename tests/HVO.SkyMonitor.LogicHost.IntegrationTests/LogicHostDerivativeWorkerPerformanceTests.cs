@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -192,7 +193,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         foreach (var concurrency in BacklogConcurrencyLevels)
         {
             p5.Add(await MeasureBacklogRecoveryAsync(
-                fixture, telemetry, w2, $"{runId}-P5-C{concurrency}", concurrency, scale)
+                fixture, telemetry, w2, $"{runId}-P5-C{concurrency}", concurrency, scale,
+                canonicalHistory: true, priorP5: p5)
                 .ConfigureAwait(false));
         }
 
@@ -858,7 +860,9 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         int concurrency,
         HarnessScale scale,
         bool assertRssPlateau = true,
-        bool retainRssDiagnostics = false)
+        bool retainRssDiagnostics = false,
+        bool canonicalHistory = false,
+        IReadOnlyList<BacklogRecoveryMeasurement>? priorP5 = null)
     {
         var trials = new List<BacklogRecoveryTrialMeasurement>();
         for (var trial = 1; trial <= scale.RecoveryTrials; trial++)
@@ -889,83 +893,183 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             var disabledBacklog = await ReadBacklogAsync(allIds.ToArray()).ConfigureAwait(false);
             Assert.AreEqual(scale.BacklogInitialJobs + scale.BacklogDisabledArrivals, disabledBacklog.Count);
 
+            var diagnosticDirectory = Path.Combine(GetRepositoryRoot(), "tests",
+                "HVO.SkyMonitor.LogicHost.IntegrationTests", "TestResults", "p5-diagnostics");
+            var diagnosticFileName = $"p5-c{concurrency}-t{trial}-{Guid.NewGuid():N}.json";
             telemetry.Clear();
             StabilizeGc();
-            using var resources = new ResourceSampler(retainRssDiagnostics);
+            using var resources = new ResourceSampler(retainRssDiagnostics, retainFailureEndpoints: true);
             var recoveryStarted = Stopwatch.GetTimestamp();
             var initialDrain = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var monitoringCancellation = new CancellationTokenSource();
             var monitor = MonitorInitialDrainAsync(initialIds, recoveryStarted, initialDrain, monitoringCancellation.Token);
+            ResourceEvidence? resourceEvidence = null;
+            BacklogSnapshot? finalBacklog = null;
+            DerivativeCorrectness? correctness = null;
+            var recoveryElapsed = TimeSpan.Zero;
+            double? arrivalAdjustedDrainRate = null;
+            var retentionAttempted = false;
+
+            async Task<object> CreateDiagnosticAsync(string outcome)
+            {
+                resourceEvidence ??= await resources.StopAsync().ConfigureAwait(false);
+                var repositoryRoot = GetRepositoryRoot();
+                var assembly = typeof(LogicHostDerivativeWorkerPerformanceTests).Assembly;
+                using var assemblyStream = File.OpenRead(assembly.Location);
+                return new
+                {
+                    Schema = "hvo-logichost-p5-trial-diagnostic-v1",
+                    Issue = 1151,
+                    Outcome = outcome,
+                    Trial = trial,
+                    Concurrency = concurrency,
+                    Scenario = trialScenario,
+                    Method = canonicalHistory
+                        ? nameof(CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence)
+                        : nameof(CentralDerivativeWorker_P5C1FreshProcess_RecordsDiagnosticEvidence),
+                    Identity = new
+                    {
+                        Git = ReadGitEvidence(repositoryRoot),
+                        AssemblySha256 = Convert.ToHexStringLower(SHA256.HashData(assemblyStream)),
+                        assembly.ManifestModule.ModuleVersionId
+                    },
+                    Workload = new
+                    {
+                        workload.Id,
+                        workload.Width,
+                        workload.Height,
+                        workload.StrideBytes,
+                        PixelFormat = workload.PixelFormat.ToString(),
+                        workload.ByteLength,
+                        workload.ChecksumSha256,
+                        Seed = 2025,
+                        Recipe = BuiltInProcessingRecipes.ImageQuality
+                    },
+                    Scale = scale,
+                    History = new
+                    {
+                        PrecedingPhases = canonicalHistory ? "P1/P2/P3/P4" : "fresh-process-P5-only",
+                        CompletedConcurrencyLevels = priorP5?.Select(level => new { level.Concurrency, level.Trials }).ToArray(),
+                        CompletedTrialsAtThisConcurrency = trials.Count
+                    },
+                    SubmittedJobs = allIds.Count,
+                    DisabledBacklog = disabledBacklog,
+                    FinalBacklog = finalBacklog,
+                    Correctness = correctness,
+                    InitialDrainObserved = initialDrain.Task.IsCompletedSuccessfully,
+                    InitialBacklogDrainMilliseconds = initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : (double?)null,
+                    RecoveryMilliseconds = recoveryElapsed == TimeSpan.Zero ? (double?)null : recoveryElapsed.TotalMilliseconds,
+                    ArrivalAdjustedDrainRate = arrivalAdjustedDrainRate,
+                    Resources = resourceEvidence with { Diagnostic = null },
+                    Diagnostic = resources.CreateFailureDiagnostic(),
+                    AllowedGrowthBytes = checked((concurrency + 1L) * workload.ByteLength + RssSamplingToleranceBytes),
+                    Runtime = new
+                    {
+                        RuntimeInformation.FrameworkDescription,
+                        RuntimeVersion = Environment.Version.ToString(),
+                        RuntimeInformation.OSDescription,
+                        ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                        Environment.ProcessorCount,
+                        GCSettings.IsServerGC,
+                        LatencyModeAfterSampling = GCSettings.LatencyMode.ToString()
+                    },
+                    Unavailable = "Heap/commit/GC are endpoints, not trajectories; exact sampling UTC, live buffers and observer neutrality are unqualified. Partial trials do not establish a plateau result.",
+                    RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+            }
+
             try
             {
-                await using var worker = CreateWorker(
-                    fixture.Factory.Services,
-                    $"issue-100-P5-C{concurrency}-T{trial}",
+                try
+                {
+                    await using var worker = CreateWorker(
+                        fixture.Factory.Services,
+                        $"issue-100-P5-C{concurrency}-T{trial}",
+                        concurrency,
+                        leaseDuration: TimeSpan.FromSeconds(10));
+                    await worker.StartAsync().ConfigureAwait(false);
+                    await SubmitAtFixedRateAsync(
+                            scale.BacklogEnabledArrivals,
+                            scale.BacklogArrivalInterval,
+                            async submittedAtUtc =>
+                            {
+                                var ids = await SeedExecutableJobsAsync(
+                                    fixture,
+                                    workload,
+                                    BuiltInProcessingRecipes.ImageQuality,
+                                    $"{trialScenario}-enabled-{allIds.Count:D3}",
+                                    1,
+                                    submittedAtUtc).ConfigureAwait(false);
+                                allIds.Add(ids[0]);
+                            })
+                        .ConfigureAwait(false);
+                    await WaitForCompletionAsync(allIds.ToArray(), scale.RecoveryTimeout).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await monitoringCancellation.CancelAsync().ConfigureAwait(false);
+                    await monitor.ConfigureAwait(false);
+                }
+                recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
+                resourceEvidence = await resources.StopAsync().ConfigureAwait(false);
+                var ids = allIds.ToArray();
+                finalBacklog = await ReadBacklogAsync(ids).ConfigureAwait(false);
+                Assert.AreEqual(0, finalBacklog.Count);
+                correctness = await ValidateDerivativeResultsAsync(fixture, ids).ConfigureAwait(false);
+                arrivalAdjustedDrainRate = ids.Length / recoveryElapsed.TotalSeconds;
+                Assert.IsGreaterThan(0.1, arrivalAdjustedDrainRate.Value);
+                var rssGrowth = Math.Max(0, resourceEvidence.RssFinalThirdMedianBytes
+                    - resourceEvidence.RssMiddleThirdMedianBytes);
+                var allowedRssGrowth = checked((concurrency + 1L) * workload.ByteLength
+                    + RssSamplingToleranceBytes);
+                var rssPlateauPassed = rssGrowth <= allowedRssGrowth;
+                if (!scale.Smoke && assertRssPlateau)
+                {
+                    retentionAttempted = !rssPlateauPassed;
+                    await P5TrialDiagnostics.AssertPlateauAsync(rssPlateauPassed,
+                        $"P5 RSS median growth {rssGrowth} exceeded the {allowedRssGrowth}-byte full-frame envelope.",
+                        () => CreateDiagnosticAsync("rss-plateau-failed"), diagnosticDirectory, diagnosticFileName)
+                        .ConfigureAwait(false);
+                }
+                trials.Add(new BacklogRecoveryTrialMeasurement(
+                    trial,
                     concurrency,
-                    leaseDuration: TimeSpan.FromSeconds(10));
-                await worker.StartAsync().ConfigureAwait(false);
-                await SubmitAtFixedRateAsync(
-                        scale.BacklogEnabledArrivals,
-                        scale.BacklogArrivalInterval,
-                        async submittedAtUtc =>
-                        {
-                            var ids = await SeedExecutableJobsAsync(
-                                fixture,
-                                workload,
-                                BuiltInProcessingRecipes.ImageQuality,
-                                $"{trialScenario}-enabled-{allIds.Count:D3}",
-                                1,
-                                submittedAtUtc).ConfigureAwait(false);
-                            allIds.Add(ids[0]);
-                        })
-                    .ConfigureAwait(false);
-                await WaitForCompletionAsync(allIds.ToArray(), scale.RecoveryTimeout).ConfigureAwait(false);
+                    ids.Length,
+                    scale.BacklogInitialJobs,
+                    scale.BacklogDisabledArrivals,
+                    scale.BacklogEnabledArrivals,
+                    initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : recoveryElapsed.TotalMilliseconds,
+                    recoveryElapsed.TotalMilliseconds,
+                    arrivalAdjustedDrainRate.Value,
+                    disabledBacklog,
+                    finalBacklog,
+                    resourceEvidence,
+                    new RssPlateauEvidence(
+                        resourceEvidence.RssSamples,
+                        resourceEvidence.RssMiddleThirdMedianBytes,
+                        resourceEvidence.RssFinalThirdMedianBytes,
+                        allowedRssGrowth,
+                        rssGrowth,
+                        rssPlateauPassed),
+                    telemetry.Snapshot(),
+                    correctness));
             }
-            finally
+            catch (Exception failure)
             {
-                await monitoringCancellation.CancelAsync().ConfigureAwait(false);
-                await monitor.ConfigureAwait(false);
+                if (!retentionAttempted)
+                {
+                    // Sampling is stopped before any record construction or publication, even for a canceled trial.
+                    var retentionFailure = await P5TrialDiagnostics.TryRecordAsync(
+                        () => CreateDiagnosticAsync(failure is OperationCanceledException ? "canceled" : "trial-failed"),
+                        diagnosticDirectory, diagnosticFileName).ConfigureAwait(false);
+                    if (retentionFailure is not null)
+                    {
+                        failure.Data["P5DiagnosticRetentionFailureType"] = retentionFailure.GetType().FullName;
+                        Console.Error.WriteLine($"P5 diagnostic retention failed ({retentionFailure.GetType().Name}); original trial failure preserved.");
+                    }
+                }
+                throw;
             }
-            var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
-            var resourceEvidence = await resources.StopAsync().ConfigureAwait(false);
-            var ids = allIds.ToArray();
-            var finalBacklog = await ReadBacklogAsync(ids).ConfigureAwait(false);
-            Assert.AreEqual(0, finalBacklog.Count);
-            var correctness = await ValidateDerivativeResultsAsync(fixture, ids).ConfigureAwait(false);
-            var arrivalAdjustedDrainRate = ids.Length / recoveryElapsed.TotalSeconds;
-            Assert.IsGreaterThan(0.1, arrivalAdjustedDrainRate);
-            var rssGrowth = Math.Max(0, resourceEvidence.RssFinalThirdMedianBytes
-                - resourceEvidence.RssMiddleThirdMedianBytes);
-            var allowedRssGrowth = checked((concurrency + 1L) * workload.ByteLength
-                + RssSamplingToleranceBytes);
-            var rssPlateauPassed = rssGrowth <= allowedRssGrowth;
-            if (!scale.Smoke && assertRssPlateau)
-            {
-                Assert.IsTrue(rssPlateauPassed,
-                    $"P5 RSS median growth {rssGrowth} exceeded the {allowedRssGrowth}-byte full-frame envelope.");
-            }
-            trials.Add(new BacklogRecoveryTrialMeasurement(
-                trial,
-                concurrency,
-                ids.Length,
-                scale.BacklogInitialJobs,
-                scale.BacklogDisabledArrivals,
-                scale.BacklogEnabledArrivals,
-                initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : recoveryElapsed.TotalMilliseconds,
-                recoveryElapsed.TotalMilliseconds,
-                arrivalAdjustedDrainRate,
-                disabledBacklog,
-                finalBacklog,
-                resourceEvidence,
-                new RssPlateauEvidence(
-                    resourceEvidence.RssSamples,
-                    resourceEvidence.RssMiddleThirdMedianBytes,
-                    resourceEvidence.RssFinalThirdMedianBytes,
-                    allowedRssGrowth,
-                    rssGrowth,
-                    rssPlateauPassed),
-                telemetry.Snapshot(),
-                correctness));
         }
 
         return new BacklogRecoveryMeasurement(
@@ -2259,10 +2363,20 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         private readonly long _managedHeapStart;
         private readonly long _gcCommittedStart;
         private readonly bool _retainRssDiagnostics;
+        private readonly bool _retainFailureEndpoints;
+        private readonly int _generation0Start;
+        private readonly int _generation1Start;
+        private readonly int _generation2Start;
         private readonly RssSampler _rss;
+        private ResourceEvidence? _evidence;
+        private long _managedHeapEnd;
+        private long _gcCommittedEnd;
+        private int _generation0End;
+        private int _generation1End;
+        private int _generation2End;
         private bool _stopped;
 
-        public ResourceSampler(bool retainRssDiagnostics = false)
+        public ResourceSampler(bool retainRssDiagnostics = false, bool retainFailureEndpoints = false)
         {
             _process.Refresh();
             _cpuStart = _process.TotalProcessorTime;
@@ -2270,11 +2384,19 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             _managedHeapStart = GC.GetTotalMemory(forceFullCollection: false);
             _gcCommittedStart = GC.GetGCMemoryInfo().TotalCommittedBytes;
             _retainRssDiagnostics = retainRssDiagnostics;
+            _retainFailureEndpoints = retainFailureEndpoints;
+            _generation0Start = retainFailureEndpoints ? GC.CollectionCount(0) : 0;
+            _generation1Start = retainFailureEndpoints ? GC.CollectionCount(1) : 0;
+            _generation2Start = retainFailureEndpoints ? GC.CollectionCount(2) : 0;
             _rss = new RssSampler(_process.WorkingSet64);
         }
 
         public async Task<ResourceEvidence> StopAsync()
         {
+            if (_evidence is not null)
+            {
+                return _evidence;
+            }
             _stopped = true;
             var peak = await _rss.StopAsync().ConfigureAwait(false);
             var timedRssSamples = _rss.Snapshot();
@@ -2294,7 +2416,12 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             }
             _process.Refresh();
             var gcInfo = GC.GetGCMemoryInfo();
-            return new ResourceEvidence(
+            _managedHeapEnd = _retainRssDiagnostics || _retainFailureEndpoints ? GC.GetTotalMemory(forceFullCollection: false) : 0;
+            _gcCommittedEnd = gcInfo.TotalCommittedBytes;
+            _generation0End = _retainFailureEndpoints ? GC.CollectionCount(0) : 0;
+            _generation1End = _retainFailureEndpoints ? GC.CollectionCount(1) : 0;
+            _generation2End = _retainFailureEndpoints ? GC.CollectionCount(2) : 0;
+            _evidence = new ResourceEvidence(
                 (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds,
                 Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - _allocatedStart),
                 _rss.Initial,
@@ -2306,11 +2433,46 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 _retainRssDiagnostics
                     ? new ResourceDiagnosticEvidence(
                         _managedHeapStart,
-                        GC.GetTotalMemory(forceFullCollection: false),
+                        _managedHeapEnd,
                         _gcCommittedStart,
-                        gcInfo.TotalCommittedBytes,
+                        _gcCommittedEnd,
                         timedRssSamples)
                     : null);
+            return _evidence;
+        }
+
+        public object CreateFailureDiagnostic()
+        {
+            if (_evidence is null)
+            {
+                throw new InvalidOperationException("Diagnostics require stopped sampling.");
+            }
+            var retained = _rss.DiagnosticSnapshot();
+            return new
+            {
+                ManagedHeapStartBytes = _managedHeapStart,
+                ManagedHeapEndBytes = _managedHeapEnd,
+                GcCommittedStartBytes = _gcCommittedStart,
+                GcCommittedEndBytes = _gcCommittedEnd,
+                Generation0Collections = _generation0End - _generation0Start,
+                Generation1Collections = _generation1End - _generation1Start,
+                Generation2Collections = _generation2End - _generation2Start,
+                Sampling = new
+                {
+                    IntervalMilliseconds = 10,
+                    Scope = "whole-current-testhost-process-WorkingSet64",
+                    Thirds = "sample-count-thirds-lower-median",
+                    _rss.StartedTimestamp,
+                    Stopwatch.Frequency,
+                    ObservedSamples = _evidence.RssSamples,
+                    RetainedSamples = retained.Length,
+                    Truncated = retained.Length != _evidence.RssSamples,
+                    Retention = "first-samples-in-original-order; no-resampling; medians-use-all-observed-samples",
+                    P5TrialDiagnostics.MaximumSamples,
+                    P5TrialDiagnostics.MaximumBytes
+                },
+                RssSamples = retained
+            };
         }
 
         public void Dispose()
@@ -2342,8 +2504,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         }
 
         public long Initial { get; }
+        public long StartedTimestamp => _started;
 
         public RssSample[] Snapshot() => _samples.ToArray();
+        public RssSample[] DiagnosticSnapshot() => _samples.Take(P5TrialDiagnostics.MaximumSamples).ToArray();
 
         public async Task<long> StopAsync()
         {
