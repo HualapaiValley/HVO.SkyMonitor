@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/storage"
 @page "/operations/data"
 @layout OperationsLayout
@@ -171,7 +172,7 @@ else
                 <div><h2 id="storage-reconciliation-heading">Evidence reconciliation</h2><p>Files on disk and their durable records are checked against each other.</p></div>
                 @if (LastReconciledUtc is { } last)
                 {
-                    <span>Last @FormatUtc(last)</span>
+                    <span>Last @FormatSiteTime(last)</span>
                 }
             </header>
             @if (_reconciliationError is not null)

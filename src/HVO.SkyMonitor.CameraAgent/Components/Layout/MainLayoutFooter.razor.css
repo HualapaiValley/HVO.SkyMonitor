@@ -7,3 +7,11 @@
     display: inline-flex;
     align-items: center;
 }
+.global-footer__section--center .footer-chip {
+    white-space: normal;
+    text-align: center;
+}
+
+.global-footer__section--center time {
+    overflow-wrap: anywhere;
+}

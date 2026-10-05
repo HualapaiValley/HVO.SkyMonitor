@@ -69,7 +69,7 @@ public sealed class AutomationsPageTests
         Assert.AreEqual("1", rail[0].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("of 1 definition", rail[0].QuerySelector("small")!.TextContent.Trim());
         // Without the schedule calendar the page falls back to UTC, so the next run is 04:00.
-        Assert.AreEqual("04:00", rail[1].QuerySelector("strong")!.TextContent.Trim());
+        Assert.AreEqual("04:00 +00:00", rail[1].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("Sky temperature", rail[1].QuerySelector("small")!.TextContent.Trim());
         Assert.AreEqual("0", rail[2].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("1 / 1", rail[3].QuerySelector("strong")!.TextContent.Trim());
@@ -80,7 +80,7 @@ public sealed class AutomationsPageTests
         Assert.AreEqual("Enabled", card.QuerySelector(".state-chip")!.TextContent.Trim());
         Assert.AreEqual("Every 10 captures", Fact(card, "Trigger"));
         Assert.AreEqual("virtual-sky-temperature", Fact(card, "Target"));
-        Assert.AreEqual("Succeeded / Sat 5 Sep 02:40", Fact(card, "Last run"));
+        Assert.AreEqual("Succeeded / Sat 5 Sep 02:40 +00:00", Fact(card, "Last run"));
         Assert.AreEqual("At capture sequence 420", Fact(card, "Next run"));
         Assert.Contains("Environmental On Demand Acquisition / revision 2", card.QuerySelector("footer > span")!.TextContent, StringComparison.Ordinal);
         // Repeated row actions carry a distinguishing accessible name, not just "Remove".
@@ -578,14 +578,14 @@ public sealed class AutomationsPageTests
 
         Assert.AreEqual("Schedule", cut.Find(".automation-tabs button.active").TextContent.Trim());
         Assert.Contains("America/Phoenix", cut.Find("#automation-schedule .ops-panel-heading p").TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("20:00 – 20:00 local", cut.Find("#automation-schedule .ops-panel-heading > span").TextContent.Trim());
+        Assert.AreEqual("20:00 -07:00 – 20:00 -07:00 local", cut.Find("#automation-schedule .ops-panel-heading > span").TextContent.Trim());
         var band = cut.Find(".automation-night");
-        Assert.AreEqual("Capture window / 19:08 – 05:08", band.TextContent.Trim());
+        Assert.AreEqual("Capture window / 19:08 -07:00 – 05:08 -07:00", band.TextContent.Trim());
         // The window opened before the track starts, so the band is clipped to the left edge.
         Assert.Contains("left:0%", band.GetAttribute("style")!, StringComparison.Ordinal);
-        Assert.AreEqual("Now 20:00", cut.Find(".automation-now small").TextContent.Trim());
+        Assert.AreEqual("Now 20:00 -07:00", cut.Find(".automation-now small").TextContent.Trim());
         var marker = cut.Find(".automation-run-marker");
-        Assert.AreEqual("21:00", marker.QuerySelector("strong")!.TextContent.Trim());
+        Assert.AreEqual("21:00 -07:00", marker.QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("Sky temperature", marker.QuerySelector("small")!.TextContent.Trim());
         // The card is clamped inside the track; its tick stays at the exact time.
         Assert.Contains("left:11%", marker.GetAttribute("style")!, StringComparison.Ordinal);
@@ -593,7 +593,7 @@ public sealed class AutomationsPageTests
 
         var upcoming = cut.FindAll(".automation-upcoming li");
         Assert.HasCount(2, upcoming);
-        Assert.AreEqual("Fri 4 Sep 21:00", upcoming[0].QuerySelector("strong")!.TextContent.Trim());
+        Assert.AreEqual("Fri 4 Sep 21:00 -07:00", upcoming[0].QuerySelector("strong")!.TextContent.Trim());
         Assert.AreEqual("At capture sequence 420", upcoming[1].QuerySelector("strong")!.TextContent.Trim());
         Assert.Contains("Capture relative.", cut.Find(".ops-validation-list").TextContent, StringComparison.Ordinal);
         Assert.AreEqual("1 of 32", FactText(cut, "Definitions"));
@@ -659,9 +659,9 @@ public sealed class AutomationsPageTests
         cut.WaitForElement(".automation-day-track");
         Assert.Contains("Times are shown in UTC because the site timezone could not be read.", cut.Find(".automation-utc").TextContent, StringComparison.Ordinal);
         Assert.Contains("The schedule calendar is unavailable.", cut.Find(".automation-utc").TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("03:00 – 03:00 UTC", cut.Find("#automation-schedule .ops-panel-heading > span").TextContent.Trim());
+        Assert.AreEqual("03:00 +00:00 – 03:00 +00:00 UTC", cut.Find("#automation-schedule .ops-panel-heading > span").TextContent.Trim());
         Assert.IsEmpty(cut.FindAll(".automation-night"));
-        Assert.AreEqual("04:00", cut.Find(".automation-run-marker strong").TextContent.Trim());
+        Assert.AreEqual("04:00 +00:00", cut.Find(".automation-run-marker strong").TextContent.Trim());
     }
 
     [TestMethod]

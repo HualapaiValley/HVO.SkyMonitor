@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/calibration"
 @page "/operations/calibration"
 @layout OperationsLayout
@@ -224,8 +225,8 @@ else
                     <label class="ops-field" for="cal-offset">Effective offset<input id="cal-offset" type="number" step="any" @bind="_offset" /></label>
                     <label class="ops-field" for="cal-temperature">Camera temperature (C)<input id="cal-temperature" type="number" step="any" @bind="_temperatureC" /></label>
                     <label class="ops-field" for="cal-light">Light exposure it applies to (s)<input id="cal-light" type="number" min="0" step="any" @bind="_lightSeconds" /></label>
-                    <label class="ops-field" for="cal-from">Effective from (UTC)<input id="cal-from" type="datetime-local" value="@_effectiveFrom" @onchange="EffectiveFromChanged" /></label>
-                    <label class="ops-field" for="cal-until">Effective until (UTC, optional)<input id="cal-until" type="datetime-local" value="@_effectiveUntil" @onchange="EffectiveUntilChanged" /></label>
+                    <label class="ops-field" for="cal-from">Effective from (@SiteTime.Label)<input id="cal-from" type="datetime-local" step="any" value="@_effectiveFrom" @onchange="EffectiveFromChanged" /></label>
+                    <label class="ops-field" for="cal-until">Effective until (@SiteTime.Label, optional)<input id="cal-until" type="datetime-local" step="any" value="@_effectiveUntil" @onchange="EffectiveUntilChanged" /></label>
                 </div>
                 <details class="calibration-advanced">
                     <summary>Reference exposures and model seed</summary>

@@ -113,7 +113,7 @@ public sealed class StoragePageTests
         Assert.AreEqual("10", Fact(cut, ".storage-holds", "Capture lanes"));
         Assert.AreEqual("4", Fact(cut, ".storage-holds", "Delivery"));
         Assert.AreEqual("4", Fact(cut, ".storage-holds", "Quarantine"));
-        Assert.AreEqual("Jul 23, 11:40:00 UTC, Delivery", Fact(cut, ".storage-holds", "Oldest held evidence"));
+        Assert.AreEqual("23 Jul 2026 11:40:00 +00:00 (UTC (site time zone unavailable)), Delivery", Fact(cut, ".storage-holds", "Oldest held evidence"));
     }
 
     [TestMethod]
@@ -182,7 +182,7 @@ public sealed class StoragePageTests
         StringAssert.Contains(items[2].TextContent, "120 products inspected", StringComparison.Ordinal);
         Assert.IsFalse(items[2].ClassList.Contains("failed"));
         Assert.AreEqual("Passed:", items[2].QuerySelector(".visually-hidden")!.TextContent);
-        Assert.AreEqual("Last Jul 23, 11:57:00 UTC", cut.Find(".storage-reconciliation .ops-panel-heading > span").TextContent);
+        Assert.AreEqual("Last 23 Jul 2026 11:57:00 +00:00 (UTC (site time zone unavailable))", cut.Find(".storage-reconciliation .ops-panel-heading > span").TextContent);
     }
 
     [TestMethod]

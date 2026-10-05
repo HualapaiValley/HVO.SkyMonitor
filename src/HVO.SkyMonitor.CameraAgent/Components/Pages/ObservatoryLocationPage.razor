@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/site"
 @page "/operations/sky-map"
 @layout OperationsLayout
@@ -216,7 +217,7 @@ else
             <span class="state-chip @(_state.ObjectsAtBound ? "warning" : "success")">@_state.Objects.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) objects</span>
         </header>
         <form class="site-instant" @onsubmit="ProjectAsync" @onsubmit:preventDefault>
-            <label class="ops-field">Scene instant (UTC)<input id="site-instant" type="datetime-local" step="1" @bind="_instantInput" disabled="@_loading" /></label>
+            <label class="ops-field">Scene instant (@SiteTime.Label)<input id="site-instant" type="datetime-local" step="1" @bind="_instantInput" disabled="@_loading" /></label>
             <button type="submit" class="button secondary small" disabled="@_loading">Project</button>
             <button type="button" class="button secondary small" disabled="@(_loading || _instantInput is null)" @onclick="UseNowAsync">Use now</button>
             <p>Showing @Timestamp(_state.AtUtc). Pick a moment up to 24 hours ahead or 62 days back to preview the sky the camera would record then.</p>

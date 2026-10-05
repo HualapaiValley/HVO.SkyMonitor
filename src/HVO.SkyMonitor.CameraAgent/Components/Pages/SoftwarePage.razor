@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/software"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -48,7 +49,7 @@ else
                 <div><dt>Source revision</dt><dd>@(software.SourceRevision is { } revision ? revision : "Not recorded")</dd></div>
                 <div><dt>Runtime</dt><dd>@software.Runtime / @software.RuntimeIdentifier</dd></div>
                 <div><dt>Uptime</dt><dd>@HealthPage.FormatDuration(software.Uptime)</dd></div>
-                <div><dt>Started</dt><dd>@FormatUtc(software.StartedUtc)</dd></div>
+                <div><dt>Started</dt><dd>@FormatSiteTime(software.StartedUtc)</dd></div>
                 <div><dt>Update service</dt><dd>Installer CLI</dd></div>
             </dl>
         </section>

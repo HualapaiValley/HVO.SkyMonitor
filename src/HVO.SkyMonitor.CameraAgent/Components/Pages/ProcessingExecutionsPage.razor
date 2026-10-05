@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/executions"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -12,7 +13,7 @@
 <div class="executions-page">
     <PageHeader Eyebrow="Durable execution journal" Title="Processing executions" Lead="Live runs stay on the ordered in-process path; replays run separately against retained evidence. This page reads the durable journal at a bounded size and never touches the live slot.">
         <span class="executions-refresh" aria-live="polite">
-            @if (_view is not null) { <span>Read <time datetime="@_view.ReadUtc.ToString("O")">@_view.ReadUtc.ToString("HH:mm:ss")</time> UTC@(_polling ? ", refreshing every 5 s while work is active" : "")</span> }
+            @if (_view is not null) { <span>Read <time datetime="@_view.ReadUtc.ToString("O")">@SiteTime.Format(_view.ReadUtc)</time>@(_polling ? ", refreshing every 5 s while work is active" : "")</span> }
             <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="RefreshNowAsync">Refresh</button>
         </span>
     </PageHeader>
@@ -75,7 +76,7 @@
                                 <td><span class="state-chip @StatusClass(execution.Status)">@execution.Status</span>@if (execution.CancellationRequested && !execution.IsTerminal) { <span class="muted"> cancelling</span> }</td>
                                 <td><code>@execution.GraphRevisionId</code></td>
                                 <td>@execution.TriggerKind@(execution.TriggerReference is null ? "" : $" / {execution.TriggerReference}")</td>
-                                <td><time datetime="@execution.AcceptedUtc.ToString("O")">@execution.AcceptedUtc.ToString("u")</time></td>
+                                <td><time datetime="@execution.AcceptedUtc.ToString("O")">@SiteTime.Format(execution.AcceptedUtc)</time></td>
                                 <td>@FormatAge(execution.Age(_view!.ReadUtc))</td>
                                 <td>@execution.AttemptCount</td>
                                 <td>@FormatDuration(execution.Duration)</td>

@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/executions/{ExecutionId:guid}"
 @layout MainLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -28,7 +29,7 @@
             <aside class="run-workspace__rail" aria-label="Pipeline navigation">
                 <header class="run-rail__heading"><div><p class="eyebrow">Local operations</p><h2>Pipeline runs</h2></div><button type="button" class="icon-button" disabled="@_loading" @onclick="RefreshAsync" aria-label="Refresh pipeline run"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7" /></svg></button></header>
                 <div class="run-rail__controls"><label class="search-field"><span class="visually-hidden">Filter captures</span><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input type="search" placeholder="Filter captures" @bind="_runSearch" @bind:event="oninput" /></label><label><span class="visually-hidden">Filter by outcome</span><select @bind="_outcomeFilter"><option value="all">All outcomes</option><option value="Completed">Succeeded</option><option value="Running">In progress</option><option value="Pending">Pending</option><option value="Failed">Failed</option><option value="Cancelled">Cancelled</option><option value="Expired">Expired</option></select></label></div>
-                <div class="run-rail__section"><div class="run-rail__label"><h3>Recent captures</h3><small>UTC</small></div>
+                <div class="run-rail__section"><div class="run-rail__label"><h3>Recent captures</h3><small>@SiteTime.Label</small></div>
                 @if (_recent is null)
                 {
                     <p class="muted">Recent captures are unavailable.</p>
@@ -37,7 +38,7 @@
                 {
                     <div class="run-list">@foreach (var run in FilteredRuns)
                     {
-                        <a class="run-item @(run.ExecutionId == execution.ExecutionId ? "selected" : "")" aria-current="@(run.ExecutionId == execution.ExecutionId ? "page" : null)" href="/operations/pipeline/executions/@run.ExecutionId"><span class="status-icon @PipelineRunPresentation.StatusClass(run.Status.ToString())" aria-hidden="true"></span><span class="run-copy"><strong>@RunCaptureLabel(run.CaptureId)</strong><small>@PipelineRunPresentation.StatusLabel(run.Status.ToString()) / @run.ExecutionClass</small></span><time datetime="@run.AcceptedUtc.ToString("O")">@run.AcceptedUtc.ToString("HH:mm")</time></a>
+                        <a class="run-item @(run.ExecutionId == execution.ExecutionId ? "selected" : "")" aria-current="@(run.ExecutionId == execution.ExecutionId ? "page" : null)" href="/operations/pipeline/executions/@run.ExecutionId"><span class="status-icon @PipelineRunPresentation.StatusClass(run.Status.ToString())" aria-hidden="true"></span><span class="run-copy"><strong>@RunCaptureLabel(run.CaptureId)</strong><small>@PipelineRunPresentation.StatusLabel(run.Status.ToString()) / @run.ExecutionClass</small></span><time datetime="@run.AcceptedUtc.ToString("O")">@SiteTime.Format(run.AcceptedUtc)</time></a>
                     }</div>
                     @if (FilteredRuns.Count == 0) { <p class="muted">No captures match this filter.</p> }
                 }
@@ -72,14 +73,14 @@
                     @if (_selectedTransient is { } transient)
                     {
                         <header class="detail-heading"><div><p class="eyebrow">Independent transient lane / recorded milestone</p><h2>@ExecutionRunDiagram.TransientName(transient.StageKey)</h2><p>@transient.State / @(transient.CandidateId is { } candidateId ? $"Candidate {candidateId:D}" : "Capture-scoped milestone")</p></div><span class="state-chip pending">@transient.State</span></header>
-                        <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Recorded</dt><dd>@transient.RecordedUtc.ToString("HH:mm:ss.fff") UTC</dd></div><div><dt>Duration</dt><dd>Not recorded</dd></div><div><dt>Attempt</dt><dd>Not recorded</dd></div><div><dt>Runner</dt><dd>Independent transient lane</dd></div></dl><h3>Dependencies</h3><p class="unavailable-copy">Only evidenced predecessor edges are drawn.</p><h3>Outputs</h3><p class="unavailable-copy">Artifact inventory is unavailable for this milestone.</p></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded milestone</span></div><ol><li><time>@transient.RecordedUtc.ToString("HH:mm:ss.fff")</time><span class="event-level">Recorded</span><p>@transient.StageKey / @transient.State</p></li></ol><p class="unavailable-copy">@(_tab == "attempts" ? "Attempt history is not recorded by this milestone contract." : _tab == "artifacts" ? "No output artifact identities are recorded by this milestone contract." : "No inferred start, completion or attempt duration is shown.")</p></section></div>
+                        <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Recorded</dt><dd>@SiteTime.Format(transient.RecordedUtc)</dd></div><div><dt>Duration</dt><dd>Not recorded</dd></div><div><dt>Attempt</dt><dd>Not recorded</dd></div><div><dt>Runner</dt><dd>Independent transient lane</dd></div></dl><h3>Dependencies</h3><p class="unavailable-copy">Only evidenced predecessor edges are drawn.</p><h3>Outputs</h3><p class="unavailable-copy">Artifact inventory is unavailable for this milestone.</p></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded milestone</span></div><ol><li><time>@SiteTime.Format(transient.RecordedUtc)</time><span class="event-level">Recorded</span><p>@transient.StageKey / @transient.State</p></li></ol><p class="unavailable-copy">@(_tab == "attempts" ? "Attempt history is not recorded by this milestone contract." : _tab == "artifacts" ? "No output artifact identities are recorded by this milestone contract." : "No inferred start, completion or attempt duration is shown.")</p></section></div>
                     }
                     else if (SelectedNode is { } selected)
                     {
                         @if (_tab == "stage")
                         {
                             <header class="detail-heading"><div><p class="eyebrow">Edge processing / @(selected.Required ? "Required" : "Optional")</p><h2>@PipelineRunPresentation.Name(selected)</h2><p>@PipelineRunPresentation.Description(selected)</p></div><span class="state-chip @PipelineRunPresentation.StatusClass(selected.Status)">@PipelineRunPresentation.StatusLabel(selected.Status)</span></header>
-                            <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Started</dt><dd>@(selected.StartedUtc?.ToString("HH:mm:ss.fff") is { } started ? $"{started} UTC" : "Not recorded")</dd></div><div><dt>Completed</dt><dd>@(selected.CompletedUtc?.ToString("HH:mm:ss.fff") is { } ended ? $"{ended} UTC" : "Not recorded")</dd></div><div><dt>Duration</dt><dd>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(selected))</dd></div><div><dt>Attempts</dt><dd>@selected.AttemptCount recorded</dd></div><div><dt>Runner</dt><dd>@PipelineRunPresentation.Runner(selected)</dd></div><div><dt>Stage</dt><dd>@selected.NodeId</dd></div></dl><h3>Dependencies</h3><div class="token-list">@if (selected.Dependencies.Count == 0) { <span>No dependencies recorded</span> } @foreach (var dependency in selected.Dependencies) { <span>@dependency.ProducerId / @(dependency.Required ? "required" : "optional")</span> }</div><h3>Outputs</h3><div class="token-list outputs">@if (selected.Outputs.Count == 0) { <span>No outputs recorded</span> } @foreach (var output in selected.Outputs) { <span>@output.Role / @output.Variant / @output.AvailabilityState</span> }</div></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded execution facts</span></div><ol>@foreach (var fact in StageFacts(selected)) { <li><time>@(fact.Time?.ToString("HH:mm:ss.fff") ?? "Not timed")</time><span class="event-level @fact.Tone">@fact.Label</span><p>@fact.Message</p></li> }</ol><p class="unavailable-copy">Journal facts are shown at their recorded times; no log messages or successful commits are synthesized.</p></section></div>
+                            <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Started</dt><dd>@SiteTime.Format(selected.StartedUtc, unavailable: "Not recorded")</dd></div><div><dt>Completed</dt><dd>@SiteTime.Format(selected.CompletedUtc, unavailable: "Not recorded")</dd></div><div><dt>Duration</dt><dd>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(selected))</dd></div><div><dt>Attempts</dt><dd>@selected.AttemptCount recorded</dd></div><div><dt>Runner</dt><dd>@PipelineRunPresentation.Runner(selected)</dd></div><div><dt>Stage</dt><dd>@selected.NodeId</dd></div></dl><h3>Dependencies</h3><div class="token-list">@if (selected.Dependencies.Count == 0) { <span>No dependencies recorded</span> } @foreach (var dependency in selected.Dependencies) { <span>@dependency.ProducerId / @(dependency.Required ? "required" : "optional")</span> }</div><h3>Outputs</h3><div class="token-list outputs">@if (selected.Outputs.Count == 0) { <span>No outputs recorded</span> } @foreach (var output in selected.Outputs) { <span>@output.Role / @output.Variant / @output.AvailabilityState</span> }</div></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded execution facts</span></div><ol>@foreach (var fact in StageFacts(selected)) { <li><time>@SiteTime.Format(fact.Time, unavailable: "Not timed")</time><span class="event-level @fact.Tone">@fact.Label</span><p>@fact.Message</p></li> }</ol><p class="unavailable-copy">Journal facts are shown at their recorded times; no log messages or successful commits are synthesized.</p></section></div>
                         }
                         else if (_tab == "artifacts")
                         {
@@ -89,7 +90,7 @@
                         }
                         else
                         {
-                            <header class="panel-heading"><div><p class="eyebrow">Immutable execution history</p><h2>@PipelineRunPresentation.Name(selected) attempts</h2></div><span class="quiet-label">Newest first</span></header><ol class="attempt-list">@foreach (var attempt in selected.Attempts.OrderByDescending(static item => item.AttemptNumber)) { <li><span class="status-icon @PipelineRunPresentation.StatusClass(attempt.Status)" aria-hidden="true"></span><span class="attempt-copy"><strong>Attempt @attempt.AttemptNumber — @PipelineRunPresentation.StatusLabel(attempt.Status)</strong><span>@attempt.ExecutionRoute / @PipelineRunPresentation.Duration(attempt.Duration)</span><span>@(attempt.Reason ?? attempt.Outcome ?? "No outcome recorded")</span></span><time>@attempt.StartedUtc.ToString("HH:mm:ss.fff") UTC</time></li> }</ol>
+                            <header class="panel-heading"><div><p class="eyebrow">Immutable execution history</p><h2>@PipelineRunPresentation.Name(selected) attempts</h2></div><span class="quiet-label">Newest first</span></header><ol class="attempt-list">@foreach (var attempt in selected.Attempts.OrderByDescending(static item => item.AttemptNumber)) { <li><span class="status-icon @PipelineRunPresentation.StatusClass(attempt.Status)" aria-hidden="true"></span><span class="attempt-copy"><strong>Attempt @attempt.AttemptNumber — @PipelineRunPresentation.StatusLabel(attempt.Status)</strong><span>@attempt.ExecutionRoute / @PipelineRunPresentation.Duration(attempt.Duration)</span><span>@(attempt.Reason ?? attempt.Outcome ?? "No outcome recorded")</span></span><time>@SiteTime.Format(attempt.StartedUtc)</time></li> }</ol>
                             @if (selected.Attempts.Count == 0) { <p class="unavailable-copy">No attempts recorded.</p> }
                         }
                     }
@@ -112,12 +113,12 @@
                 <div><dt>Primary artifact</dt><dd><code>@execution.PrimaryArtifactId</code></dd></div>
                 <div><dt>Trigger</dt><dd>@execution.TriggerKind@(execution.TriggerReference is null ? "" : $" / {execution.TriggerReference}")</dd></div>
                 <div><dt>Priority</dt><dd>@execution.Priority</dd></div>
-                <div><dt>Accepted</dt><dd>@execution.AcceptedUtc.ToString("u")</dd></div>
-                <div><dt>Available</dt><dd>@execution.AvailableUtc.ToString("u")</dd></div>
-                <div><dt>Deadline</dt><dd>@execution.DeadlineUtc.ToString("u")</dd></div>
-                <div><dt>Maximum age</dt><dd>@execution.MaximumAgeUtc.ToString("u")</dd></div>
-                <div><dt>Started</dt><dd>@(execution.StartedUtc?.ToString("u") ?? "Not started")</dd></div>
-                <div><dt>Completed</dt><dd>@(execution.CompletedUtc?.ToString("u") ?? "Not completed")</dd></div>
+                <div><dt>Accepted</dt><dd>@SiteTime.Format(execution.AcceptedUtc)</dd></div>
+                <div><dt>Available</dt><dd>@SiteTime.Format(execution.AvailableUtc)</dd></div>
+                <div><dt>Deadline</dt><dd>@SiteTime.Format(execution.DeadlineUtc)</dd></div>
+                <div><dt>Maximum age</dt><dd>@SiteTime.Format(execution.MaximumAgeUtc)</dd></div>
+                <div><dt>Started</dt><dd>@SiteTime.Format(execution.StartedUtc, unavailable: "Not started")</dd></div>
+                <div><dt>Completed</dt><dd>@SiteTime.Format(execution.CompletedUtc, unavailable: "Not completed")</dd></div>
                 <div><dt>Duration</dt><dd>@ProcessingExecutionsPage.FormatDuration(execution.Duration)</dd></div>
                 <div><dt>Attempts</dt><dd>@execution.AttemptCount</dd></div>
             </dl>
@@ -137,8 +138,8 @@
                             <summary><span class="state-chip @NodeStatusClass(node.Status)">@node.Status</span><strong>@node.NodeId</strong><span class="muted">@(node.Required ? "required" : "optional") / @node.AttemptCount attempt@(node.AttemptCount == 1 ? "" : "s") / @ProcessingExecutionsPage.FormatDuration(node.StartedUtc is { } s && node.CompletedUtc is { } c ? c - s : null)</span></summary>
                             <dl class="fact-grid">
                                 <div><dt>Plan SHA-256</dt><dd><code>@node.PlanSha256</code></dd></div>
-                                <div><dt>Started</dt><dd>@(node.StartedUtc?.ToString("u") ?? "Not started")</dd></div>
-                                <div><dt>Completed</dt><dd>@(node.CompletedUtc?.ToString("u") ?? "Not completed")</dd></div>
+                                <div><dt>Started</dt><dd>@SiteTime.Format(node.StartedUtc, unavailable: "Not started")</dd></div>
+                                <div><dt>Completed</dt><dd>@SiteTime.Format(node.CompletedUtc, unavailable: "Not completed")</dd></div>
                                 @if (node.Reason is not null) { <div><dt>Reason</dt><dd>@node.Reason</dd></div> }
                             </dl>
                             <h3>Inputs</h3>
@@ -154,7 +155,7 @@
                             else
                             {
                                 <table class="node-table"><caption class="visually-hidden">Attempts of @node.NodeId</caption><thead><tr><th scope="col">Attempt</th><th scope="col">Status</th><th scope="col">Outcome</th><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Reason</th></tr></thead><tbody>
-                                @foreach (var attempt in node.Attempts) { <tr><td>@attempt.AttemptNumber</td><td>@attempt.Status</td><td>@(attempt.Outcome ?? "-")</td><td>@attempt.StartedUtc.ToString("u")</td><td>@ProcessingExecutionsPage.FormatDuration(attempt.Duration)</td><td>@(attempt.Reason ?? "-")</td></tr> }
+                                @foreach (var attempt in node.Attempts) { <tr><td>@attempt.AttemptNumber</td><td>@attempt.Status</td><td>@(attempt.Outcome ?? "-")</td><td>@SiteTime.Format(attempt.StartedUtc)</td><td>@ProcessingExecutionsPage.FormatDuration(attempt.Duration)</td><td>@(attempt.Reason ?? "-")</td></tr> }
                                 </tbody></table>
                             }
                             <h3>Outputs</h3>

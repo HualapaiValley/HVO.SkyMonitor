@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// immutable graph revision, and submits one durable request behind an explicit confirmation.
 /// The page never prefetches artifact content and exposes no upload, promotion, or publication action.
 /// </summary>
-public sealed partial class ReplaySubmitPage : ComponentBase, IAsyncDisposable
+public sealed partial class ReplaySubmitPage : SiteTimeComponent, IAsyncDisposable
 {
     private ReplayCandidateView? _candidate;
     private ReplayRunnerFactsView _runnerFacts = default!;

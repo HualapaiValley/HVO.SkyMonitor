@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
+public sealed partial class TransientDetail : SiteTimeComponent, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentEventEvidenceView? _evidence;
@@ -91,9 +91,8 @@ public sealed partial class TransientDetail : ComponentBase, IAsyncDisposable
     }
 
     private string TimeZoneLabel => _calendar.TimeZoneFallback ? "UTC (site time zone unavailable)" : _calendar.TimeZoneId;
-    private string LocalTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss", CultureInfo.InvariantCulture);
-    private static string UtcTime(DateTimeOffset value) => value.UtcDateTime.ToString("d MMM yyyy HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
-    private string FormatTime(DateTimeOffset? value) => value is null ? "Not recorded" : $"{LocalTime(value.Value)} ({TimeZoneLabel}) · {UtcTime(value.Value)}";
+    private string LocalTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss zzz", CultureInfo.InvariantCulture);
+    private string FormatTime(DateTimeOffset? value) => value is null ? "Not recorded" : SiteTime.Format(value.Value);
     private static string FormatGuid(Guid? value) => value?.ToString("D") ?? "Not recorded";
     private static string FormatList(IReadOnlyList<string>? values) => values is null || values.Count == 0 ? "None recorded" : string.Join(", ", values);
     private static string FormatBoolean(bool? value) => value is null ? "Not recorded" : value.Value ? "Yes" : "No";
