@@ -179,5 +179,8 @@ and raw log/TRX/JSON SHA-256 index are retained in
 [the measurement summary](scene-compaction-1055-measurements.json). The exact
 [comparison script](scene-compaction-1055-compare.py) reads capture JSON and both
 immutable journals; run it before retention preparation. Failed
-attempts remain indexed and are not counted as passing measurements. Full
+attempts remain indexed and are not counted as passing measurements. The measured CameraAgent endpoint is `5872b69b`; subsequent changes add a
+module-type validation-cache key and its regression, plus central consumer
+retention. They do not change the workload's geometry or storage representation,
+but those later changes are not included in these timing samples. Full
 qualification and independent review remain required before merge.
