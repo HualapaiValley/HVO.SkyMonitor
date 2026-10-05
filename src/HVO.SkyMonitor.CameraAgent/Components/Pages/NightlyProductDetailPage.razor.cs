@@ -108,7 +108,7 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
         detail.Occurrence.SourceWindow is { Policy.Kind: LocalAutomationSourceWindowKind.CompletedCivilHour } window &&
         window.EndUtc - window.StartUtc < TimeSpan.FromHours(1);
 
-    private string GapLabel(KeogramGap gap) => $"{LocalTime(gap.StartUtc)}–{LocalTime(gap.EndUtc)} " +
+    private string GapLabel(KeogramGap gap) => ObservingDayPage.LocalSpan(gap.StartUtc, gap.EndUtc, TimeZoneId) + " " +
         FormattableString.Invariant($"({gap.ColumnCount:N0} {(gap.ColumnCount == 1 ? "column" : "columns")})");
 
     private static string Algorithms(NightlyProductPresentation presentation) => presentation.Algorithms.Count == 0
@@ -117,7 +117,7 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
 
     private string LocalTime(DateTimeOffset utc) => Local(utc).ToString("HH:mm", CultureInfo.InvariantCulture);
 
-    private string LocalDateTime(DateTimeOffset utc) => Local(utc).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    private string LocalDateTime(DateTimeOffset utc) => Local(utc).ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
 
     private DateTimeOffset Local(DateTimeOffset utc)
     {
@@ -144,6 +144,7 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
     /// </summary>
     internal static IReadOnlyList<AxisTick> AxisTicks(NightlyProductTimeAxis axis, Func<DateTimeOffset, DateTimeOffset> toLocal)
     {
+        var showOffset = toLocal(axis.StartUtc).Offset != toLocal(axis.EndUtc).Offset;
         if (axis.Planned)
         {
             var drawnSeconds = axis.Width * axis.ColumnSeconds;
@@ -155,7 +156,7 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
             var ticks = new List<AxisTick>();
             for (var tick = axis.StartUtc + (rounded - sinceMidnight); tick <= axis.EndUtc; tick += step)
             {
-                ticks.Add(new AxisTick(100.0 * (tick - axis.StartUtc).TotalSeconds / drawnSeconds, TickLabel(toLocal(tick))));
+                ticks.Add(new AxisTick(100.0 * (tick - axis.StartUtc).TotalSeconds / drawnSeconds, TickLabel(toLocal(tick), showOffset)));
             }
             return ticks;
         }
@@ -167,10 +168,10 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
             .Select(index => (axis.Frames.Count - 1) * index / (MaximumTicks - 1))
             .Distinct()
             .Select(index => axis.Frames[index])
-            .Select(frame => new AxisTick(100.0 * (frame.Column + 0.5) / axis.Width, TickLabel(toLocal(frame.ObservationStartedUtc))))];
+            .Select(frame => new AxisTick(100.0 * (frame.Column + 0.5) / axis.Width, TickLabel(toLocal(frame.ObservationStartedUtc), showOffset)))];
     }
 
-    private static string TickLabel(DateTimeOffset local) => local.ToString("HH:mm", CultureInfo.InvariantCulture);
+    private static string TickLabel(DateTimeOffset local, bool showOffset) => local.ToString(showOffset ? "HH:mm zzz" : "HH:mm", CultureInfo.InvariantCulture);
 
     // Labels near an edge align inward so they stay inside the image's width.
     private static string TickClass(AxisTick tick) => tick.Percent switch
@@ -198,6 +199,10 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
     {
         var start = Local(startUtc);
         var end = Local(endUtc);
+        if (start.Offset != end.Offset)
+        {
+            return ObservingDayPage.LocalSpan(startUtc, endUtc, TimeZoneId).Replace("–", " to ", StringComparison.Ordinal);
+        }
         return start.Date == end.Date
             ? $"{LocalTime(startUtc)} to {LocalTime(endUtc)}"
             : string.Create(CultureInfo.InvariantCulture, $"{start:HH:mm dd MMM} to {end:HH:mm dd MMM}");

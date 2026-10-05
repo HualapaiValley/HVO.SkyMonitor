@@ -239,7 +239,7 @@ public sealed class CalibrationPageTests
         StringAssert.Contains(cut.Markup, "bias / dark / flat / defect", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "Compatible", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "10 days", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Markup, "Validity interval ends 2026-01-25", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Validity interval ends 25 Jan 2026", StringComparison.Ordinal);
         Assert.AreEqual("bundle-active", cut.Find("#calibration-active-bundle").TextContent.Trim());
         Assert.AreEqual(1, service.DetailRequests.Count(static id => id == "bundle-active"));
         Assert.IsEmpty(cut.FindAll("#review-calibration-activate-bundle-active"));

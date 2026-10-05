@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// share the device ID and verification code with LogicHost, then import the envelope it issues. Clearing
 /// credentials is not offered, because a later import replaces them once LogicHost has revoked the device.
 /// </summary>
-public sealed partial class RegistrationPage : ComponentBase, IAsyncDisposable
+public sealed partial class RegistrationPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const string MaskedCode = "••••••••••";
     private const string FocusFallbackId = "registration-heading";
@@ -301,9 +301,9 @@ public sealed partial class RegistrationPage : ComponentBase, IAsyncDisposable
             $"Revoke {view.Record?.FriendlyName ?? "this device"} in LogicHost, wait until this page reports Credentials refused, then register again if the device should return. Clearing an active registration is not offered."),
     };
 
-    private static string LifecycleSummary(RegistrationView view) => view.State switch
+    private string LifecycleSummary(RegistrationView view) => view.State switch
     {
-        RegistrationState.Active => view.Record is { } record ? $"Completed {record.IssuedUtc.UtcDateTime.ToString("d MMM", CultureInfo.InvariantCulture)}" : "Completed",
+        RegistrationState.Active => view.Record is { } record ? $"Completed {SiteTime.Format(record.IssuedUtc)}" : "Completed",
         RegistrationState.Rejected => "Refused",
         RegistrationState.Waiting => "Activating",
         _ => "Not started",
@@ -400,11 +400,9 @@ public sealed partial class RegistrationPage : ComponentBase, IAsyncDisposable
         _ => "LogicHost will review the reported location. The page shows Active once the first heartbeat is acknowledged.",
     };
 
-    private static string FormatDate(DateTimeOffset value)
-        => value.UtcDateTime.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+    private string FormatDate(DateTimeOffset value) => SiteTime.Format(value);
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("d MMM yyyy, HH:mm 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     public async ValueTask DisposeAsync()
     {

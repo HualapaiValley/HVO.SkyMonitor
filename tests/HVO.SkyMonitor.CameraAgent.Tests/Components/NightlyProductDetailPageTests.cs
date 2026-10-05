@@ -23,6 +23,19 @@ public sealed class NightlyProductDetailPageTests
     private static readonly DateTimeOffset Closed = new(2026, 10, 3, 0, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void AxisTicks_AcrossDstFold_DistinguishBothLocalHoursWithoutMovingColumns()
+    {
+        var start = new DateTimeOffset(2026, 11, 1, 5, 0, 0, TimeSpan.Zero);
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+        var axis = new NightlyProductTimeAxis(true, start, start.AddMinutes(125), 126, 60, 126, [], []);
+        var ticks = NightlyProductDetailPage.AxisTicks(axis, instant => TimeZoneInfo.ConvertTime(instant, zone));
+        Assert.IsTrue(ticks.Any(tick => tick.Label == "01:00 -04:00"));
+        Assert.IsTrue(ticks.Any(tick => tick.Label == "01:00 -05:00"));
+        Assert.AreEqual(0, ticks.First(tick => tick.Label == "01:00 -04:00").Percent, 1e-9);
+        Assert.AreEqual(100.0 * 60 / 126, ticks.First(tick => tick.Label == "01:00 -05:00").Percent, 1e-9);
+    }
+
+    [TestMethod]
     public void AxisTicks_PlannedAxisLabelsRoundLocalTimesAtTheirExactPositions()
     {
         var start = new DateTimeOffset(2026, 10, 1, 13, 35, 0, TimeSpan.Zero);

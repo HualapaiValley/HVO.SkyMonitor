@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 /// server list in the operator settings file. Setting the host clock and the GPS receiver are shown disabled with the
 /// reason: the host's time service owns the clock, and no GPS reader exists yet.
 /// </summary>
-public sealed partial class TimeSyncPanel : ComponentBase, IDisposable
+public sealed partial class TimeSyncPanel : SiteTimeComponent, IDisposable
 {
     internal const string SetClockUnavailableReason = "The host's time service sets the clock; CameraAgent measures it.";
     internal const string GpsUnavailableReason =
@@ -168,12 +168,12 @@ public sealed partial class TimeSyncPanel : ComponentBase, IDisposable
            left.UsingDefault == right.UsingDefault &&
            left.Servers.SequenceEqual(right.Servers, StringComparer.Ordinal);
 
-    private static string CheckText(TimeSyncCheckView check) => check.Outcome switch
+    private string CheckText(TimeSyncCheckView check) => check.Outcome switch
     {
         ClockCheckOutcome.Joined => "A check was already running; its result is shown.",
         ClockCheckOutcome.RateLimited => check.RetryAfterUtc is { } retry
             ? string.Create(CultureInfo.InvariantCulture,
-                $"The clock was checked less than {CheckIntervalText} ago, so that result is shown. Check again after {retry:HH:mm:ss} UTC.")
+                $"The clock was checked less than {CheckIntervalText} ago, so that result is shown. Check again after {SiteTime.Format(retry)}.")
             : $"The clock was checked less than {CheckIntervalText} ago, so that result is shown.",
         _ => "Clock checked.",
     };
@@ -205,8 +205,8 @@ public sealed partial class TimeSyncPanel : ComponentBase, IDisposable
     private static string MeasuredText(TimeSyncView view)
         => view.MeasuredUtc is { } measured ? string.Concat(ClockFormat.Unsigned(view.AgentUtc - measured), " ago") : "Not yet";
 
-    private static string? MeasuredTitle(TimeSyncView view)
-        => view.MeasuredUtc?.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string? MeasuredTitle(TimeSyncView view)
+        => view.MeasuredUtc is { } time ? SiteTime.Format(time) : null;
 
     private static string Every(TimeSpan interval) => interval.TotalHours >= 1 && interval.Minutes == 0
         ? string.Create(CultureInfo.InvariantCulture, $"{(int)interval.TotalHours} h")

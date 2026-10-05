@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <see cref="CircuitConnectionState"/> reports a connected browser. Every number shown is measured
 /// from the preview's own pixels; nothing here moves hardware.
 /// </summary>
-public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
+public sealed partial class FocusPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const string MetricHfd = "hfd";
     internal const string MetricFwhm = "fwhm";
@@ -173,7 +173,7 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
     private string StateDetail => _status is null ? "Reading the CameraAgent focus session." : Session.State switch
     {
         ManualFocusSessionState.Running =>
-            $"{Session.TotalSamples} {(Session.TotalSamples == 1 ? "sample" : "samples")}; safety limit {Session.SafetyDeadlineUtc.ToString("HH:mm:ss", Culture)} UTC",
+            $"{Session.TotalSamples} {(Session.TotalSamples == 1 ? "sample" : "samples")}; safety limit {SiteTime.Format(Session.SafetyDeadlineUtc)}",
         ManualFocusSessionState.Idle => "No focus session is active",
         _ => EndText(Session.EndReason) + (Session.Retention switch
         {
@@ -828,8 +828,8 @@ public sealed partial class FocusPage : ComponentBase, IAsyncDisposable
     private static string ExportHref(ManualFocusSessionRecordSummary record)
         => $"/api/v1/operations/focus-sessions/{Uri.EscapeDataString(record.RecordId)}/export";
 
-    private static string RecordTitle(ManualFocusSessionRecordSummary record)
-        => (record.SavedUtc is { } saved ? saved.UtcDateTime.ToString("yyyy-MM-dd HH:mm", Culture) + " UTC" : record.RecordId) +
+    private string RecordTitle(ManualFocusSessionRecordSummary record)
+        => (record.SavedUtc is { } saved ? SiteTime.Format(saved) : record.RecordId) +
            $" / {record.TotalSamples} {(record.TotalSamples == 1 ? "sample" : "samples")}";
 
     private static string RecordConditions(ManualFocusSessionRecordSummary record)

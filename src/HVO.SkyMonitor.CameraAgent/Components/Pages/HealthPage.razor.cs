@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class HealthPage : ComponentBase, IDisposable
+public sealed partial class HealthPage : SiteTimeComponent, IDisposable
 {
     private readonly CancellationTokenSource _lifetime = new();
     private SystemHealthView? _health;
@@ -262,11 +262,9 @@ public sealed partial class HealthPage : ComponentBase, IDisposable
 
     private static string Percent(double value) => string.Create(CultureInfo.InvariantCulture, $"{value:0.#}%");
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("MMM d, HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
-    private static string FormatClock(DateTimeOffset value)
-        => value.UtcDateTime.ToString("HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatClock(DateTimeOffset value) => SiteTime.Format(value);
 
     public void Dispose()
     {

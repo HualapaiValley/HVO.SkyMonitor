@@ -100,7 +100,7 @@ public static class ArchiveCardFacts
     }
 }
 
-public sealed partial class ArchiveCard : ComponentBase
+public sealed partial class ArchiveCard : SiteTimeComponent
 {
     private string? _failedSource;
 
@@ -117,7 +117,7 @@ public sealed partial class ArchiveCard : ComponentBase
     private bool PreviewFailed =>
         _failedSource is not null && SelectedSlot?.PreviewUrl?.OriginalString == _failedSource;
 
-    private string ImageAlt => $"{SelectedSlot?.Label} sky capture from {GalleryPage.FormatCaptureTime(Capture.ExposureStartedUtc)}";
+    private string ImageAlt => $"{SelectedSlot?.Label} sky capture from {SiteTime.Format(Capture.ExposureStartedUtc)}";
 
     private string ImageLinkLabel => PreviewFailed
         ? $"Open capture {Capture.CaptureSequence} detail. Image preview unavailable."
@@ -125,7 +125,7 @@ public sealed partial class ArchiveCard : ComponentBase
             ? $"Open capture {Capture.CaptureSequence} detail. {UnavailableTitle}."
             : $"Open capture {Capture.CaptureSequence} detail.";
 
-    private string CaptureTimeUtc => Capture.ExposureStartedUtc.UtcDateTime.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+    private string CaptureTime => SiteTime.Format(Capture.ExposureStartedUtc, "HH:mm:ss");
 
     private string ProductClass => ArchiveCardFacts.ProductClass(Capture, Presentation);
 

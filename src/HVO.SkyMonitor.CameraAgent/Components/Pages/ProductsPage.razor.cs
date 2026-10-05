@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// The archive Products page: the generated products library by default, and the retained outputs table as a second
 /// view. Every link that carries a retained-output filter or cursor keeps opening the retained view unchanged.
 /// </summary>
-public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProductsPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const string RetainedPath = "/archive/products?view=retained";
 

@@ -7,7 +7,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class DeliveryPage : ComponentBase, IAsyncDisposable
+public sealed partial class DeliveryPage : SiteTimeComponent, IAsyncDisposable
 {
     private const string PolicyTriggerId = "delivery-policy";
     private const string FocusFallbackId = "delivery-refresh";
@@ -245,11 +245,11 @@ public sealed partial class DeliveryPage : ComponentBase, IAsyncDisposable
         return record.PayloadBytes is { } bytes ? $"{role} / {OperationsPage.FormatBytes(bytes)}" : role;
     }
 
-    private static string NextAction(ArtifactOutboxDeliveryRecord record) => record.Status switch
+    private string NextAction(ArtifactOutboxDeliveryRecord record) => record.Status switch
     {
-        ArtifactOutboxStatus.Pending => $"Queued since {FormatUtc(record.CreatedUtc)}",
+        ArtifactOutboxStatus.Pending => $"Queued since {FormatSiteTime(record.CreatedUtc)}",
         ArtifactOutboxStatus.Leased => "Sending now",
-        ArtifactOutboxStatus.Retry => $"Retry at {FormatUtc(record.NextAttemptUtc)}",
+        ArtifactOutboxStatus.Retry => $"Retry at {FormatSiteTime(record.NextAttemptUtc)}",
         ArtifactOutboxStatus.Acknowledged => "Complete",
         ArtifactOutboxStatus.Abandoned => "Abandoned by an operator",
         _ => "Held",
@@ -289,8 +289,7 @@ public sealed partial class DeliveryPage : ComponentBase, IAsyncDisposable
             ? string.Create(CultureInfo.InvariantCulture, $"{seconds / 60} min")
             : string.Create(CultureInfo.InvariantCulture, $"{seconds / 60.0:F1} min");
 
-    private static string FormatUtc(DateTimeOffset value)
-        => value.UtcDateTime.ToString("MMM d, HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string FormatSiteTime(DateTimeOffset value) => SiteTime.Format(value);
 
     public async ValueTask DisposeAsync()
     {

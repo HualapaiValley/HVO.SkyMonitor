@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/archive/products"
 @using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -62,7 +63,7 @@
                     @foreach (var product in _page.Items)
                     {
                         <tr>
-                            <td><time datetime="@product.CommittedUtc.ToString("O")">@TransientPage.FormatTime(product.CommittedUtc)</time></td>
+                            <td><time datetime="@product.CommittedUtc.ToString("O")">@SiteTime.Format(product.CommittedUtc)</time></td>
                             <td><a href="@DetailUrl(product.ArtifactId)">@OperationsPage.SplitWords(product.Role.ToString())@(product.Variant is null ? string.Empty : $" · {product.Variant}")</a>@if (product.IsMaterialization) { <span class="badge-soft">Saved layer stack</span> }@if (product.EncodedWidth is { } width && product.EncodedHeight is { } height) { <span class="dim">@width × @height</span> }</td>
                             <td><a href="/gallery/@product.CaptureId.ToString("D")">#@product.CaptureSequence</a></td>
                             <td>@product.Recipe.Name <span class="dim">@product.Recipe.SemanticVersion</span></td>

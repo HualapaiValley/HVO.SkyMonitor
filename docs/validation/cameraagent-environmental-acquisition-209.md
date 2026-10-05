@@ -100,6 +100,15 @@ regime, on-demand leases/receipts, and association sets survive restart.
 Expired abandoned command leases are reclaimable and old expired rows are
 bounded; new commands are rejected explicitly at capacity.
 
+Periodic acquisition preserves the configured epoch and cadence. A slot outside
+the active deployment location's half-open effective interval records `Missing`
+with reason `deployment-location-not-effective` and publishes no observation.
+The next normal boundary remains persisted, including on a new or future-effective
+deployment. Before the schedule epoch, the first future boundary is persisted
+without an early attempt. A successful later slot resets the failure count;
+previous valid observation evidence remains readable after a skipped slot and
+restart. Capture-triggered and on-demand location validation remains unchanged.
+
 ## Standalone And Central Boundaries
 
 `EnvironmentalHistoryAndOwnerSurfaceRecoverWithoutAnyCentralServiceAsync` runs

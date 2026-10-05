@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingExecutionsPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProcessingExecutionsPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
     private readonly SemaphoreSlim _gate = new(1, 1);

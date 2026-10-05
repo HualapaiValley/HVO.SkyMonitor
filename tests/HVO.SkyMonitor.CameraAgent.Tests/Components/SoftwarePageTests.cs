@@ -24,7 +24,7 @@ public sealed class SoftwarePageTests
             Assert.AreEqual("0123456789ab", Fact(cut, "software-agent-heading", "Source revision"));
             Assert.AreEqual(".NET 10.0.0 / linux-x64", Fact(cut, "software-agent-heading", "Runtime"));
             Assert.AreEqual("2h 5m", Fact(cut, "software-agent-heading", "Uptime"));
-            Assert.AreEqual("23 Jul 2026, 10:00 UTC", Fact(cut, "software-agent-heading", "Started"));
+            Assert.AreEqual("23 Jul 2026 10:00:00 +00:00 (UTC (site time zone unavailable))", Fact(cut, "software-agent-heading", "Started"));
             Assert.AreEqual("2026.07.1 / official", Fact(cut, "software-catalog-heading", "Package"));
             Assert.AreEqual("118,218", Fact(cut, "software-catalog-heading", "Star rows"));
             Assert.AreEqual("celestial-v2 (manifest 3)", Fact(cut, "software-catalog-heading", "Schema"));

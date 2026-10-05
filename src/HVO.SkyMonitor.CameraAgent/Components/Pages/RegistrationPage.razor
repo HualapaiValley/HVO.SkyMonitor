@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/registration"
 @page "/devices/bootstrap"
 @page "/devices"
@@ -85,7 +86,7 @@ else if (_view is null)
                                 <path d="m3 3 14 14"></path>
                             }</svg></button>
                         <button type="button" id="registration-copy-code" class="icon-button" aria-label="Copy verification code" title="Copy verification code" @onclick="() => CopyAsync(identity.VerificationCode, CopiedValue.VerificationCode)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5"></rect><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"></path></svg></button></dd></div>
-                    <div><dt>Created</dt><dd>@FormatUtc(identity.CreatedUtc)</dd></div>
+                    <div><dt>Created</dt><dd>@FormatSiteTime(identity.CreatedUtc)</dd></div>
                     <div><dt>Mode</dt><dd>Connected</dd></div>
                     <div><dt>Credential</dt><dd>@(view.Record is null ? "None yet" : "Device key")</dd></div>
                     <div><dt>Capture identity</dt><dd>@(view.CaptureIdentityAligned ? "Matches device ID" : "Differs from device ID")</dd></div>
@@ -117,7 +118,7 @@ else if (_view is null)
                     <div><dt>Artifact delivery</dt><dd>@DeliveryText(view.Delivery)</dd></div>
                     <div><dt>Location review</dt><dd>@ObservatoryLocationPage.LocationReviewText(record.LocationReview)</dd></div>
                     <div><dt>Revocation</dt><dd>@(view.State == RegistrationState.Rejected ? "Credentials refused" : "Not reported")</dd></div>
-                    <div><dt>Credential expires</dt><dd>@FormatUtc(record.ExpiresUtc)</dd></div>
+                    <div><dt>Credential expires</dt><dd>@FormatSiteTime(record.ExpiresUtc)</dd></div>
                 </dl>
                 <a class="text-button" href="/operations/site">View Observatory &amp; location</a>
             }

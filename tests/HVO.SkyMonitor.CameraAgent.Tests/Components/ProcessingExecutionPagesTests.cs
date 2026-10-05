@@ -571,6 +571,27 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    public void RunDiagram_RecordedSiteClockKeepsFullDateAndZoneAccessible()
+    {
+        using var context = new BunitContext();
+        ConfigureDiagram(context);
+        context.Services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(
+            ObservingDayCalendar.Create("Asia/Kolkata")));
+        var cut = context.Render<ExecutionRunDiagram>(parameters => parameters
+            .Add(component => component.Nodes, [])
+            .Add(component => component.TransientEnabled, true)
+            .Add(component => component.TransientEvents, [new("frame-staged", null, "pending", "recorded", Now)]));
+        var node = cut.Find(".run-diagram__transient-node");
+        Assert.AreEqual("Durable frame window", node.QuerySelector(".node-heading strong")!.TextContent);
+        var clock = node.QuerySelector("time")!;
+        Assert.AreEqual("17:30:00 +05:30", clock.TextContent);
+        Assert.AreEqual(Now.ToString("O", System.Globalization.CultureInfo.InvariantCulture), clock.GetAttribute("datetime"));
+        StringAssert.Contains(clock.GetAttribute("title")!, "4 Sep 2026 17:30:00 +05:30 (Asia/Kolkata)", StringComparison.Ordinal);
+        StringAssert.Contains(node.GetAttribute("aria-label")!, "4 Sep 2026 17:30:00 +05:30 (Asia/Kolkata)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".transient-track-band").TextContent, "Asia/Kolkata", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void RunDiagram_RecordedLowercaseAcknowledgementIsNotShownAsPending()
     {
         using var context = new BunitContext();
