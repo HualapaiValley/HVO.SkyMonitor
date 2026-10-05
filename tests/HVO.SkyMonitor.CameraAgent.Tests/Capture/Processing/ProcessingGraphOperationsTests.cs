@@ -3284,8 +3284,11 @@ public sealed class ProcessingGraphOperationsTests
         var provenance = new SceneProvenance(
             sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
             "projection-v1", "astronomy-v1", "sensor-v1",
+            RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(CreateProjectedSceneConfiguration().Rig),
+            SceneUtc: DateTimeOffset.UnixEpoch,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-            ProjectedSceneStageKey: stageKey);
+            ProjectedSceneStageKey: stageKey,
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
         return submission with
         {
             Result = submission.Result with

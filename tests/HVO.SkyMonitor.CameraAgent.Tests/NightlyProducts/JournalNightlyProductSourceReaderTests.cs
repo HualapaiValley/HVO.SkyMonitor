@@ -290,7 +290,7 @@ public sealed class JournalNightlyProductSourceReaderTests
     private static CameraModuleConfig Configuration()
         => new(
             NightlyProductFixture.Observatory,
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"), // Payloads are supplied by this fixture, without a virtual sky scene.
             new CameraRigConfig(
                 new SensorProfile("Test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
                 new OpticsProfile("Test", 1, 1, 0),

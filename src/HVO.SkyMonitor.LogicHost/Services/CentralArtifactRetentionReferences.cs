@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -27,7 +29,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
     {
-        if (await DirectReferences(centralArtifactId).AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false) ||
+            await DirectReferences(centralArtifactId).AnyAsync(cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -56,7 +59,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
-        if (await DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId)
+        if (await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false) ||
+            await DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId)
                 .AnyAsync(cancellationToken).ConfigureAwait(false))
         {
             return true;
@@ -100,6 +104,24 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.Leased
                 || job.Status == CentralDerivativeJobStatus.RetryableFailure
                 || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> CompactSceneConsumersRemainAsync(Guid centralArtifactId, CancellationToken cancellationToken)
+    {
+        var scene = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == centralArtifactId && artifact.Role == FrameArtifactRole.Metadata &&
+                artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            .Select(artifact => new { artifact.CentralFrameId, artifact.Frame!.SceneProvenanceJson })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (scene is null || CentralProjectedSceneResolver.ReadProvenance(scene.SceneProvenanceJson)?.RequiresProjectedScene != true)
+            return false;
+        // A completed job releases its execution hold, but retained compact images still need this geometry
+        // for later annotation/replay. Reservation's serializable transaction fences this indexed frame range.
+        // Pending/quarantined consumers remain evidence until explicitly expired; no new lifetime column is needed.
+        return await dbContext.CentralArtifacts.AnyAsync(consumer =>
+            consumer.CentralFrameId == scene.CentralFrameId && consumer.Role != FrameArtifactRole.Metadata &&
+            consumer.ObjectState != CentralArtifactObjectState.Expired && consumer.RetentionDeletionToken == null,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private IQueryable<int> DirectReferences(Guid centralArtifactId)

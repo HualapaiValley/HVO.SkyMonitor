@@ -29,7 +29,8 @@ unsafe evidence fails closed through the existing retention failure reporting.
 A small mutable journal cursor conservatively defers already checked candidates;
 it never authorizes deletion from partial discovery. A complete pass clears the
 cursor. Production-workload headroom and many-manifest costs still require the
-before/after evidence below; this mechanism is not yet qualified.
+before/after evidence below. The 10,000-sidecar workload completes without a
+budget cursor; full candidate qualification remains pending.
 
 Retained old manifests are read in their original representation. Recovery and
 archived replay recreate the recorded graph without imposing new-acquisition
@@ -50,7 +51,12 @@ freezes its artifact identity, checksum, scene identity, source descriptor hash,
 and annotation identity in the existing immutable input requirement and input
 rows. The reference fits the existing 2 KB selector field; no database migration
 or new central graph binding is required. Existing input retention, invalidation,
-lease, and frozen input-set rules apply. Raw identity must be authenticated before
+lease, and frozen input-set rules apply. A compact-only retention reference also
+keeps the scene while any non-expired image consumer remains in its exact central
+frame, after jobs finish. The hold uses existing rows and reservation transaction
+fencing; it clears after those consumers expire and leaves legacy inline captures
+on their existing retention rules. Its post-completion tests are pending the next
+local gate slot. Raw identity must be authenticated before
 selection; raw arriving later leaves selection waiting. Executor and processing-runner
 paths resolve the same pinned scene bytes and embedded raw descriptor hash after
 selection, without requiring an undeclared raw pixel retention dependency. The metadata input does not become an image-kernel
@@ -75,8 +81,9 @@ existing binding regression passed 2/2. The SQL-backed arrival-order matrix pass
 responses, retries, frozen scene retention/recipe identity, and exact annotation
 pixels. The first SQL run exposed missing requirement hydration in a lease query
 and missing explicit EF insertion for the new graph input; both were corrected
-without weakening immutable-input guards. The complete Tier C candidate gate,
-independent immutable review, and before/after performance evidence remain pending. Neither this document nor the preserved September prototype constitutes
+without weakening immutable-input guards. The complete Tier C candidate gate
+and independent immutable review remain pending. Before/after measurements are
+recorded below. Neither this document nor the preserved September prototype constitutes
 qualification evidence.
 
 Performance evidence must compare the same fixed production-catalog capture
@@ -137,13 +144,40 @@ for 35 captures, with zero candidate inline geometry in frame/outbox/journal
 records. Raw journal manifests fell from 1,978,122 to 166,197 bytes and product
 descriptors from 4,071,805 to 447,955 bytes. Capture median was 839 versus 593 ms.
 
-This pair is provisional: candidate peak RSS rose from about 357 to 494 MB,
-although its later samples returned to about 329 MB. A reversed-order repeat with
-GC statistics is pending. Fresh-process initialization was 553 versus 362 ms,
-with 30.3 versus 13.4 MB allocated; these are single observations, not percentiles
-or OS cache-cold startup claims. The first retention run safely rejected valid
-numeric storage-policy enums in historical options; the reader now matches the
-pipeline factory's string/numeric enum semantics, with both forms in the
-historical-root regression. Full same-day retention measurement remains pending.
-Failed attempts and the original successful pair are retained in the issue ledger;
-these findings have not been replaced with later results.
+The initial candidate peak RSS rose from about 357 to 494 MB, although later
+samples returned to about 329 MB. The reversed-order repeat (baseline `24a60a01`,
+candidate `5872b69b`) moved the high peak to the unchanged baseline: 493 versus
+360 MB. Its GC committed heap reached about 298 MB, compared with about 137 MB
+on the candidate, then shrank. This attributes the transient to GC heap sizing
+and collection scheduling; it is not evidence of a persistent candidate leak.
+Both pairs are retained. Capture latency also varied: the second pair measured
+850 versus 877 ms median and 932 versus 1,017 ms p95, so this evidence does not
+claim an unconditional throughput improvement. Managed allocations fell slightly
+in both pairs; measured physical writes fell from approximately 513 to 481 MB
+and write calls from about 25,900 to 18,900 for 30 measured captures.
+
+Fresh-process initialization measured 553/585 ms on the baseline and 362/377 ms
+on the candidate, with 30.3 versus 13.4 MB allocated. These are individual
+observations, not percentiles or OS cache-cold startup claims. The first retention
+run safely rejected valid numeric storage-policy enums in historical options;
+the corrected reader matches the pipeline factory's string/numeric enum semantics,
+with both forms in the historical-root regression.
+
+The corrected W3M workload passed with 10,000 same-day sidecars. Every candidate
+pass retained all 35 scenes required by archive consumers and completed with no
+cursor backlog. Median/p95/max discovery cost was 1.044/1.425/1.817 seconds on
+one CPU, about 33.7 MB logical reads and 255 MB transient managed allocations per
+pass, with 223 MB median and 231 MB maximum RSS. The baseline measured 2.7 ms
+because its canonical scenes had expired while duplicate archive geometry
+remained. This is an explicit cost of protecting the one remaining geometry
+product. It fits the supported workload under the configured bounds and the
+default 30-minute retention sweep. The 17-capture Unit test separately proves
+bounded progress and deletion after every archive consumer disappears.
+
+The complete numbers, both capture pairs, GC samples, output-equivalence results,
+and raw log/TRX/JSON SHA-256 index are retained in
+[the measurement summary](scene-compaction-1055-measurements.json). The exact
+[comparison script](scene-compaction-1055-compare.py) reads capture JSON and both
+immutable journals; run it before retention preparation. Failed
+attempts remain indexed and are not counted as passing measurements. Full
+qualification and independent review remain required before merge.

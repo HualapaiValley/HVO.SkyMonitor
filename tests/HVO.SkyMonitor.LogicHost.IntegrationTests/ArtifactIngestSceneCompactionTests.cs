@@ -144,6 +144,20 @@ public sealed partial class ArtifactIngestTests
             .ConfigureAwait(false);
         var actual = await ReadDerivativeAsync(owner, lease.SourceDevicePublicId, result.ArtifactId!.Value).ConfigureAwait(false);
         actual.Should().Equal(expected.Products[0].Payload.ToArray());
+        // Completion drops the job hold, but retained compact images still require this sole scene.
+        if (lease.GraphExecutionId is { } graphExecutionId)
+            await workerScope.ServiceProvider.GetRequiredService<ICentralProcessingGraphScheduler>()
+                .ConvergeAsync(graphExecutionId, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        var completedDb = workerScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await completedDb.CentralDerivativeJobs.AsNoTracking().SingleAsync(job => job.Id == jobId).ConfigureAwait(false))
+            .Status.Should().Be(CentralDerivativeJobStatus.Completed);
+        if (lease.GraphExecutionId is { } completedGraphId)
+            (await completedDb.CentralProcessingGraphExecutions.AsNoTracking()
+                .SingleAsync(execution => execution.Id == completedGraphId).ConfigureAwait(false))
+                .Status.Should().Be(CentralProcessingGraphExecutionStatus.Completed);
+        (await workerScope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionService>()
+            .ReleaseAsync(lease.ProjectedScene!.CentralArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Held);
     }
 
     private static async Task AssignCompactSceneAnnotationGraphAsync(Guid registrationId)

@@ -91,7 +91,30 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selected);
+        var retention = new CentralArtifactRetentionReferences(db);
+        Assert.IsTrue(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
+            "compact image consumers hold geometry independently of job lifetime");
+        Assert.IsTrue(await retention.IsHeldOutsideTransientEventAsync(artifact.Id, Guid.NewGuid(), CancellationToken.None)
+            .ConfigureAwait(false));
         rawArtifact.ObjectState = CentralArtifactObjectState.Expired;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsFalse(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
+            "expired consumers do not retain scene geometry forever");
+        var pendingPreview = new CentralArtifact
+        {
+            Frame = frame, CentralFrameId = frame.Id, ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Preview, ObjectState = CentralArtifactObjectState.Pending
+        };
+        db.Add(pendingPreview);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsTrue(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
+            "an accepted derivative waiting for its source is still a geometry consumer");
+        frame.SceneProvenanceJson = JsonSerializer.Serialize(provenance with { ProjectedSceneSchemaVersion = null }, JsonSerializerOptions.Web);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.IsFalse(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
+            "legacy inline captures keep their existing independent retention behavior");
+        frame.SceneProvenanceJson = JsonSerializer.Serialize(provenance, JsonSerializerOptions.Web);
+        pendingPreview.ObjectState = CentralArtifactObjectState.Expired;
         await db.SaveChangesAsync().ConfigureAwait(false);
         var resolved = await resolver.ResolveAsync(selected.Reference, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(selected.Annotation.ProvenanceSha256, resolved.ProvenanceSha256);
