@@ -161,7 +161,7 @@ public sealed class CentralTimeLapseNativeTests
         Assert.IsGreaterThan(0, product.Encoding.Media.Packets.Count);
     }
 
-    private static async Task<Guid> SeedSourceAsync(IServiceProvider services, CentralTimeLapseRequest request, int index)
+    internal static async Task<Guid> SeedSourceAsync(IServiceProvider services, CentralTimeLapseRequest request, int index)
     {
         var db = services.GetRequiredService<ApplicationDbContext>();
         var store = services.GetRequiredService<IObjectStore>();

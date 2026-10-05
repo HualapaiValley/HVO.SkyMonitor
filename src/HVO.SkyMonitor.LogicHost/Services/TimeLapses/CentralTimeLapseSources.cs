@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.LogicHost.Services.TimeLapses;
 
 internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralArtifactObjectReader reader)
 {
-    private sealed record Inventory(int Count, DateTimeOffset? LatestReceiptUtc);
+    private sealed record Inventory(int Count, int ReconstructedCount, DateTimeOffset? LatestReceiptUtc);
     private static readonly JsonSerializerOptions RigJson = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -24,8 +24,10 @@ internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralA
         var inventory = await db.CentralArtifacts.AsNoTracking().Where(item => item.DevicePublicId == deviceId &&
                 item.Frame!.ObservatoryId == observatoryId && item.Role == FrameArtifactRole.Raw &&
                 item.Frame.Timing!.ExposureStartedUtc >= historyStart && item.Frame.Timing.ExposureStartedUtc < end)
-            .GroupBy(static _ => 1).Select(group => new Inventory(group.Count(), group.Max(item => (DateTimeOffset?)item.ReceivedAtUtc)))
-            .SingleOrDefaultAsync(token).ConfigureAwait(false) ?? new(0, null);
+            .GroupBy(static _ => 1).Select(group => new Inventory(group.Count(),
+                group.Count(item => item.ReconstructionState == CentralReconstructionState.Complete),
+                group.Max(item => (DateTimeOffset?)item.ReceivedAtUtc)))
+            .SingleOrDefaultAsync(token).ConfigureAwait(false) ?? new(0, 0, null);
         return DiscoveryIdentity(deviceId, observatoryId, period, start, end, settle, preset, inventory);
     }
 
@@ -101,7 +103,8 @@ internal sealed class CentralTimeLapseSources(ApplicationDbContext db, ICentralA
         return new(deviceId, observatoryId, period, start, end, end + settle, false, preset, retained, exclusions, [])
         {
             DiscoveryIdentity = DiscoveryIdentity(deviceId, observatoryId, period, start, end, settle, preset,
-                new(rows.Length, rows.Length == 0 ? null : rows.Max(static row => row.ReceivedAtUtc)))
+                new(rows.Length, rows.Count(static row => row.ReconstructionState == CentralReconstructionState.Complete),
+                    rows.Length == 0 ? null : rows.Max(static row => row.ReceivedAtUtc)))
         };
     }
 

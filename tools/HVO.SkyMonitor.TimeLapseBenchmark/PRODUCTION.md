@@ -105,3 +105,19 @@ CameraAgent videos remain local; LogicHost recreates its larger version from
 received raw sources. Storage sizing must account for the documented quota and
 absence of automatic video expiration. Runtime adoption remains behind the
 operator's existing installer/live-upgrade hold.
+
+## Mixed-cadence daily compatibility
+
+A separate synthetic 512×512 red/green/blue canary uses the production FFmpeg
+arguments on `home-dev-01` (FFmpeg 6.1.1, RTX 5070). Three captures at 20-second
+cadence and twelve captures at five-second cadence represent adjacent minutes
+at 180×. Both libx264 and NVENC retained matching stream configuration across
+the two segments, then stream-copied all 15 packets with identical payload
+hashes and exact presentation/duration values into a 666666-microsecond video.
+Full decode passed. This checks the protocol, not sky appearance or performance.
+
+Reproduce on an already qualified NVIDIA host with
+`python3 mixed_cadence.py <new-empty-output-directory>`. Each subprocess is
+time-limited and pinned to one CPU. Commands, individual probes and joined
+probes are retained in that directory; [mixed-cadence-results.json](mixed-cadence-results.json)
+records the accepted result. No runtime or driver installation is performed.

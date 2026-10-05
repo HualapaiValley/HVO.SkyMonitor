@@ -172,8 +172,9 @@ to guess historical geometry or site.
 Discovery visits explicitly configured targets, freezes closed hours and builds
 a daily request from exact hourly job IDs. Late arrivals within the configured
 catch-up span create immutable successors; older products and links remain.
-A small capture-count/latest-receipt check reuses unchanged requests without
-rereading full source descriptors. Raw retention alone does not replace a finished
+A small capture-count/reference-completion/latest-receipt check reuses unchanged
+requests without rereading full source descriptors. References arriving after a
+raw image trigger a successor when that image becomes reconstructable. Raw retention alone does not replace a finished
 hour with an empty successor. Later settings do not change existing requests. Source availability and quality
 exclusions are recorded. Retrying/rebuilding outside that bounded discovery span
 is not automatic. Restart recovery has three fenced attempts; failed terminal

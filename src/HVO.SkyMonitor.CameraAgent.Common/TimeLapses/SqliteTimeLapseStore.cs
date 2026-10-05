@@ -415,7 +415,8 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         }.ToString());
         await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(connection, async (configured, cancellationToken) =>
         {
-            await ExecuteAsync(configured, null, "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(configured, null, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(configured, null, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
             if (!string.Equals((string?)await ScalarAsync(configured, null, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false), "wal", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Time-lapse storage requires WAL.");
         }, token).ConfigureAwait(false);

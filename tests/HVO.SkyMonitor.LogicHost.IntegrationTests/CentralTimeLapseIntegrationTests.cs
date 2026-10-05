@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.TimeLapses;
+using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Video.FFmpeg;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -93,6 +94,54 @@ public sealed class CentralTimeLapseIntegrationTests
         await Assert.ThrowsExactlyAsync<ArgumentException>(() => store.CompleteAsync(final,
             CentralTimeLapseState.Produced, null, null, CancellationToken.None));
         await store.CompleteAsync(final, CentralTimeLapseState.NoSources, "timelapse.no-admitted-sources", null, CancellationToken.None);
+    }
+
+    [TestMethod]
+    public async Task ReferenceCompletionCreatesSuccessorButRawRetentionDoesNot()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var store = services.GetRequiredService<CentralTimeLapseStore>();
+        var sources = services.GetRequiredService<CentralTimeLapseSources>();
+        var template = CreateRequest();
+        var owner = await db.Users.SingleAsync(user => user.Email == TestUsers.Operator.Email);
+        db.Observatories.Add(new() { Id = template.ObservatoryId, OwnerUserId = owner.Id, Name = "Reference completion", CreatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var sourceId = await CentralTimeLapseNativeTests.SeedSourceAsync(services, template, 0);
+        var selected = db.CentralArtifacts.Where(item => item.Id == sourceId);
+        await selected.ExecuteUpdateAsync(update => update.SetProperty(item => item.ReconstructionState, CentralReconstructionState.PendingReference));
+        Task<CentralTimeLapseRequest> Freeze(CancellationToken token) => sources.FreezeAsync(template.DevicePublicId, template.ObservatoryId,
+            template.Period, template.StartUtc, template.EndUtc, TimeSpan.FromMinutes(10), template.Preset, token);
+        Task<string> Discover() => sources.DiscoveryIdentityAsync(template.DevicePublicId, template.ObservatoryId, template.Period,
+            template.StartUtc, template.EndUtc, TimeSpan.FromMinutes(10), template.Preset, CancellationToken.None);
+        var pendingId = await store.EnqueueAsync(Freeze, CancellationToken.None);
+        var pendingIdentity = await Discover();
+        Assert.AreEqual(pendingId, await store.FindDiscoveredAsync(template.DevicePublicId, template.Period.ReportDate, pendingIdentity, CancellationToken.None));
+        var pending = await store.ClaimAsync(CancellationToken.None);
+        Assert.IsNotNull(pending);
+        Assert.AreEqual(pendingId, pending.JobId);
+        Assert.HasCount(0, pending.Request.Sources);
+        await store.CompleteAsync(pending, CentralTimeLapseState.NoSources, "timelapse.no-admitted-sources", null, CancellationToken.None);
+
+        // The raw object and receipt stay unchanged when a missing rig reference arrives later.
+        await selected.ExecuteUpdateAsync(update => update.SetProperty(item => item.ReconstructionState, CentralReconstructionState.Complete));
+        var completedIdentity = await Discover();
+        Assert.AreNotEqual(pendingIdentity, completedIdentity);
+        Assert.IsNull(await store.FindDiscoveredAsync(template.DevicePublicId, template.Period.ReportDate, completedIdentity, CancellationToken.None));
+        var successorId = await store.EnqueueAsync(Freeze, CancellationToken.None);
+        Assert.AreNotEqual(pendingId, successorId);
+        var successor = await store.ClaimAsync(CancellationToken.None);
+        Assert.IsNotNull(successor);
+        Assert.AreEqual(successorId, successor.JobId);
+        Assert.HasCount(1, successor.Request.Sources);
+        Assert.AreEqual(sourceId, successor.Request.Sources[0].CentralArtifactId);
+        await store.CompleteAsync(successor, CentralTimeLapseState.Failed, "test.finished", null, CancellationToken.None);
+
+        // Routine retention changes object availability, not reconstruction completion.
+        await selected.ExecuteUpdateAsync(update => update.SetProperty(item => item.ObjectState, CentralArtifactObjectState.Expired));
+        Assert.AreEqual(completedIdentity, await Discover());
+        Assert.AreEqual(successorId, await store.FindDiscoveredAsync(template.DevicePublicId, template.Period.ReportDate, completedIdentity, CancellationToken.None));
     }
 
     internal static CentralTimeLapseRequest CreateRequest()
