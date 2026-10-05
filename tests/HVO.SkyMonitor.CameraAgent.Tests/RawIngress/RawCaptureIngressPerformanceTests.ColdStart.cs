@@ -172,7 +172,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var configuration = await LoadCanonicalConfigurationAsync().ConfigureAwait(false);
         using var fixture = CreateIngress(root);
         await fixture.Ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var lanes = (ICaptureLaneStore)fixture.Ingress;
+        var lanes = fixture.Ingress;
         var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
         var standard = policy.Definitions.Single(lane => lane.Name == "standard");
         var completed = 0;
