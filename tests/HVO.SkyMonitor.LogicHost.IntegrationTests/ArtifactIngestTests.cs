@@ -1253,7 +1253,9 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames()
+    [DataRow(0)]
+    [DataRow(100)]
+    public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames(int verificationBacklog)
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
         var rig = CreateRig("structured-cloud-history-rig");
@@ -1370,8 +1372,23 @@ public sealed class ArtifactIngestTests
             deviceId, rig, dependentBytes, 94, capturedAtUtc: DateTimeOffset.UnixEpoch.AddMinutes(2));
         using var dependentResponse = await PostAsync(client, dependentManifest, dependentBytes).ConfigureAwait(false);
         dependentResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var backlogArtifactIds = new List<Guid>();
+        for (var index = 0; index < verificationBacklog; index++)
+        {
+            var backlogManifest = CreateManifestV2(deviceId, rig, dependentBytes, 1000 + index);
+            using var backlogResponse = await PostAsync(client, backlogManifest, dependentBytes).ConfigureAwait(false);
+            backlogResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            backlogArtifactIds.Add(backlogManifest.Descriptor.Artifact.ArtifactId);
+        }
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await db.CentralArtifacts.Where(item => backlogArtifactIds.Contains(item.ArtifactId))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
+                .SetProperty(item => item.ObjectVerificationToken, Guid.NewGuid())
+                .SetProperty(item => item.ObjectVerificationRequestedAtUtc, DateTimeOffset.UnixEpoch)
+                .SetProperty(item => item.ObjectVerificationRetryAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
         var stored = await db.CentralArtifacts.Include(item => item.Sources)
             .SingleAsync(item => item.ArtifactId == artifact.ArtifactId).ConfigureAwait(false);
         stored.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
@@ -1426,10 +1443,23 @@ public sealed class ArtifactIngestTests
             new MutableTimeProvider(DateTimeOffset.UtcNow.AddHours(1)),
             telemetry,
             NullLogger<CentralArtifactReconciliationService>.Instance);
-        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        // Recovery shares a bounded queue with the assembly. A single cycle may
+        // not visit these artifacts, so wait for their verification reservations.
+        for (var cycle = 0; cycle < 10; cycle++)
+        {
+            await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!await db.CentralArtifacts.AnyAsync(item =>
+                    (item.Id == stored.Id || item.Id == dependentId) && item.ObjectVerificationToken != null)
+                .ConfigureAwait(false))
+            {
+                break;
+            }
+        }
         db.ChangeTracker.Clear();
         var reconciled = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == artifact.ArtifactId)
             .ConfigureAwait(false);
+        reconciled.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        reconciled.ObjectVerificationToken.Should().BeNull("the quarantined parent must be verified before checking invalidation");
         reconciled.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
         reconciled.StateReasonCode.Should().Be("lineage.source-identity-mismatch");
         var reconciledDependent = await db.CentralArtifacts.SingleAsync(item => item.Id == dependentId)
