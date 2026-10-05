@@ -169,11 +169,18 @@ public static class PresentationProcessingProducts
             input.Layer.SourceProduct == layer.SourceProduct
                 ? input.Product
                 : throw new ArgumentException("Canonical manifest layer cannot be resolved uniquely.", nameof(orderedLayers)))).ToArray();
-        var identity = Identity(ManifestRecipeName, "overlay-manifest-v1", new { manifest.ManifestIdentitySha256 });
+        var identity = CreateManifestRecipeIdentity(manifest);
         return ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, outputVariant, ManifestMediaType, null,
             LayeredPresentationJson.Serialize(manifest), identity, [new("overlay-manifest-contract", "1.0.0")], sources,
             baseArtifact.Integration, baseArtifact.Compatibility, ProcessingProductKind.Metadata,
             OverlayManifestV1.CurrentSchemaVersion, manifest.ManifestIdentitySha256);
+    }
+
+    /// <summary>Computes the manifest product recipe from canonical metadata without reading a raster or layer payload.</summary>
+    public static ProcessingRecipeIdentity CreateManifestRecipeIdentity(OverlayManifestV1 manifest)
+    {
+        LayeredPresentationJson.Validate(manifest);
+        return Identity(ManifestRecipeName, "overlay-manifest-v1", new { manifest.ManifestIdentitySha256 });
     }
 
     internal static ProcessingRecipeIdentity Identity(string name, string implementationVersion, object parameters)
@@ -304,7 +311,7 @@ public static class PresentationMaterializationExecutor
         LayeredPresentationJson.Validate(manifest);
         PresentationProcessingProducts.ValidateReference(manifest.BaseProduct, baseArtifact, requirePackedLayout: true);
         if (manifestArtifact.ArtifactId == Guid.Empty || manifestArtifact.ProductKind != ProcessingProductKind.Metadata ||
-            !string.Equals(manifestArtifact.SchemaVersion, OverlayManifestV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
+            manifestArtifact.SchemaVersion is not (OverlayManifestV1.CurrentSchemaVersion or TransientTrailPresentation.CompositionSchemaVersion) ||
             !string.Equals(manifestArtifact.ContentIdentitySha256, manifest.ManifestIdentitySha256, StringComparison.Ordinal) ||
             !string.Equals(manifestArtifact.MediaType, PresentationProcessingProducts.ManifestMediaType, StringComparison.OrdinalIgnoreCase) ||
             !manifestArtifact.Payload.Span.SequenceEqual(LayeredPresentationJson.Serialize(manifest)))

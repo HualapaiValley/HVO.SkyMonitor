@@ -44,6 +44,34 @@ public sealed class PresentationProcessingProductTests
     }
 
     [TestMethod]
+    public void SupplementaryManifestMaterializationRetainsEveryCanonicalBindingAndRejectsUnknownSchema()
+    {
+        var baseArtifact = Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "base", Layout(), new byte[64]);
+        var baseReference = PresentationProcessingProducts.CreateReference(baseArtifact, new string('E', 64));
+        var layer = LayerInput("measured", 500, 2, 2, new(255, 220, 32), baseReference.Compatibility);
+        var manifest = LayeredPresentationJson.CreateManifest(baseReference, null, [layer.Layer]);
+        var product = PresentationProcessingProducts.CreateManifestProduct(baseReference, null, [layer],
+            TransientTrailPresentation.CompositionSchemaVersion, baseArtifact) with
+        {
+            SchemaVersion = TransientTrailPresentation.CompositionSchemaVersion
+        };
+        var artifact = ToArtifact(product);
+        var rendered = PresentationMaterializationExecutor.MaterializePacked(baseArtifact, artifact, manifest,
+            [layer], [layer.Layer.LayerIdentitySha256], "saved");
+        CollectionAssert.Contains(rendered.SourceArtifactIds.ToArray(), artifact.ArtifactId);
+        foreach (var invalid in new[]
+        {
+            artifact with { SchemaVersion = "unrecognized-composition-v2" },
+            artifact with { ContentIdentitySha256 = new string('F', 64) },
+            artifact with { Payload = "{}"u8.ToArray() }
+        })
+        {
+            Assert.ThrowsExactly<ArgumentException>(() => PresentationMaterializationExecutor.MaterializePacked(
+                baseArtifact, invalid, manifest, [layer], [layer.Layer.LayerIdentitySha256], "saved"));
+        }
+    }
+
+    [TestMethod]
     public void MaterializationBindsToggleOrderCompositorEncoderAndLineage()
     {
         var baseArtifact = Artifact(Guid.Parse("30000000-0000-0000-0000-000000000003"), FrameArtifactRole.Preview,

@@ -22,7 +22,7 @@ internal sealed record OnDemandMaterializationResult(
     long ByteLength,
     bool Replayed);
 
-internal sealed class CaptureProcessingPersistence(
+internal sealed partial class CaptureProcessingPersistence(
     IOptions<CameraAgentHostOptions> options,
     SqliteCaptureProcessingStore store,
     IFrameStorageService frameStorage,

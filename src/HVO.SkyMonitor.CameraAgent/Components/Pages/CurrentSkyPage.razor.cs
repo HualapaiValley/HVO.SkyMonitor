@@ -443,6 +443,14 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
+    private async Task RefreshMeasuredEvidenceAsync()
+    {
+        if (_layers is null || _layerLoading || _saving || _viewerOpen || _accessDenied ||
+            _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
+        _layerLoading = true;
+        await LoadLayersAsync(_layers.CaptureId, Volatile.Read(ref _layerGeneration), cancellation.Token);
+    }
+
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
     private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
@@ -486,11 +494,17 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _layerLoading = false;
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {
+            var previousKinds = _layers?.Layers.Select(static layer => layer.Kind).ToHashSet(StringComparer.Ordinal);
+            var selectedKinds = _layers?.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
+                .Select(static layer => layer.Kind).ToHashSet(StringComparer.Ordinal);
             _layers = value;
             _layersNotRetained = false;
             _layerMessage = null;
-            _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
+            _selectedLayers = value.Layers.Where(layer => previousKinds?.Contains(layer.Kind) == true
+                    ? selectedKinds?.Contains(layer.Kind) == true : layer.EnabledByDefault)
                 .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+            _layerInteractive = false;
+            _bindGeneration++;
             _bindLayers = true;
         }
         else
@@ -601,19 +615,21 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         ? FormattableString.Invariant($"aspect-ratio: {layers.WidthPixels} / {layers.HeightPixels};")
         : string.Empty;
 
-    private bool HasLayer(string first, string second) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
+    private bool HasLayer(string first, string? second = null) => _layers?.Layers.Any(layer => layer.Kind == first || layer.Kind == second) == true;
 
     private IEnumerable<CameraAgentPresentationLayer> RetainedLayers(string group) =>
         _layers?.Layers.Where(layer => LayerGroup(layer.Kind) == group) ?? [];
 
     private static string LayerGroup(string kind) => kind switch
     {
+        "MeasuredTransientTrails" => "Measured",
         "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
 
     private static string LayerDescription(string kind) => kind switch
     {
+        "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
         "scene-annotation" or "star-annotations" => "expected / projected catalog, not measured associations (#526)",
         "scene-constellations" or "constellations" => "expected / HYG topology",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
@@ -883,6 +899,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerLabel(string kind) => kind switch
     {
+        "MeasuredTransientTrails" => "Measured transient trails",
         "scene-annotation" or "star-annotations" => "Catalog stars",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",
@@ -909,7 +926,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var selected = _layers.Layers.Where(layer => _selectedLayers.Contains(layer.IdentitySha256))
                 .Select(static layer => layer.IdentitySha256).ToArray();
             if (!IsCurrentLayer(generation, captureId, cancellation)) return;
-            var result = await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token);
+            var result = _layers.ManifestArtifactId == Guid.Empty
+                ? await OperatorService.SaveLayeredPresentationAsync(captureId, selected, cancellation.Token)
+                : await OperatorService.SaveFrozenLayeredPresentationAsync(captureId,
+                    _layers.ManifestIdentitySha256, selected, cancellation.Token);
             if (!IsCurrentLayer(generation, captureId, cancellation)) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
