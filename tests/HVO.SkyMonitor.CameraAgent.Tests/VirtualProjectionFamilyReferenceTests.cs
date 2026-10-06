@@ -11,6 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class VirtualProjectionFamilyReferenceTests
 {
+    private static readonly string[] MonoProfileNames = ["mono-native", "mono-roi", "mono-bin2", "mono-roi-bin2", "mono-mirror", "mono-roll"];
+
     [TestMethod]
     public void FrozenMatrix_DeclaresEveryFamilyOnceWithTheEquidistantBaselineFirst()
     {
@@ -24,8 +26,7 @@ public sealed class VirtualProjectionFamilyReferenceTests
         foreach (var family in families.Skip(1))
         {
             var profiles = VirtualAstrometryFixture.Profiles(1, family);
-            CollectionAssert.AreEqual(new[] { "mono-native", "mono-roi", "mono-bin2", "mono-roi-bin2", "mono-mirror", "mono-roll" },
-                profiles.Select(p => p.Name).ToArray(), family.Name);
+            CollectionAssert.AreEqual(MonoProfileNames, profiles.Select(p => p.Name).ToArray(), family.Name);
             Assert.IsTrue(profiles.All(p => p.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.Mono16), "CFA is outside every new family.");
         }
     }
