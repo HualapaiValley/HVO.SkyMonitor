@@ -104,6 +104,25 @@ public sealed class CentralDerivativeJobInputReaderTests
         Assert.AreEqual(corrupt ? "object.length-mismatch" : "object.missing", fixture.Jobs.ReasonCode);
     }
 
+    [TestMethod]
+    [DataRow(-1L)]
+    [DataRow(2147483648L)]
+    public async Task InvalidStoredInputLengthRejectsDescriptionAndReadBeforeObjectAccess(long byteLength)
+    {
+        await using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        fixture.Artifact.ByteLength = byteLength;
+        await fixture.Db.SaveChangesAsync().ConfigureAwait(false);
+        Assert.AreEqual(fixture.Payload.Length, fixture.Lease.Inputs!.Single().ByteLength,
+            "A valid-looking lease length must not bypass the stored source bound.");
+        await Assert.ThrowsExactlyAsync<CentralDerivativeInputRejectedException>(() => fixture.Reader.DescribeAsync(
+            fixture.Lease, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CentralDerivativeInputRejectedException>(() => fixture.Reader.ReadAsync(
+            fixture.Lease, CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual(0, fixture.Objects.VerifyCount, "Reject before storage verification or payload allocation.");
+        Assert.AreEqual(0, fixture.Objects.CopyCount);
+        Assert.AreEqual(0, fixture.Jobs.MarkCount, "An unsupported length must not quarantine or retire the source.");
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         internal ApplicationDbContext Db { get; } = new(new DbContextOptionsBuilder<ApplicationDbContext>()
