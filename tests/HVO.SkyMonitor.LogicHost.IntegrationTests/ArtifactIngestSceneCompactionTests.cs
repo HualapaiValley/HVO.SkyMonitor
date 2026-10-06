@@ -27,6 +27,58 @@ public sealed partial class ArtifactIngestTests
     };
 
     [TestMethod]
+    public async Task LegacyLeaseReadsCompactCapturePixelsWithItsFrozenSceneAndRejectsCanceledAuthority()
+    {
+        var data = await CreateSceneIngestCaseAsync(graph: false).ConfigureAwait(false);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using (var response = await PostAsync(client, data.Raw, data.Pixels).ConfigureAwait(false))
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using (var response = await PostAsync(client, data.SceneManifest, data.SceneBytes).ConfigureAwait(false))
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using (var response = await PostAsync(client, data.Derivative, data.Pixels).ConfigureAwait(false))
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var jobId = await db.CentralDerivativeJobs.Where(job =>
+                job.SourceArtifact!.Frame!.FrameId == data.Raw.Descriptor.Capture.CaptureId &&
+                job.RecipeName == BuiltInProcessingRecipes.Annotation)
+            .Select(job => job.Id).SingleAsync().ConfigureAwait(false);
+        await db.CentralDerivativeJobs.Where(job => job.Id != jobId &&
+                (job.Status == CentralDerivativeJobStatus.Pending || job.Status == CentralDerivativeJobStatus.RetryableFailure))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+        var jobs = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>();
+        var lease = await jobs.ClaimNextAsync("legacy-scene-reader", TimeSpan.FromMinutes(2), CancellationToken.None).ConfigureAwait(false);
+        lease.Should().NotBeNull();
+        lease!.JobId.Should().Be(jobId);
+        lease.ProjectedScene.Should().NotBeNull();
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        var reader = new CentralDerivativeJobInputReader(db,
+            scope.ServiceProvider.GetRequiredService<ICentralArtifactObjectReader>(), jobs, telemetry, TimeProvider.System);
+        var legacy = lease with { Inputs = null };
+        await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => reader.DescribeAsync(
+            legacy with { WorkerId = "foreign-worker" }, CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => reader.DescribeAsync(
+            legacy with { LeaseToken = Guid.NewGuid() }, CancellationToken.None)).ConfigureAwait(false);
+        var description = await reader.DescribeAsync(legacy, CancellationToken.None).ConfigureAwait(false);
+        description.References.Should().ContainSingle();
+        description.References.Single().ArtifactId.Should().Be(lease.SourceArtifactId);
+        description.ProcessingInputs.Single().Payload.IsEmpty.Should().BeTrue();
+        var loaded = await reader.ReadAsync(legacy, CancellationToken.None).ConfigureAwait(false);
+        loaded.ProcessingInputs.Should().ContainSingle();
+        loaded.ProcessingInputs.Single().Payload.ToArray().Should().Equal(data.Pixels);
+        loaded.ProcessingInputs.Single().Descriptor!.Capture.CaptureId.Should().Be(data.Raw.Descriptor.Capture.CaptureId);
+        legacy.ProjectedScene.Should().Be(lease.ProjectedScene, "fallback input loading retains the separate frozen scene identity");
+        await db.CentralDerivativeJobs.Where(job => job.Id == jobId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Status, CentralDerivativeJobStatus.Canceled))
+            .ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => reader.ReadAsync(
+            legacy, CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     [DataRow("raw,scene,derivative", false)]
     [DataRow("derivative,raw,scene", false)]
     [DataRow("scene,derivative,raw", false)]

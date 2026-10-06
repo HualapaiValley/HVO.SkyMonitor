@@ -278,16 +278,16 @@ internal sealed class CentralDerivativeJobInputReader(
         var now = timeProvider.GetUtcNow();
         if (leaseInput.CentralArtifactId == Guid.Empty)
         {
-            return await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(candidate => candidate.Id == lease.JobId
-                    && candidate.Status == CentralDerivativeJobStatus.Leased
-                    && candidate.LeaseToken == lease.LeaseToken
-                    && candidate.LeaseOwner == lease.WorkerId
-                    && candidate.LeaseExpiresAtUtc > now
-                    && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
-                    && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
-                    && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
-                .Select(candidate => candidate.SourceArtifact!)
+            return await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.ArtifactId == lease.SourceArtifactId
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete
+                    && dbContext.CentralDerivativeJobs.Any(candidate => candidate.Id == lease.JobId
+                        && candidate.Status == CentralDerivativeJobStatus.Leased
+                        && candidate.LeaseToken == lease.LeaseToken
+                        && candidate.LeaseOwner == lease.WorkerId
+                        && candidate.LeaseExpiresAtUtc > now
+                        && candidate.SourceCentralArtifactId == artifact.Id))
                 .Include(artifact => artifact.Layout)
                 .Include(artifact => artifact.Recipe)
                 .Include(artifact => artifact.Sources)
