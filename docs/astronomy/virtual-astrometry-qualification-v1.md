@@ -1,5 +1,9 @@
 # Virtual all-sky astrometry qualification — final report (v1)
 
+> **Superseded for projection families.** This report remains the record of the #1106 measurement. Issue
+> [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126) publishes the projection-family envelope in
+> [v2](virtual-astrometry-qualification-v2.md), which is the current statement of supported lens projections.
+
 Issue [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) (V7 of epic
 [#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098)) reruns every delivered qualification harness
 at one integrated `development/v1` revision and audits the epic's nine completion criteria against delivered code
