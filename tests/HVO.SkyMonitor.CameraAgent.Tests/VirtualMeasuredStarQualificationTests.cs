@@ -175,6 +175,7 @@ public sealed class VirtualMeasuredStarQualificationTests
         {
             schema = "virtual-measured-stars-v1",
             partition,
+            projectionFamily = VirtualAstrometryFixture.Family.Name,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
             runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
@@ -199,7 +200,7 @@ public sealed class VirtualMeasuredStarQualificationTests
         }, EvidenceJsonOptions)).ConfigureAwait(false);
         TestContext.WriteLine(path);
         TestContext.AddResultFile(path);
-        Assert.AreEqual(partitions.Length * 7, reports.Count);
+        Assert.AreEqual(partitions.Length * VirtualAstrometryFixture.Profiles(0).Count, reports.Count);
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
@@ -259,13 +260,10 @@ public sealed class VirtualMeasuredStarQualificationTests
         var visible = catalog.Stars.Select(star => (star.Id, Ray: VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.J2000(star), utc, VirtualAstrometryFixture.Observer)))
             .Where(item => item.Ray.Z > 0).Select(item => (item.Id, Pixel: VirtualAstrometryReference.Project(rig, item.Ray)))
             .Where(item => item.Pixel is not null).Select(item => (item.Id, Pixel: item.Pixel!.Value)).ToArray();
-        var cx = (rig.Optics.PrincipalPointX!.Value - rig.Readout!.Roi.X) / rig.Readout.BinX;
-        var cy = (rig.Optics.PrincipalPointY!.Value - rig.Readout.Roi.Y) / rig.Readout.BinY;
-        var interior = rig.Optics.ImageCircleRadiusPixels!.Value / rig.Readout.BinX - 12;
         var width = nominal.Projection.WidthPixels; var height = nominal.Projection.HeightPixels;
         return [.. visible.Select(v => new TruthStar(v.Id, v.Pixel,
             v.Pixel.X > 6 && v.Pixel.Y > 6 && v.Pixel.X < width - 6 && v.Pixel.Y < height - 6 &&
-            Math.Pow(v.Pixel.X - cx, 2) + Math.Pow(v.Pixel.Y - cy, 2) < interior * interior &&
+            VirtualAstrometryReference.IsApertureInterior(rig, v.Pixel, 12) &&
             visible.All(o => o.Id == v.Id || VirtualAstrometryReference.Distance(o.Pixel, v.Pixel) > 12)))];
     }
 

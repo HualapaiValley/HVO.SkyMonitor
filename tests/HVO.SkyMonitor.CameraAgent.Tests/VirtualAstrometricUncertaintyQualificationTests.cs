@@ -132,6 +132,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
             schema = "virtual-astrometric-uncertainty-v1",
+            projectionFamily = VirtualAstrometryFixture.Family.Name,
             partition,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),

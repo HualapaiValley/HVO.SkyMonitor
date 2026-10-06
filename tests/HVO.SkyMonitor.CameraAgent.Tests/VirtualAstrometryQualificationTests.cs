@@ -34,6 +34,8 @@ public sealed class VirtualAstrometryQualificationTests
         var partitions = tuning ? new[] { (Month: 2, Day: 10, Seed: 110220) }
             : [(Month: 1, Day: 15, Seed: 110201), (Month: 5, Day: 15, Seed: 110205), (Month: 9, Day: 15, Seed: 110209)];
         var partition = tuning ? "tuning-not-final" : "held-out-stationary-baseline";
+        // Views per capture: one per profile plus three derived phases for each CFA profile.
+        var viewsPerCapture = VirtualAstrometryFixture.Profiles(0).Sum(p => p.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16 ? 4 : 1);
         var resultRoot = Path.Combine(TestContext.TestRunDirectory!, partition); Directory.CreateDirectory(resultRoot);
         foreach (var (month, day, seed) in partitions)
         {
@@ -117,6 +119,7 @@ public sealed class VirtualAstrometryQualificationTests
         {
             schema = "virtual-astrometry-pixels-v2",
             partition,
+            projectionFamily = VirtualAstrometryFixture.Family.Name,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             snapshot.DatabaseSha256,
             snapshot.RowCount,
@@ -134,11 +137,11 @@ public sealed class VirtualAstrometryQualificationTests
             failures
         }, VirtualAstrometryFixture.JsonOptions)).ConfigureAwait(false);
         TestContext.AddResultFile(path);
-        Assert.AreEqual(partitions.Length * 30, reports.Count, "Every supported camera/derived-phase case must run.");
+        Assert.AreEqual(partitions.Length * viewsPerCapture * 3, reports.Count, "Every supported camera/derived-phase case must run.");
         Assert.AreEqual(reports.Count * 25, mappings.SourceGeometry.Count, "Every accepted blind/warm source requires its own grid.");
         Assert.AreEqual(reports.Count, mappings.SourceCoverage.Count);
-        Assert.AreEqual(reports.Count * 10 * 25, mappings.Grids.Count, "Every source maps to every later warm view in its season.");
-        Assert.AreEqual(reports.Count * 10, mappings.MappingCoverage.Count);
+        Assert.AreEqual(reports.Count * viewsPerCapture * 25, mappings.Grids.Count, "Every source maps to every later warm view in its season.");
+        Assert.AreEqual(reports.Count * viewsPerCapture, mappings.MappingCoverage.Count);
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
@@ -255,15 +258,23 @@ public sealed class VirtualAstrometryQualificationTests
                         scaleYRelativeError = errorY
                     });
                 }
+            // A rectangular aperture fills the frame, so its unsupported inverse points are explicit probes just outside the readout.
+            var circular = VirtualAstrometryReference.IsCircular(source.Truth);
+            var width = source.Nominal.Projection.WidthPixels; var height = source.Nominal.Projection.HeightPixels;
+            var outsideFrameProbes = circular ? Array.Empty<PixelPoint>() : new PixelPoint[] { new(-.5, height / 2d), new(width + .5, height / 2d), new(width / 2d, -.5), new(width / 2d, height + .5) };
+            foreach (var probe in outsideFrameProbes)
+                if (VirtualAstrometryReference.Unproject(source.Truth, probe) is not null || sourceMapping.PixelToSky(probe) is not null)
+                    failures.Add($"{source.Id} outside-frame inverse probe {probe} was not rejected");
             sourceCoverage.Add(new
             {
                 source = source.Id,
                 source.Assessment.Mode,
                 points = samples.Count,
                 supportedPoints = supportedSourcePoints,
-                unsupportedPoints = samples.Count - supportedSourcePoints
+                unsupportedPoints = samples.Count - supportedSourcePoints,
+                outsideFrameProbes = outsideFrameProbes.Length
             });
-            if (supportedSourcePoints == 0 || supportedSourcePoints == samples.Count)
+            if (circular ? supportedSourcePoints == 0 || supportedSourcePoints == samples.Count : supportedSourcePoints != samples.Count)
                 failures.Add($"{source.Id} grid must exercise supported and unsupported inverse/scale points");
             foreach (var target in cases.Where(item => item.Id[..2] == source.Id[..2] && item.Id.EndsWith("-2", StringComparison.Ordinal)))
             {
@@ -290,7 +301,8 @@ public sealed class VirtualAstrometryQualificationTests
                     supportedMappings,
                     unsupportedMappings = samples.Count - supportedMappings
                 });
-                if (supportedMappings == 0 || supportedMappings == samples.Count)
+                // Overlapping rectangular views can legitimately map every grid point; circular views always clip some.
+                if (supportedMappings == 0 || circular && supportedMappings == samples.Count)
                     failures.Add($"{source.Id}->{target.Id} grid must exercise supported and unsupported mappings");
             }
         }

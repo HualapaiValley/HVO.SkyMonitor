@@ -84,17 +84,65 @@ internal static class VirtualAstrometryReference
     }
     internal static Basis Pose(CameraRigConfig rig) => Pose(rig.Orientation.BoresightAltitudeDegrees,
         rig.Orientation.BoresightAzimuthDegrees, rig.Orientation.RollAdjustmentDegrees, rig.Optics.HorizontalFlip);
-    internal static double NativeFocal(CameraRigConfig rig) => rig.Optics.FocalLengthXPixels ??
-        (rig.Optics.FocalLengthMillimeters > 0 ? rig.Optics.FocalLengthMillimeters / (rig.Sensor.PixelSizeMicrons / 1000)
-            : rig.Optics.ImageCircleRadiusPixels!.Value / Radians(rig.Optics.FieldOfViewDegrees / 2));
+    internal static ProjectionModel Model(CameraRigConfig rig) => RigProjectionContextFactory.ParseModel(rig.Optics.ProjectionModel);
+    internal static double NativeFocal(CameraRigConfig rig)
+    {
+        if (rig.Optics.FocalLengthXPixels is { } focal) return focal;
+        if (rig.Optics.FocalLengthMillimeters > 0) return rig.Optics.FocalLengthMillimeters / (rig.Sensor.PixelSizeMicrons / 1000);
+        var radius = rig.Optics.ImageCircleRadiusPixels!.Value; var half = Radians(rig.Optics.FieldOfViewDegrees / 2);
+        return Model(rig) switch
+        {
+            ProjectionModel.EquidistantFisheye => radius / half,
+            ProjectionModel.EquisolidFisheye => radius / (2 * Math.Sin(half / 2)),
+            ProjectionModel.OrthographicFisheye => radius / Math.Sin(half),
+            ProjectionModel.StereographicFisheye => radius / (2 * Math.Tan(half / 2)),
+            _ => throw new NotSupportedException("A perspective reference requires a declared focal length.")
+        };
+    }
+    /// <summary>Ideal normalized radius g(theta) of each family; null outside its forward domain.</summary>
+    internal static double? IdealRadius(ProjectionModel model, double theta) => model switch
+    {
+        ProjectionModel.EquidistantFisheye => theta,
+        ProjectionModel.EquisolidFisheye => 2 * Math.Sin(theta / 2),
+        ProjectionModel.OrthographicFisheye => theta <= Math.PI / 2 ? Math.Sin(theta) : null,
+        ProjectionModel.StereographicFisheye => theta < Math.PI ? 2 * Math.Tan(theta / 2) : null,
+        ProjectionModel.Perspective => theta < Math.PI / 2 ? Math.Tan(theta) : null,
+        _ => throw new NotSupportedException()
+    };
+    private static double? Theta(ProjectionModel model, double ideal) => model switch
+    {
+        ProjectionModel.EquidistantFisheye => ideal,
+        ProjectionModel.EquisolidFisheye => ideal <= 2 ? 2 * Math.Asin(ideal / 2) : null,
+        ProjectionModel.OrthographicFisheye => ideal <= 1 ? Math.Asin(ideal) : null,
+        ProjectionModel.StereographicFisheye => 2 * Math.Atan(ideal / 2),
+        ProjectionModel.Perspective => Math.Atan(ideal),
+        _ => throw new NotSupportedException()
+    };
+    /// <summary>Independent Newton inverse of d = g(1 + k1 g^2) on the monotonic branch that starts at the origin.</summary>
+    private static double? IdealFromDistorted(double distorted, double k1)
+    {
+        if (k1 == 0) return distorted;
+        var g = distorted;
+        for (var i = 0; i < 100; i++)
+        {
+            var slope = 1 + 3 * k1 * g * g;
+            if (slope <= 0) return null;
+            var step = (g * (1 + k1 * g * g) - distorted) / slope;
+            g -= step;
+            if (Math.Abs(step) < 1e-15 * Math.Max(1, g)) return g;
+        }
+        return null;
+    }
+    internal static bool IsCircular(CameraRigConfig rig) => Model(rig) != ProjectionModel.Perspective;
     internal static PixelPoint? Project(CameraRigConfig rig, Vector enu)
     {
-        var basis = Pose(rig);
+        var basis = Pose(rig); var model = Model(rig);
         var qx = Vector.Dot(enu, basis.Right); var qy = Vector.Dot(enu, basis.Up); var qz = Vector.Dot(enu, basis.Forward);
         var theta = Math.Acos(Math.Clamp(qz, -1, 1)); var length = Math.Sqrt(qx * qx + qy * qy);
-        // Equidistant normalized radius theta, scaled by the one-coefficient radial term 1 + k1 theta^2.
-        var distance = NativeFocal(rig) * theta * (1 + rig.Optics.RadialDistortionK1 * theta * theta);
-        if (distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
+        if (IdealRadius(model, theta) is not { } g) return null;
+        // Family normalized radius g(theta), scaled by the one-coefficient radial term 1 + k1 g^2.
+        var distance = NativeFocal(rig) * g * (1 + rig.Optics.RadialDistortionK1 * g * g);
+        if (model != ProjectionModel.Perspective && distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
         var x = rig.Optics.PrincipalPointX!.Value + (length < 1e-12 ? 0 : distance * qx / length);
         var y = rig.Optics.PrincipalPointY!.Value - (length < 1e-12 ? 0 : distance * qy / length);
         var readout = rig.Readout!;
@@ -103,16 +151,26 @@ internal static class VirtualAstrometryReference
     }
     internal static Vector? Unproject(CameraRigConfig rig, PixelPoint pixel)
     {
-        if (rig.Optics.RadialDistortionK1 != 0) throw new NotSupportedException("The reference inverse covers undistorted optics only.");
-        var readout = rig.Readout!;
+        var readout = rig.Readout!; var model = Model(rig);
         if (pixel.X < 0 || pixel.Y < 0 || pixel.X >= readout.Roi.Width / readout.BinX || pixel.Y >= readout.Roi.Height / readout.BinY) return null;
         var dx = pixel.X * readout.BinX + readout.Roi.X - rig.Optics.PrincipalPointX!.Value;
         var dy = rig.Optics.PrincipalPointY!.Value - pixel.Y * readout.BinY - readout.Roi.Y;
         var length = Math.Sqrt(dx * dx + dy * dy);
-        if (length > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
-        var theta = length / NativeFocal(rig); var basis = Pose(rig);
+        if (model != ProjectionModel.Perspective && length > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
+        if (IdealFromDistorted(length / NativeFocal(rig), rig.Optics.RadialDistortionK1) is not { } ideal ||
+            Theta(model, ideal) is not { } theta) return null;
+        var basis = Pose(rig);
         return length < 1e-12 ? basis.Forward : basis.Right * (Math.Sin(theta) * dx / length)
             + basis.Up * (Math.Sin(theta) * dy / length) + basis.Forward * Math.Cos(theta);
+    }
+    /// <summary>Readout pixel at least <paramref name="margin"/> inside a circular aperture; rectangular apertures defer to the caller's frame border.</summary>
+    internal static bool IsApertureInterior(CameraRigConfig rig, PixelPoint pixel, double margin)
+    {
+        if (!IsCircular(rig)) return true;
+        var cx = (rig.Optics.PrincipalPointX!.Value - rig.Readout!.Roi.X) / rig.Readout.BinX;
+        var cy = (rig.Optics.PrincipalPointY!.Value - rig.Readout.Roi.Y) / rig.Readout.BinY;
+        var interiorRadius = rig.Optics.ImageCircleRadiusPixels!.Value / rig.Readout.BinX - margin;
+        return Math.Pow(pixel.X - cx, 2) + Math.Pow(pixel.Y - cy, 2) < interiorRadius * interiorRadius;
     }
     internal static double SeparationDegrees(Vector a, Vector b) =>
         Math.Atan2(Vector.Cross(a, b).Length, Vector.Dot(a, b)) * 180 / Math.PI;
@@ -150,13 +208,10 @@ internal static class VirtualAstrometryReference
         }).ToArray();
         var precision = associationRows.Count(row => row.CatalogId == row.expectedNearestId) / (double)associationRows.Length;
         var associatedIds = solved.Associations.Select(a => a.CatalogId).ToHashSet(StringComparer.Ordinal);
-        var cx = (truth.Optics.PrincipalPointX!.Value - truth.Readout!.Roi.X) / truth.Readout.BinX;
-        var cy = (truth.Optics.PrincipalPointY!.Value - truth.Readout.Roi.Y) / truth.Readout.BinY;
-        var interiorRadius = truth.Optics.ImageCircleRadiusPixels!.Value / truth.Readout.BinX - 12;
         var withheld = expected.Where(item => !associatedIds.Contains(item.Star.Id) &&
             item.Pixel.X > 12 && item.Pixel.Y > 12 && item.Pixel.X < nominal.Projection.WidthPixels - 12 &&
             item.Pixel.Y < nominal.Projection.HeightPixels - 12 &&
-            Math.Pow(item.Pixel.X - cx, 2) + Math.Pow(item.Pixel.Y - cy, 2) < interiorRadius * interiorRadius).Select(item =>
+            IsApertureInterior(truth, item.Pixel, 12)).Select(item =>
         {
             var mapped = mapping.SkyToPixel(MeanOfDate(item.Star, solved.Assessment.Frame.MidpointUtc));
             return new
