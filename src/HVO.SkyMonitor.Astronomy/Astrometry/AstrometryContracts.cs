@@ -11,7 +11,7 @@ public sealed record AstrometricDetection(int Index, PixelPoint Pixel, double Fl
 /// <summary>Explicitly geometric, fixed-position J2000 catalog semantics supported by this solver version.</summary>
 public static class AstrometricConventions
 {
-    public const string SolverVersion = "spherical-triangle-astrometry-v1";
+    public const string SolverVersion = "spherical-triangle-astrometry-v2";
     public const string CoordinateModel = "j2000-fixed-position-iau1976-mean-of-date-v1";
     public const string Refraction = "none-geometric";
     public const string PixelCoordinates = "continuous-top-left-pixel-edge";

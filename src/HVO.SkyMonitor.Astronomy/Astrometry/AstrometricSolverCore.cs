@@ -107,7 +107,11 @@ internal static class AstrometricSolverCore
         var narrow = configuration.Model == ProjectionModel.Perspective;
         var maxSpan = narrow ? Math.Min(Math.PI, 2 * Math.Atan(Math.Sqrt(Math.Pow(Math.Max(configuration.PrincipalX, configuration.Width - configuration.PrincipalX) / configuration.FocalX, 2) + Math.Pow(Math.Max(configuration.PrincipalY, configuration.Height - configuration.PrincipalY) / configuration.FocalY, 2)) / o.MinimumScale)) : Math.PI;
         var tolerance = Math.Max(1.8 / (Math.Min(configuration.FocalX, configuration.FocalY) * o.MinimumScale), (narrow ? .0015 : .004) * maxSpan);
-        var indexed = (narrow ? training : training.OrderBy(s => s.Catalog.Magnitude).Take(120)).ToList();
+        // A narrow field indexes every training star unless the field is wide enough that doing so would swamp the triangle
+        // bound; then it indexes the brightest stars expected to supply the detection triangles (WideFieldIndexCount).
+        var narrowCount = narrow ? WideFieldIndexCount(configuration, o.MaximumScale, o.DetectionTriangleStars) : 0;
+        var indexed = (!narrow ? training.OrderBy(s => s.Catalog.Magnitude).Take(120)
+            : narrowCount >= training.Count ? training : training.OrderBy(s => s.Catalog.Magnitude).Take(narrowCount)).ToList();
         if (indexed.Count > 1500) return Reject("Catalog exceeds the bounded1500-star in-memory index limit");
         var index = new Dictionary<(int, int, int), List<Triangle>>();
         foreach (var t in Triangles(indexed.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, control))
@@ -206,6 +210,25 @@ internal static class AstrometricSolverCore
         var pose = candidate.Rotation.ToPose(); var solution = config with { BoresightAltitude = pose.Altitude, BoresightAzimuth = pose.Azimuth, Roll = pose.Roll, FocalX = config.FocalX * candidate.Scale, FocalY = config.FocalY * candidate.Scale };
         var associations = evaluation.Candidate.Matches.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, false)).Concat(evaluation.Held.Select(m => new CoreAssociation(m.Star.Catalog.Id, m.CoreDetection.Index, m.Distance, true))).ToArray();
         return new(true, "accepted", "Warm local fit and withheld-star gates passed; proposed next configuration", solution, candidate.Scale, evaluation.Quality, associations, 0, 0, 0, 0, 1, false, watch.Elapsed.TotalMilliseconds, domain);
+    }
+    /// <summary>
+    /// Number of brightest above-horizon training stars a perspective field indexes: twice the detection-triangle stars,
+    /// scaled from the hemisphere to the solid angle of the sensor rectangle at the largest searched focal scale (the
+    /// narrowest field), so the brightest detections are expected to be indexed anywhere in the scale range. A telescope
+    /// field asks for more stars than exist above the horizon and so keeps every training star.
+    /// </summary>
+    internal static int WideFieldIndexCount(SolverOptics config, double focalScale, int detectionTriangleStars)
+    {
+        // Solid angle of the sensor rectangle through an ideal pinhole, summed over the four quadrants about the principal point.
+        var solidAngle = 0d;
+        foreach (var x in new[] { config.PrincipalX, config.Width - config.PrincipalX })
+            foreach (var y in new[] { config.PrincipalY, config.Height - config.PrincipalY })
+            {
+                double a = Math.Max(0, x) / (config.FocalX * focalScale), b = Math.Max(0, y) / (config.FocalY * focalScale);
+                solidAngle += Math.Atan(a * b / Math.Sqrt(1 + a * a + b * b));
+            }
+        var count = 2 * detectionTriangleStars * 2 * Math.PI / solidAngle;
+        return solidAngle > 0 && count < int.MaxValue ? (int)Math.Ceiling(count) : int.MaxValue;
     }
     /// <summary>
     /// Smallest focal scale whose scaled aperture edge stays inside the family and distortion domain. Scaling focal
