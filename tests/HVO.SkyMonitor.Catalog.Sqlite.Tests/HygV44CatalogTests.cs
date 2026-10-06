@@ -101,6 +101,34 @@ internal sealed class HygV44CatalogTests
     }
 
     [TestMethod]
+    public void FindByAliasReturnsExactlyTheStoredAliasTable()
+    {
+        var catalog = CreateCatalog();
+        var stored = new List<CelestialCatalogAlias>();
+        using (var connection = new SqliteConnection($"Data Source={FixturePath};Mode=ReadOnly;Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT alias, object_id, kind FROM celestial_object_aliases";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                stored.Add(new CelestialCatalogAlias(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+            }
+        }
+
+        Assert.HasCount(68, stored);
+        foreach (var group in stored.GroupBy(static item => item.Alias, StringComparer.OrdinalIgnoreCase))
+        {
+            var expected = group
+                .OrderBy(static item => item.ObjectId, StringComparer.Ordinal)
+                .ThenBy(static item => item.Alias, StringComparer.Ordinal)
+                .ToArray();
+            CollectionAssert.AreEqual(expected, catalog.FindByAlias(group.Key).ToArray(), group.Key);
+        }
+    }
+
+    [TestMethod]
     public void SchemaTwoKeepsItsLegacyMeaning()
     {
         var catalog = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
@@ -135,6 +163,10 @@ internal sealed class HygV44CatalogTests
     [DataRow("INSERT INTO celestial_object_aliases VALUES ('Missing', '1', 'hd')", DisplayName = "dangling-alias")]
     [DataRow("INSERT INTO celestial_object_aliases VALUES ('Dog Star', '32263', 'nickname')", DisplayName = "untyped-alias")]
     [DataRow("INSERT INTO celestial_object_aliases VALUES (' Sirius', '32263', 'proper')", DisplayName = "untrimmed-alias")]
+    [DataRow("INSERT INTO celestial_object_aliases VALUES ('Dog Star', '32263', 'proper')", DisplayName = "underived-alias")]
+    [DataRow("DELETE FROM celestial_object_aliases WHERE alias = 'Sirius'", DisplayName = "missing-alias")]
+    [DataRow("UPDATE celestial_object_aliases SET kind = 'gliese' WHERE alias = 'Sirius'", DisplayName = "mistyped-alias")]
+    [DataRow("UPDATE celestial_object_aliases SET object_id = '24129' WHERE alias = 'Sirius'", DisplayName = "reassigned-alias")]
     [DataRow("PRAGMA user_version = 2", DisplayName = "user-version")]
     public void SchemaThreeRefusesContradictorySemanticsAndRows(string mutation)
     {

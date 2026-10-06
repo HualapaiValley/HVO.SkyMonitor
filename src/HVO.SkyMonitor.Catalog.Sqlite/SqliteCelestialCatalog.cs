@@ -36,7 +36,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     private readonly ReadOnlyCollection<CelestialCatalogObject> _objects;
     private readonly IReadOnlyDictionary<string, CelestialCatalogObject> _objectsByHipparcosId;
     private readonly Dictionary<string, CelestialCatalogObjectDetails> _detailsById;
-    private readonly Dictionary<string, CelestialCatalogAlias[]> _aliases;
+    private readonly Lazy<Dictionary<string, CelestialCatalogAlias[]>> _aliases;
 
     /// <summary>Creates and fully loads a validated catalog snapshot.</summary>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
@@ -115,9 +115,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             var details = new Dictionary<string, CelestialCatalogObjectDetails>(StringComparer.Ordinal);
             _objects = Array.AsReadOnly(ReadObjects(connection, detailed ? details : null));
             _detailsById = details;
-            _aliases = detailed
-                ? ReadAliases(connection, details)
-                : new Dictionary<string, CelestialCatalogAlias[]>(StringComparer.OrdinalIgnoreCase);
+            if (detailed)
+            {
+                ValidateAliases(connection, details);
+            }
+            // The alias table is proven equal to the aliases derived from the retained designations, so the lookup
+            // index is built from them on first use rather than held by every host that never searches by name.
+            _aliases = new Lazy<Dictionary<string, CelestialCatalogAlias[]>>(
+                () => BuildAliasIndex(details), LazyThreadSafetyMode.ExecutionAndPublication);
             if (options.ExpectedRowCount is { } expectedRowCount && _objects.Count != expectedRowCount)
             {
                 throw new InvalidDataException(
@@ -268,7 +273,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     public IReadOnlyList<CelestialCatalogAlias> FindByAlias(string designation)
     {
         ArgumentNullException.ThrowIfNull(designation);
-        return _aliases.TryGetValue(designation.Trim(), out var matches) ? matches : [];
+        return _aliases.Value.TryGetValue(designation.Trim(), out var matches) ? matches : [];
     }
 
     private int FindUpperBound(double maximumMagnitude)
@@ -597,37 +602,121 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ProperMotionConvention);
     }
 
-    private static Dictionary<string, CelestialCatalogAlias[]> ReadAliases(
+    /// <summary>
+    /// Proves in one streaming pass that the alias table holds exactly the aliases preprocessing derives from each
+    /// object's designations: every row is trimmed, typed, names a catalog object, and equals that object's derived
+    /// alias of its kind, and the row count equals the number of derived aliases. The (alias, object) primary key
+    /// makes each row claim a distinct object/kind slot, so equal counts mean no derived alias is missing.
+    /// </summary>
+    private static void ValidateAliases(
         SqliteConnection connection,
         Dictionary<string, CelestialCatalogObjectDetails> details)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT alias, object_id, kind FROM celestial_object_aliases ORDER BY alias, object_id";
+        command.CommandText = "SELECT alias, object_id, kind FROM celestial_object_aliases";
         using var reader = command.ExecuteReader();
-        var grouped = new Dictionary<string, List<CelestialCatalogAlias>>(StringComparer.OrdinalIgnoreCase);
+        long rows = 0;
         while (reader.Read())
         {
             var alias = reader.GetString(0);
-            var kind = Array.Find(AliasKinds, item => string.Equals(item, reader.GetString(2), StringComparison.Ordinal));
+            var kind = reader.GetString(2);
             if (string.IsNullOrWhiteSpace(alias) || !string.Equals(alias, alias.Trim(), StringComparison.Ordinal) ||
-                kind is null || !details.TryGetValue(reader.GetString(1), out var target))
+                Array.IndexOf(AliasKinds, kind) < 0 || !details.TryGetValue(reader.GetString(1), out var target) ||
+                !MatchesDerivedAlias(alias, kind, target.Designations))
             {
-                throw new InvalidDataException("Catalog alias rows must be trimmed, typed, and reference a catalog object.");
+                throw new InvalidDataException(
+                    "Catalog alias rows must be trimmed, typed, and equal an alias derived from a catalog object.");
             }
-            if (!grouped.TryGetValue(alias, out var matches))
+            rows++;
+        }
+
+        long expected = 0;
+        foreach (var item in details.Values)
+        {
+            foreach (var kind in AliasKinds)
             {
-                grouped.Add(alias, matches = []);
+                if (DerivedAlias(item.Designations, kind) is not null)
+                {
+                    expected++;
+                }
             }
-            matches.Add(new CelestialCatalogAlias(alias, target.Id, kind));
+        }
+        if (rows != expected)
+        {
+            throw new InvalidDataException(
+                $"Catalog alias table holds {rows} aliases; its designations derive {expected}.");
+        }
+    }
+
+    private static bool MatchesDerivedAlias(string alias, string kind, CelestialObjectDesignations designations)
+    {
+        var value = alias.AsSpan();
+        return kind switch
+        {
+            "proper" => designations.ProperName is { } proper && value.SequenceEqual(proper),
+            "bayer" => MatchesConstellationAlias(value, designations.Bayer, designations.Constellation),
+            "flamsteed" => MatchesConstellationAlias(value, designations.Flamsteed, designations.Constellation),
+            "hd" => designations.HenryDraperId is { } hd && value.StartsWith("HD ") && value[3..].SequenceEqual(hd),
+            "hr" => designations.HarvardRevisedId is { } hr && value.StartsWith("HR ") && value[3..].SequenceEqual(hr),
+            "gliese" => designations.GlieseId is { } gliese && value.SequenceEqual(gliese),
+            _ => false
+        };
+    }
+
+    private static bool MatchesConstellationAlias(ReadOnlySpan<char> alias, string? designation, string? constellation)
+        => designation is not null && constellation is not null &&
+           alias.Length == designation.Length + 1 + constellation.Length &&
+           alias.StartsWith(designation) && alias[designation.Length] == ' ' &&
+           alias[(designation.Length + 1)..].SequenceEqual(constellation);
+
+    /// <summary>Derives one alias exactly as preprocessing version 4 writes it, or <see langword="null"/>.</summary>
+    private static string? DerivedAlias(CelestialObjectDesignations designations, string kind) => kind switch
+    {
+        "proper" => designations.ProperName,
+        "bayer" => designations is { Bayer: { } bayer, Constellation: { } constellation } ? $"{bayer} {constellation}" : null,
+        "flamsteed" => designations is { Flamsteed: { } flamsteed, Constellation: { } constellation }
+            ? $"{flamsteed} {constellation}"
+            : null,
+        "hd" => designations.HenryDraperId is { } hd ? $"HD {hd}" : null,
+        "hr" => designations.HarvardRevisedId is { } hr ? $"HR {hr}" : null,
+        "gliese" => designations.GlieseId,
+        _ => null
+    };
+
+    private static Dictionary<string, CelestialCatalogAlias[]> BuildAliasIndex(
+        Dictionary<string, CelestialCatalogObjectDetails> details)
+    {
+        var grouped = new Dictionary<string, List<CelestialCatalogAlias>>(StringComparer.OrdinalIgnoreCase);
+        var ids = details.Keys.ToArray();
+        Array.Sort(ids, StringComparer.Ordinal);
+        var derived = new List<CelestialCatalogAlias>(AliasKinds.Length);
+        foreach (var id in ids)
+        {
+            var designations = details[id].Designations;
+            derived.Clear();
+            foreach (var kind in AliasKinds)
+            {
+                if (DerivedAlias(designations, kind) is { } alias)
+                {
+                    derived.Add(new CelestialCatalogAlias(alias, id, kind));
+                }
+            }
+            // Objects are visited in ordinal ID order, so each group is ordered by object ID and then alias.
+            derived.Sort(static (left, right) => string.CompareOrdinal(left.Alias, right.Alias));
+            foreach (var item in derived)
+            {
+                if (!grouped.TryGetValue(item.Alias, out var matches))
+                {
+                    grouped.Add(item.Alias, matches = []);
+                }
+                matches.Add(item);
+            }
         }
 
         var result = new Dictionary<string, CelestialCatalogAlias[]>(grouped.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (alias, matches) in grouped)
         {
-            result.Add(alias, matches
-                .OrderBy(static item => item.ObjectId, StringComparer.Ordinal)
-                .ThenBy(static item => item.Alias, StringComparer.Ordinal)
-                .ToArray());
+            result.Add(alias, matches.ToArray());
         }
         return result;
     }
@@ -648,6 +737,8 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         using var reader = command.ExecuteReader();
         var objects = new List<CelestialCatalogObject>();
         var hipparcosIds = new HashSet<string>(StringComparer.Ordinal);
+        // Every row names one of 88 constellation abbreviations; one shared string per abbreviation is retained.
+        var constellations = new HashSet<string>(StringComparer.Ordinal);
         while (reader.Read())
         {
             var value = new CelestialCatalogObject(
@@ -667,14 +758,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             {
                 throw new InvalidDataException($"Catalog contains duplicate Hipparcos identifier '{hipparcosId}'.");
             }
-            details?.Add(value.Id, ReadDetails(reader, value.Id));
+            details?.Add(value.Id, ReadDetails(reader, value.Id, constellations));
             objects.Add(value);
         }
 
         return objects.ToArray();
     }
 
-    private static CelestialCatalogObjectDetails ReadDetails(SqliteDataReader reader, string id)
+    private static CelestialCatalogObjectDetails ReadDetails(SqliteDataReader reader, string id, HashSet<string> constellations)
     {
         CatalogProperMotion? properMotion = (reader.IsDBNull(7), reader.IsDBNull(8)) switch
         {
@@ -692,11 +783,19 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             Designation(reader, 9, id),
             Designation(reader, 10, id),
             Designation(reader, 11, id),
-            Designation(reader, 12, id),
+            Designation(reader, 12, id) is { } constellation
+                ? constellations.TryGetValue(constellation, out var shared) ? shared : Add(constellations, constellation)
+                : null,
             Designation(reader, 13, id),
             Designation(reader, 14, id),
             Designation(reader, 15, id),
             Designation(reader, 16, id)));
+    }
+
+    private static string Add(HashSet<string> pool, string value)
+    {
+        pool.Add(value);
+        return value;
     }
 
     private static string? Designation(SqliteDataReader reader, int ordinal, string id)
