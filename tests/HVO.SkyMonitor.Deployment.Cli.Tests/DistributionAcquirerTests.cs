@@ -19,7 +19,8 @@ public sealed class DistributionAcquirerTests
     public async Task AcquireAsync_SignedOfflineBundle_VerifiesAndExtractsExactFiles()
     {
         using var fixture = CatalogDistributionFixture.Create();
-        using var acquirer = new DistributionAcquirer(cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(
+            cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         using var acquired = await acquirer.AcquireAsync(fixture.LocalRequest(), CancellationToken.None);
 
@@ -34,14 +35,14 @@ public sealed class DistributionAcquirerTests
     {
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using (var online = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot))
+        using (var online = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications))
         using (var acquired = await online.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None))
         {
             Assert.AreEqual(3, handler.RequestCount);
         }
 
         using var offlineHandler = new FixtureHandler(new Dictionary<Uri, byte[]>());
-        using var offline = new DistributionAcquirer(offlineHandler, fixture.CacheRoot, fixture.TrustRoot);
+        using var offline = new DistributionAcquirer(offlineHandler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
         using var cached = await offline.AcquireAsync(fixture.NetworkRequest(noDownload: true), CancellationToken.None);
 
         Assert.AreEqual(0, offlineHandler.RequestCount);
@@ -56,7 +57,7 @@ public sealed class DistributionAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray());
         assets[fixture.BundleUri][^1] ^= 1;
         using var handler = new FixtureHandler(assets);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -70,7 +71,7 @@ public sealed class DistributionAcquirerTests
     {
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         using var acquired = await acquirer.AcquireAsync(fixture.IndexRequest(), CancellationToken.None);
 
@@ -88,7 +89,7 @@ public sealed class DistributionAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value);
         assets[source] = assets[fixture.BundleUri];
         using var handler = new RedirectFixtureHandler(assets, source, terminal);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         var request = fixture.NetworkRequest(noDownload: false) with
         {
@@ -105,7 +106,7 @@ public sealed class DistributionAcquirerTests
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new RedirectFixtureHandler(
             fixture.NetworkAssets, fixture.BundleUri, new Uri("https://untrusted.example/catalog-bundle.tar.gz"));
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -122,7 +123,7 @@ public sealed class DistributionAcquirerTests
         File.SetUnixFileMode(victim, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.CreateSymbolicLink(Path.Combine(assetRoot, $".{fixture.AssetName}.partial"), victim);
         using var handler = new FixtureHandler(fixture.NetworkAssets);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -137,7 +138,7 @@ public sealed class DistributionAcquirerTests
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray());
         assets[fixture.BundleUri][^1] ^= 1;
         using var handler = new FixtureHandler(assets);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.IndexRequest(), CancellationToken.None));
@@ -152,7 +153,8 @@ public sealed class DistributionAcquirerTests
         var manifestUri = fixture.NetworkAssets.Keys.Single(static uri => uri.AbsolutePath.EndsWith("catalog-manifest.json", StringComparison.Ordinal));
         using var handler = new StallingHandler(fixture.NetworkAssets, manifestUri);
         using var acquirer = new DistributionAcquirer(
-            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMinutes(30));
+            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMinutes(30),
+            fixture.CatalogSpecifications);
         using var caller = new CancellationTokenSource();
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
@@ -172,7 +174,8 @@ public sealed class DistributionAcquirerTests
         using var fixture = CatalogDistributionFixture.Create();
         using var handler = new StallingHandler(fixture.NetworkAssets, fixture.BundleUri);
         using var acquirer = new DistributionAcquirer(
-            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(250));
+            handler, fixture.CacheRoot, fixture.TrustRoot, null, TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(250),
+            fixture.CatalogSpecifications);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => acquirer.AcquireAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None));
@@ -188,7 +191,7 @@ public sealed class DistributionAcquirerTests
         using var fixture = CatalogDistributionFixture.Create();
         var manifestUri = fixture.NetworkAssets.Keys.Single(static uri => uri.AbsolutePath.EndsWith("catalog-manifest.json", StringComparison.Ordinal));
         using var handler = new StallingHandler(fixture.NetworkAssets, manifestUri);
-        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
         using var caller = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
 
         await Assert.ThrowsAsync<OperationCanceledException>(
@@ -215,6 +218,186 @@ public sealed class DistributionAcquirerTests
             }
             return await base.SendAsync(request, cancellationToken);
         }
+    }
+
+    [TestMethod]
+    public async Task ResolveCatalogAsync_LocalManifest_ReturnsSignedIdentityWithoutCacheWrites()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var acquirer = new DistributionAcquirer(
+            cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        var resolved = await acquirer.ResolveCatalogAsync(fixture.LocalRequest(), CancellationToken.None);
+
+        Assert.IsNotNull(resolved);
+        Assert.AreEqual("hyg-v42-production", resolved.Catalog.CatalogId);
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1", resolved.Catalog.PackageVersion);
+        Assert.AreEqual("catalog-hyg-v4.2-p3-s2-r1", resolved.Release.Tag);
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    public async Task ResolveCatalogAsync_NetworkManifest_VerifiesSignatureWithoutDownloadingTheBundle()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        var resolved = await acquirer.ResolveCatalogAsync(fixture.NetworkRequest(noDownload: false), CancellationToken.None);
+
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1", resolved?.Catalog.PackageVersion);
+        Assert.AreEqual(2, handler.RequestCount);
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    public async Task ResolveCatalogAsync_SignedIndex_DoesNotCommitIndexRollbackState()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        var resolved = await acquirer.ResolveCatalogAsync(fixture.IndexRequest(), CancellationToken.None);
+
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1", resolved?.Catalog.PackageVersion);
+        Assert.AreEqual(4, handler.RequestCount);
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    public async Task ResolveCatalogAsync_OfflineWithoutVerifiedCache_FailsClosedWithoutNetwork()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => acquirer.ResolveCatalogAsync(fixture.NetworkRequest(noDownload: true), CancellationToken.None));
+
+        Assert.AreEqual(0, handler.RequestCount);
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    public async Task ResolveCatalogAsync_WithoutSignedLocator_ReturnsNull()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var acquirer = new DistributionAcquirer(
+            cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        Assert.IsNull(await acquirer.ResolveCatalogAsync(
+            fixture.LocalRequest() with { CatalogManifest = null }, CancellationToken.None));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogCheck_UninstalledPackage_ReportsAvailableAndWritesNothing()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        var productRoot = Path.Combine(fixture.Root, "product");
+
+        var result = await CheckAsync(fixture, handler, productRoot);
+
+        Assert.AreEqual(LifecycleOperationKind.CatalogCheck, result.Operation);
+        Assert.AreEqual("available", result.Outcome);
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1", result.Catalog?.PackageVersion);
+        Assert.AreEqual("signed-release", result.Catalog?.Source);
+        Assert.IsNull(result.InstanceId);
+        Assert.AreEqual(2, handler.RequestCount);
+        Assert.IsFalse(Directory.Exists(productRoot));
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogCheck_InstalledSignedPackage_ReportsTheRetainedIdentityAndChangesNothing()
+    {
+        using var fixture = CatalogDistributionFixture.Create(signProductionDatabaseIdentity: true);
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        var productRoot = Path.Combine(fixture.Root, "product");
+        var signed = await ResolveSignedCatalogAsync(fixture);
+        var installed = InstallRetainedIdentity(productRoot, signed.BundleManifestSha256);
+        var before = Snapshot(productRoot);
+
+        var result = await CheckAsync(fixture, handler, productRoot);
+
+        Assert.AreEqual("installed", result.Outcome);
+        Assert.AreEqual(installed, result.Catalog);
+        CollectionAssert.AreEqual(before, Snapshot(productRoot));
+        AssertNoCacheEntries(fixture);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogCheck_InstalledBytesDifferingFromTheSignedIdentity_AreRefused()
+    {
+        using var fixture = CatalogDistributionFixture.Create();
+        using var handler = new FixtureHandler(fixture.NetworkAssets);
+        var productRoot = Path.Combine(fixture.Root, "product");
+        InstallRetainedIdentity(productRoot, new string('c', 64));
+        var before = Snapshot(productRoot);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CheckAsync(fixture, handler, productRoot));
+
+        Assert.AreEqual("The installed catalog differs from its signed release identity.", exception.Message);
+        CollectionAssert.AreEqual(before, Snapshot(productRoot));
+    }
+
+    private static Task<LifecycleResult> CheckAsync(CatalogDistributionFixture fixture, FixtureHandler handler, string productRoot)
+        => CameraAgentLifecycleManager.ExecuteAsync(
+            new LifecycleRequest(LifecycleOperationKind.CatalogCheck, null, productRoot, dryRun: false, resume: false, json: true)
+            {
+                AllowTestProductRoot = true,
+                CatalogManifest = fixture.NetworkRequest(noDownload: false).CatalogManifest,
+                Channel = DistributionChannel.Stable
+            },
+            new RefusingProcessRunner(), null, null, 0, 0, CancellationToken.None,
+            () => new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications));
+
+    private static async Task<DistributionCatalogIdentity> ResolveSignedCatalogAsync(CatalogDistributionFixture fixture)
+    {
+        using var acquirer = new DistributionAcquirer(
+            cacheRoot: fixture.CacheRoot, trustRoot: fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+        var resolved = await acquirer.ResolveCatalogAsync(fixture.LocalRequest(), CancellationToken.None);
+        Assert.IsNotNull(resolved);
+        return resolved.Catalog;
+    }
+
+    // Retains an installed HYG 4.2 package side by side exactly as catalog install records it.
+    private static CatalogInstallationIdentity InstallRetainedIdentity(string productRoot, string manifestSha256)
+    {
+        var paths = InstallationPaths.Create(productRoot, Guid.Empty, HygV42.CatalogId);
+        var identity = new CatalogInstallationIdentity(
+            HygV42.CatalogId, HygV42.PackageVersion, "2", "3", HygV42.DatabaseSha256, HygV42.DatabaseLength,
+            HygV42.RowCount, paths.CatalogRoot, manifestSha256, "local-offline");
+        Directory.CreateDirectory(Path.Combine(paths.CatalogRoot, "versions", HygV42.PackageVersion));
+        var references = Path.Combine(paths.CatalogReferencesRoot, HygV42.PackageVersion);
+        Directory.CreateDirectory(references);
+        SafeFileSystem.WriteTextAtomic(
+            Path.Combine(references, "installed.json"),
+            JsonSerializer.Serialize(identity, DeploymentJsonContext.Default.CatalogInstallationIdentity));
+        return identity;
+    }
+
+    private static string[] Snapshot(string root)
+        => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+            .Select(path => $"{Path.GetRelativePath(root, path)}:{(File.Exists(path) ? Hash(File.ReadAllBytes(path)) : "dir")}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+    private static void AssertNoCacheEntries(CatalogDistributionFixture fixture)
+        => Assert.IsFalse(
+            Directory.Exists(fixture.CacheRoot) &&
+            Directory.EnumerateFiles(fixture.CacheRoot, "*", SearchOption.AllDirectories).Any(),
+            "A read-only catalog resolution wrote to the distribution cache.");
+
+    private static string Hash(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
+
+    private sealed class RefusingProcessRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+            => throw new AssertFailedException($"A read-only catalog check started '{fileName}'.");
     }
 
     private class FixtureHandler(IReadOnlyDictionary<Uri, byte[]> responses) : HttpMessageHandler
@@ -269,7 +452,8 @@ public sealed class DistributionAcquirerTests
             string assetSha256,
             IReadOnlyDictionary<Uri, byte[]> networkAssets,
             Uri bundleUri,
-            Uri indexUri)
+            Uri indexUri,
+            IApprovedCatalogSpecificationSource catalogSpecifications)
         {
             Root = root;
             TrustRoot = trustRoot;
@@ -280,6 +464,7 @@ public sealed class DistributionAcquirerTests
             NetworkAssets = networkAssets;
             BundleUri = bundleUri;
             IndexUri = indexUri;
+            CatalogSpecifications = catalogSpecifications;
         }
 
         public string Root { get; }
@@ -294,13 +479,24 @@ public sealed class DistributionAcquirerTests
         public Uri IndexUri { get; }
         public string[] CatalogFileNames { get; } = ["manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"];
 
-        public static CatalogDistributionFixture Create()
+        // The synthetic bundle is approved only by this in-test specification; the reviewed production registry would
+        // refuse its placeholder database identity before acquisition.
+        public IApprovedCatalogSpecificationSource CatalogSpecifications { get; }
+
+        /// <summary>
+        /// Creates a signed catalog release. A read-only availability check never opens the bundle, so a caller may
+        /// sign the pinned production database identity instead of the placeholder to model an installed package.
+        /// </summary>
+        public static CatalogDistributionFixture Create(bool signProductionDatabaseIdentity = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-distribution-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
             var bundleFiles = Path.Combine(root, "bundle-files");
             Directory.CreateDirectory(bundleFiles);
             var databaseBytes = "sqlite-fixture"u8.ToArray();
+            var (databaseSha256, databaseLength, rowCount) = signProductionDatabaseIdentity
+                ? (HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount)
+                : (Hash(databaseBytes), databaseBytes.Length, 1L);
             var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 manifestVersion = 2,
@@ -308,7 +504,7 @@ public sealed class DistributionAcquirerTests
                 catalog = new { id = "hyg-v42-production" },
                 schemaVersion = "2",
                 preprocessingVersion = "3",
-                database = new { sha256 = Hash(databaseBytes), length = databaseBytes.Length, rowCount = 1 },
+                database = new { sha256 = databaseSha256, length = databaseLength, rowCount },
                 license = new
                 {
                     identifier = "CC-BY-SA-4.0",
@@ -331,7 +527,7 @@ public sealed class DistributionAcquirerTests
             var trustRoot = DistributionTrustRoot.FromPem(key.ExportSubjectPublicKeyInfoPem());
             var catalog = new DistributionCatalogIdentity(
                 "hyg-v42-production", "hyg-v4.2-p3-s2-r1", "production", 2, "2", "3",
-                Hash(manifestBytes), Hash(databaseBytes), databaseBytes.Length, 1, "CC-BY-SA-4.0",
+                Hash(manifestBytes), databaseSha256, databaseLength, rowCount, "CC-BY-SA-4.0",
                 "LICENSE-HYG.md", "ATTRIBUTION-HYG.md", "fixture-topology", new string('e', 64));
             var artifacts = new[]
             {
@@ -386,7 +582,14 @@ public sealed class DistributionAcquirerTests
             network[indexUri] = indexBytes;
             network[new Uri(indexUri.AbsoluteUri + ".sig")] = indexSignature;
             return new CatalogDistributionFixture(
-                root, trustRoot, manifestPath, bundlePath, assetName, assetSha256, network, bundleUri, indexUri);
+                root, trustRoot, manifestPath, bundlePath, assetName, assetSha256, network, bundleUri, indexUri,
+                new ApprovedCatalogSpecificationSet(
+                [
+                    new ApprovedCatalogContract(
+                        "hyg-v42-production", "hyg-v42-production-p3-s2", "hyg-v4.2-p3-s2-r", "HYG", "4.2", 2, "2", "3",
+                        "hyg_v42.sqlite", databaseSha256, databaseLength, rowCount, "CC-BY-SA-4.0",
+                        "LICENSE-HYG.md", "ATTRIBUTION-HYG.md", "fixture-topology", new string('e', 64))
+                ]));
         }
 
         public InstallRequest LocalRequest() => Request(ManifestPath, BundlePath, DistributionChannel.Local, noDownload: true);

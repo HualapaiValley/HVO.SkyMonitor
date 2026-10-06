@@ -190,6 +190,10 @@ services:
         InstallationPaths? outputPaths = null)
     {
         outputPaths ??= paths;
+        // The package version names exactly one approved catalog, and the mounted root must be that catalog's.
+        var catalogId = ProductionCatalog.ForPackageVersion(catalogPackageVersion).CatalogId;
+        if (!string.Equals(Path.GetFileName(paths.CatalogRoot), catalogId, StringComparison.Ordinal))
+            throw new InstallerException("The catalog package version does not belong to the instance's catalog root.");
         var compactId = instanceId.ToString("N");
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
@@ -227,7 +231,7 @@ services:
             ["CameraAgent__DeploymentLocation__SourceKind"] = "Manual",
             ["CameraAgent__DeploymentLocation__EffectiveFromUtc"] = DateTimeOffset.UnixEpoch.ToString("O", CultureInfo.InvariantCulture),
             ["Catalog__Root"] = "/app/catalog",
-            ["Catalog__RequiredCatalogId"] = ProductionCatalog.CatalogId,
+            ["Catalog__RequiredCatalogId"] = catalogId,
             ["Catalog__RequiredPackageKind"] = "Production",
             ["Catalog__RequiredPackageVersion"] = catalogPackageVersion,
             ["LocalIdentity__AdminEmail"] = request.OwnerEmail,

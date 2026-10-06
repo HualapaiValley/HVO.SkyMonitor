@@ -494,7 +494,9 @@ public sealed class VirtualSkyCameraModule(
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
-            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion);
+            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion,
+            CatalogId: (catalog as ICelestialCatalogMetadataSource)?.CatalogId,
+            CatalogPackageVersion: (catalog as ICelestialCatalogMetadataSource)?.CatalogPackageVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,

@@ -118,7 +118,9 @@ public sealed class CaptureProjectedSceneStager(
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
-            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion,
+            CatalogId: metadataSource.CatalogId,
+            CatalogPackageVersion: metadataSource.CatalogPackageVersion);
         await stagingStore.StageAsync(
             stageKey,
             stageKey,

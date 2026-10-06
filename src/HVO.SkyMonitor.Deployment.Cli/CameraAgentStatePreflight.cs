@@ -48,8 +48,31 @@ internal sealed record CameraAgentStatePreflightReport(
 internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
-    public const string CatalogContract = "hyg-v42-production-p3-s2";
+    /// <summary>
+    /// The catalog contract a current image declares: the image embeds version 1 of the approved catalog registry
+    /// (issue #521), so it can resolve every catalog that registry version approves.
+    /// </summary>
+    public const string CatalogContract = "hvo-approved-catalogs-v1";
+
+    /// <summary>The catalog contract images before issue #521 declared; such an image can resolve only HYG 4.2.</summary>
+    public const string LegacyCatalogContract = "hyg-v42-production-p3-s2";
+
     public const string ReplayRunnerContract = "local-replay-runner-v1";
+
+    /// <summary>The catalog IDs approved by registry version 1. A unit test pins this to the embedded registry.</summary>
+    public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
+
+    public static bool IsKnownCatalogContract(string? catalogContract)
+        => catalogContract is CatalogContract or LegacyCatalogContract;
+
+    /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
+    public static bool SupportsCatalog(string? catalogContract, string? catalogId)
+        => catalogContract switch
+        {
+            CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
+            LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
+            _ => false
+        };
 }
 
 /// <summary>
@@ -158,7 +181,8 @@ internal static class CameraAgentStatePreflight
         EvaluateStateContract(findings, requirements, installedStateContract, contractPolicy);
         if (candidateContracts is not null)
         {
-            EvaluateContractIdentity(findings, candidateContracts, instanceConfigurationContract, replayProfile);
+            EvaluateContractIdentity(
+                findings, candidateContracts, instanceConfigurationContract, replayProfile, Path.GetFileName(paths.CatalogRoot));
         }
         EvaluateCandidateImageIdentity(
             findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
@@ -362,7 +386,8 @@ internal static class CameraAgentStatePreflight
         List<CameraAgentStatePreflightFinding> findings,
         CameraAgentContractIdentity candidate,
         string? instanceConfigurationContract,
-        ContractReplayProfile replayProfile)
+        ContractReplayProfile replayProfile,
+        string selectedCatalogId)
     {
         const string boundary = "contract-identity";
         const string remediation =
@@ -379,11 +404,13 @@ internal static class CameraAgentStatePreflight
                 "contract-configuration", boundary, Blocking: true, "io.hvo.skymonitor.configuration-contract",
                 candidate.ConfigurationContract ?? "none", instanceConfigurationContract ?? "unspecified", remediation));
         }
-        if (!string.Equals(candidate.CatalogContract, CameraAgentImageContract.CatalogContract, StringComparison.Ordinal))
+        // The candidate must be able to resolve the catalog this instance has selected, not merely some catalog.
+        if (!CameraAgentImageContract.SupportsCatalog(candidate.CatalogContract, selectedCatalogId))
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "contract-catalog", boundary, Blocking: true, "io.hvo.skymonitor.catalog-contract",
-                candidate.CatalogContract ?? "none", CameraAgentImageContract.CatalogContract, remediation));
+                candidate.CatalogContract ?? "none",
+                $"{CameraAgentImageContract.CatalogContract} (selected catalog {selectedCatalogId})", remediation));
         }
         // An in-process instance never dispatches to the local replay runner, so it imposes no requirement here;
         // a LocalRunner instance requires the runner contract exactly as the upgrade does.
@@ -435,11 +462,14 @@ internal static class CameraAgentStatePreflight
                 expectedManifestVersion.ToString(CultureInfo.InvariantCulture),
                 "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
         }
-        if (!string.Equals(manifest.Value.CatalogId, ProductionCatalog.CatalogId, StringComparison.Ordinal))
+        // The paths are bound to the instance's selected catalog, whose side-by-side root is named by its ID.
+        var selectedCatalogId = Path.GetFileName(paths.CatalogRoot);
+        if (!string.Equals(manifest.Value.CatalogId, selectedCatalogId, StringComparison.Ordinal) ||
+            !ProductionCatalog.Specifications.TryGet(selectedCatalogId, out _))
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-identity", boundary, Blocking: true, manifestPath,
-                manifest.Value.CatalogId ?? "none", ProductionCatalog.CatalogId,
+                manifest.Value.CatalogId ?? "none", selectedCatalogId,
                 "Select the approved production catalog identity for this instance."));
         }
     }
@@ -966,7 +996,7 @@ internal static class CameraAgentStatePreflightManager
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
         var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         if (!File.Exists(paths.ManifestPath))
         {
             throw new InstallerException("The selected instance has no retained manifest.");
@@ -982,6 +1012,7 @@ internal static class CameraAgentStatePreflightManager
         {
             throw new InstallerException("The retained instance manifest does not correlate with the selected instance.");
         }
+        paths = paths.WithCatalog(ProductionCatalog.Get(manifest.Catalog?.CatalogId).CatalogId);
 
         var requirements = CameraAgentStateRequirements.From(manifest.Image);
         var candidateImageId = manifest.Image.ImageId;

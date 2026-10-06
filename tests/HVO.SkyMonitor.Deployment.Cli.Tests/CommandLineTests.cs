@@ -381,6 +381,33 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_CatalogCheckIsInstanceFreeAndNamesASignedLocator()
+    {
+        var check = (LifecycleRequest)CommandLine.ParseCommand([
+            "catalog", "check", "--catalog-index", "https://mirror.example/indexes/catalog-stable-index.json"
+        ]);
+
+        Assert.AreEqual(LifecycleOperationKind.CatalogCheck, check.Operation);
+        Assert.IsNull(check.InstanceId);
+        Assert.IsFalse(check.DryRun);
+    }
+
+    [TestMethod]
+    [DataRow("--instance-id", "00000000-0000-0000-0000-000000000001", DisplayName = "instance")]
+    [DataRow("--dry-run", null, DisplayName = "dry-run")]
+    [DataRow("--resume", null, DisplayName = "resume")]
+    [DataRow("--image-reference", "sha256:0000000000000000000000000000000000000000000000000000000000000000", DisplayName = "image")]
+    [DataRow(null, null, DisplayName = "no-locator")]
+    public void ParseCommand_CatalogCheckRefusesMutatingOrUnscopedOptions(string? option, string? value)
+    {
+        string[] arguments = option is null
+            ? ["catalog", "check"]
+            : ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json", option, .. value is null ? Array.Empty<string>() : [value]];
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Parse_TestRootAdmission_IsDecidedOnceAndCarriedOnTheRequest()
     {

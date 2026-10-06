@@ -13,19 +13,22 @@ internal static class CatalogLifecycleManager
         uint gid,
         CancellationToken cancellationToken)
     {
-        var paths = InstallationPaths.Create(request.ProductRoot, Guid.Empty, ProductionCatalog.CatalogId);
+        // Product-level operations start from the default catalog's paths; an install re-binds to the side-by-side
+        // root of the approved specification its bundle names.
+        var paths = InstallationPaths.Create(request.ProductRoot, Guid.Empty, ProductionCatalog.DefaultCatalogId);
         if (request.DryRun && request.Operation == LifecycleOperationKind.CatalogInstall)
         {
             using var acquired = await AcquireAsync(request, cancellationToken).ConfigureAwait(false);
             var temporary = Path.Combine(Path.GetTempPath(), $"hvo-catalog-plan-{Guid.NewGuid():N}");
             try
             {
+                var plannedPaths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(acquired.BundlePath).CatalogId);
                 var plannedIdentity = CatalogInstaller.Install(acquired.BundlePath, temporary, Guid.NewGuid()) with
                 {
-                    InstallRoot = paths.CatalogRoot,
+                    InstallRoot = plannedPaths.CatalogRoot,
                     Distribution = acquired.Evidence
                 };
-                return Result(request.Operation, "planned", null, paths, plannedIdentity, null);
+                return Result(request.Operation, "planned", null, plannedPaths, plannedIdentity, null);
             }
             finally
             {
@@ -71,6 +74,7 @@ internal static class CatalogLifecycleManager
             {
                 if (operation is { Phase: "installed", InstalledCatalog: not null })
                 {
+                    paths = paths.WithCatalog(ProductionCatalog.Get(operation.InstalledCatalog.CatalogId).CatalogId);
                     ValidateInstalled(paths, operation.InstalledCatalog);
                     await WriteInstalledIdentityAsync(paths, operation.InstalledCatalog, cancellationToken).ConfigureAwait(false);
                     operation = operation with
@@ -94,6 +98,7 @@ internal static class CatalogLifecycleManager
                     UpdatedUtc = DateTimeOffset.UtcNow
                 };
                 await WriteCatalogInstallOperationAsync(statePath, operation, cancellationToken).ConfigureAwait(false);
+                paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(acquired.BundlePath).CatalogId);
                 var installedIdentity = CatalogInstaller.Install(acquired.BundlePath, paths.CatalogRoot, operation.OperationId) with
                 {
                     Distribution = acquired.Evidence
@@ -130,6 +135,41 @@ internal static class CatalogLifecycleManager
         return await GarbageCollectAsync(request, paths, new DockerClient(processRunner), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reports whether a signed, approved catalog package is available or already installed side by side. The check
+    /// takes no lock, downloads no bundle, and writes nothing: installed bytes, every instance selection, the
+    /// distribution cache, and index rollback state are left exactly as they were. An installed package of the same
+    /// version whose bytes differ from the signed identity is refused rather than reported.
+    /// </summary>
+    public static async Task<LifecycleResult> CheckAsync(
+        LifecycleRequest request,
+        Func<DistributionAcquirer> distributionFactory,
+        CancellationToken cancellationToken)
+    {
+        var synthetic = SyntheticAcquisitionRequest(request);
+        ResolvedCatalogRelease release;
+        using (var acquirer = distributionFactory())
+        {
+            release = await acquirer.ResolveCatalogAsync(synthetic, cancellationToken).ConfigureAwait(false)
+                ?? throw new InstallerException("catalog check requires a signed catalog manifest or index.");
+        }
+        var specification = ProductionCatalog.ForPackageVersion(release.Catalog.PackageVersion);
+        if (specification.CatalogId != release.Catalog.CatalogId)
+            throw new InstallerException("The signed catalog release names a catalog other than its package lineage.");
+        var paths = InstallationPaths.Create(request.ProductRoot, Guid.Empty, specification.CatalogId);
+        var available = new CatalogInstallationIdentity(
+            release.Catalog.CatalogId, release.Catalog.PackageVersion, release.Catalog.SchemaVersion,
+            release.Catalog.PreprocessingVersion, release.Catalog.DatabaseSha256, release.Catalog.DatabaseLength,
+            release.Catalog.RowCount, paths.CatalogRoot, release.Catalog.BundleManifestSha256, "signed-release");
+        // Presence is read, never created: an availability check leaves installed bytes and selection untouched.
+        if (!Directory.Exists(Path.Combine(paths.CatalogRoot, "versions", release.Catalog.PackageVersion)))
+            return Result(request.Operation, "available", null, paths, available, null);
+        var installed = await ReadInstalledIdentityAsync(paths, release.Catalog.PackageVersion, cancellationToken)
+            .ConfigureAwait(false);
+        ValidateSignedIdentity(installed, release.Catalog);
+        return Result(request.Operation, "installed", null, paths, installed, null);
+    }
+
     public static async Task<LifecycleResult> SelectAsync(
         LifecycleRequest request,
         InstallationPaths paths,
@@ -154,8 +194,9 @@ internal static class CatalogLifecycleManager
             ? manifest.PreviousCatalog ?? throw new InstallerException("No previous catalog selection is retained.")
             : await ReadInstalledIdentityAsync(paths, request.CatalogVersion!, cancellationToken).ConfigureAwait(false));
         ValidateInstalled(paths, candidate);
-        await CameraAgentLifecycleManager.ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken)
-            .ConfigureAwait(false);
+        // A selection may cross approved lineages, but only to a catalog the running image can resolve.
+        CameraAgentInstaller.EnsureImageSupportsCatalog(manifest.Image, candidate.CatalogId);
+        await ValidateSelectionComposeAuthorityAsync(docker, compose, manifest, retained, cancellationToken).ConfigureAwait(false);
         if (candidate.PackageVersion == manifest.Catalog.PackageVersion && !request.Resume)
             throw new InstallerException("The requested catalog package is already selected.");
         var operation = await CameraAgentLifecycleManager.BeginAsync(
@@ -206,12 +247,21 @@ internal static class CatalogLifecycleManager
                 Phase = LifecycleOperationPhase.CandidateValidated
             };
         }
-        if (request.DryRun) return Result(request.Operation, "planned", operation.OperationId, paths, candidate, manifest);
+        if (request.DryRun)
+            return Result(request.Operation, "planned", operation.OperationId,
+                paths.WithCatalog(ProductionCatalog.Get(candidate.CatalogId).CatalogId), candidate, manifest);
         if (operation.Phase != LifecycleOperationPhase.Committed)
             operation = await CameraAgentLifecycleManager.RecordAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         var lifecycle = CameraAgentLifecycleManager.CreateLifecycleClient(
             installationResult.Url, lifecycleClientFactory);
         var settingPath = Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion");
+        var catalogIdSettingPath = Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredCatalogId");
+        // The original selection is the operation's retained identity, so a resumed or recovered selection restores
+        // the original lineage's root and identity even when the retained manifest already names the candidate.
+        var originalCatalog = operation.OriginalCatalog ?? manifest.Catalog;
+        var originalPaths = paths.WithCatalog(ProductionCatalog.Get(originalCatalog.CatalogId).CatalogId);
+        var candidatePaths = paths.WithCatalog(ProductionCatalog.Get(candidate.CatalogId).CatalogId);
+        var crossLineage = originalPaths.CatalogRoot != candidatePaths.CatalogRoot;
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         SafeFileSystem.CreateOwnerDirectory(Path.Combine(paths.OperationsRoot, "lifecycle"));
         SafeFileSystem.CreateOwnerDirectory(operationRoot);
@@ -238,23 +288,24 @@ internal static class CatalogLifecycleManager
             {
                 throw new InstallerException("The committed catalog lifecycle records do not match the retained operation.");
             }
-            await VerifyAsync(manifest, installationResult, manifest.Catalog, compose, paths, docker, ownerClientFactory,
+            await VerifyAsync(manifest, installationResult, manifest.Catalog, compose, candidatePaths, docker, ownerClientFactory,
                     verificationToken, cancellationToken)
                 .ConfigureAwait(false);
             await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CameraAgentLifecycleManager.CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
-            return Result(request.Operation, "completed", operation.OperationId, paths, manifest.Catalog, manifest);
+            return Result(request.Operation, "completed", operation.OperationId, candidatePaths, manifest.Catalog, manifest);
         }
         if (candidate.PackageVersion == manifest.Catalog.PackageVersion)
             throw new InstallerException("The requested catalog package is already selected.");
         if (operation.MutationStarted)
         {
             SafeFileSystem.WriteTextAtomic(settingPath, originalSetting);
+            await WriteCatalogLineageAsync(compose, catalogIdSettingPath, originalPaths, cancellationToken).ConfigureAwait(false);
             CameraAgentLifecycleManager.EnsureDaemon(
                 manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                 ["up", "--detach", "--force-recreate", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
-            await VerifyAsync(manifest, installationResult, operation.OriginalCatalog!, compose, paths, docker,
+            await VerifyAsync(manifest, installationResult, operation.OriginalCatalog!, compose, originalPaths, docker,
                     ownerClientFactory, verificationToken, cancellationToken)
                 .ConfigureAwait(false);
             await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
@@ -281,26 +332,38 @@ internal static class CatalogLifecycleManager
                 PreMutationContinuity = CameraAgentLifecycleManager.ToBoundary(continuity)
             }, cancellationToken).ConfigureAwait(false);
             SafeFileSystem.WriteTextAtomic(settingPath, candidate.PackageVersion);
+            await WriteCatalogLineageAsync(compose, catalogIdSettingPath, candidatePaths, cancellationToken).ConfigureAwait(false);
             operation = await CameraAgentLifecycleManager.RecordAsync(
                 paths, operation with { Phase = LifecycleOperationPhase.Mutating }, cancellationToken).ConfigureAwait(false);
+            // A cross-lineage selection mounts a different catalog root, which changes the authenticated Compose model.
+            var composeModelSha256 = crossLineage
+                ? ComposeDeployment.ComputeSha256((await docker.ComposeAsync(
+                        compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["config"], cancellationToken)
+                    .ConfigureAwait(false)).StandardOutput)
+                : manifest.ComposeModelSha256;
             CameraAgentLifecycleManager.EnsureDaemon(
                 manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                 ["up", "--detach", "--force-recreate", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
-            await VerifyAsync(manifest, installationResult, candidate, compose, paths, docker, ownerClientFactory,
+            await VerifyAsync(manifest, installationResult, candidate, compose, candidatePaths, docker, ownerClientFactory,
                     verificationToken, cancellationToken)
                 .ConfigureAwait(false);
             CameraAgentLifecycleManager.EnsureDaemon(
                 manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["restart"], cancellationToken)
                 .ConfigureAwait(false);
-            await VerifyAsync(manifest, installationResult, candidate, compose, paths, docker, ownerClientFactory,
+            await VerifyAsync(manifest, installationResult, candidate, compose, candidatePaths, docker, ownerClientFactory,
                     verificationToken, cancellationToken)
                 .ConfigureAwait(false);
+            // The retained image-rollback environment and image are bound to the original lineage's catalog root, so
+            // a cross-lineage selection retires image rollback rather than leave a rollback that would remount it.
             var committed = manifest with
             {
                 Catalog = candidate,
                 PreviousCatalog = manifest.Catalog,
+                ComposeModelSha256 = composeModelSha256,
+                PreviousImage = crossLineage ? null : manifest.PreviousImage,
+                PreviousComposeModelSha256 = crossLineage ? null : manifest.PreviousComposeModelSha256,
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
@@ -315,20 +378,20 @@ internal static class CatalogLifecycleManager
             }, cancellationToken).ConfigureAwait(false);
             CameraAgentLifecycleManager.EnsureDaemon(
                 manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+            await CatalogReferenceStore.PinHistoricalAsync(originalPaths, manifest.Catalog, operation.OperationId, cancellationToken)
                 .ConfigureAwait(false);
             await SafeFileSystem.WriteJsonAtomicAsync(paths.ManifestPath, committed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
                 .ConfigureAwait(false);
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ResultPath,
-                installationResult with { Catalog = candidate },
+                installationResult with { Catalog = candidate, ComposeModelSha256 = composeModelSha256 },
                 DeploymentJsonContext.Default.InstallationResult,
                 cancellationToken).ConfigureAwait(false);
             operation = await CameraAgentLifecycleManager.RecordAsync(
                 paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken).ConfigureAwait(false);
             await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             await CameraAgentLifecycleManager.CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
-            return Result(request.Operation, "completed", operation.OperationId, paths, candidate, committed);
+            return Result(request.Operation, "completed", operation.OperationId, candidatePaths, candidate, committed);
         }
         catch (Exception exception)
         {
@@ -342,6 +405,7 @@ internal static class CatalogLifecycleManager
             try
             {
                 SafeFileSystem.WriteTextAtomic(settingPath, originalSetting);
+                await WriteCatalogLineageAsync(compose, catalogIdSettingPath, originalPaths, recovery.Token).ConfigureAwait(false);
                 var snapshot = await CameraAgentLifecycleManager.ReadRecoverySnapshotAsync(
                     paths, operation, previousManifestPath, previousResultPath, recovery.Token).ConfigureAwait(false);
                 await CameraAgentLifecycleManager.WriteRecoverySnapshotAsync(
@@ -350,7 +414,7 @@ internal static class CatalogLifecycleManager
                     manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
                 await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                     ["up", "--detach", "--force-recreate", "--remove-orphans"], recovery.Token).ConfigureAwait(false);
-                await VerifyAsync(manifest, installationResult, manifest.Catalog, compose, paths, docker,
+                await VerifyAsync(manifest, installationResult, manifest.Catalog, compose, originalPaths, docker,
                         ownerClientFactory, verificationToken, recovery.Token)
                     .ConfigureAwait(false);
                 await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, recovery.Token).ConfigureAwait(false);
@@ -370,6 +434,65 @@ internal static class CatalogLifecycleManager
         }
     }
 
+    /// <summary>
+    /// Authenticates the Compose model before a selection. An interrupted cross-lineage selection can leave the
+    /// environment mounting the other lineage's root than the retained manifest names; only then, and only for a
+    /// root the retained operation itself names, the model is authenticated with the manifest's own root restored in
+    /// a staged copy. Every other difference is refused exactly as before.
+    /// </summary>
+    private static async Task ValidateSelectionComposeAuthorityAsync(
+        DockerClient docker,
+        ComposeFiles compose,
+        InstanceManifest manifest,
+        LifecycleOperationState? retained,
+        CancellationToken cancellationToken)
+    {
+        var environment = await File.ReadAllTextAsync(compose.EnvironmentFile, cancellationToken).ConfigureAwait(false);
+        var authenticated = CameraAgentLifecycleManager.ReplaceEnvironmentValue(
+            environment, "HVO_CATALOG_ROOT", manifest.Catalog.InstallRoot);
+        if (authenticated == environment || retained is not { MutationStarted: true, CandidateCatalog: not null } ||
+            !environment.Split('\n').Any(line =>
+                line == $"HVO_CATALOG_ROOT={retained.CandidateCatalog.InstallRoot}" ||
+                line == $"HVO_CATALOG_ROOT={retained.OriginalCatalog?.InstallRoot}"))
+        {
+            await CameraAgentLifecycleManager.ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+        var stagedRoot = Path.Combine(
+            Path.GetDirectoryName(compose.EnvironmentFile)!, $".catalog-authority-{retained.OperationId:N}");
+        SafeFileSystem.CreateOwnerDirectory(stagedRoot);
+        var stagedEnvironment = Path.Combine(stagedRoot, "instance.env");
+        try
+        {
+            SafeFileSystem.WriteTextAtomic(stagedEnvironment, authenticated);
+            await CameraAgentLifecycleManager.ValidateComposeAuthorityAsync(
+                    docker, compose with { EnvironmentFile = stagedEnvironment }, manifest, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            File.Delete(stagedEnvironment);
+            Directory.Delete(stagedRoot);
+        }
+    }
+
+    /// <summary>
+    /// Points the instance at one approved catalog lineage: the required catalog ID the host enforces and the
+    /// side-by-side root Compose mounts. Within one lineage both are unchanged, so rewriting them is idempotent.
+    /// </summary>
+    private static async Task WriteCatalogLineageAsync(
+        ComposeFiles compose,
+        string catalogIdSettingPath,
+        InstallationPaths catalogPaths,
+        CancellationToken cancellationToken)
+    {
+        SafeFileSystem.WriteTextAtomic(catalogIdSettingPath, Path.GetFileName(catalogPaths.CatalogRoot));
+        var environment = await File.ReadAllTextAsync(compose.EnvironmentFile, cancellationToken).ConfigureAwait(false);
+        var updated = CameraAgentLifecycleManager.ReplaceEnvironmentValue(environment, "HVO_CATALOG_ROOT", catalogPaths.CatalogRoot);
+        if (updated != environment) SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, updated);
+    }
+
     private static async Task VerifyAsync(
         InstanceManifest manifest,
         InstallationResult result,
@@ -382,7 +505,7 @@ internal static class CatalogLifecycleManager
         CancellationToken cancellationToken)
     {
         var owner = ownerClientFactory?.Invoke(result.Url) ?? new OwnerBootstrapClient(result.Url);
-        await owner.WaitForHealthAsync(cancellationToken).ConfigureAwait(false);
+        await owner.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
         await owner.VerifyInstallationAsync(
             token,
             new InstallationVerificationExpectation(
@@ -397,6 +520,53 @@ internal static class CatalogLifecycleManager
     }
 
     private static async Task<LifecycleResult> GarbageCollectAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        DockerClient docker,
+        CancellationToken cancellationToken)
+    {
+        // Package versions are unique across approved lineages, so an exact version names exactly one side-by-side
+        // catalog root. Without a version every installed approved catalog is collected in registry order.
+        var catalogPaths = request.CatalogVersion is null
+            ? paths.ForEveryApprovedCatalog()
+                .Where(static item => Directory.Exists(Path.Combine(item.CatalogRoot, "versions")))
+                .ToArray()
+            : [paths.WithCatalog(ProductionCatalog.ForPackageVersion(request.CatalogVersion).CatalogId)];
+        if (catalogPaths.Length == 0) throw new InstallerException("The production catalog has no installed versions.");
+        var deleted = new List<string>();
+        Guid? completedOperationId = null;
+        var roots = new List<string>();
+        foreach (var item in catalogPaths)
+        {
+            var (catalogDeleted, catalogOperationId) = await GarbageCollectCatalogAsync(request, item, docker, cancellationToken)
+                .ConfigureAwait(false);
+            deleted.AddRange(catalogDeleted);
+            completedOperationId = catalogOperationId ?? completedOperationId;
+            roots.Add(item.CatalogRoot);
+        }
+        roots.Add(paths.OperationsRoot);
+        return new LifecycleResult(
+            DeploymentSchemaVersions.LifecycleOperation,
+            request.Operation,
+            request.DryRun ? $"planned:{string.Join(',', deleted)}" : $"completed:{string.Join(',', deleted)}",
+            request.DryRun ? null : completedOperationId,
+            null,
+            null,
+            paths.ProductRoot,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            roots,
+            null,
+            DateTimeOffset.UtcNow);
+    }
+
+    private static async Task<(List<string> Deleted, Guid? CompletedOperationId)> GarbageCollectCatalogAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         DockerClient docker,
@@ -478,25 +648,7 @@ internal static class CatalogLifecycleManager
             deleted.Add(version);
             completedOperationId = operationId;
         }
-        return new LifecycleResult(
-            DeploymentSchemaVersions.LifecycleOperation,
-            request.Operation,
-            request.DryRun ? $"planned:{string.Join(',', deleted)}" : $"completed:{string.Join(',', deleted)}",
-            request.DryRun ? null : completedOperationId,
-            null,
-            null,
-            paths.ProductRoot,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            [paths.CatalogRoot, paths.OperationsRoot],
-            null,
-            DateTimeOffset.UtcNow);
+        return (deleted, completedOperationId);
     }
 
     private static async Task<Guid?> RecoverGarbageCollectionTombstonesAsync(
@@ -623,8 +775,7 @@ internal static class CatalogLifecycleManager
                 continue;
             }
             var targetVersion = target.StartsWith("versions/", StringComparison.Ordinal) ? target["versions/".Length..] : string.Empty;
-            if (!System.Text.RegularExpressions.Regex.IsMatch(
-                    targetVersion, "^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            if (!ProductionCatalog.Get(Path.GetFileName(paths.CatalogRoot)).IsPackageVersion(targetVersion))
                 throw new InstallerException("Catalog garbage collection found a malformed selection pointer.");
             if (target == $"versions/{version}") return true;
         }
@@ -706,8 +857,10 @@ internal static class CatalogLifecycleManager
 
     private static void ValidateInstalled(InstallationPaths paths, CatalogInstallationIdentity identity)
     {
+        // Every installed version is validated within its own approved catalog's side-by-side root.
+        paths = paths.WithCatalog(ProductionCatalog.Get(identity.CatalogId).CatalogId);
         CameraAgentLifecycleManager.ValidateCanonicalCatalog(paths, identity);
-        var result = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(paths.CatalogRoot, identity.PackageVersion));
+        var result = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(paths.CatalogRoot, identity.CatalogId, identity.PackageVersion));
         var actual = ProductionCatalog.ToIdentity(result, paths.CatalogRoot);
         if (actual.CatalogId != identity.CatalogId || actual.PackageVersion != identity.PackageVersion ||
             actual.SchemaVersion != identity.SchemaVersion || actual.PreprocessingVersion != identity.PreprocessingVersion ||
@@ -720,6 +873,13 @@ internal static class CatalogLifecycleManager
     }
 
     private static async Task<AcquiredCatalog> AcquireAsync(LifecycleRequest request, CancellationToken cancellationToken)
+    {
+        var synthetic = SyntheticAcquisitionRequest(request);
+        using var acquirer = new DistributionAcquirer();
+        return await acquirer.AcquireAsync(synthetic, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static InstallRequest SyntheticAcquisitionRequest(LifecycleRequest request)
     {
         var synthetic = new InstallRequest
         {
@@ -740,8 +900,7 @@ internal static class CatalogLifecycleManager
             NoDownload = request.NoDownload
         };
         synthetic.Validate();
-        using var acquirer = new DistributionAcquirer();
-        return await acquirer.AcquireAsync(synthetic, cancellationToken).ConfigureAwait(false);
+        return synthetic;
     }
 
     private static async Task WriteInstalledIdentityAsync(
@@ -803,10 +962,12 @@ internal static class CatalogLifecycleManager
         string version,
         CancellationToken cancellationToken)
     {
+        var catalogId = ProductionCatalog.ForPackageVersion(version).CatalogId;
+        paths = paths.WithCatalog(catalogId);
         var path = Path.Combine(paths.CatalogReferencesRoot, version, "installed.json");
         if (!File.Exists(path))
         {
-            var result = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(paths.CatalogRoot, version));
+            var result = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(paths.CatalogRoot, catalogId, version));
             return ProductionCatalog.ToIdentity(result, paths.CatalogRoot);
         }
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);

@@ -127,6 +127,12 @@ public interface ICelestialCatalogMetadataSource
 
     /// <summary>Gets the deterministic preprocessing recipe version, or <c>unspecified</c>.</summary>
     string PreprocessingVersion => "unspecified";
+
+    /// <summary>Gets the validated installed catalog identity, or <see langword="null"/> when none was installed.</summary>
+    string? CatalogId => null;
+
+    /// <summary>Gets the validated installed package version, or <see langword="null"/> when none was installed.</summary>
+    string? CatalogPackageVersion => null;
 }
 
 /// <summary>Process-safe in-memory catalog with deterministic brightest-first selection.</summary>

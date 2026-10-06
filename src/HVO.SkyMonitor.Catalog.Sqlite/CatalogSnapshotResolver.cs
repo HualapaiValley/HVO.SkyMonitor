@@ -24,11 +24,17 @@ public sealed record CatalogSnapshotResolverOptions(string InstallRoot, string E
     /// <summary>Gets the only package kind accepted by the resolver.</summary>
     public CatalogSnapshotPackageKind ExpectedPackageKind { get; init; } = CatalogSnapshotPackageKind.Production;
 
-    /// <summary>Gets the required catalog SQLite schema version.</summary>
-    public string ExpectedSchemaVersion { get; init; } = "2";
+    /// <summary>
+    /// Gets the required catalog SQLite schema version. When <see langword="null"/>, a production snapshot must
+    /// match its approved specification and a fixture must declare a supported schema/preprocessing pair.
+    /// </summary>
+    public string? ExpectedSchemaVersion { get; init; }
 
-    /// <summary>Gets the required deterministic preprocessing version.</summary>
-    public string ExpectedPreprocessingVersion { get; init; } = "3";
+    /// <summary>
+    /// Gets the required deterministic preprocessing version. When <see langword="null"/>, it is taken from the
+    /// approved specification for production snapshots and from the supported pairs for fixtures.
+    /// </summary>
+    public string? ExpectedPreprocessingVersion { get; init; }
 
     /// <summary>Gets the exact immutable package version to resolve instead of the shared current pointer.</summary>
     public string? ExpectedPackageVersion { get; init; }
@@ -62,23 +68,6 @@ public static class CatalogSnapshotResolver
     private const int MaximumManifestLength = 65_536;
     private const int MaximumCatalogIdLength = 32;
     private const int MaximumCatalogVersionLength = 64;
-    private const string ProductionCatalogId = "hyg-v42-production";
-    private const string ProductionCatalogName = "HYG 4.2";
-    private const string ProductionCatalogVersion = "4.2";
-    private const string ProductionSourceProjectUrl = "https://codeberg.org/astronexus/hyg";
-    private const string ProductionSourceOid = "5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601";
-    private const string ProductionSourceDownloadUrl =
-        "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601";
-    private const string ProductionDecompressedSha256 =
-        "b2983a8d934e4f031cdb67bdd6c3437f8c5143cd6606a9573a9a9ac4b6375fd2";
-    private const string ProductionDatabaseSha256 =
-        "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2";
-    private const string ProductionLicenseSha256 =
-        "9ab0956d22d8390b54456c2afb3b47281b4a5a0313c6871f0af4489ed8395f05";
-    private const string ProductionAttributionSha256 =
-        "e3addc3480a0d0f07129f332b0dea592fa315373f21111d54ac8e2aebd03b5f1";
-    private const string ProductionTopologySha256 =
-        "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621";
     private const uint StatxType = 0x00000001;
     private const uint StatxLinkCount = 0x00000004;
     private const uint StatxInode = 0x00000100;
@@ -137,16 +126,24 @@ public static class CatalogSnapshotResolver
                 $"Catalog package version '{manifest.Package.Version}' does not match current pointer '{snapshotVersion}'.");
         }
 
-        ValidateVersion("schema", options.ExpectedSchemaVersion, manifest.SchemaVersion);
-        ValidateVersion("preprocessing", options.ExpectedPreprocessingVersion, manifest.PreprocessingVersion);
-        if (options.ExpectedPackageKind == CatalogSnapshotPackageKind.Production)
+        ApprovedCatalogSpecification? specification = null;
+        if (options.ExpectedPackageKind == CatalogSnapshotPackageKind.Production &&
+            !ApprovedCatalogSpecifications.TryGet(manifest.Catalog.Id, out specification))
         {
-            ValidateProductionManifest(manifest);
-            ValidateProductionRetainedFiles(snapshotDirectory, manifest);
+            throw new InvalidDataException(
+                $"Catalog '{manifest.Catalog.Id}' is not an approved production catalog specification.");
+        }
+        ValidateVersion("schema", options.ExpectedSchemaVersion ?? specification?.SchemaVersion, manifest.SchemaVersion);
+        ValidateVersion("preprocessing", options.ExpectedPreprocessingVersion ?? specification?.PreprocessingVersion,
+            manifest.PreprocessingVersion);
+        if (specification is not null)
+        {
+            ValidateProductionManifest(manifest, specification);
+            ValidateProductionRetainedFiles(snapshotDirectory, manifest, specification);
         }
         else
         {
-            ValidateFixtureRetainedFiles(snapshotDirectory);
+            ValidateFixtureRetainedFiles(snapshotDirectory, FixtureDatabaseFile(manifest));
         }
         ValidateSha256(manifest.Database.Sha256, "database.sha256");
         if (manifest.Database.Length <= 0)
@@ -192,9 +189,9 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException(
                 $"Catalog name mismatch. Expected '{manifest.Catalog.Name}', got '{catalog.Metadata.Name}'.");
         }
-        if (options.ExpectedPackageKind == CatalogSnapshotPackageKind.Production)
+        if (specification is not null)
         {
-            ValidateTopologyEndpoints(catalog, manifest.Topology!);
+            ValidateTopologyEndpoints(catalog, manifest.Topology!, specification.Topology);
         }
 
         return new CatalogSnapshotResult(
@@ -213,7 +210,10 @@ public static class CatalogSnapshotResolver
             catalog);
     }
 
-    private static void ValidateTopologyEndpoints(SqliteCelestialCatalog catalog, SnapshotTopology expected)
+    private static void ValidateTopologyEndpoints(
+        SqliteCelestialCatalog catalog,
+        SnapshotTopology expected,
+        ApprovedCatalogTopology approved)
     {
         var topology = StandardConstellationTopology.CreateD3Celestial() as InMemoryConstellationTopology
             ?? throw new InvalidDataException("The standard constellation topology has an unsupported implementation.");
@@ -236,63 +236,62 @@ public static class CatalogSnapshotResolver
         var resolved = catalog.GetByHipparcosIdsAsync(endpointIds).AsTask().GetAwaiter().GetResult();
         var unresolved = endpointIds
             .Except(resolved.Select(static item => item.HipparcosId!), StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
             .ToArray();
-        if (!unresolved.SequenceEqual(["55203"], StringComparer.Ordinal))
+        if (!unresolved.SequenceEqual(approved.UnresolvedEndpoints, StringComparer.Ordinal))
         {
             throw new InvalidDataException(
-                $"Catalog constellation topology endpoint mismatch. Expected only pinned missing HIP 55203; got '{string.Join(',', unresolved)}'.");
+                $"Catalog constellation topology endpoint mismatch. Expected only pinned missing HIP {string.Join(',', approved.UnresolvedEndpoints)}; got '{string.Join(',', unresolved)}'.");
         }
     }
 
-    private static void ValidateProductionManifest(SnapshotManifest manifest)
+    private static void ValidateProductionManifest(SnapshotManifest manifest, ApprovedCatalogSpecification expected)
     {
-        if (!IsProductionPackageVersion(manifest.Package.Version))
+        if (!expected.IsPackageVersion(manifest.Package.Version))
         {
             throw new InvalidDataException("Catalog production package version is invalid.");
         }
 
-        ValidateConstant("catalog.id", ProductionCatalogId, manifest.Catalog.Id);
-        ValidateConstant("catalog.name", ProductionCatalogName, manifest.Catalog.Name);
-        ValidateConstant("catalog.version", ProductionCatalogVersion, manifest.Catalog.Version);
-        ValidateConstant("schemaVersion", "2", manifest.SchemaVersion);
-        ValidateConstant("preprocessingVersion", "3", manifest.PreprocessingVersion);
-        ValidateConstant("source.projectUrl", ProductionSourceProjectUrl, manifest.Source!.ProjectUrl);
-        ValidateConstant("source.downloadUrl", ProductionSourceDownloadUrl, manifest.Source.DownloadUrl);
-        ValidateConstant("source.oid", ProductionSourceOid, manifest.Source.Oid);
-        ValidateConstant("source.compressed.sha256", ProductionSourceOid, manifest.Source.Compressed.Sha256);
-        ValidateConstant("source.compressed.length", 13_636_976, manifest.Source.Compressed.Length);
-        ValidateConstant("source.decompressed.sha256", ProductionDecompressedSha256,
+        ValidateConstant("manifestVersion", expected.ManifestVersion, manifest.ManifestVersion);
+        ValidateConstant("catalog.id", expected.CatalogId, manifest.Catalog.Id);
+        ValidateConstant("catalog.name", expected.CatalogName, manifest.Catalog.Name);
+        ValidateConstant("catalog.version", expected.CatalogVersion, manifest.Catalog.Version);
+        ValidateConstant("schemaVersion", expected.SchemaVersion, manifest.SchemaVersion);
+        ValidateConstant("preprocessingVersion", expected.PreprocessingVersion, manifest.PreprocessingVersion);
+        ValidateConstant("source.projectUrl", expected.Source.ProjectUrl.OriginalString, manifest.Source!.ProjectUrl);
+        ValidateConstant("source.downloadUrl", expected.Source.DownloadUrl.OriginalString, manifest.Source.DownloadUrl);
+        ValidateConstant("source.oid", expected.Source.Oid, manifest.Source.Oid);
+        ValidateConstant("source.compressed.sha256", expected.Source.Compressed.Sha256, manifest.Source.Compressed.Sha256);
+        ValidateConstant("source.compressed.length", expected.Source.Compressed.Length, manifest.Source.Compressed.Length);
+        ValidateConstant("source.decompressed.sha256", expected.Source.Decompressed.Sha256,
             manifest.Source.Decompressed.Sha256);
-        ValidateConstant("source.decompressed.length", 33_932_800, manifest.Source.Decompressed.Length);
-        ValidateConstant("serializer.name", "sqlite3", manifest.Serializer!.Name);
-        ValidateConstant("serializer.version", "3.45.1", manifest.Serializer.Version);
-        ValidateConstant("database.relativePath", "hyg_v42.sqlite", manifest.Database.RelativePath);
-        ValidateConstant("database.sha256", ProductionDatabaseSha256, manifest.Database.Sha256);
-        ValidateConstant("database.length", 9_302_016, manifest.Database.Length);
-        ValidateConstant("database.rowCount", 119_625, manifest.Database.RowCount);
-        ValidateConstant("database.solCount", 0, manifest.Database.SolCount!.Value);
-        ValidateConstant("database.requiredColumn", "hipparcos_id", manifest.Database.RequiredColumn!);
-        ValidateConstant("license.identifier", "CC BY-SA 4.0", manifest.License!.Identifier);
-        ValidateConstant("license.url", "https://creativecommons.org/licenses/by-sa/4.0/", manifest.License.Url);
-        ValidateFileConstant("license.file", manifest.License.File, "LICENSE-HYG.md", ProductionLicenseSha256, 423);
-        ValidateFileConstant("license.attribution", manifest.License.Attribution, "ATTRIBUTION-HYG.md",
-            ProductionAttributionSha256, 1_361);
-        ValidateConstant("topology.identity", "d3-celestial-v0.7.32-hip-coordinate-map-v1",
-            manifest.Topology!.Identity);
-        ValidateConstant("topology.sha256", ProductionTopologySha256, manifest.Topology.Sha256);
-        ValidateConstant("topology.constellationCount", 88, manifest.Topology.ConstellationCount);
-        ValidateConstant("topology.segmentCount", 743, manifest.Topology.SegmentCount);
+        ValidateConstant("source.decompressed.length", expected.Source.Decompressed.Length,
+            manifest.Source.Decompressed.Length);
+        ValidateConstant("serializer.name", expected.SerializerName, manifest.Serializer!.Name);
+        ValidateConstant("serializer.version", expected.SerializerVersion, manifest.Serializer.Version);
+        ValidateConstant("database.relativePath", expected.Database.RelativePath, manifest.Database.RelativePath);
+        ValidateConstant("database.sha256", expected.Database.Sha256, manifest.Database.Sha256);
+        ValidateConstant("database.length", expected.Database.Length, manifest.Database.Length);
+        ValidateConstant("database.rowCount", expected.Database.RowCount, manifest.Database.RowCount);
+        ValidateConstant("database.solCount", expected.Database.SolCount, manifest.Database.SolCount!.Value);
+        ValidateConstant("database.requiredColumn", expected.Database.RequiredColumn, manifest.Database.RequiredColumn!);
+        ValidateConstant("license.identifier", expected.License.Identifier, manifest.License!.Identifier);
+        ValidateConstant("license.url", expected.License.Url.OriginalString, manifest.License.Url);
+        ValidateFileConstant("license.file", manifest.License.File, expected.License.File);
+        ValidateFileConstant("license.attribution", manifest.License.Attribution, expected.License.Attribution);
+        ValidateConstant("topology.identity", expected.Topology.Identity, manifest.Topology!.Identity);
+        ValidateConstant("topology.sha256", expected.Topology.Sha256, manifest.Topology.Sha256);
+        ValidateConstant("topology.constellationCount", expected.Topology.ConstellationCount,
+            manifest.Topology.ConstellationCount);
+        ValidateConstant("topology.segmentCount", expected.Topology.SegmentCount, manifest.Topology.SegmentCount);
     }
 
-    private static void ValidateProductionRetainedFiles(string snapshotDirectory, SnapshotManifest manifest)
+    private static void ValidateProductionRetainedFiles(
+        string snapshotDirectory,
+        SnapshotManifest manifest,
+        ApprovedCatalogSpecification specification)
     {
-        var expectedNames = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "manifest.json",
-            manifest.Database.RelativePath,
-            manifest.License!.File.RelativePath,
-            manifest.License.Attribution.RelativePath
-        };
+        var expectedNames = specification.RetainedFileNames.ToHashSet(StringComparer.Ordinal);
         var actualNames = Directory.EnumerateFileSystemEntries(snapshotDirectory)
             .Select(static path => Path.GetFileName(path)!)
             .ToHashSet(StringComparer.Ordinal);
@@ -301,7 +300,7 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException("Catalog production snapshot must contain exactly its four retained files.");
         }
 
-        using var license = AuthenticateRetainedFile(snapshotDirectory, manifest.License.File, "Catalog license");
+        using var license = AuthenticateRetainedFile(snapshotDirectory, manifest.License!.File, "Catalog license");
         using var attribution = AuthenticateRetainedFile(
             snapshotDirectory,
             manifest.License.Attribution,
@@ -310,12 +309,24 @@ public static class CatalogSnapshotResolver
         ValidateRetainedFile(attribution, manifest.License.Attribution, "Catalog attribution");
     }
 
-    private static void ValidateFixtureRetainedFiles(string snapshotDirectory)
+    /// <summary>
+    /// The retained database file name of a supported fixture format. A fixture keeps the database file name of the
+    /// production schema/preprocessing pair it imitates, so each pair has exactly one expected file set.
+    /// </summary>
+    private static string FixtureDatabaseFile(SnapshotManifest manifest)
+        => (manifest.SchemaVersion, manifest.PreprocessingVersion) switch
+        {
+            ("2", "3") => "hyg_v42.sqlite",
+            ("3", "4") => "hyg_v44.sqlite",
+            _ => throw new InvalidDataException("Catalog fixture must declare a supported schema and preprocessing pair.")
+        };
+
+    private static void ValidateFixtureRetainedFiles(string snapshotDirectory, string databaseFile)
     {
         var expectedNames = new HashSet<string>(StringComparer.Ordinal)
         {
             "manifest.json",
-            "hyg_v42.sqlite"
+            databaseFile
         };
         var actualNames = Directory.EnumerateFileSystemEntries(snapshotDirectory)
             .Select(static path => Path.GetFileName(path)!)
@@ -331,8 +342,14 @@ public static class CatalogSnapshotResolver
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.InstallRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedCatalogId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedSchemaVersion);
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedPreprocessingVersion);
+        if (options.ExpectedSchemaVersion is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedSchemaVersion);
+        }
+        if (options.ExpectedPreprocessingVersion is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedPreprocessingVersion);
+        }
         ValidateCatalogId(options.ExpectedCatalogId);
         if (options.ExpectedPackageVersion is { } packageVersion && !IsValidVersion(packageVersion))
         {
@@ -518,7 +535,7 @@ public static class CatalogSnapshotResolver
             RequireString(value, "sha256"),
             RequireInt64(value, "length"));
 
-    private static void RejectDuplicateProperties(JsonElement element)
+    internal static void RejectDuplicateProperties(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
@@ -541,12 +558,12 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static JsonElement RequireObject(JsonElement element, string name)
+    internal static JsonElement RequireObject(JsonElement element, string name)
         => element.ValueKind == JsonValueKind.Object
             ? element
             : throw new InvalidDataException($"Catalog manifest '{name}' must be an object.");
 
-    private static void RequireExactProperties(JsonElement element, string name, params string[] expectedNames)
+    internal static void RequireExactProperties(JsonElement element, string name, params string[] expectedNames)
     {
         var remaining = expectedNames.ToHashSet(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
@@ -564,12 +581,12 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static JsonElement RequireProperty(JsonElement element, string name)
+    internal static JsonElement RequireProperty(JsonElement element, string name)
         => element.TryGetProperty(name, out var value)
             ? value
             : throw new InvalidDataException($"Catalog manifest is missing required property '{name}'.");
 
-    private static string RequireString(JsonElement element, string name)
+    internal static string RequireString(JsonElement element, string name)
     {
         var property = RequireProperty(element, name);
         if (property.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(property.GetString()))
@@ -579,7 +596,7 @@ public static class CatalogSnapshotResolver
         return property.GetString()!;
     }
 
-    private static int RequireInt32(JsonElement element, string name)
+    internal static int RequireInt32(JsonElement element, string name)
     {
         var property = RequireProperty(element, name);
         if (property.ValueKind != JsonValueKind.Number || !property.TryGetInt32(out var value))
@@ -589,7 +606,7 @@ public static class CatalogSnapshotResolver
         return value;
     }
 
-    private static long RequireInt64(JsonElement element, string name)
+    internal static long RequireInt64(JsonElement element, string name)
     {
         var property = RequireProperty(element, name);
         if (property.ValueKind != JsonValueKind.Number || !property.TryGetInt64(out var value))
@@ -891,9 +908,9 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static void ValidateVersion(string name, string expected, string actual)
+    private static void ValidateVersion(string name, string? expected, string actual)
     {
-        if (!string.Equals(expected, actual, StringComparison.Ordinal))
+        if (expected is not null && !string.Equals(expected, actual, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"Catalog manifest {name} version mismatch. Expected '{expected}', got '{actual}'.");
         }
@@ -926,16 +943,11 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static void ValidateFileConstant(
-        string name,
-        SnapshotFile actual,
-        string expectedPath,
-        string expectedSha256,
-        long expectedLength)
+    private static void ValidateFileConstant(string name, SnapshotFile actual, ApprovedCatalogFile expected)
     {
-        ValidateConstant($"{name}.relativePath", expectedPath, actual.RelativePath);
-        ValidateConstant($"{name}.sha256", expectedSha256, actual.Sha256);
-        ValidateConstant($"{name}.length", expectedLength, actual.Length);
+        ValidateConstant($"{name}.relativePath", expected.RelativePath, actual.RelativePath);
+        ValidateConstant($"{name}.sha256", expected.Sha256, actual.Sha256);
+        ValidateConstant($"{name}.length", expected.Length, actual.Length);
     }
 
     private static AuthenticatedFile AuthenticateRetainedFile(
@@ -1006,28 +1018,6 @@ public static class CatalogSnapshotResolver
     private static bool IsValidVersion(string value)
         => !string.IsNullOrEmpty(value) && char.IsAsciiLetterOrDigit(value[0]) && value.All(IsVersionCharacter);
 
-    private static bool IsProductionPackageVersion(string value)
-    {
-        const string prefix = "hyg-v4.2-p3-s2-r";
-        if (!value.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            return false;
-        }
-        var revision = value.AsSpan(prefix.Length);
-        if (revision.Length == 0 || revision[0] == '0')
-        {
-            return false;
-        }
-        foreach (var character in revision)
-        {
-            if (!char.IsAsciiDigit(character))
-            {
-                return false;
-            }
-        }
-        return int.TryParse(revision, out var parsedRevision) && parsedRevision > 0;
-    }
-
     private sealed record SnapshotManifest(
         int ManifestVersion,
         SnapshotPackage Package,
@@ -1042,7 +1032,7 @@ public static class CatalogSnapshotResolver
 
     private sealed record SnapshotPackage(string Kind, string Version);
 
-    private static void ValidateCatalogId(string value)
+    internal static void ValidateCatalogId(string value)
     {
         if (value.Length > MaximumCatalogIdLength ||
             !char.IsAsciiLetterOrDigit(value[0]) || char.IsAsciiLetterUpper(value[0]) ||

@@ -133,7 +133,9 @@ internal sealed class AnnotationSceneProvider(
             ConstellationIds: request.ConstellationIds,
             IncludeConstellationEndpointStars: false,
             RigProfileHashSha256: rigHash,
-            ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion);
+            ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion,
+            CatalogId: metadataSource.CatalogId,
+            CatalogPackageVersion: metadataSource.CatalogPackageVersion);
         return new AnnotationSceneResult(scene, provenance);
     }
 

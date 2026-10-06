@@ -176,11 +176,12 @@ internal static partial class Program
         ValidateSafeIdentifier(packageVersion, "catalog package version");
         var catalogId = root.GetProperty("catalog").GetProperty("id").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits catalog.id.");
+        var specification = ReleaseCatalogs.Get(catalogId, packageVersion);
         var archiveName = $"{packageVersion}.bundle.tar.gz";
-        await WriteCatalogArchiveAsync(bundle, Path.Combine(output, archiveName), packageVersion, createdUtc, cancellationToken)
+        await WriteCatalogArchiveAsync(bundle, Path.Combine(output, archiveName), packageVersion, specification, createdUtc, cancellationToken)
             .ConfigureAwait(false);
-        File.Copy(Path.Combine(bundle, "LICENSE-HYG.md"), Path.Combine(output, "LICENSE-HYG.md"));
-        File.Copy(Path.Combine(bundle, "ATTRIBUTION-HYG.md"), Path.Combine(output, "ATTRIBUTION-HYG.md"));
+        File.Copy(Path.Combine(bundle, specification.LicenseFile), Path.Combine(output, specification.LicenseFile));
+        File.Copy(Path.Combine(bundle, specification.AttributionFile), Path.Combine(output, specification.AttributionFile));
 
         var provenanceName = "catalog-provenance.json";
         await WriteJsonAsync(Path.Combine(output, provenanceName), new
@@ -206,8 +207,8 @@ internal static partial class Program
             (DistributionArtifactRole.CatalogBundle, archiveName, "application/gzip", (string?)null, (string?)null),
             (DistributionArtifactRole.Sbom, sbomName, "application/spdx+json", (string?)null, (string?)null),
             (DistributionArtifactRole.Provenance, provenanceName, "application/json", (string?)null, (string?)null),
-            (DistributionArtifactRole.License, "LICENSE-HYG.md", "text/markdown", (string?)null, (string?)null),
-            (DistributionArtifactRole.Attribution, "ATTRIBUTION-HYG.md", "text/markdown", (string?)null, (string?)null)
+            (DistributionArtifactRole.License, specification.LicenseFile, "text/markdown", (string?)null, (string?)null),
+            (DistributionArtifactRole.Attribution, specification.AttributionFile, "text/markdown", (string?)null, (string?)null)
         };
         var artifacts = await CreateArtifactsAsync(output, payloads, cancellationToken).ConfigureAwait(false);
         const string checksumsName = "SHA256SUMS";
@@ -232,8 +233,8 @@ internal static partial class Program
             root.GetProperty("database").GetProperty("length").GetInt64(),
             root.GetProperty("database").GetProperty("rowCount").GetInt64(),
             root.GetProperty("license").GetProperty("identifier").GetString() ?? string.Empty,
-            "LICENSE-HYG.md",
-            "ATTRIBUTION-HYG.md",
+            specification.LicenseFile,
+            specification.AttributionFile,
             root.GetProperty("topology").GetProperty("identity").GetString() ?? string.Empty,
             root.GetProperty("topology").GetProperty("sha256").GetString() ?? string.Empty);
         var manifest = new DistributionReleaseManifest(
@@ -924,7 +925,7 @@ internal static partial class Program
         switch (metadataKind)
         {
             case "manifest":
-                _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot);
+                _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot, ReleaseCatalogs.Specifications);
                 break;
             case "index":
                 _ = DistributionVerifier.VerifyIndex(bytes, signatureText, trustRoot);
@@ -977,7 +978,7 @@ internal static partial class Program
         }
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var manifestSignature = await File.ReadAllBytesAsync(manifestSignaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, manifestSignature, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, manifestSignature, trustRoot, ReleaseCatalogs.Specifications);
         if (manifest.Release.Train != train)
         {
             throw new ReleaseToolException("The release manifest does not match --train.");
@@ -1081,7 +1082,7 @@ internal static partial class Program
             : DistributionTrustRoot.Production;
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var signature = await File.ReadAllBytesAsync(signaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signature, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signature, trustRoot, ReleaseCatalogs.Specifications);
         foreach (var artifact in manifest.Artifacts)
         {
             var path = Path.Combine(assetRoot, artifact.AssetName);
@@ -1161,10 +1162,8 @@ internal static partial class Program
         Directory.CreateDirectory(versionRoot);
         try
         {
-            var expected = new HashSet<string>(StringComparer.Ordinal)
-            {
-                "ATTRIBUTION-HYG.md", "LICENSE-HYG.md", "hyg_v42.sqlite", "manifest.json"
-            };
+            var expected = new HashSet<string>(
+                ReleaseCatalogs.Get(catalog.CatalogId, catalog.PackageVersion).RetainedFileNames, StringComparer.Ordinal);
             using var file = File.OpenRead(archivePath);
             using var gzip = new GZipStream(file, CompressionMode.Decompress);
             using var reader = new TarReader(gzip);
@@ -1349,7 +1348,7 @@ internal static partial class Program
             : DistributionTrustRoot.Production;
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var signatureBytes = await File.ReadAllBytesAsync(signaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signatureBytes, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signatureBytes, trustRoot, ReleaseCatalogs.Specifications);
         foreach (var artifact in manifest.Artifacts.OrderBy(static artifact => artifact.AssetName, StringComparer.Ordinal))
         {
             await Console.Out.WriteLineAsync($"{artifact.AssetName}\t{artifact.Length.ToString(CultureInfo.InvariantCulture)}")
@@ -1435,10 +1434,11 @@ internal static partial class Program
         string bundle,
         string output,
         string packageVersion,
+        ApprovedCatalogContract specification,
         DateTimeOffset timestamp,
         CancellationToken cancellationToken)
     {
-        var expected = new[] { "ATTRIBUTION-HYG.md", "LICENSE-HYG.md", "hyg_v42.sqlite", "manifest.json" };
+        var expected = ReleaseCatalogs.OrderedFiles(specification);
         var actual = Directory.EnumerateFiles(bundle).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
         if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
         {

@@ -9,11 +9,34 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 /// <summary>
 /// Validates and loads a read-only SQLite snapshot into a connection-independent immutable cache.
 /// </summary>
-public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource, IAstrometricCatalogSource
+public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource,
+    IAstrometricCatalogSource, ICelestialCatalogDetailsSource
 {
     private const int Sha256HexLength = 64;
+    private const string DetailedSchemaVersion = "3";
+    private const string CoordinateFrame = "equatorial-j2000-icrs-aligned";
+    private const string CoordinateEpoch = "J2000.0";
+    private const string ProperMotionConvention = "mu-alpha-cos-delta-and-mu-delta-mas-per-year";
+    private const string ProperMotionUnknownRule = "null-when-upstream-pair-is-zero-or-reaches-9999.99";
+    private static readonly string[] DetailedMetadataKeys =
+    [
+        "catalog_version", "color_index", "coordinate_epoch", "coordinate_equinox", "coordinate_frame", "license",
+        "magnitude_band", "name", "preprocessing_version", "proper_motion_convention", "proper_motion_unknown_rule",
+        "schema_version", "source_commit", "source_url"
+    ];
+    private const string LegacyObjectQuery =
+        "SELECT id, display_name, right_ascension_hours, declination_degrees, magnitude, color_index, hipparcos_id " +
+        "FROM celestial_objects ORDER BY magnitude, id COLLATE BINARY";
+    private const string DetailedObjectQuery =
+        "SELECT id, display_name, right_ascension_hours, declination_degrees, magnitude, color_index, hipparcos_id, " +
+        "proper_motion_ra_cos_dec_mas_per_year, proper_motion_dec_mas_per_year, proper_name, bayer, flamsteed, " +
+        "constellation, bayer_flamsteed, henry_draper_id, harvard_revised_id, gliese_id " +
+        "FROM celestial_objects ORDER BY magnitude, id COLLATE BINARY";
+    private static readonly string[] AliasKinds = ["bayer", "flamsteed", "gliese", "hd", "hr", "proper"];
     private readonly ReadOnlyCollection<CelestialCatalogObject> _objects;
     private readonly IReadOnlyDictionary<string, CelestialCatalogObject> _objectsByHipparcosId;
+    private readonly Dictionary<string, CelestialCatalogObjectDetails> _detailsById;
+    private readonly Dictionary<string, CelestialCatalogAlias[]> _aliases;
 
     /// <summary>Creates and fully loads a validated catalog snapshot.</summary>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
@@ -69,7 +92,8 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             privateSnapshot.Load(connection);
 
             ValidateIntegrity(connection);
-            ValidateSchema(connection);
+            var detailed = string.Equals(options.ExpectedSchemaVersion, DetailedSchemaVersion, StringComparison.Ordinal);
+            ValidateSchema(connection, detailed);
             var metadata = ReadMetadata(connection);
             ValidateVersion("schema_version", options.ExpectedSchemaVersion, metadata);
             ValidateVersion("preprocessing_version", options.ExpectedPreprocessingVersion, metadata);
@@ -87,7 +111,13 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 RequiredMetadata(metadata, "license"),
                 RequiredMetadata(metadata, "schema_version"));
             PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
-            _objects = Array.AsReadOnly(ReadObjects(connection));
+            Semantics = detailed ? ReadSemantics(metadata) : CatalogSemantics.LegacyFixedJ2000;
+            var details = new Dictionary<string, CelestialCatalogObjectDetails>(StringComparer.Ordinal);
+            _objects = Array.AsReadOnly(ReadObjects(connection, detailed ? details : null));
+            _detailsById = details;
+            _aliases = detailed
+                ? ReadAliases(connection, details)
+                : new Dictionary<string, CelestialCatalogAlias[]>(StringComparer.OrdinalIgnoreCase);
             if (options.ExpectedRowCount is { } expectedRowCount && _objects.Count != expectedRowCount)
             {
                 throw new InvalidDataException(
@@ -119,6 +149,18 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
 
     /// <summary>Gets package identity only when this instance was loaded by the installed-snapshot resolver.</summary>
     public AstrometricCatalogProvenance? AstrometricProvenance { get; }
+
+    /// <summary>Gets the installed catalog identity, or <see langword="null"/> for a direct database load.</summary>
+    public string? CatalogId => AstrometricProvenance?.CatalogId;
+
+    /// <summary>Gets the installed package version, or <see langword="null"/> for a direct database load.</summary>
+    public string? CatalogPackageVersion => AstrometricProvenance?.PackageVersion;
+
+    /// <summary>
+    /// Gets the declared catalog semantics. Snapshots before schema 3 predate declared semantics and
+    /// report <see cref="CatalogSemantics.LegacyFixedJ2000"/>.
+    /// </summary>
+    public CatalogSemantics Semantics { get; }
 
     /// <summary>Gets the number of validated catalog objects in the immutable cache.</summary>
     public int ObjectCount => _objects.Count;
@@ -215,6 +257,20 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         return ValueTask.FromResult(result);
     }
 
+    /// <inheritdoc />
+    public bool TryGetDetails(string objectId, out CelestialCatalogObjectDetails details)
+    {
+        ArgumentNullException.ThrowIfNull(objectId);
+        return _detailsById.TryGetValue(objectId, out details!);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<CelestialCatalogAlias> FindByAlias(string designation)
+    {
+        ArgumentNullException.ThrowIfNull(designation);
+        return _aliases.TryGetValue(designation.Trim(), out var matches) ? matches : [];
+    }
+
     private int FindUpperBound(double maximumMagnitude)
     {
         var low = 0;
@@ -293,7 +349,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         }
     }
 
-    private static void ValidateSchema(SqliteConnection connection)
+    private static void ValidateSchema(SqliteConnection connection, bool detailed)
     {
         var objects = ReadSchemaObjects(connection);
         var expectedObjects = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -302,6 +358,10 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ["celestial_objects"] = "table",
             ["celestial_objects_magnitude_id"] = "index"
         };
+        if (detailed)
+        {
+            expectedObjects.Add("celestial_object_aliases", "table");
+        }
         if (objects.Count != expectedObjects.Count ||
             expectedObjects.Any(expected => !objects.TryGetValue(expected.Key, out var type) || type != expected.Value))
         {
@@ -313,7 +373,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             new("key", "TEXT", true, 1),
             new("value", "TEXT", true, 0)
         ]);
-        ValidateTable(connection, "celestial_objects",
+        ColumnDefinition[] objectColumns =
         [
             new("id", "TEXT", true, 1),
             new("display_name", "TEXT", true, 0),
@@ -322,8 +382,56 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             new("magnitude", "REAL", true, 0),
             new("color_index", "REAL", false, 0),
             new("hipparcos_id", "TEXT", false, 0)
-        ]);
+        ];
+        if (detailed)
+        {
+            objectColumns =
+            [
+                .. objectColumns,
+                new("proper_motion_ra_cos_dec_mas_per_year", "REAL", false, 0),
+                new("proper_motion_dec_mas_per_year", "REAL", false, 0),
+                new("proper_name", "TEXT", false, 0),
+                new("bayer", "TEXT", false, 0),
+                new("flamsteed", "TEXT", false, 0),
+                new("constellation", "TEXT", false, 0),
+                new("bayer_flamsteed", "TEXT", false, 0),
+                new("henry_draper_id", "TEXT", false, 0),
+                new("harvard_revised_id", "TEXT", false, 0),
+                new("gliese_id", "TEXT", false, 0)
+            ];
+        }
+        ValidateTable(connection, "celestial_objects", objectColumns);
+        if (detailed)
+        {
+            ValidateTable(connection, "celestial_object_aliases",
+            [
+                new("alias", "TEXT", true, 1),
+                new("object_id", "TEXT", true, 2),
+                new("kind", "TEXT", true, 0)
+            ]);
+            ValidateAliasIndexes(connection);
+        }
         ValidateIndex(connection);
+    }
+
+    private static void ValidateAliasIndexes(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA index_list('celestial_object_aliases')";
+        using var reader = command.ExecuteReader();
+        var primaryKeys = 0;
+        while (reader.Read())
+        {
+            if (!string.Equals(reader.GetString(3), "pk", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Catalog celestial_object_aliases table contains an unexpected index.");
+            }
+            primaryKeys++;
+        }
+        if (primaryKeys != 1)
+        {
+            throw new InvalidDataException("Catalog celestial_object_aliases primary key is missing.");
+        }
     }
 
     private static Dictionary<string, string> ReadSchemaObjects(SqliteConnection connection)
@@ -347,12 +455,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         {
             "catalog_metadata" => "PRAGMA table_list('catalog_metadata')",
             "celestial_objects" => "PRAGMA table_list('celestial_objects')",
+            "celestial_object_aliases" => "PRAGMA table_list('celestial_object_aliases')",
             _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
         var tableInfoCommandText = name switch
         {
             "catalog_metadata" => "PRAGMA table_xinfo('catalog_metadata')",
             "celestial_objects" => "PRAGMA table_xinfo('celestial_objects')",
+            "celestial_object_aliases" => "PRAGMA table_xinfo('celestial_object_aliases')",
             _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
         using (var tableCommand = connection.CreateCommand())
@@ -462,12 +572,79 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ? value
             : throw new InvalidDataException($"Catalog metadata is missing required key '{key}'.");
 
-    private static CelestialCatalogObject[] ReadObjects(SqliteConnection connection)
+    private static CatalogSemantics ReadSemantics(Dictionary<string, string> metadata)
+    {
+        if (metadata.Count != DetailedMetadataKeys.Length || DetailedMetadataKeys.Any(key => !metadata.ContainsKey(key)))
+        {
+            throw new InvalidDataException("Catalog schema 3 metadata must contain exactly the declared semantic keys.");
+        }
+        ValidateVersion("coordinate_frame", CoordinateFrame, metadata);
+        ValidateVersion("coordinate_equinox", CoordinateEpoch, metadata);
+        ValidateVersion("coordinate_epoch", CoordinateEpoch, metadata);
+        ValidateVersion("proper_motion_convention", ProperMotionConvention, metadata);
+        ValidateVersion("proper_motion_unknown_rule", ProperMotionUnknownRule, metadata);
+        var sourceCommit = RequiredMetadata(metadata, "source_commit");
+        if (sourceCommit.Length != 40 || !sourceCommit.All(static item => item is >= '0' and <= '9' or >= 'a' and <= 'f'))
+        {
+            throw new InvalidDataException("Catalog source_commit must be a lowercase 40-character commit ID.");
+        }
+        return new CatalogSemantics(
+            CoordinateFrame,
+            CoordinateEpoch,
+            CoordinateEpoch,
+            RequiredMetadata(metadata, "magnitude_band"),
+            RequiredMetadata(metadata, "color_index"),
+            ProperMotionConvention);
+    }
+
+    private static Dictionary<string, CelestialCatalogAlias[]> ReadAliases(
+        SqliteConnection connection,
+        Dictionary<string, CelestialCatalogObjectDetails> details)
     {
         using var command = connection.CreateCommand();
-        command.CommandText =
-            "SELECT id, display_name, right_ascension_hours, declination_degrees, magnitude, color_index, hipparcos_id " +
-            "FROM celestial_objects ORDER BY magnitude, id COLLATE BINARY";
+        command.CommandText = "SELECT alias, object_id, kind FROM celestial_object_aliases ORDER BY alias, object_id";
+        using var reader = command.ExecuteReader();
+        var grouped = new Dictionary<string, List<CelestialCatalogAlias>>(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read())
+        {
+            var alias = reader.GetString(0);
+            var kind = Array.Find(AliasKinds, item => string.Equals(item, reader.GetString(2), StringComparison.Ordinal));
+            if (string.IsNullOrWhiteSpace(alias) || !string.Equals(alias, alias.Trim(), StringComparison.Ordinal) ||
+                kind is null || !details.TryGetValue(reader.GetString(1), out var target))
+            {
+                throw new InvalidDataException("Catalog alias rows must be trimmed, typed, and reference a catalog object.");
+            }
+            if (!grouped.TryGetValue(alias, out var matches))
+            {
+                grouped.Add(alias, matches = []);
+            }
+            matches.Add(new CelestialCatalogAlias(alias, target.Id, kind));
+        }
+
+        var result = new Dictionary<string, CelestialCatalogAlias[]>(grouped.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (alias, matches) in grouped)
+        {
+            result.Add(alias, matches
+                .OrderBy(static item => item.ObjectId, StringComparer.Ordinal)
+                .ThenBy(static item => item.Alias, StringComparer.Ordinal)
+                .ToArray());
+        }
+        return result;
+    }
+
+    private static CelestialCatalogObject[] ReadObjects(
+        SqliteConnection connection,
+        Dictionary<string, CelestialCatalogObjectDetails>? details)
+    {
+        using var command = connection.CreateCommand();
+        if (details is null)
+        {
+            command.CommandText = LegacyObjectQuery;
+        }
+        else
+        {
+            command.CommandText = DetailedObjectQuery;
+        }
         using var reader = command.ExecuteReader();
         var objects = new List<CelestialCatalogObject>();
         var hipparcosIds = new HashSet<string>(StringComparer.Ordinal);
@@ -490,10 +667,48 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             {
                 throw new InvalidDataException($"Catalog contains duplicate Hipparcos identifier '{hipparcosId}'.");
             }
+            details?.Add(value.Id, ReadDetails(reader, value.Id));
             objects.Add(value);
         }
 
         return objects.ToArray();
+    }
+
+    private static CelestialCatalogObjectDetails ReadDetails(SqliteDataReader reader, string id)
+    {
+        CatalogProperMotion? properMotion = (reader.IsDBNull(7), reader.IsDBNull(8)) switch
+        {
+            (true, true) => null,
+            (false, false) => new CatalogProperMotion(reader.GetDouble(7), reader.GetDouble(8)),
+            _ => throw new InvalidDataException($"Catalog object '{id}' has a half-known proper motion.")
+        };
+        if (properMotion is { } motion &&
+            (!double.IsFinite(motion.RightAscensionCosDeclinationMasPerYear) || !double.IsFinite(motion.DeclinationMasPerYear)))
+        {
+            throw new InvalidDataException($"Catalog object '{id}' has a non-finite proper motion.");
+        }
+
+        return new CelestialCatalogObjectDetails(id, properMotion, new CelestialObjectDesignations(
+            Designation(reader, 9, id),
+            Designation(reader, 10, id),
+            Designation(reader, 11, id),
+            Designation(reader, 12, id),
+            Designation(reader, 13, id),
+            Designation(reader, 14, id),
+            Designation(reader, 15, id),
+            Designation(reader, 16, id)));
+    }
+
+    private static string? Designation(SqliteDataReader reader, int ordinal, string id)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+        var value = reader.GetString(ordinal);
+        return string.IsNullOrWhiteSpace(value) || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+            ? throw new InvalidDataException($"Catalog object '{id}' has a blank or untrimmed designation.")
+            : value;
     }
 
     private static void ValidateObject(CelestialCatalogObject value)
