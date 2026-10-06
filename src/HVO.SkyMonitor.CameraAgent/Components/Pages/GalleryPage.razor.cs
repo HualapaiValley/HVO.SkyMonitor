@@ -9,11 +9,12 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
+public sealed partial class GalleryPage : SiteTimeComponent, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryPage? _page;
     private string? _errorMessage;
+    private string? _draftZone;
     private string? _draftFrom;
     private string? _draftTo;
     private string? _draftOrigin;
@@ -276,6 +277,18 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private Task ApplyFiltersAsync()
     {
+        if (!string.Equals(_draftZone, SiteTime.Label, StringComparison.Ordinal))
+        {
+            _errorMessage = "The site time zone changed while these filters were open. Reload before entering times.";
+            return Task.CompletedTask;
+        }
+        var fromValid = TryFilterInput(_draftFrom, From, out var fromUtc, out var fromError);
+        var toValid = TryFilterInput(_draftTo, To, out var toUtc, out var toError);
+        if (!fromValid || !toValid)
+        {
+            _errorMessage = fromError ?? toError;
+            return Task.CompletedTask;
+        }
         // The primary product/outcome selects and the advanced role/status selects address the same query fields.
         // Clear the advanced value when the primary one is set so no visible control is silently ignored.
         if (_draftProduct != "all")
@@ -288,8 +301,8 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         }
         var values = new Dictionary<string, object?>
         {
-            ["from"] = EmptyToNull(_draftFrom),
-            ["to"] = EmptyToNull(_draftTo),
+            ["from"] = fromUtc?.ToString("O", CultureInfo.InvariantCulture),
+            ["to"] = toUtc?.ToString("O", CultureInfo.InvariantCulture),
             ["origin"] = EmptyToNull(_draftOrigin),
             ["role"] = EmptyToNull(_draftRole),
             ["recipe"] = EmptyToNull(_draftRecipe),
@@ -306,6 +319,19 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         };
         NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters("/gallery", values));
         return Task.CompletedTask;
+    }
+
+    private bool TryFilterInput(string? entered, string? recorded, out DateTimeOffset? utc, out string? error)
+    {
+        // An unchanged URL instant already identifies one occurrence of a repeated local hour.
+        if (TryDate(recorded, out var original) && original is { } value &&
+            string.Equals(entered, SiteTime.Input(value), StringComparison.Ordinal))
+        {
+            utc = value;
+            error = null;
+            return true;
+        }
+        return SiteTime.TryInput(entered, out utc, out error);
     }
 
     private void ClearFilters() => NavigationManager.NavigateTo("/gallery");
@@ -332,8 +358,9 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private void CopyParametersToDraft()
     {
-        _draftFrom = From;
-        _draftTo = To;
+        _draftZone = SiteTime.Label;
+        _draftFrom = TryDate(From, out var from) && from is { } first ? SiteTime.Input(first) : From;
+        _draftTo = TryDate(To, out var to) && to is { } last ? SiteTime.Input(last) : To;
         _draftOrigin = Origin;
         _draftRole = Role;
         _draftRecipe = Recipe;
@@ -384,9 +411,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             "returnUrl",
             returnUrl), UriKind.Relative);
     }
-
-    internal static string FormatCaptureTime(DateTimeOffset value) =>
-        value.ToLocalTime().ToString("MMM d, yyyy HH:mm:ss", CultureInfo.InvariantCulture);
 
     private static bool TryDate(string? value, out DateTimeOffset? parsed)
     {

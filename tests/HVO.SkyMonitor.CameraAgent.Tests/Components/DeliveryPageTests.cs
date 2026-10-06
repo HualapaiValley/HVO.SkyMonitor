@@ -38,7 +38,7 @@ public sealed class DeliveryPageTests
 
         var rows = cut.FindAll(".delivery-outbox-table tbody tr");
         Assert.HasCount(3, rows);
-        StringAssert.Contains(rows[0].TextContent, "Retry at Jul 23, 12:05:00 UTC", StringComparison.Ordinal);
+        StringAssert.Contains(rows[0].TextContent, "Retry at 23 Jul 2026 12:05:00 +00:00 (UTC (site time zone unavailable))", StringComparison.Ordinal);
         StringAssert.Contains(rows[0].TextContent, "Logic Host Unavailable", StringComparison.Ordinal);
         Assert.IsTrue(rows[0].ClassList.Contains("current-row"));
         Assert.AreEqual("/operations/quarantine", rows[1].QuerySelector("a")!.GetAttribute("href"));

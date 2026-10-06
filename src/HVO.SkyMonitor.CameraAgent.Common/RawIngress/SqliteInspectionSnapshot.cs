@@ -3,10 +3,8 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 /// <summary>
-/// Produces the coherent read-only snapshot every raw-ingress schema inspector reads before a database is
-/// opened for normal use. The snapshot is taken with the SQLite online backup API from a single read-only
-/// source connection, so a concurrent checkpoint can never remove the write-ahead log between an existence
-/// check and a file copy, and no recovery side file is copied or later interpreted.
+/// Provides a coherent read-only transaction for raw-ingress schema inspection. SQLite reads the main file
+/// and committed WAL together without copying retained history into temporary storage.
 /// </summary>
 internal static class SqliteInspectionSnapshot
 {
@@ -17,15 +15,12 @@ internal static class SqliteInspectionSnapshot
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
-    /// Opens <paramref name="databasePath"/> read-only, backs it up into a private temporary database, and runs
-    /// <paramref name="inspectAsync"/> against that backup. <paramref name="sourceOpenedSeam"/> runs once the
-    /// source connection is open and before the backup step, once per attempt. The temporary directory is always
-    /// removed.
+    /// Opens the database read-only and keeps all inspector queries in one deferred read transaction.
+    /// The source-open seam precedes the first read, including when the last writer checkpoints on close.
     /// </summary>
     internal static async ValueTask<TResult> InspectAsync<TResult>(
         string databasePath,
         int busyTimeoutSeconds,
-        string temporaryDirectoryPrefix,
         Action ensureDatabaseFilesArePhysical,
         Func<SqliteConnection, CancellationToken, ValueTask<TResult>> inspectAsync,
         Action? sourceOpenedSeam,
@@ -41,7 +36,6 @@ internal static class SqliteInspectionSnapshot
                 return await InspectOnceAsync(
                     databasePath,
                     busyTimeoutSeconds,
-                    temporaryDirectoryPrefix,
                     ensureDatabaseFilesArePhysical,
                     inspectAsync,
                     sourceOpenedSeam,
@@ -50,8 +44,7 @@ internal static class SqliteInspectionSnapshot
             catch (SqliteException exception) when (attempt < MaxAttempts && IsContention(exception))
             {
                 // Only transient lock contention is retried; corruption and schema failures propagate to the
-                // inspector that owns their diagnostics. sqlite3_backup_step can return BUSY without ever invoking
-                // the busy handler, so the connection-local busy timeout alone does not space these attempts out.
+                // inspector that owns their diagnostics.
                 await Task.Delay(RetryDelay * attempt, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -64,7 +57,6 @@ internal static class SqliteInspectionSnapshot
     private static async ValueTask<TResult> InspectOnceAsync<TResult>(
         string databasePath,
         int busyTimeoutSeconds,
-        string temporaryDirectoryPrefix,
         Action ensureDatabaseFilesArePhysical,
         Func<SqliteConnection, CancellationToken, ValueTask<TResult>> inspectAsync,
         Action? sourceOpenedSeam,
@@ -99,58 +91,27 @@ internal static class SqliteInspectionSnapshot
                 await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
-        // Coherence does not come from holding this connection open: it comes from the read transaction that the
-        // backup step below opens, which yields one committed image of the database however the write-ahead log has
-        // moved in the meantime. This is why no side file is copied and why nothing here needs an explicit
-        // BEGIN DEFERRED. Tests bind this seam to close the last writer exactly here, which is the race that used to
-        // delete the write-ahead log between the enumeration and the copy.
         sourceOpenedSeam?.Invoke();
-        DirectoryInfo? snapshotRoot = null;
+        cancellationToken.ThrowIfCancellationRequested();
+        using var cancellation = cancellationToken.Register(
+            static handle => SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)handle!), source.Handle);
         try
         {
-            snapshotRoot = Directory.CreateTempSubdirectory(temporaryDirectoryPrefix);
-            var snapshotPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
-            using var snapshot = new SqliteConnection(new SqliteConnectionStringBuilder
-            {
-                DataSource = snapshotPath,
-                Mode = SqliteOpenMode.ReadWriteCreate,
-                Cache = SqliteCacheMode.Private,
-                Pooling = false,
-                DefaultTimeout = busyTimeoutSeconds
-            }.ToString());
-            await Sqlite.SqliteConnectionConfigurationGate.OpenAndConfigureAsync(
-                snapshot,
-                async (connection, token) =>
-                {
-                    using var command = connection.CreateCommand();
-                    command.CommandText = $"PRAGMA busy_timeout = {busyTimeoutSeconds * 1000};";
-                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                },
-                cancellationToken).ConfigureAwait(false);
-            source.BackupDatabase(snapshot);
-            return await inspectAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            // Use SQL transaction control so existing inspectors can issue commands without passing a managed
+            // SqliteTransaction. The first read pins one committed image for every subsequent schema query.
+            using var begin = source.CreateCommand();
+            begin.CommandText = "PRAGMA query_only = ON; PRAGMA cache_size = -2048; PRAGMA mmap_size = 0; BEGIN DEFERRED;";
+            await begin.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var result = await inspectAsync(source, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            ensureDatabaseFilesArePhysical();
+            return result;
         }
-        finally
+        catch (SqliteException) when (cancellationToken.IsCancellationRequested)
         {
-            DeleteSnapshotRoot(snapshotRoot);
+            throw new OperationCanceledException(cancellationToken);
         }
-    }
-
-    private static void DeleteSnapshotRoot(DirectoryInfo? snapshotRoot)
-    {
-        if (snapshotRoot is null)
-        {
-            return;
-        }
-        try
-        {
-            snapshotRoot.Delete(recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // The snapshot directory is private temporary state. Failing to remove it must never replace a
-            // corruption or schema diagnostic that is already propagating out of the inspection.
-        }
+        // Disposing the non-pooled read-only connection rolls back and releases the read lock on every exit.
     }
 
     private static bool IsContention(SqliteException exception)

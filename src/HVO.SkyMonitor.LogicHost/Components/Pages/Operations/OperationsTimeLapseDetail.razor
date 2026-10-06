@@ -1,0 +1,44 @@
+@page "/app/time-lapses/{ProductId:guid}"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Time-lapse | Network Operations</PageTitle>
+<a href="/app/time-lapses">Time-lapses</a>
+@if (Loading)
+{
+    <p role="status">Checking video availability…</p>
+}
+else if (Product is null)
+{
+    <h1>Time-lapse unavailable</h1><p>This product is not available to your account.</p>
+}
+else
+{
+    <h1>@(Product.IsDaily ? "Daily" : "Hourly") time-lapse · @Product.Period.ReportDate</h1>
+    <p>@Product.StartUtc.ToString("u") – @Product.EndUtc.ToString("u")</p>
+    @if (Product.IsGapFiller)
+    {
+        <p>No images were admitted for this hour. The daily video marks this interval as missing.</p>
+    }
+    else if (Available)
+    {
+        <video controls preload="metadata" src="@VideoUrl" aria-label="Time-lapse video"></video>
+        <p class="actions"><a class="btn btn-primary" href="@(VideoUrl + "?download=true")">Download MP4</a></p>
+        <p>Use the player's full-screen control, or download the video for local playback.</p>
+    }
+    else
+    {
+        <p role="alert">The video payload is unavailable. Its retained provenance is still available.</p>
+    }
+    <p><a href="@($"/api/v1.0/time-lapses/{ProductId:D}/provenance")">Download provenance</a></p>
+    <dl><dt>Resolution</dt><dd>@Product.Encoding.Media.Width × @Product.Encoding.Media.Height</dd>
+        <dt>Coverage</dt><dd>@(Product.HasGaps ? "Contains marked gaps in received or admitted images" : "Complete source timeline")</dd>
+        <dt>Video duration</dt><dd>@((Product.Encoding.Media.DurationTicks / 1_000_000d).ToString("0.###")) seconds</dd>
+        <dt>File size</dt><dd>@((Product.Encoding.PayloadBytes / 1_000_000d).ToString("0.0")) MB</dd>
+        <dt>Checksum</dt><dd class="checksum">@Product.Encoding.PayloadSha256</dd>
+    </dl>
+    @if (Product.SegmentProductIds.Count > 0)
+    {
+        <h2>Hourly sources</h2><p>The daily video reuses these hourly products. Empty hours are retained as marked gap segments.</p>
+        <ul>@foreach (var segment in Product.SegmentProductIds) { <li><a href="@($"/app/time-lapses/{segment:D}")">@segment</a></li> }</ul>
+    }
+}

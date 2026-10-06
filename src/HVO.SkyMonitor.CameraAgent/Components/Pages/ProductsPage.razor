@@ -1,8 +1,10 @@
+@inherits SiteTimeComponent
 @page "/archive/products"
 @using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -16,10 +18,11 @@
     </nav>
     @if (!IsRetainedView)
     {
-        <PageHeader Eyebrow="Archive / multi-source derivatives" Title="Generated products" Lead="Nightly star trails and keograms of each evaluated sunrise-to-sunrise period, with their sources, span, and the automation that generated them. A period without a product keeps its recorded reason and shows no image.">
+        <PageHeader Eyebrow="Archive / multi-source derivatives" Title="Generated products" Lead="Nightly star trails, keograms and time-lapses of each evaluated sunrise-to-sunrise period, with their sources, span, and the automation that generated them. A period without a product keeps its recorded reason.">
             <a class="btn btn-outline-light" href="/operations/automations">Manage automations</a>
         </PageHeader>
         <GeneratedProductsView Type="@Type" Status="@Status" Day="@Day" Before="@Before" />
+        <TimeLapseLibraryView Before="@VideoBefore" />
     }
     else
     {
@@ -60,7 +63,7 @@
                     @foreach (var product in _page.Items)
                     {
                         <tr>
-                            <td><time datetime="@product.CommittedUtc.ToString("O")">@TransientPage.FormatTime(product.CommittedUtc)</time></td>
+                            <td><time datetime="@product.CommittedUtc.ToString("O")">@SiteTime.Format(product.CommittedUtc)</time></td>
                             <td><a href="@DetailUrl(product.ArtifactId)">@OperationsPage.SplitWords(product.Role.ToString())@(product.Variant is null ? string.Empty : $" · {product.Variant}")</a>@if (product.IsMaterialization) { <span class="badge-soft">Saved layer stack</span> }@if (product.EncodedWidth is { } width && product.EncodedHeight is { } height) { <span class="dim">@width × @height</span> }</td>
                             <td><a href="/gallery/@product.CaptureId.ToString("D")">#@product.CaptureSequence</a></td>
                             <td>@product.Recipe.Name <span class="dim">@product.Recipe.SemanticVersion</span></td>

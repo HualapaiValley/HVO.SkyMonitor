@@ -929,6 +929,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
         builder.Services.AddSingleton<CentralProcessingGraphConvergenceSignal>();
         builder.Services.AddHostedService<CentralDerivativeWorker>();
+        HVO.SkyMonitor.LogicHost.Services.TimeLapses.CentralTimeLapseServices.AddCentralTimeLapses(builder.Services, builder.Configuration);
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddInstalledCelestialCatalog();
 

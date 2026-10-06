@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Storage.FileSystem\HVO.SkyMonitor.Storage.FileSystem.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HVO.SkyMonitor.Processing.Tests" />
+  </ItemGroup>
+</Project>

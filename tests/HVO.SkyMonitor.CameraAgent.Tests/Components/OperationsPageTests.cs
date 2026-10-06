@@ -50,7 +50,7 @@ public sealed class OperationsPageTests
 
             Assert.HasCount(4, cut.FindAll(".ops-config-card"));
             AssertCard(cut, "/operations/camera", "Installed rig / r1", "Module Virtual Sky");
-            AssertCard(cut, "/operations/schedule", "Schedule r2", "Next transition 00:00 UTC");
+            AssertCard(cut, "/operations/schedule", "Schedule r2", "Next transition 2 Jan 1970 00:00:00 +00:00 (UTC (site time zone unavailable))");
             AssertCard(cut, "/operations/pipeline", "Pipeline r2", "1 configured step");
             AssertCard(cut, "/operations/calibration", "No active bundle", "0 published bundles");
 
@@ -70,7 +70,7 @@ public sealed class OperationsPageTests
             Assert.AreEqual("Revision r2 saved from an operator draft; active.", changes[0].QuerySelector("span")!.TextContent);
             Assert.AreEqual("Revision r1 saved from an operator draft.", changes[1].QuerySelector("span")!.TextContent);
             Assert.AreEqual("1970-01-01T00:00:00.0000000+00:00", changes[0].QuerySelector("time")!.GetAttribute("datetime"));
-            Assert.AreEqual("Jan 1", changes[0].QuerySelector("time")!.TextContent);
+            Assert.AreEqual("1 Jan 1970 00:00:00 +00:00 (UTC (site time zone unavailable))", changes[0].QuerySelector("time")!.TextContent);
 
             Assert.IsTrue(cut.Find(".toast").HasAttribute("hidden"));
             Assert.IsEmpty(cut.FindAll("dialog"));
@@ -490,7 +490,7 @@ public sealed class OperationsPageTests
             var first = cut.Find(".ops-audit-list li");
             Assert.AreEqual("Calibration", first.QuerySelector("strong")!.TextContent);
             Assert.AreEqual("Rollback Bundle: bundle bundle-1 active.", first.QuerySelector("span")!.TextContent);
-            Assert.AreEqual(OperatorUiTestData.Now.AddMinutes(-2).UtcDateTime.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+            Assert.AreEqual("23 Jul 2026 11:58:00 +00:00 (UTC (site time zone unavailable))",
                 first.QuerySelector("time")!.TextContent);
         });
     }

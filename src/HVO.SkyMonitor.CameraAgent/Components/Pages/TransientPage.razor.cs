@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
+public sealed partial class TransientPage : SiteTimeComponent, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentTransientOperatorPage? _page;
@@ -52,8 +52,8 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
     private string ObservingDateLabel(CameraAgentTransientOperatorCandidate candidate)
         => ObservingDate(candidate)?.ToString("d MMM yyyy", CultureInfo.InvariantCulture) ?? "Reporting date unavailable";
     private string LocalTime(DateTimeOffset value)
-        => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss", CultureInfo.InvariantCulture);
-    private static string UtcTime(DateTimeOffset value) => value.UtcDateTime.ToString("d MMM yyyy HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+        => TimeZoneInfo.ConvertTime(value, _calendar.TimeZone).ToString("d MMM yyyy HH:mm:ss zzz", CultureInfo.InvariantCulture);
+    private string SiteTimestamp(DateTimeOffset value) => SiteTime.Format(value);
     private IReadOnlyList<CameraAgentTransientOperatorCandidate> VisibleItems => _page?.Items.Where(candidate =>
         (ClassificationFilter == "all" || string.Equals(ClassificationFilter,
             CameraAgentEventFacts.ClassificationKey(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence), StringComparison.Ordinal)) &&
@@ -229,8 +229,7 @@ public sealed partial class TransientPage : ComponentBase, IAsyncDisposable
         return true;
     }
 
-    internal static string FormatTime(DateTimeOffset value)
-        => value.UtcDateTime.ToString("MMM d, yyyy HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    internal string FormatTime(DateTimeOffset value) => SiteTime.Format(value);
 
     internal static string SplitWords(string value)
         => OperationsPage.SplitWords(value.Replace('_', ' '));

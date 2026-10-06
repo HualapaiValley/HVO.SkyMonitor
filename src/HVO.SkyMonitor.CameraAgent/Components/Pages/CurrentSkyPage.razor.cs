@@ -6,7 +6,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
+public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
@@ -720,7 +720,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string StorageStatusReason => IsArchived
         ? "Available retained artifacts are identified below; current free space is not a capture fact."
         : _operations is { RawReconciliation: { } raw, ProductReconciliation: { } products }
-            ? $"Last recovery checks: raw {raw.CompletedUtc:yyyy-MM-dd HH:mm} UTC; derived {products.CompletedUtc:yyyy-MM-dd HH:mm} UTC. This is recovery evidence, not a free-space measurement."
+            ? $"Last recovery checks: raw {SiteTime.Format(raw.CompletedUtc)}; derived {SiteTime.Format(products.CompletedUtc)}. This is recovery evidence, not a free-space measurement."
             : "A complete local recovery check is not available. Open Storage for its recorded results.";
 
     private string StageFactLabel => ShowLayeredHero && _layerInteractive
@@ -1123,7 +1123,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     }
 
     private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
-        ? $"{slot.Label} sky capture from {capture.ExposureStartedUtc.ToLocalTime():g}"
+        ? $"{slot.Label} sky capture from {SiteTime.Format(capture.ExposureStartedUtc)}"
         : "Current sky capture";
 
     private string FreshnessLabel => _presentation?.ImageFreshness switch

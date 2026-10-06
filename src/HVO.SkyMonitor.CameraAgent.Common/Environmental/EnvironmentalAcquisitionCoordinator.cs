@@ -238,6 +238,12 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             ?? throw new InvalidOperationException("Deployment location is not initialized.");
         if (!location.IsEffectiveAt(observedAtUtc))
         {
+            if (trigger == EnvironmentalAcquisitionTrigger.Periodic)
+            {
+                return Receipt(
+                    source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.Missing,
+                    "deployment-location-not-effective", null, started);
+            }
             throw new InvalidOperationException("Deployment location is not effective for the observation time.");
         }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

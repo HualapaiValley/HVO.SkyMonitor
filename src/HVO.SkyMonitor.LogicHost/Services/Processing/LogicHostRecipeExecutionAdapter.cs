@@ -130,7 +130,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             ? ProcessingGraphInputBindingKind.PrimaryArtifact
             : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
 
-    private static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
+    internal static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
     {
         var observation = ResolveObservationBounds(descriptor);
         return new ProcessingArtifact(

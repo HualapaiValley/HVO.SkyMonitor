@@ -24,7 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class RawCaptureIngressTests
+public sealed partial class RawCaptureIngressTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
@@ -414,7 +414,7 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_InspectionBackupsRemainCoherentWhenLastWriterCloses()
+    public async Task InitializeAsync_InspectionReadsRemainCoherentWhenLastWriterCloses()
     {
         var root = CreateRoot();
         try
@@ -433,7 +433,7 @@ public sealed class RawCaptureIngressTests
             SqliteConnection.ClearAllPools();
 
             // Transient runtime inspector: the last writer closes exactly at the inspection seam, so the
-            // write-ahead log is checkpointed away before the backup step opens its read transaction. Coherence
+            // write-ahead log is checkpointed away before inspection opens its read transaction. Coherence
             // comes from that read transaction, not from holding the source connection open, and the inspection
             // still sees one committed image instead of a main file paired with side files copied at another instant.
             var transientBarrier = await CreateWalWriterBarrierAsync(databasePath).ConfigureAwait(false);

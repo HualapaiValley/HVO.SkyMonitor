@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/replays/new"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -61,8 +62,8 @@
                 <div><dt>Agent</dt><dd>@_candidate.AgentId</dd></div>
                 <div><dt>Rig</dt><dd>@(_candidate.RigId ?? "Unspecified")</dd></div>
                 <div><dt>Sequence</dt><dd>@_candidate.CaptureSequence</dd></div>
-                <div><dt>Exposure started</dt><dd><time datetime="@_candidate.ExposureStartedUtc.ToString("O")">@_candidate.ExposureStartedUtc.ToString("u")</time></dd></div>
-                <div><dt>Durable ingress</dt><dd><time datetime="@_candidate.DurableIngressUtc.ToString("O")">@_candidate.DurableIngressUtc.ToString("u")</time></dd></div>
+                <div><dt>Exposure started</dt><dd><time datetime="@_candidate.ExposureStartedUtc.ToString("O")">@SiteTime.Format(_candidate.ExposureStartedUtc)</time></dd></div>
+                <div><dt>Durable ingress</dt><dd><time datetime="@_candidate.DurableIngressUtc.ToString("O")">@SiteTime.Format(_candidate.DurableIngressUtc)</time></dd></div>
                 <div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(_candidate.RawState)</dd></div>
                 <div><dt>Evidence availability</dt><dd>@OperationsPage.SplitWords(_candidate.EvidenceAvailability)</dd></div>
                 <div><dt>Raw retention hold</dt><dd>@(_candidate.RawRetentionHold is null ? "Unavailable" : _candidate.RawRetentionHold.Value ? "Held" : "Not held")</dd></div>

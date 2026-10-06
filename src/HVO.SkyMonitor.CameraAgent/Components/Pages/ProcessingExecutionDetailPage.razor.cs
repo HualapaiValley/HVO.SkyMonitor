@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, IAsyncDisposable
 {
     private CameraAgentProcessingExecutionDetailView? _view;
     private string? _message;
@@ -53,7 +53,7 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         : "No acknowledgement recorded for this execution";
     private long? _captureSequence;
     private string TriggerLabel => _view?.Execution is { } execution
-        ? $"{(execution.TriggerReference is { } reference ? reference : "Recorded capture trigger")} at {execution.AcceptedUtc:HH:mm:ss} UTC"
+        ? $"{(execution.TriggerReference is { } reference ? reference : "Recorded capture trigger")} at {SiteTime.Format(execution.AcceptedUtc)}"
         : "Unavailable";
     private string ScheduleLabel => _capture?.Detail?.Schedule is { } schedule
         ? $"schedule {ShortIdentity(schedule.RevisionId)} / {schedule.SetpointProfileId} / {schedule.Reason}"

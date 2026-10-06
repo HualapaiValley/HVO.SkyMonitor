@@ -1,3 +1,4 @@
+using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
@@ -12,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// The archive Products page: the generated products library by default, and the retained outputs table as a second
 /// view. Every link that carries a retained-output filter or cursor keeps opening the retained view unchanged.
 /// </summary>
-public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProductsPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const string RetainedPath = "/archive/products?view=retained";
 
@@ -39,6 +40,9 @@ public sealed partial class ProductsPage : ComponentBase, IAsyncDisposable
     [Parameter, SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "day")] public string? Day { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "before")] public string? Before { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "videoBefore")] public string? VideoBeforeText { get; set; }
+    private DateOnly? VideoBefore => DateOnly.TryParseExact(VideoBeforeText, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+        DateTimeStyles.None, out var value) ? value : null;
 
     // Links from before the generated products library carry no view, so any retained filter or cursor selects it.
     internal bool IsRetainedView => string.Equals(View, "retained", StringComparison.Ordinal) ||
