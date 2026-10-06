@@ -11,12 +11,18 @@
 #           HVO_1170_WORK_ROOT=<dir> holds per-trial durable roots, each deleted by the harness.
 #
 # Requires bash 5.1+, git, jq, flock, sha256sum, zstd, python3 and the pinned .NET SDK. Docker is not used.
+# The heavy lock follows #520 addendum 003: the script re-executes itself under `flock -o`, so only flock holds
+# the lock and no child (dotnet test, MSBuild nodes, build servers) inherits it or outlives the run holding it.
+# MSBuild node reuse and the compiler and Razor build servers are disabled for every build and test the run
+# starts, and `dotnet build-server shutdown` runs before S1 and before every measured trial.
 # Every process must pass exactly one test and write its evidence; a filter that selects nothing is a
 # failure, never a skip. Failures are kept in the pack and the script exits nonzero once all processes
 # have finished. The pack gets an index, SHA256SUMS and a .tar.zst with its own hash beside it.
 set -uo pipefail
 
 fatal() { echo "$*" >&2; exit 1; }
+script=$(realpath "${BASH_SOURCE[0]}") || exit 2
+lock=/tmp/hvo-1170-heavy.lock
 repo=$(git rev-parse --show-toplevel) || exit 2
 manifest="$repo/docs/validation/issue-1170-pipeline-manifest.json"
 mode=${1:?usage: issue-1170-pipeline.sh <measure|attribute|s1> <new output directory>}
@@ -37,18 +43,22 @@ base=$(jq -r .productBase "$manifest")
 git cat-file -e "$base^{commit}" 2>/dev/null || { echo "product base $base is not available" >&2; exit 2; }
 product_unchanged=false
 git diff --quiet "$base" HEAD -- src && product_unchanged=true
+if [[ "${HVO_1170_HEAVY_LOCK:-}" != "$lock" ]]; then
+    # MSBuild reads these variables as properties: no reused nodes, no compiler or Razor server outliving a build.
+    export HVO_1170_HEAVY_LOCK=$lock MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false UseRazorBuildServer=false
+    exec flock -o -w 7200 -E 75 "$lock" bash "$script" "$mode" "$out"
+fi
 mkdir -p "$(dirname "$out")" || exit 2
 mkdir "$out" || { echo "output directory must not exist: $out" >&2; exit 2; }
 mkdir "$out/runs" "$out/host" || exit 2
 out=$(cd "$out" && pwd -P) || exit 2
 mkdir -p "$work" || exit 2
 
-exec 9>/tmp/hvo-1170-heavy.lock
-flock -w 7200 9 || fatal "could not acquire /tmp/hvo-1170-heavy.lock"
-
 utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 load1() { cut -d' ' -f1 /proc/loadavg; }
 tenants() { { utc; cat /proc/loadavg; ps -eo pid,user,pcpu,rss,etimes,comm --sort=-pcpu | head -25; } >"$1"; }
+# Stops build servers left by earlier builds so they are neither tenants nor part of CPU and memory snapshots.
+shutdown_build_servers() { dotnet build-server shutdown >"$1" 2>&1 || fatal "dotnet build-server shutdown failed; see $1"; }
 threshold=$(jq -r .loadGate.oneMinuteBelow "$manifest"); max_wait=$(jq -r .loadGate.maxWaitSeconds "$manifest")
 # Waits for the one-minute load to fall below the manifest threshold; prints the seconds waited.
 gate() {
@@ -81,14 +91,18 @@ host=$(jq -n --arg kernel "$(uname -sr)" --arg cpu "$(lscpu | sed -n 's/^Model n
     --arg swap "$(sed -n 's/^SwapTotal:[[:space:]]*//p' /proc/meminfo)" --arg sdk "$(dotnet --version)" \
     --arg governor "$governor" --arg perf "$perf_state" --arg trace "$trace_version" --arg hostname "$(hostname)" \
     --arg dotnetvars "$(env | grep -E '^(DOTNET_|COMPlus_)' | sort)" \
+    --arg buildvars "$(env | grep -E '^(MSBUILDDISABLENODEREUSE|UseSharedCompilation|UseRazorBuildServer)=' | sort)" \
     '{hostname: $hostname, kernel: $kernel, cpu: $cpu, hypervisor: $hypervisor, logicalProcessors: ($cores | tonumber),
       memTotal: $memory, swapTotal: $swap, sdk: $sdk, governor: $governor, perf: $perf,
-      dotnetTrace: (if $trace == "" then null else $trace end), callerDotnetVariables: $dotnetvars}') || fatal "could not record host"
+      dotnetTrace: (if $trace == "" then null else $trace end), callerDotnetVariables: $dotnetvars,
+      heavyLock: {path: "/tmp/hvo-1170-heavy.lock", form: "flock -o", buildVariables: $buildvars,
+                  buildServerShutdown: "before S1 and before every measured trial"}}') || fatal "could not record host"
 
 results='[]'; failed=0
 record() { results=$(jq --argjson run "$1" '. + [$run]' <<<"$results") || fatal "could not record run"; }
 
 if [[ "$mode" == s1 ]]; then
+    shutdown_build_servers "$out/runs/s1-build-server-shutdown.log"
     waited=$(gate); before=$(load1); started=$(utc); seconds=$SECONDS
     "$repo/docs/validation/issue-1106-qualification.sh" "$out/s1" >"$out/runs/s1.log" 2>&1
     rc=$?; [[ $rc -eq 0 ]] || failed=1
@@ -127,6 +141,7 @@ else
                 name=$cell-t$trial${collector:+-$collector}; dir="$out/runs/$name"; mkdir -p "$dir"
                 extra=(); [[ "$profile" == tc0-side-cell ]] && extra+=(DOTNET_TieredCompilation=0)
                 [[ -n "$collector" ]] && { mkdir "$dir/attach"; extra+=(HVO_PIPELINE_ATTACH_DIR="$dir/attach"); }
+                shutdown_build_servers "$dir/build-server-shutdown.log"
                 waited=$(gate); before=$(load1); tenants "$dir/tenants-before.txt"
                 started=$(utc); seconds=$SECONDS
                 echo "=== $name $started load=$before waited=${waited}s"
