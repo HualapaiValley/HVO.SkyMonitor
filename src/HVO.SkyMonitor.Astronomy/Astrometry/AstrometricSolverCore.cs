@@ -68,6 +68,7 @@ internal static class AstrometricSolverCore
 {
     private sealed record Star(CelestialCatalogObject Catalog, EnuVector Ray);
     private readonly record struct Triangle(int A, int B, int C, double X, double Y, double Z);
+    private const int MaximumIndexTriangles = 2000000;
     private sealed record Pair(Star Star, CoreDetection CoreDetection, PixelPoint Predicted, double Distance);
     private sealed record Candidate(AstrometricRotation Rotation, double Scale, List<Pair> Matches);
     public static CoreResult Solve(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
@@ -107,15 +108,15 @@ internal static class AstrometricSolverCore
         var narrow = configuration.Model == ProjectionModel.Perspective;
         var maxSpan = narrow ? Math.Min(Math.PI, 2 * Math.Atan(Math.Sqrt(Math.Pow(Math.Max(configuration.PrincipalX, configuration.Width - configuration.PrincipalX) / configuration.FocalX, 2) + Math.Pow(Math.Max(configuration.PrincipalY, configuration.Height - configuration.PrincipalY) / configuration.FocalY, 2)) / o.MinimumScale)) : Math.PI;
         var tolerance = Math.Max(1.8 / (Math.Min(configuration.FocalX, configuration.FocalY) * o.MinimumScale), (narrow ? .0015 : .004) * maxSpan);
-        // A narrow field indexes every training star unless the field is wide enough that doing so would swamp the triangle
-        // bound; then it indexes the brightest stars expected to supply the detection triangles (WideFieldIndexCount).
-        var narrowCount = narrow ? WideFieldIndexCount(configuration, o.MaximumScale, o.DetectionTriangleStars) : 0;
-        var indexed = (!narrow ? training.OrderBy(s => s.Catalog.Magnitude).Take(120)
-            : narrowCount >= training.Count ? training : training.OrderBy(s => s.Catalog.Magnitude).Take(narrowCount)).ToList();
+        // A narrow field indexes every training star, in training order exactly as solver v1 did, whenever that index fits
+        // the triangle bound; a field too wide for that indexes the largest magnitude-ordered prefix that fits (IndexPrefix).
+        var brightest = narrow ? training.OrderBy(s => s.Catalog.Magnitude).ToList() : [];
+        var admitted = narrow ? IndexPrefix(brightest.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, MaximumIndexTriangles, control) : 0;
+        var indexed = (!narrow ? training.OrderBy(s => s.Catalog.Magnitude).Take(120) : admitted == training.Count ? training : brightest.Take(admitted)).ToList();
         if (indexed.Count > 1500) return Reject("Catalog exceeds the bounded1500-star in-memory index limit");
         var index = new Dictionary<(int, int, int), List<Triangle>>();
         foreach (var t in Triangles(indexed.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, control))
-        { var k = Key(t, tolerance); if (!index.TryGetValue(k, out var bucket)) index[k] = bucket = []; bucket.Add(t); triangleCount++; if (triangleCount > 2000000) return Reject("Catalog triangle index exceeds its2million-entry bound"); }
+        { var k = Key(t, tolerance); if (!index.TryGetValue(k, out var bucket)) index[k] = bucket = []; bucket.Add(t); triangleCount++; if (triangleCount > MaximumIndexTriangles) return Reject("Catalog triangle index exceeds its2million-entry bound"); }
         var bright = detections.OrderByDescending(d => d.Flux).Take(o.DetectionTriangleStars).ToArray();
         var rawCandidates = new List<Candidate>();
         var scales = Enumerable.Range(0, (int)Math.Ceiling((o.MaximumScale - o.MinimumScale) / o.ScaleStep) + 1)
@@ -212,24 +213,30 @@ internal static class AstrometricSolverCore
         return new(true, "accepted", "Warm local fit and withheld-star gates passed; proposed next configuration", solution, candidate.Scale, evaluation.Quality, associations, 0, 0, 0, 0, 1, false, watch.Elapsed.TotalMilliseconds, domain);
     }
     /// <summary>
-    /// Number of brightest above-horizon training stars a perspective field indexes: twice the detection-triangle stars,
-    /// scaled from the hemisphere to the solid angle of the sensor rectangle at the largest searched focal scale (the
-    /// narrowest field), so the brightest detections are expected to be indexed anywhere in the scale range. A telescope
-    /// field asks for more stars than exist above the horizon and so keeps every training star.
+    /// Number of leading rays whose index triangles fit <paramref name="maximumTriangles"/>, or every ray when they all
+    /// do. Rays are admitted in order, counting the triangles each closes with the rays before it under the same
+    /// acceptance rule as <see cref="Triangles"/>, so the enumeration stops as soon as the bound is passed rather than
+    /// growing with the number of rays above the horizon.
     /// </summary>
-    internal static int WideFieldIndexCount(SolverOptics config, double focalScale, int detectionTriangleStars)
+    internal static int IndexPrefix(EnuVector[] rays, double maxSpan, double minimumSide, long maximumTriangles, AstrometricWorkControl? control = null)
     {
-        // Solid angle of the sensor rectangle through an ideal pinhole, summed over the four quadrants about the principal point.
-        var solidAngle = 0d;
-        foreach (var x in new[] { config.PrincipalX, config.Width - config.PrincipalX })
-            foreach (var y in new[] { config.PrincipalY, config.Height - config.PrincipalY })
+        var distances = new double[rays.Length * rays.Length]; var count = 0L;
+        for (var c = 0; c < rays.Length; c++)
+        {
+            for (var a = 0; a < c; a++) distances[a * rays.Length + c] = distances[c * rays.Length + a] = Angle(rays[a], rays[c]);
+            for (var a = 0; a < c; a++)
             {
-                double a = Math.Max(0, x) / (config.FocalX * focalScale), b = Math.Max(0, y) / (config.FocalY * focalScale);
-                solidAngle += Math.Atan(a * b / Math.Sqrt(1 + a * a + b * b));
+                control?.Check();
+                var ac = distances[a * rays.Length + c]; if (ac < minimumSide || ac > maxSpan) continue;
+                for (var b = a + 1; b < c; b++)
+                    if (IsIndexTriangle(rays[a], rays[b], rays[c], distances[a * rays.Length + b], ac, distances[b * rays.Length + c], maxSpan, minimumSide) &&
+                        ++count > maximumTriangles) return c;
             }
-        var count = 2 * detectionTriangleStars * 2 * Math.PI / solidAngle;
-        return solidAngle > 0 && count < int.MaxValue ? (int)Math.Ceiling(count) : int.MaxValue;
+        }
+        return rays.Length;
     }
+    /// <summary>Number of triangles <see cref="Triangles"/> enumerates; exposed for bound-check tests.</summary>
+    internal static int CountTriangles(EnuVector[] rays, double maxSpan, double minimumSide) => Triangles(rays, maxSpan, minimumSide).Count();
     /// <summary>
     /// Smallest focal scale whose scaled aperture edge stays inside the family and distortion domain. Scaling focal
     /// length by <c>s</c> divides the normalized edge radius by <c>s</c>, for circular and rectangular apertures alike.
@@ -280,14 +287,20 @@ internal static class AstrometricSolverCore
             for (var c = b + 1; c < rays.Length; c++)
             {
                 var ac = distances[a * rays.Length + c]; var bc = distances[b * rays.Length + c];
-                if (ac < minimumSide || bc < minimumSide || ac > maxSpan || bc > maxSpan) continue;
+                if (!IsIndexTriangle(rays[a], rays[b], rays[c], ab, ac, bc, maxSpan, minimumSide)) continue;
+                // Ordering by opposite side gives rotation-invariant correspondence.
                 var side = new[] { (Angle: bc, Vertex: a), (Angle: ac, Vertex: b), (Angle: ab, Vertex: c) }.OrderBy(s => s.Angle).ToArray();
-                if (side[1].Angle - side[0].Angle < minimumSide || side[2].Angle - side[1].Angle < minimumSide) continue;
-                // Exclude near-collinear triangles; ordering by opposite side gives rotation-invariant correspondence.
-                if (Math.Abs(EnuVector.Dot(rays[a], EnuVector.Cross(rays[b], rays[c]))) < Math.Sin(side[0].Angle) * Math.Sin(side[2].Angle) * .12) continue;
                 yield return new(side[0].Vertex, side[1].Vertex, side[2].Vertex, side[0].Angle, side[1].Angle, side[2].Angle);
             }
         }
+    }
+    private static bool IsIndexTriangle(EnuVector a, EnuVector b, EnuVector c, double ab, double ac, double bc, double maxSpan, double minimumSide)
+    {
+        if (ab < minimumSide || ac < minimumSide || bc < minimumSide || ab > maxSpan || ac > maxSpan || bc > maxSpan) return false;
+        double low = Math.Min(ab, Math.Min(ac, bc)), high = Math.Max(ab, Math.Max(ac, bc)), middle = Math.Max(Math.Min(ab, ac), Math.Min(Math.Max(ab, ac), bc));
+        if (middle - low < minimumSide || high - middle < minimumSide) return false;
+        // Exclude near-collinear triangles.
+        return Math.Abs(EnuVector.Dot(a, EnuVector.Cross(b, c))) >= Math.Sin(low) * Math.Sin(high) * .12;
     }
     private static (int, int, int) Key(Triangle t, double bin) => ((int)Math.Floor(t.X / bin), (int)Math.Floor(t.Y / bin), (int)Math.Floor(t.Z / bin));
     public static double Angle(EnuVector a, EnuVector b) => Math.Atan2(EnuVector.Cross(a, b).Length, EnuVector.Dot(a, b));
