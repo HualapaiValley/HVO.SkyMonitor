@@ -293,14 +293,17 @@ public sealed class VirtualOpticalCalibrationQualificationTests
     /// <summary>
     /// Largest native-pixel disagreement between the truth and calibrated intrinsic maps over the supported field,
     /// evaluated with the reference family form r = f g(theta) (1 + k1 g^2) rather than a production projector. The
-    /// field is the declared zenith domain where the truth pixel lies inside the truth native aperture.
+    /// field is the declared zenith domain where the truth pixel lies inside the truth native aperture. A sample is skipped
+    /// only when the truth's own supported distortion domain excludes it, where a negative k1 has folded the truth radius
+    /// back toward the axis; every sample inside the truth domain is compared whatever the calibrated optics do there.
     /// </summary>
     private static double MappingError(ProjectionContext truth, ProjectionContext calibrated)
     {
         var worst = 0d;
         for (var zenith = 0d; zenith <= MappingDomainZenithDegrees; zenith += 2.5)
         {
-            if (VirtualAstrometryReference.IdealRadius(truth.Model, VirtualAstrometryReference.Radians(zenith)) is not { } g) continue;
+            if (VirtualAstrometryReference.IdealRadius(truth.Model, VirtualAstrometryReference.Radians(zenith)) is not { } g ||
+                !VirtualAstrometryReference.IsSupportedIdealRadius(g, truth.RadialDistortionK1)) continue;
             var truthRadius = truth.FocalLengthXPixels * g * (1 + truth.RadialDistortionK1 * g * g);
             var calibratedRadius = calibrated.FocalLengthXPixels * g * (1 + calibrated.RadialDistortionK1 * g * g);
             for (var azimuth = 0d; azimuth < 360; azimuth += 10)

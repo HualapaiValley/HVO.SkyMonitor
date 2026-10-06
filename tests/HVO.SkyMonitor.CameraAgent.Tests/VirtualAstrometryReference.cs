@@ -133,13 +133,19 @@ internal static class VirtualAstrometryReference
         }
         return null;
     }
+    /// <summary>
+    /// The documented supported distortion domain, where the radial derivative 1 + 3 k1 g^2 stays at least one half.
+    /// Beyond it a negative k1 folds the radius back toward the axis, so keeping those rays would place far off-axis
+    /// stars inside the frame where, by contract, nothing projects.
+    /// </summary>
+    internal static bool IsSupportedIdealRadius(double ideal, double k1) => 1 + 3 * k1 * ideal * ideal >= .5;
     internal static bool IsCircular(CameraRigConfig rig) => Model(rig) != ProjectionModel.Perspective;
     internal static PixelPoint? Project(CameraRigConfig rig, Vector enu)
     {
         var basis = Pose(rig); var model = Model(rig);
         var qx = Vector.Dot(enu, basis.Right); var qy = Vector.Dot(enu, basis.Up); var qz = Vector.Dot(enu, basis.Forward);
         var theta = Math.Acos(Math.Clamp(qz, -1, 1)); var length = Math.Sqrt(qx * qx + qy * qy);
-        if (IdealRadius(model, theta) is not { } g) return null;
+        if (IdealRadius(model, theta) is not { } g || !IsSupportedIdealRadius(g, rig.Optics.RadialDistortionK1)) return null;
         // Family normalized radius g(theta), scaled by the one-coefficient radial term 1 + k1 g^2.
         var distance = NativeFocal(rig) * g * (1 + rig.Optics.RadialDistortionK1 * g * g);
         if (model != ProjectionModel.Perspective && distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;

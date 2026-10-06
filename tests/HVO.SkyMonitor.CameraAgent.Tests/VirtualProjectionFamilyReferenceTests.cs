@@ -108,6 +108,55 @@ public sealed class VirtualProjectionFamilyReferenceTests
     }
 
     [TestMethod]
+    public void ReferenceProjection_StopsAtTheSupportedDistortionDomain()
+    {
+        const double k1 = -.007;
+        var rectilinear = VirtualAstrometryFixture.Families.Single(f => f.Name == "rectilinear");
+        var native = VirtualAstrometryFixture.Profiles(1, rectilinear)[0].Config.Rig;
+        var rig = native with { Optics = native.Optics with { RadialDistortionK1 = k1 } };
+        var basis = VirtualAstrometryReference.Pose(rig);
+        var focal = VirtualAstrometryReference.NativeFocal(rig);
+        var principalX = rig.Optics.PrincipalPointX!.Value; var principalY = rig.Optics.PrincipalPointY!.Value;
+        VirtualAstrometryReference.Vector Ray(double theta, double phi) =>
+            basis.Forward * Math.Cos(theta) + (basis.Right * Math.Cos(phi) + basis.Up * Math.Sin(phi)) * Math.Sin(theta);
+
+        // The domain ends where the radial derivative 1 + 3 k1 g^2 falls to one half (g 4.880, theta 78.42 deg here).
+        var edge = Math.Sqrt(-.5 / (3 * k1));
+        Assert.IsTrue(VirtualAstrometryReference.IsSupportedIdealRadius(edge * (1 - 1e-12), k1));
+        Assert.IsFalse(VirtualAstrometryReference.IsSupportedIdealRadius(edge * (1 + 1e-12), k1));
+        Assert.IsTrue(VirtualAstrometryReference.IsSupportedIdealRadius(1e6, 0));
+        Assert.IsTrue(VirtualAstrometryReference.IsSupportedIdealRadius(1e6, .006));
+
+        // At 85 deg the folded radius f g (1 + k1 g^2) lands back inside the frame, where nothing projects by contract.
+        var phi = VirtualAstrometryReference.Radians(20);
+        var far = Math.Tan(VirtualAstrometryReference.Radians(85)); var folded = focal * far * (1 + k1 * far * far);
+        Assert.IsTrue(principalX + folded * Math.Cos(phi) is > 0 and < 1936 && principalY - folded * Math.Sin(phi) is > 0 and < 1216);
+        Assert.IsNull(VirtualAstrometryReference.Project(rig, Ray(VirtualAstrometryReference.Radians(85), phi)));
+
+        // Inside the domain the projection is the unchanged family formula, to the last bit.
+        var ray = Ray(VirtualAstrometryReference.Radians(30), phi);
+        var qx = VirtualAstrometryReference.Vector.Dot(ray, basis.Right); var qy = VirtualAstrometryReference.Vector.Dot(ray, basis.Up);
+        var g = Math.Tan(Math.Acos(Math.Clamp(VirtualAstrometryReference.Vector.Dot(ray, basis.Forward), -1, 1)));
+        var length = Math.Sqrt(qx * qx + qy * qy); var distance = focal * g * (1 + k1 * g * g);
+        var projected = VirtualAstrometryReference.Project(rig, ray);
+        Assert.IsNotNull(projected);
+        Assert.AreEqual(principalX + distance * qx / length, projected.Value.X);
+        Assert.AreEqual(principalY - distance * qy / length, projected.Value.Y);
+    }
+
+    [TestMethod]
+    public void FisheyeFamilies_StayInsideTheSupportedDistortionDomainAcrossTheirFieldForEveryFrozenK1()
+    {
+        foreach (var family in VirtualAstrometryFixture.Families.Where(f => f.Model != ProjectionModel.Perspective))
+        {
+            var g = VirtualAstrometryReference.IdealRadius(family.Model, VirtualAstrometryReference.Radians(family.FieldOfViewDegrees / 2));
+            Assert.IsNotNull(g, family.Name);
+            foreach (var k1 in new[] { -.008, -.007, 0, .006 })
+                Assert.IsTrue(VirtualAstrometryReference.IsSupportedIdealRadius(g.Value, k1), $"{family.Name} k1 {k1}");
+        }
+    }
+
+    [TestMethod]
     public void RectangularAperture_HasNoCircularInteriorAndRejectsOutsideFramePixels()
     {
         var rectilinear = VirtualAstrometryFixture.Families.Single(f => f.Name == "rectilinear");
