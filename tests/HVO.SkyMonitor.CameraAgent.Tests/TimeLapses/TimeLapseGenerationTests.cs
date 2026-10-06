@@ -219,7 +219,12 @@ public sealed class TimeLapseGenerationTests
     }
 
     private static CameraModuleConfig Configuration() => new(NightlyProductFixture.Observatory,
-        new CameraModuleDescriptor("VirtualSky"), Rig(), CapturePipelineConfig.Empty, "video-fixture");
+        new CameraModuleDescriptor("VirtualSky"), Rig(),
+        new CapturePipelineConfig(
+            [new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+            CapturePipelineSchemaVersions.ExplicitV2,
+            CapturePipelineDependencyPolicy.RejectEnabledDependent),
+        "video-fixture");
 
     private static CameraRigConfig Rig() => NightlyProductFixture.Rig with
     {
