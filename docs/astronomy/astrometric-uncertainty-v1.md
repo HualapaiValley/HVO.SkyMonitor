@@ -10,7 +10,7 @@ facts. It builds on the [shared astrometry library](shared-astrometry-v1.md).
 - proper motion or epoch propagation, which stays with #521
 - a parallel clock implementation; clock facts come only from the #1095 kernel view
 - host persistence, presentation or FITS/WCS export of the uncertainty
-- physical lens or sensor qualification, which stays with #1107/#523
+- physical lens or sensor qualification, which stays with #1107 under the physical-qualification epic #1166
 
 ## Ownership
 
@@ -288,7 +288,7 @@ under-coverage. The budget was posted on #1105 before any held-out run.
 ## Limits
 
 - The declared floors are qualified for the VirtualSky renderer and the #1103 v2 measurer at these profiles only.
-  A physical camera needs its own budget from its own tuning data (#1107/#523).
+  A physical camera needs its own budget from its own tuning data (#1107 under #1166).
 - The #1104 shared covariance is residual-scaled. It is an engineering estimate of calibration error, and the session
   chain checks it against truth rather than assuming it.
 - Coverage of the pose is per frame. Correlation between frames is modelled only through the shared calibration.

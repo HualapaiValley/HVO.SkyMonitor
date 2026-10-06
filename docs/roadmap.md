@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-10-03
+Status date: 2026-10-06
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -78,6 +78,42 @@ The deferred CameraAgent storage/upload naming cleanup
 delivered `RM-004`. Its #433 vocabulary prerequisite is complete, but the
 naming-only residual is not approved for automatic start.
 
+Celestial-fidelity epic [#520](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/520)
+inherits delivered `RM-001`. Its delivered foundation is retained history:
+the bounded virtual astrometry and optical-calibration milestone
+[#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098) (#1100-#1106),
+completed child #522, #1088 and #1131. The
+[scope, implementation order and acceptance map](planning/virtual-astrometry-qualification.md)
+and the [qualified envelope and consumer handoff](astronomy/virtual-astrometry-qualification-v1.md#consumer-handoff)
+remain authoritative for that delivered scope. On 2026-10-06 the operator limited
+#520 to software and VirtualSky work that runs without physical camera hardware,
+and moved physical qualification to the downstream epic
+[#1166](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1166). Physical
+camera and lens acceptance [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107)
+moved there from #523, and Raspberry Pi target qualification
+[#1171](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1171) sits under it.
+The operator then
+[assigned the remaining software children](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520#issuecomment-6025439060)
+as an opt-in queue targeting `development/v1`: whole-pipeline performance
+[#1170](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1170), projection
+families [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126),
+measured associations [#526](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/526),
+astrometry recipes and calculators [#523](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/523),
+deeper HYG selections [#1167](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1167),
+long exposures [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168),
+registered stacking [#1169](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1169),
+Sun and Moon footprints [#518](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/518),
+HYG 4.4 [#521](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/521), OpenNGC
+[#525](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/525) and extended
+deep-sky rendering [#524](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/524).
+This activation keeps the technical dependencies (#526 before #523; #523 and
+#1168 before #1169; #521 and #518 before #525, then #524), existing claims,
+per-issue claims and the draft-first review cycle. It does not change unrelated
+portfolio priority, promote `main`, deploy, or require GPU hardware. #1166, #1107
+and #1171 keep their own hardware and scheduling gates. Software acceptance does
+not wait for them, and #520 may close with #1166 open. Virtual acceptance does not
+imply physical accuracy.
+
 ## Future
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
@@ -114,24 +150,6 @@ Deferred validation follow-ups [#252](https://github.com/RoySalisbury/HVO.SkyMon
 and [#262](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/262)
 inherit `RM-001`; they validate delivered boundaries and are not separate
 portfolio initiatives.
-
-Deferred celestial-fidelity epic [#520](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/520)
-and children [#518](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/518) and
-[#521](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/521)-[#526](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/526)
-also inherit delivered `RM-001`. The operator authorized the bounded virtual
-HYG/all-sky astrometry and optical-calibration milestone
-[#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098) on
-2026-10-01 UTC, targeting `development/v1`. Its
-[scope, implementation order and acceptance map](planning/virtual-astrometry-qualification.md)
-activate #522 and only the required existing-snapshot, measurement and solution
-portions coordinated with #521/#526/#523. This authorization preserves technical
-dependencies and existing contributor claims; it does not change unrelated
-portfolio priority or activate the remaining celestial backlog. The HYG 4.4
-upgrade/lifecycle, broader application adoption, resolved/extended objects,
-FITS/WCS and physical qualification retain their own gates. Hardware acceptance
-is tracked in [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107)
-under #523 and requires separate scheduling and hardware. Unfinished supported
-virtual work cannot be deferred there to close #1098.
 
 ## Delivered
 
