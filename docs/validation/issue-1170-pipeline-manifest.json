@@ -1,0 +1,45 @@
+{
+  "schema": "issue1170-pipeline-manifest-v1",
+  "issue": 1170,
+  "epic": 520,
+  "declaredBeforeMeasurement": true,
+  "productBase": "b13f0d0e57e32355c6787d2ddf5951148bd1234b",
+  "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+  "filter": "FullyQualifiedName~Issue1170ComposedPipelineEvidenceTests.ComposedShippedGraph",
+  "harnessSources": ["tests/HVO.SkyMonitor.CameraAgent.Tests/Issue1170ComposedPipelineEvidenceTests.cs"],
+  "analysisSources": ["docs/validation/issue-1170-pipeline.sh", "docs/validation/issue-1170-oncpu.py", "docs/validation/issue-1170-metrics.sh"],
+  "rules": [
+    "Every process runs one cell trial at one committed, clean revision built in Release; HVO_EVIDENCE_REVISION equals that revision and the harness checks it against the assembly InformationalVersion.",
+    "S1 is the unchanged #1106 manifest run by docs/validation/issue-1106-qualification.sh with DOTNET_TieredCompilation=0, for comparability with the #1106 evidence. S2-S4 run with production runtime defaults (tiered compilation and dynamic PGO on) and record every DOTNET_* variable. The tc0-side-cell profile is labelled and is never production latency.",
+    "Each S2/S4 trial is a separate process with 5 warm-up and 30 measured operations. Trial medians are reported as median/min/max across trials; p95 is reported per trial and pooled across all measured operations, never from trial medians.",
+    "Measurement runs attach no collector. Attribution runs attach dotnet-trace (EventPipe) through the harness PID handshake; collector overhead is the attribution trial against the measurement trial median of the same cell. perf is used only where unprivileged sampling works; otherwise the index records it as unavailable with the host's perf_event_paranoid value.",
+    "Heavy work is serialized by flock on /tmp/hvo-1170-heavy.lock and gated on the one-minute load average; tenants are recorded, not paused.",
+    "Regression rule (after against baseline, same cell and profile): median-of-trial-medians above max(5%, baseline trial-median spread); allocated bytes above 1%; any full-frame copy increase; peak RSS above max(5%, 32 MiB); any S4 drain increase. Unexplained regression blocks merge.",
+    "A harness failure is retained and reported; the runner exits nonzero after all processes finish."
+  ],
+  "loadGate": { "oneMinuteBelow": 0.5, "maxWaitSeconds": 1800 },
+  "trials": 5,
+  "cells": [
+    { "id": "s2-sample-night", "section": "S2", "scenario": "steady", "workload": "sample-night", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w1-night-long", "section": "S2", "scenario": "steady", "workload": "w1-night-long", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w1-night-short", "section": "S2", "scenario": "steady", "workload": "w1-night-short", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w1-day", "section": "S2", "scenario": "steady", "workload": "w1-day", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w1-dense", "section": "S2", "scenario": "steady", "workload": "w1-dense", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w2-night", "section": "S2", "scenario": "steady", "workload": "w2-night", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w6-night", "section": "S2", "scenario": "steady", "workload": "w6-night", "runtimeProfile": "production-defaults" },
+    { "id": "s2-w1-night-long-tc0", "section": "S2", "scenario": "steady", "workload": "w1-night-long", "runtimeProfile": "tc0-side-cell" },
+    { "id": "s3-sample-cold", "section": "S3", "scenario": "cold", "workload": "sample-night", "runtimeProfile": "production-defaults" },
+    { "id": "s3-w1-cold", "section": "S3", "scenario": "cold", "workload": "w1-night-long", "runtimeProfile": "production-defaults" },
+    { "id": "s4-w1-saturation", "section": "S4", "scenario": "saturation", "workload": "w1-night-long", "runtimeProfile": "production-defaults" }
+  ],
+  "attribution": {
+    "trials": 1,
+    "stoppingProvider": "HVO-Issue1170-Harness",
+    "profiles": {
+      "cpu": "dotnet-common,dotnet-sampled-thread-time",
+      "allocation": "gc-verbose"
+    },
+    "cells": ["s2-sample-night", "s2-w1-night-long", "s2-w2-night", "s2-w6-night", "s4-w1-saturation"],
+    "reports": ["topN exclusive 60", "topN inclusive 200", "cpu: on-CPU split of the Speedscope export by docs/validation/issue-1170-oncpu.py, top 200"]
+  }
+}
