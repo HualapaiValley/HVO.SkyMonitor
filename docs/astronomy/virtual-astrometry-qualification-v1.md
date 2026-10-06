@@ -13,7 +13,8 @@ and the 0.99 ellipsoid coverage on `mono-roi-bin2` (11.0 % of its binomial bound
 only. It makes no claim about physical accuracy, and the hardware evidence it does not provide is listed for #1107.
 
 **Not included:**
-- physical cameras, lenses or sky, and any claim of physical accuracy. These stay with #1107 under #523.
+- physical cameras, lenses or sky, and any claim of physical accuracy. These stay with #1107, which moved from #523
+  to the physical-qualification epic #1166 on 2026-10-06.
 - new production consumers: astrometry recipes, compact persistence, calculators, registered stacking or
   FITS/WCS export. The handoff below names their seams; it does not implement them.
 - deployment or promotion to `main`
@@ -323,10 +324,12 @@ FITS/WCS export stays with #141 and #523. `ProjectedSceneV1` still has no measur
 
 ## Physical-hardware handoff (#1107)
 
-[#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107) owns physical qualification under #523
-and is not authorized to start. Simulation shows that the process works under declared simulation assumptions. It
-does not identify the installed lens, measure its distortion or certify real-camera accuracy. #1107 needs the
-following evidence:
+[#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107) owns physical qualification. On 2026-10-06 it
+moved from #523 to the downstream physical-qualification epic
+[#1166](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1166), and it is not authorized to start. The
+criterion 9 row above records ownership as it stood when this report merged. Simulation shows that the process works
+under declared simulation assumptions. It does not identify the installed lens, measure its distortion or certify
+real-camera accuracy. #1107 needs the following evidence:
 
 | Virtual result | Why it does not transfer | Hardware evidence #1107 needs |
 | --- | --- | --- |

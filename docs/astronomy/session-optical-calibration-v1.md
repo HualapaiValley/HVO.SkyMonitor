@@ -11,7 +11,7 @@ and cropped or binned readouts are views derived from it. It builds on the
 - per-frame lens models
 - projection math inside hosts
 - FITS/WCS export
-- physical lens or sensor qualification, which stays with #1107/#523
+- physical lens or sensor qualification, which stays with #1107 under the physical-qualification epic #1166
 
 ## Ownership
 
