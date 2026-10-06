@@ -21,10 +21,15 @@ WAIT = re.compile(r"(Monitor\.Wait|WaitHandle\.Wait|LowLevelLifoSemaphore\.Wait|
                   r"|WaitForSignal|WaitNative|SpinWait|EventPipe|Interop\+Sys\.Read\(class Microsoft\.Win32\.SafeHandles\.SafePipeHandle)")
 # Threads parked for a GC suspension, and the finalizer/Gen2 callbacks that run behind it, sample as running
 # managed code; they are counted separately so allocation pressure is visible without inflating hot frames.
+# The match is against every real frame on the stack, not only the leaf: a Gen2 callback trimming
+# SharedArrayPool blocks in Monitor.Enter_Slowpath, whose leaf alone looks like application lock contention.
 GC = re.compile(r"(Thread\.<PollGC>|GC\.RunFinalizers|SharedArrayPool`1.*\.Trim\(|InitializeTlsBucketsAndTrimming)")
 UNRESOLVED = "?!?"
 PSEUDO = {"CPU_TIME", "UNMANAGED_CODE_TIME"}
-IO = re.compile(r"Interop\+Sys\.(FSync|PWrite|PRead|Write|Read|Open|Stat|LStat|FStat|Unlink|Rename|FTruncate|FAllocate|MkDir|Close)\b")
+# Asynchronous file I/O runs pwrite/pread on a thread-pool worker with no interop frame, so its native interval
+# ends in RandomAccess itself rather than in Interop+Sys.
+IO = re.compile(r"(Interop\+Sys\.(FSync|PWrite|PRead|Write|Read|Open|Stat|LStat|FStat|Unlink|Rename|FTruncate|FAllocate|MkDir|Close)\b"
+                r"|System\.IO\.RandomAccess\.(WriteAtOffset|ReadAtOffset)\()")
 
 
 def main(argv):
@@ -49,7 +54,7 @@ def main(argv):
                 marker = frames[stack[-1]]
                 real = [index for index in stack if frames[index] not in PSEUDO]
                 leaf = frames[real[-1]] if real else marker
-                if GC.search(leaf):
+                if any(GC.search(frames[index]) for index in real):
                     totals["gcSuspensionMilliseconds"] += span
                 elif leaf == UNRESOLVED:
                     totals["unresolvedNativeMilliseconds"] += span
