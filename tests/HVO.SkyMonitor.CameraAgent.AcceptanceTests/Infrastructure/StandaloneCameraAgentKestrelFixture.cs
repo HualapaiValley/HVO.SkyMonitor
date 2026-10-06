@@ -533,18 +533,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         {
             options["queueForUpload"] = false;
             foreach (var policy in options["policies"]!.AsArray()) policy!.AsObject()["queueForUpload"] = false;
-            var projectedScene = JsonNode.Parse("""
-                {
-                  "id": "ProjectedScene",
-                  "type": "ProjectedScene",
-                  "order": 1,
-                  "dependsOn": ["$raw"],
-                  "publication": { "persistence": "durable-local" },
-                  "options": { "outputVariant": "projected-scene-v1", "maximumMagnitude": 6.5, "maximumResults": 9 }
-                }
-                """)!;
-            steps.Insert(0, projectedScene);
-            localStorage["dependsOn"]!.AsArray().Add("ProjectedScene");
+            var projectedScene = steps.Select(static node => node!.AsObject())
+                .Single(static step => step["type"]!.GetValue<string>() == "ProjectedScene");
+            projectedScene["order"] = 1;
+            projectedScene["options"] = JsonNode.Parse("""
+                { "outputVariant": "projected-scene-v1", "maximumMagnitude": 6.5, "maximumResults": 9 }
+                """);
         }
         if (useSyntheticCalibration)
         {

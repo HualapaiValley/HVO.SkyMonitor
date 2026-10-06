@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -251,8 +252,18 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.IsNotNull(restartedRawManifest.Scene);
         Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionModel));
         Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionCalibrationVersion));
-        Assert.IsNotNull(restartedRawManifest.Scene.Objects);
-        Assert.IsNotEmpty(restartedRawManifest.Scene.Objects);
+        Assert.IsTrue(restartedRawManifest.Scene.RequiresProjectedScene);
+        Assert.IsNull(restartedRawManifest.Scene.Objects);
+        Assert.IsNull(restartedRawManifest.Scene.Segments);
+        var sceneArtifact = restartedCapture.Artifacts.Single(static artifact =>
+            artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion);
+        var sceneDocument = ProjectedSceneJson.Parse(
+            await ReadArtifactBytesAsync(fixture.Services, sceneArtifact.ArtifactId).ConfigureAwait(false));
+        Assert.IsTrue(sceneDocument.IsValid, sceneDocument.ErrorPath);
+        Assert.IsNotNull(sceneDocument.Scene);
+        Assert.AreEqual(restartedCapture.CaptureId, sceneDocument.Scene.Source.CaptureId);
+        Assert.AreEqual(restartedRawManifest.Descriptor.Artifact.ArtifactId, sceneDocument.Scene.Source.ArtifactId);
+        Assert.IsNotEmpty(sceneDocument.Scene.Objects);
         Assert.AreEqual(60000.0,
             restartedConfig.Module.Options!.Value.GetProperty("magnitudeZeroElectronsPerSecond").GetDouble());
         Assert.IsNotNull(restartedRawManifest.Scene.VirtualExposure);
@@ -325,6 +336,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         var rawManifest = ReadManifest(fixture.Root, raw.ArtifactId);
         var provenance = rawManifest.Scene;
         Assert.IsNotNull(provenance);
+        Assert.IsTrue(provenance.RequiresProjectedScene);
+        Assert.IsNull(provenance.Objects);
+        Assert.IsNull(provenance.Segments);
+        Assert.IsTrue(fixture.Services.GetRequiredService<IProjectedSceneStore>()
+            .TryGet(provenance.SceneId, out var capturedScene));
+        Assert.IsNotNull(capturedScene);
         Assert.AreNotEqual(provenance.SceneId, provenance.ProjectedSceneStageKey);
         Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, product.ProductSchemaVersion);
         Assert.AreEqual("Available", capture.CanonicalSceneAvailability);
@@ -347,11 +364,11 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(rawManifest.Descriptor),
             scene.Source.ArtifactIdentitySha256, ignoreCase: true);
         CollectionAssert.AreEqual(
-            provenance.Objects!.Select(static item => (
+            capturedScene.Objects.Select(static item => (
                 item.Id,
                 item.DisplayName,
-                PixelX: CanonicalizeGeneratedGeometry(item.PixelX),
-                PixelY: CanonicalizeGeneratedGeometry(item.PixelY),
+                PixelX: CanonicalizeGeneratedGeometry(item.Pixel.X),
+                PixelY: CanonicalizeGeneratedGeometry(item.Pixel.Y),
                 Magnitude: CanonicalizeGeneratedGeometry(item.Magnitude))).ToArray(),
             scene.Objects.Select(static item => (
                 item.Id,
@@ -360,14 +377,14 @@ public sealed class StandaloneCameraAgentAcceptanceTests
                 PixelY: item.Pixel.Y,
                 item.Magnitude)).ToArray());
         CollectionAssert.AreEqual(
-            provenance.Segments!.Select(static item => (
+            capturedScene.Segments.Select(static item => (
                 item.ConstellationId,
                 item.FromObjectId,
                 item.ToObjectId,
-                FromPixelX: CanonicalizeGeneratedGeometry(item.FromPixelX),
-                FromPixelY: CanonicalizeGeneratedGeometry(item.FromPixelY),
-                ToPixelX: CanonicalizeGeneratedGeometry(item.ToPixelX),
-                ToPixelY: CanonicalizeGeneratedGeometry(item.ToPixelY),
+                FromPixelX: CanonicalizeGeneratedGeometry(item.FromPixel.X),
+                FromPixelY: CanonicalizeGeneratedGeometry(item.FromPixel.Y),
+                ToPixelX: CanonicalizeGeneratedGeometry(item.ToPixel.X),
+                ToPixelY: CanonicalizeGeneratedGeometry(item.ToPixel.Y),
                 item.PartIndex)).ToArray(),
             scene.Segments.Select(static item => (
                 item.ConstellationId,
@@ -529,6 +546,10 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             .Select(static parsed => parsed.Document!.Manifest!)
             .GroupBy(static manifest => manifest.Descriptor.Artifact.ArtifactId)
             .ToDictionary(static group => group.Key, static group => group.First());
+        var products = capture.Artifacts.Where(static artifact => artifact.ProductSchemaVersion is not null)
+            .ToDictionary(static artifact => artifact.ArtifactId,
+                artifact => ReadDurableProductManifest(root, artifact.ArtifactId));
+        var knownArtifactIds = manifests.Keys.Concat(products.Keys).ToHashSet();
         var captureLocations = manifests.Values
             .Where(manifest => manifest.Descriptor.Capture.CaptureId == capture.CaptureId)
             .Select(static manifest => manifest.Descriptor.Location)
@@ -537,6 +558,23 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(1, captureLocations.Distinct().Count());
         foreach (var artifact in capture.Artifacts)
         {
+            if (products.TryGetValue(artifact.ArtifactId, out var product))
+            {
+                Assert.AreEqual(capture.CaptureId, product.Capture.CaptureId);
+                Assert.AreEqual(capture.AgentId, product.Capture.AgentId);
+                Assert.AreEqual(artifact.Role, product.Artifact.Role);
+                Assert.AreEqual(artifact.ChecksumSha256, product.Artifact.ChecksumSha256, ignoreCase: true);
+                Assert.AreEqual(artifact.ByteLength, product.ByteLength);
+                Assert.AreEqual(artifact.ProductSchemaVersion, product.ProductSchemaVersion);
+                Assert.AreEqual(artifact.ContentIdentitySha256, product.ContentIdentitySha256, ignoreCase: true);
+                Assert.AreEqual(product.Artifact.Recipe.OptionsSha256,
+                    CaptureContractJson.ComputeCanonicalJsonSha256(product.Artifact.Recipe.Options), ignoreCase: true);
+                Assert.AreEqual(artifact.Recipe?.IdentitySha256,
+                    ProcessingIdentity.CreateRecipeIdentity(product.Artifact.Recipe).IdentitySha256, ignoreCase: true);
+                Assert.IsTrue(product.Artifact.SourceArtifactIds.All(knownArtifactIds.Contains),
+                    $"Product {artifact.ArtifactId:D} has dangling source identities.");
+                continue;
+            }
             Assert.IsTrue(manifests.TryGetValue(artifact.ArtifactId, out var manifest), artifact.ArtifactId.ToString("D"));
             var descriptor = manifest.Descriptor;
             Assert.IsTrue(descriptor.Validate().IsValid);
@@ -552,7 +590,7 @@ public sealed class StandaloneCameraAgentAcceptanceTests
                 artifact.Recipe?.IdentitySha256,
                 ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
                 ignoreCase: true);
-            Assert.IsTrue(descriptor.Artifact.SourceArtifactIds.All(manifests.ContainsKey),
+            Assert.IsTrue(descriptor.Artifact.SourceArtifactIds.All(knownArtifactIds.Contains),
                 $"Artifact {artifact.ArtifactId:D} has dangling source identities.");
             var manifestText = System.Text.Encoding.UTF8.GetString(CaptureContractJson.Serialize(manifest));
             Assert.IsFalse(manifestText.Contains("35.5599378", StringComparison.Ordinal));

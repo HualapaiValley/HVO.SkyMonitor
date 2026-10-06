@@ -50,7 +50,22 @@ public sealed record SceneProvenance(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageSchemaVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageKey = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageIdentitySha256 = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] VirtualExposureProvenance? VirtualExposure = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] VirtualExposureProvenance? VirtualExposure = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneSchemaVersion = null)
+{
+    public const string RetainedProjectedSceneSchemaVersion = "projected-scene-v1";
+
+    /// <summary>New capture evidence resolves geometry from its source-bound retained metadata product.</summary>
+    [JsonIgnore]
+    public bool RequiresProjectedScene => ProjectedSceneSchemaVersion is not null;
+
+    public SceneProvenance WithoutProjectedGeometry() => this with
+    {
+        Objects = null,
+        Segments = null,
+        ProjectedSceneSchemaVersion = RetainedProjectedSceneSchemaVersion
+    };
+}
 
 /// <summary>Versioned cloud inputs and logical interval needed to reproduce a simulated frame.</summary>
 public sealed record CloudScenarioProvenance(

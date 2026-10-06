@@ -18,6 +18,79 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingGraphTests
 {
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("disabled")]
+    [DataRow("duplicate")]
+    [DataRow("implicit-annotation")]
+    [DataRow("optional-annotation")]
+    [DataRow("implicit-scene-source")]
+    [DataRow("memory-only-scene")]
+    public void SceneBearingAcquisitionRequiresOneExplicitSceneAndAnnotationDependency(string invalidCase)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var scene = new CaptureProcessingStepConfig("ProjectedScene", "scene", DependsOn: ["$raw"]);
+        var preview = new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"]);
+        var annotation = new CaptureProcessingStepConfig("Annotation", "annotation",
+            Options: JsonSerializer.SerializeToElement(new { requireProjectedSceneDependency = true }),
+            DependsOn: ["preview", "scene"]);
+        var baseline = CreateConfig(scene, preview, annotation) with { Module = new CameraModuleDescriptor("VirtualSky") };
+        var valid = factory.CreateGraph(baseline);
+        valid.DisposeSteps();
+        CaptureProcessingStepConfig[] invalidSteps = invalidCase switch
+        {
+            "missing" => [preview],
+            "disabled" => [scene with { Enabled = false }, preview],
+            "duplicate" => [scene, scene with { Id = "other-scene" }, preview],
+            "implicit-annotation" => [scene, preview, annotation with { DependsOn = ["preview"] }],
+            "implicit-scene-source" => [scene with { DependsOn = null }, preview],
+            "memory-only-scene" => [scene with
+                { Publication = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly) }, preview],
+            "optional-annotation" => [scene, preview, annotation with { Options = JsonSerializer.SerializeToElement(new { }) }],
+            _ => throw new ArgumentOutOfRangeException(nameof(invalidCase))
+        };
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
+            baseline with { Pipeline = new CapturePipelineConfig(invalidSteps) }));
+        // A retained old raw capture keeps the graph that its immutable descriptor recorded.
+        var retained = factory.CreateRetainedGraph(baseline with { Pipeline = new CapturePipelineConfig([preview]) });
+        Assert.HasCount(1, retained.Nodes);
+        retained.DisposeSteps();
+    }
+
+    [TestMethod]
+    public void ExplicitSceneUploadAcceptsSupportedStructuredProduct()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var config = CreateConfig(
+            new("ProjectedScene", "scene", DependsOn: ["$raw"]),
+            new("Storage", "storage", DependsOn: ["$raw", "scene"],
+                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
+                { StorageRoot = Path.GetTempPath(), QueueForUpload = true }))) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky")
+        };
+        config = config with
+        {
+            Pipeline = config.Pipeline with
+            {
+                SchemaVersion = CapturePipelineSchemaVersions.ExplicitV2,
+                DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent
+            }
+        };
+        var graph = factory.CreateGraph(config);
+        Assert.HasCount(2, graph.Nodes);
+        graph.DisposeSteps();
+    }
 
     [TestMethod]
     public void AddCameraAgentInfrastructure_InitializesRawSchemaBeforeProcessingHostedServices()

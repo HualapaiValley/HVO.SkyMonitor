@@ -1407,7 +1407,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             artifact.ReconciledAtUtc = reconciledAtUtc;
             artifact.StateReasonCode = null;
             if (artifact.ManifestSchemaVersion == HVO.SkyMonitor.AgentCore.ArtifactManifestV2.CurrentSchemaVersion
-                || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
+                || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw
+                || artifact.MediaType == HVO.SkyMonitor.Processing.StructuredProcessingProductContracts.ProjectedSceneMediaType)
             {
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 scheduleDerivatives = true;
@@ -2032,11 +2033,11 @@ internal sealed partial class CentralArtifactReconciliationService(
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId != null))
         {
             var requiresSameFrame = ArtifactIngestService.RequiresSameFrameSource(artifact, source.Ordinal);
-            var usable = await db.CentralArtifacts.AnyAsync(candidate =>
+            var usable = await db.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
+                .AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (!usable)
             {
@@ -2049,6 +2050,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             var requiresSameFrame = ArtifactIngestService.RequiresSameFrameSource(artifact, source.Ordinal);
             var resolved = await db.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
                 .Include(candidate => candidate.Layout)
@@ -2056,9 +2058,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (resolved is not null)
             {

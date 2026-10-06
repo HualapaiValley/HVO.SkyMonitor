@@ -93,7 +93,7 @@ internal sealed class ProcessingReplayWorker(
         CaptureLaneHandlerResult result;
         try
         {
-            using var graph = new ReplayGraph(pipelineFactory.CreateGraph(lease.Configuration));
+            using var graph = new ReplayGraph(pipelineFactory.CreateRetainedGraph(lease.Configuration));
             VerifyFrozenPlan(graph.Value, lease.Revision);
             var execution = new ProcessingExecutionContext(
                 lease.Execution.ExecutionId,

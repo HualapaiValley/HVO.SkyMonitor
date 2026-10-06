@@ -102,11 +102,8 @@ public sealed class CaptureProjectedSceneStager(
             metadata.License,
             metadata.SchemaVersion,
             metadataSource.PreprocessingVersion,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
-                item.ConstellationId, item.FromObjectId, item.ToObjectId,
-                item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray(),
+            Objects: null,
+            Segments: null,
             options.SolarSystemBodies.Count > 0 ? ephemeris?.ModelVersion : null,
             topologyMetadata?.Version,
             topologyMetadata?.SourceUrl,
@@ -120,7 +117,8 @@ public sealed class CaptureProjectedSceneStager(
             SceneUtc: effectiveUtc,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256);
+            ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
         await stagingStore.StageAsync(
             stageKey,
             stageKey,

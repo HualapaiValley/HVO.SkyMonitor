@@ -35,6 +35,14 @@ public sealed record ArtifactManifestV2(
         {
             return descriptorValidation;
         }
+        if (Scene is { RequiresProjectedScene: true } compact &&
+            (compact.ProjectedSceneSchemaVersion != SceneProvenance.RetainedProjectedSceneSchemaVersion ||
+             compact.Objects is not null || compact.Segments is not null || compact.SceneUtc is null ||
+             !IsSha256(compact.SceneId) ||
+             compact.ProjectedSceneStageSchemaVersion != "projected-scene-stage-v1" ||
+             !IsSha256(compact.ProjectedSceneStageKey) ||
+             !IsSha256(compact.RigProfileHashSha256)))
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
         if (Scene?.VirtualExposure is { } exposure &&
             (!exposure.IsValid(Descriptor!.Controls.EffectiveExposure) ||
              exposure.RequestedStartUtc.ToUnixTimeMilliseconds() != Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
@@ -48,6 +56,9 @@ public sealed record ArtifactManifestV2(
             ? CaptureContractValidationResult.Success
             : CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.transientScenario");
     }
+
+    private static bool IsSha256(string? value)
+        => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 
     private static bool IsSafeRelativePath(string path)
     {

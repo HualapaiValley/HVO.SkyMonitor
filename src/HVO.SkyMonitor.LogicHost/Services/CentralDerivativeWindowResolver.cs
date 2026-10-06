@@ -139,8 +139,11 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 .Include(item => item.CanonicalInputs)
                 .AsSplitQuery()
                 .SingleOrDefaultAsync(item => item.Id == jobId, cancellationToken).ConfigureAwait(false);
-            if (job is null || job.Status != CentralDerivativeJobStatus.Waiting)
+            if (job is null || job.Status != CentralDerivativeJobStatus.Waiting ||
+                job.InputRequirements.Any(static requirement => requirement.BindingName == CentralProjectedSceneResolver.BindingName))
             {
+                // The graph scheduler owns the already selected scene reference and its primary dependencies.
+                // A sequence-window resolver must not reinterpret the compact reference as a pixel selector.
                 if (ownedTransaction is not null)
                 {
                     await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);

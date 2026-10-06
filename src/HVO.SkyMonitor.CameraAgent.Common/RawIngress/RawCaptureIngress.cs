@@ -375,6 +375,11 @@ internal sealed class RawCaptureIngress :
             }
             else
             {
+                // Old immutable evidence is adopted above. Every newly published scene-bearing capture must
+                // have staged its canonical product before this boundary; a cache cannot recover after restart.
+                if (frame.Metadata.Scene is { RequiresProjectedScene: false })
+                    throw new InvalidOperationException(
+                        "Scene-bearing raw capture requires an enabled ProjectedScene node and durable scene staging.");
                 var previewDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -658,7 +663,7 @@ internal sealed class RawCaptureIngress :
                     throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
-                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
                     (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,

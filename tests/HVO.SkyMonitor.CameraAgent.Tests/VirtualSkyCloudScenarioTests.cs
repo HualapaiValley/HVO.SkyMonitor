@@ -28,28 +28,41 @@ public sealed class VirtualSkyCloudScenarioTests
         var publisher = new RecordingPublisher();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.Combine(Path.GetTempPath(), "hvo-cloud-graph", Guid.NewGuid().ToString("N"))
+            }).Build());
         services.AddSingleton<IEnvironmentalObservationPublisher>(publisher);
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-        var config = Config(CameraPixelFormat.Mono16, Definition());
+        var config = Config(CameraPixelFormat.Mono16, Definition()) with
+        {
+            Pipeline = new CapturePipelineConfig([
+                new CaptureProcessingStepConfig("ProjectedScene", "scene", 5, DependsOn: ["$raw"])
+            ])
+        };
 
         var baseline = factory.CreateGraph(config);
         Assert.IsFalse(baseline.Nodes.Any(static node => node.Id == "CloudObservation"));
 
         var configured = factory.CreateGraph(config with
         {
-            Pipeline = new CapturePipelineConfig(
-            [
-                new CaptureProcessingStepConfig(
+            Pipeline = config.Pipeline with
+            {
+                Steps =
+                [
+                    .. config.Pipeline.Steps,
+                    new CaptureProcessingStepConfig(
                     "VirtualSkyCloudObservation",
                     "CloudObservation",
                     10,
                     DependsOn: ["$raw"],
                     Required: true)
-            ])
+                ]
+            }
         });
-        var node = configured.Nodes.Single();
+        var node = configured.Nodes.Single(static value => value.Id == "CloudObservation");
         Assert.AreEqual("CloudObservation", node.Id);
         Assert.IsInstanceOfType<VirtualSkyCloudObservationProcessingStep>(node.Step);
         Assert.IsTrue(node.Required);

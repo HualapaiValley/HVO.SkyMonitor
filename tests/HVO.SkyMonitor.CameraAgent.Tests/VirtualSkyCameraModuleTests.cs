@@ -9,6 +9,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
@@ -600,7 +602,8 @@ public sealed class VirtualSkyCameraModuleTests
                     "rolling",
                     25,
                     JsonSerializer.SerializeToElement(new { windowSize = 2 }),
-                    ["$raw"])
+                    ["$raw"]),
+                new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])
             ])
         };
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(incompatible));
@@ -848,7 +851,8 @@ public sealed class VirtualSkyCameraModuleTests
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
         using var provider = services.BuildServiceProvider();
 
         var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config);
@@ -856,8 +860,10 @@ public sealed class VirtualSkyCameraModuleTests
         CollectionAssert.AreEqual(ExpectedRgbGraph, graph.Nodes.Select(static node => node.Id).ToArray());
         graph.DisposeSteps();
 
-        var emptyGraph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
-            config with { Pipeline = CapturePipelineConfig.Empty });
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
+            config with { Pipeline = CapturePipelineConfig.Empty }));
+        var emptyGraph = factory.CreateRetainedGraph(config with { Pipeline = CapturePipelineConfig.Empty });
         Assert.IsFalse(emptyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.RollingMean));
         Assert.IsFalse(emptyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.LinearNormalization));
         emptyGraph.DisposeSteps();
@@ -867,61 +873,95 @@ public sealed class VirtualSkyCameraModuleTests
     public async Task FullAsi174McRgbProfileHasFixedFrameEvidenceAndConfiguredPipeline()
     {
         var config = await LoadProfileAsync("virtual-asi174mc.full.json").ConfigureAwait(false);
-        var services = new ServiceCollection();
-        var catalog = CreateCanonicalStarCatalog();
-        services.AddLogging();
-        services.AddSingleton<ICelestialCatalog>(catalog);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
-        using var provider = services.BuildServiceProvider();
-        var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore);
-        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
-        var setpoint = new CaptureSetpoint(
-            config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
-        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint);
-
-        var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
-        var rawBytes = result.Frame!.PixelData.ToArray();
-        var statistics = CalculateByteStatistics(rawBytes);
-        var checksum = Convert.ToHexString(SHA256.HashData(rawBytes));
-        TestContext.WriteLine(
-            $"ASI174MC RGB24: min={statistics.Minimum}, max={statistics.Maximum}, " +
-            $"mean={statistics.Mean:R}, checksum={checksum}");
-
-        var submission = new CaptureLoopSubmission(request, result, FixtureUtc, request.TargetInterval, TimeSpan.Zero);
-        var context = new CaptureProcessingContext(config, submission);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
-            .Select(static node => node.Step).ToArray();
-        foreach (var step in pipeline)
+        var root = Directory.CreateTempSubdirectory("hvo-compact-rgb-").FullName;
+        try
         {
-            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
-        }
+            var services = new ServiceCollection();
+            var catalog = CreateCanonicalStarCatalog();
+            services.AddLogging();
+            services.AddSingleton<ICelestialCatalog>(catalog);
+            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = root }).Build());
+            using var provider = services.BuildServiceProvider();
+            var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
+            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore,
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var setpoint = new CaptureSetpoint(
+                config.Rig.Pipeline.NightExposure, config.Rig.Pipeline.NightGain, null, null);
+            var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint);
 
-        Assert.AreEqual(1936 * 1216 * 3, rawBytes.Length);
-        using var manifest = LoadTemporalConformanceManifest();
-        var expectedRender = manifest.RootElement.GetProperty("renders").EnumerateArray()
-            .Single(item => item.GetProperty("id").GetString() == "asi174mc-rgb24-full");
-        var expectedStatistics = expectedRender.GetProperty("statistics");
-        Assert.AreEqual((byte)expectedStatistics.GetProperty("minimum").GetInt32(), statistics.Minimum);
-        Assert.AreEqual((byte)expectedStatistics.GetProperty("maximum").GetInt32(), statistics.Maximum);
-        Assert.AreEqual(expectedStatistics.GetProperty("mean").GetDouble(), statistics.Mean, 1e-12);
-        Assert.AreEqual(expectedRender.GetProperty("sha256").GetString(), checksum);
-        Assert.AreEqual(expectedRender.GetProperty("rigProfileVersion").GetString(),
-            result.Frame.Metadata.Scene!.RigProfileVersion);
-        Assert.IsNotNull(context.Artifacts);
-        Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.Preview].Frame.PixelFormat);
-        Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelFormat);
-        Assert.AreEqual("rgb24-canonical-annotation-v2",
-            context.Artifacts[FrameArtifactRole.AnnotatedPreview].RecipeVersion);
-        CollectionAssert.AreEqual(rawBytes, context.Artifacts.Raw.Frame.PixelData.ToArray());
-        CollectionAssert.AreNotEqual(rawBytes,
-            context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelData.ToArray());
+            var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+            var rawBytes = result.Frame!.PixelData.ToArray();
+            var statistics = CalculateByteStatistics(rawBytes);
+            var checksum = Convert.ToHexString(SHA256.HashData(rawBytes));
+            TestContext.WriteLine(
+                $"ASI174MC RGB24: min={statistics.Minimum}, max={statistics.Maximum}, " +
+                $"mean={statistics.Mean:R}, checksum={checksum}");
+
+            var submission = new CaptureLoopSubmission(request, result, FixtureUtc, request.TargetInterval, TimeSpan.Zero);
+            Assert.IsTrue(result.Frame.Metadata.Scene!.RequiresProjectedScene);
+            Assert.IsNull(result.Frame.Metadata.Scene.Objects);
+            Assert.IsNull(result.Frame.Metadata.Scene.Segments);
+            var descriptor = RawCaptureDescriptorFactory.Create(config, submission,
+                new RawCaptureIdentity(config.AgentId!, 1, Guid.NewGuid(), Guid.NewGuid()),
+                PayloadChecksum.ComputeSha256(rawBytes), FixtureUtc.AddMinutes(1));
+            var rawManifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion,
+                descriptor, "raw.bin", result.Frame.Metadata.Scene);
+            await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), rawBytes).ConfigureAwait(false);
+            var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, rawManifest,
+                new StoredFrameReference("raw.bin", Path.Combine(root, "raw.bin"), FixtureUtc, FrameArtifactRole.Raw),
+                CaptureContractJson.ComputeManifestSha256(rawManifest));
+            submission = submission with
+            {
+                Result = result with
+                {
+                    Artifacts = new FrameArtifactSet(new FrameArtifact(descriptor.Artifact.ArtifactId,
+                        FrameArtifactRole.Raw, result.Frame, recipeVersion: descriptor.Artifact.Recipe.ImplementationVersion))
+                }
+            };
+            var context = new CaptureProcessingContext(config, submission, receipt);
+            var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config);
+            foreach (var node in graph.Nodes)
+            {
+                context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
+                var priorOutcomes = context.ProcessingOutcomes.Count;
+                await node.Step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+                foreach (var product in context.ProcessingOutcomes.Skip(priorOutcomes).SelectMany(outcome => outcome.Products))
+                    context.RegisterProcessingProduct(product);
+            }
+            graph.DisposeSteps();
+
+            Assert.AreEqual(1936 * 1216 * 3, rawBytes.Length);
+            using var manifest = LoadTemporalConformanceManifest();
+            var expectedRender = manifest.RootElement.GetProperty("renders").EnumerateArray()
+                .Single(item => item.GetProperty("id").GetString() == "asi174mc-rgb24-full");
+            var expectedStatistics = expectedRender.GetProperty("statistics");
+            Assert.AreEqual((byte)expectedStatistics.GetProperty("minimum").GetInt32(), statistics.Minimum);
+            Assert.AreEqual((byte)expectedStatistics.GetProperty("maximum").GetInt32(), statistics.Maximum);
+            Assert.AreEqual(expectedStatistics.GetProperty("mean").GetDouble(), statistics.Mean, 1e-12);
+            Assert.AreEqual(expectedRender.GetProperty("sha256").GetString(), checksum);
+            Assert.AreEqual(expectedRender.GetProperty("rigProfileVersion").GetString(),
+                result.Frame.Metadata.Scene!.RigProfileVersion);
+            Assert.IsNotNull(context.Artifacts);
+            Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.Preview].Frame.PixelFormat);
+            Assert.AreEqual(CameraPixelFormat.Rgb24, context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelFormat);
+            Assert.AreEqual("rgb24-canonical-annotation-v2",
+                context.Artifacts[FrameArtifactRole.AnnotatedPreview].RecipeVersion);
+            CollectionAssert.AreEqual(rawBytes, context.Artifacts.Raw.Frame.PixelData.ToArray());
+            CollectionAssert.AreNotEqual(rawBytes,
+                context.Artifacts[FrameArtifactRole.AnnotatedPreview].Frame.PixelData.ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
     private static readonly DateTimeOffset FixtureUtc = DateTimeOffset.Parse(
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
-    private static readonly string[] ExpectedRgbGraph = ["Preview", "Annotation"];
+    private static readonly string[] ExpectedRgbGraph = ["ProjectedScene", "Preview", "Annotation"];
     private static readonly string[] ExpectedStandaloneGraph =
-        ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "Telemetry"];
+        ["Calibration", "ProjectedScene", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "Telemetry"];
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
     private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
         LoadCanonicalAsi174Expectations();

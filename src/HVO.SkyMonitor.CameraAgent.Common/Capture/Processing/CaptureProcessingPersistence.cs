@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -31,6 +32,60 @@ internal sealed class CaptureProcessingPersistence(
     ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
+    internal string StorageRoot => _storageRoot;
+
+    internal async ValueTask<DurableProcessingOutput> RequireCommittedSceneAsync(
+        Guid captureId, ProcessingProduct product, CancellationToken cancellationToken)
+    {
+        var output = await RequireOutputAsync(
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), captureId, cancellationToken).ConfigureAwait(false);
+        if (output.OutputIdentitySha256 != product.OutputIdentitySha256 ||
+            output.Artifact.ChecksumSha256 != product.ChecksumSha256 ||
+            output.ContentIdentitySha256 != product.ContentIdentitySha256)
+            throw new InvalidDataException("The canonical scene differs from the committed processing product.");
+        return output;
+    }
+    // Callers hold the storage lifecycle gate through enqueue, so expiry cannot remove
+    // the authenticated payload between this read and the durable outbox hold.
+    internal async ValueTask<StructuredProcessingProductManifestV1?> FindCommittedSceneUploadAsync(
+        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        var candidates = await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
+            SceneProvenance.RetainedProjectedSceneSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
+        if (candidates.Count == 0) return null;
+        if (candidates.Count != 1)
+            throw new InvalidDataException("The capture's canonical projected scene is ambiguous.");
+        var output = await RequireOutputAsync(candidates[0].ArtifactId, descriptor.Capture.CaptureId,
+            cancellationToken).ConfigureAwait(false);
+        return await CreateSceneUploadManifestAsync(descriptor, output, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<StructuredProcessingProductManifestV1> CreateSceneUploadManifestAsync(
+        ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
+    {
+        if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
+            output.ProductSchemaVersion != SceneProvenance.RetainedProjectedSceneSchemaVersion ||
+            output.Artifact.SourceArtifactIds.Count != 1 ||
+            output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
+            output.Capture != descriptor.Capture)
+            throw new InvalidDataException("The canonical scene is not bound to this raw capture.");
+        var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+        var product = restored.Product;
+        var parsed = ProjectedSceneJson.Parse(product.Payload);
+        if (!parsed.IsValid || parsed.Scene is not { } scene ||
+            scene.Source != new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor)) ||
+            scene.SceneIdentitySha256 != product.ContentIdentitySha256)
+            throw new InvalidDataException("The canonical scene's immutable source evidence is invalid.");
+        return new StructuredProcessingProductManifestV1(
+            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+            new StructuredProcessingProductDescriptorV1(
+                descriptor, output.Artifact, product.OutputIdentitySha256, product.Algorithms,
+                product.Compatibility, product.TotalIntegration.Ticks, product.Payload.Length,
+                product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
+            output.PayloadRelativePath, output.Artifact.SourceId);
+    }
+
     private readonly SqliteCaptureProcessingStore _store = store;
     private readonly IFrameStorageService _frameStorage = frameStorage;
     private readonly CaptureProcessingTelemetry _telemetry = telemetry;
@@ -286,10 +341,15 @@ internal sealed class CaptureProcessingPersistence(
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
         var deletedFiles = 0;
+        var sceneRetention = new ProjectedSceneRetentionGuard(_storageRoot, _store,
+            maximumCandidates: _lifecycleOptions.ReconciliationBatchSize);
+        var resume = await sceneRetention.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         foreach (var unavailable in new[] { false, true })
         {
-            long? cursorTimestamp = null;
-            string? cursorOutput = null;
+            long? cursorTimestamp = unavailable ? null : resume.Timestamp;
+            string? cursorOutput = unavailable ? null : resume.Identity;
+            var checkedTimestamp = cursorTimestamp;
+            var checkedOutput = cursorOutput;
             do
             {
                 var page = unavailable
@@ -307,7 +367,28 @@ internal sealed class CaptureProcessingPersistence(
                             : []
                         : new[] { ResolveSafePath(candidate.PayloadRelativePath), ResolveSafePath(candidate.SidecarRelativePath) }
                             .Where(File.Exists).ToArray();
-                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available") continue;
+                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available")
+                    {
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        continue;
+                    }
+                    if (!unavailable)
+                    {
+                        bool sceneHeld;
+                        try
+                        {
+                            sceneHeld = await sceneRetention.HasRetainedConsumerAsync(candidate, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (InvalidDataException)
+                        {
+                            await sceneRetention.SaveCursorAsync(checkedTimestamp, checkedOutput, cancellationToken).ConfigureAwait(false);
+                            throw;
+                        }
+                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
+                        checkedOutput = candidate.OutputIdentitySha256;
+                        if (sceneHeld) continue;
+                    }
                     var operation = new ProcessingLifecycleOperation(
                         $"delete:{Guid.NewGuid():N}", "delete", candidate.OutputIdentitySha256,
                         sourcePaths.FirstOrDefault() is { } first ? Relative(first) : null,
@@ -323,6 +404,7 @@ internal sealed class CaptureProcessingPersistence(
                 cursorOutput = page.NextOutputIdentitySha256;
             }
             while (cursorTimestamp is not null);
+            if (!unavailable) sceneRetention.CompletePass();
         }
         long? diagnosticTimestamp = null;
         long? diagnosticId = null;

@@ -67,7 +67,8 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralTransientDerivativeExecutor transientDerivativeExecutor,
     ICentralTransientReprocessingExecutor transientReprocessingExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
-    TimeProvider timeProvider) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
+    TimeProvider timeProvider,
+    CentralProjectedSceneResolver? projectedScenes = null) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
 {
     private const double MaximumLabelMagnitude = 2.5;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -196,7 +197,10 @@ internal sealed class CentralDerivativeJobExecutor(
         // unavailable input is surfaced and suspends the job before the recipe can skip; the kernel skips a null
         // annotation on the runner path with the same reason code.
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CreateAnnotation(lease.SceneProvenanceJson)
+            ? lease.ProjectedScene is not null
+                ? await (projectedScenes ?? throw new CentralDerivativeJobStateException("Projected scene resolution is unavailable."))
+                    .ResolveAsync(lease, jobService, cancellationToken).ConfigureAwait(false)
+                : CreateAnnotation(lease.SceneProvenanceJson)
             : null;
         return new CentralDerivativeExecutionPreparation(
             null, false, selector, optionsDocument.RootElement.Clone(), annotation, canonicalInputs);
@@ -212,6 +216,7 @@ internal sealed class CentralDerivativeJobExecutor(
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(outcome);
         if (string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && lease.ProjectedScene is null
             && CreateAnnotation(lease.SceneProvenanceJson) is null)
         {
             // Authoritative on both paths: an annotation job without frozen provenance is skipped, whatever the
@@ -284,7 +289,8 @@ internal sealed class CentralDerivativeJobExecutor(
     /// durable side effect, so a completion can re-derive the execution identity the kernel must have produced.
     /// </summary>
     internal static (JsonElement Options, ProcessingInputSelector Selector, ProcessingAnnotationInput? Annotation,
-        IReadOnlyList<ProcessingAuxiliaryInput> CanonicalInputs) CreateFrozenRequestInputs(CentralDerivativeJobLease lease)
+        IReadOnlyList<ProcessingAuxiliaryInput> CanonicalInputs) CreateFrozenRequestInputs(
+            CentralDerivativeJobLease lease, ProcessingAnnotationInput? projectedAnnotation = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
@@ -293,7 +299,7 @@ internal sealed class CentralDerivativeJobExecutor(
         var canonicalInputs = CreateCanonicalInputs(lease)
             ?? throw new CentralDerivativeJobStateException("The derivative canonical inputs are invalid.");
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CreateAnnotation(lease.SceneProvenanceJson)
+            ? projectedAnnotation ?? CreateAnnotation(lease.SceneProvenanceJson)
             : null;
         return (optionsDocument.RootElement.Clone(), selector, annotation, canonicalInputs);
     }
@@ -457,8 +463,9 @@ internal sealed class CentralDerivativeJobExecutor(
     /// instead of producing evidence whose recipe identity the frozen expectation and the evidence trigger reject.
     /// The marker is unambiguous because <see cref="CentralProcessingGraphNodeRegistry"/> admits annotation nodes with
     /// only a primary binding, so nothing but a frozen annotation can move the expected identity off the requested
-    /// one. A bound expected identity was derived from the frame's write-once provenance, which is therefore the
-    /// frozen value itself. Legacy jobs keep the live frame provenance.
+    /// one. Legacy inline geometry remains immutable when present. Compact captures instead carry a separate
+    /// frozen projected-scene artifact reference, which the executor resolves before running the recipe.
+    /// Legacy jobs without that reference keep the live frame provenance.
     /// </summary>
     internal static string? ResolveLeaseSceneProvenance(
         Guid? graphExecutionId,
@@ -483,7 +490,14 @@ internal sealed class CentralDerivativeJobExecutor(
         {
             return null;
         }
-        var objects = provenance.Objects?.Select(item =>
+        return CreateAnnotation(provenance.SceneId, provenance.Objects, provenance.Segments);
+    }
+
+    internal static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, IReadOnlyList<ProjectedObjectProvenance>? projectedObjects,
+        IReadOnlyList<ProjectedSegmentProvenance>? projectedSegments)
+    {
+        var objects = projectedObjects?.Select(item =>
         {
             var annotate = ShouldAnnotate(item);
             return new ProjectedAnnotationObject(
@@ -493,12 +507,12 @@ internal sealed class CentralDerivativeJobExecutor(
                 annotate,
                 annotate);
         }).ToArray() ?? [];
-        var segments = provenance.Segments?.Select(item => new ProjectedAnnotationSegment(
+        var segments = projectedSegments?.Select(item => new ProjectedAnnotationSegment(
             item.ConstellationId,
             new PixelPoint(item.FromPixelX, item.FromPixelY),
             new PixelPoint(item.ToPixelX, item.ToPixelY))).ToArray() ?? [];
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(
-            CaptureContractJson.SerializeToElement(new { provenance.SceneId, objects, segments }));
+            CaptureContractJson.SerializeToElement(new { SceneId = sceneId, objects, segments }));
         return new ProcessingAnnotationInput(
             objects,
             segments,

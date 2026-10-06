@@ -1058,7 +1058,7 @@ public sealed class LocalReplayRunnerPerformanceTests
     private static CameraModuleConfig CreateDurableConfiguration(Workload workload)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"), // Payloads are supplied by this fixture, without a virtual sky scene.
             new CameraRigConfig(
                 new SensorProfile(
                     "W6-sized-preview-Bayer12-in-16",

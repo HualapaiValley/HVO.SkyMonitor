@@ -33,7 +33,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
 [TestCategory("Integration")]
-public sealed class ArtifactIngestTests
+public sealed partial class ArtifactIngestTests
 {
     private static readonly ConcurrentDictionary<string, CaptureLocationProvenance> DefaultLocations =
         new(StringComparer.Ordinal);

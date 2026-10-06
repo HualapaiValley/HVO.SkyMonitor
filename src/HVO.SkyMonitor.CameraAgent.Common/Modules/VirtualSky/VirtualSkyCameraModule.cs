@@ -471,9 +471,9 @@ public sealed class VirtualSkyCameraModule(
             metadata.License,
             metadata.SchemaVersion,
             (catalog as ICelestialCatalogMetadataSource)?.PreprocessingVersion,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
+            stageKey is not null ? null : scene.Objects.Select(static item => new ProjectedObjectProvenance(
                 item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
+            stageKey is not null ? null : scene.Segments.Select(static item => new ProjectedSegmentProvenance(
                 item.ConstellationId, item.FromObjectId, item.ToObjectId,
                 item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray(),
             sceneRequest.SolarSystemBodies.Count > 0 ? planetEphemeris?.ModelVersion : null,
@@ -493,7 +493,8 @@ public sealed class VirtualSkyCameraModule(
                 ? null
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            VirtualExposure: virtualExposure);
+            VirtualExposure: virtualExposure,
+            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,

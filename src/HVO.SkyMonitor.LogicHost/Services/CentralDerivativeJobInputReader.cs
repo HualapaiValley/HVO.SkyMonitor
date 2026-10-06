@@ -69,13 +69,8 @@ internal sealed class CentralDerivativeJobInputReader(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        var leaseInputs = lease.Inputs is { Count: > 0 }
-            ? lease.Inputs
-            : [new CentralDerivativeJobLeaseInput(
-                0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
-                lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
-                lease.FrameId, lease.AgentId, null, lease.CapturedAtUtc, string.Empty)];
-        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
+        var leaseInputs = ResolveLeaseInputs(lease);
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Length);
         long totalBytes = 0;
         foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
         {
@@ -92,8 +87,8 @@ internal sealed class CentralDerivativeJobInputReader(
     {
         ArgumentNullException.ThrowIfNull(lease);
         var leaseInputs = ResolveLeaseInputs(lease);
-        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
-        var references = new List<CentralDerivativeJobInputReference>(leaseInputs.Count);
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Length);
+        var references = new List<CentralDerivativeJobInputReference>(leaseInputs.Length);
         long totalBytes = 0;
         foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
         {
@@ -120,9 +115,10 @@ internal sealed class CentralDerivativeJobInputReader(
         return new CentralDerivativeJobInputDescriptions(processingInputs, references, totalBytes);
     }
 
-    private static IReadOnlyList<CentralDerivativeJobLeaseInput> ResolveLeaseInputs(CentralDerivativeJobLease lease)
+    private static CentralDerivativeJobLeaseInput[] ResolveLeaseInputs(CentralDerivativeJobLease lease)
         => lease.Inputs is { Count: > 0 }
-            ? lease.Inputs
+            ? lease.Inputs.Where(input => lease.ProjectedScene is null ||
+                input.BindingName != CentralProjectedSceneResolver.BindingName).ToArray()
             : [new CentralDerivativeJobLeaseInput(
                 0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
                 lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
@@ -282,16 +278,16 @@ internal sealed class CentralDerivativeJobInputReader(
         var now = timeProvider.GetUtcNow();
         if (leaseInput.CentralArtifactId == Guid.Empty)
         {
-            return await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(candidate => candidate.Id == lease.JobId
-                    && candidate.Status == CentralDerivativeJobStatus.Leased
-                    && candidate.LeaseToken == lease.LeaseToken
-                    && candidate.LeaseOwner == lease.WorkerId
-                    && candidate.LeaseExpiresAtUtc > now
-                    && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
-                    && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
-                    && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
-                .Select(candidate => candidate.SourceArtifact!)
+            return await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.ArtifactId == lease.SourceArtifactId
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete
+                    && dbContext.CentralDerivativeJobs.Any(candidate => candidate.Id == lease.JobId
+                        && candidate.Status == CentralDerivativeJobStatus.Leased
+                        && candidate.LeaseToken == lease.LeaseToken
+                        && candidate.LeaseOwner == lease.WorkerId
+                        && candidate.LeaseExpiresAtUtc > now
+                        && candidate.SourceCentralArtifactId == artifact.Id))
                 .Include(artifact => artifact.Layout)
                 .Include(artifact => artifact.Recipe)
                 .Include(artifact => artifact.Sources)
