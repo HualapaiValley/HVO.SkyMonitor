@@ -40,7 +40,22 @@ public static class VisibleSceneReadoutTransform
                 FromPixel = Scale(segment.FromPixel, binX, binY),
                 ToPixel = Scale(segment.ToPixel, binX, binY)
             }),
-            nativeRoiScene.ComputationProvenance);
+            nativeRoiScene.ComputationProvenance,
+            nativeRoiScene.ResolvedFootprints.Select(footprint => Scale(footprint, binX, binY)));
+    }
+
+    private static ProjectedResolvedFootprint Scale(ProjectedResolvedFootprint value, int binX, int binY)
+    {
+        var parts = value.Parts.Select(part => part with
+        {
+            Points = part.Points.Select(point => Scale(point, binX, binY)).ToArray()
+        }).ToArray();
+        return value with
+        {
+            CenterPixel = value.CenterPixel is { } center ? Scale(center, binX, binY) : null,
+            Parts = parts,
+            Bounds = ResolvedFootprintSampler.ComputeBounds(parts)
+        };
     }
 
     private static PixelPoint Scale(PixelPoint value, int binX, int binY)

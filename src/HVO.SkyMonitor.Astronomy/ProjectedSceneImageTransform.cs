@@ -3,7 +3,8 @@ namespace HVO.SkyMonitor.Astronomy;
 /// <summary>Transformed emitted-image geometry detached from optical projection metadata.</summary>
 public sealed record ProjectedSceneGeometrySnapshot(
     IReadOnlyList<ProjectedCelestialObject> Objects,
-    IReadOnlyList<ProjectedConstellationSegment> Segments);
+    IReadOnlyList<ProjectedConstellationSegment> Segments,
+    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null);
 
 /// <summary>Applies the canonical emitted-image transform exactly once to continuous pixel-edge coordinates.</summary>
 public static class ProjectedSceneImageTransform
@@ -82,7 +83,53 @@ public static class ProjectedSceneImageTransform
                 });
             }
         }
-        return new(objects, segments);
+        var footprints = source.ResolvedFootprints
+            .Select(footprint => TransformFootprint(transform, footprint))
+            .OfType<ProjectedResolvedFootprint>()
+            .ToArray();
+        return new(objects, segments, footprints);
+    }
+
+    private static ProjectedResolvedFootprint? TransformFootprint(
+        ProjectedSceneImageTransformV1 transform,
+        ProjectedResolvedFootprint footprint)
+    {
+        var parts = new List<ResolvedFootprintPart>();
+        var clippedByCrop = false;
+        foreach (var part in footprint.Parts)
+        {
+            var chords = new List<(PixelPoint From, PixelPoint To)>();
+            var chordCount = part.Closed ? part.Points.Count : part.Points.Count - 1;
+            for (var index = 0; index < chordCount; index++)
+            {
+                var from = part.Points[index];
+                var to = part.Points[(index + 1) % part.Points.Count];
+                if (!TryClipToCrop(transform, from, to, out var clippedFrom, out var clippedTo))
+                {
+                    clippedByCrop = true;
+                    continue;
+                }
+                if (ResolvedFootprintSampler.Distance(clippedFrom, from) > ResolvedFootprintSampler.JoinTolerancePixels ||
+                    ResolvedFootprintSampler.Distance(clippedTo, to) > ResolvedFootprintSampler.JoinTolerancePixels)
+                    clippedByCrop = true;
+                chords.Add((clippedFrom, clippedTo));
+            }
+            parts.AddRange(ResolvedFootprintSampler.Stitch(chords, part.Closed && !clippedByCrop)
+                .Select(stitched => stitched with
+                {
+                    Points = stitched.Points.Select(point => Apply(transform, point)).ToArray()
+                }));
+        }
+        if (parts.Count == 0) return null;
+        return footprint with
+        {
+            CenterPixel = footprint.CenterPixel is { } center && ContainsCrop(transform, center)
+                ? Apply(transform, center)
+                : null,
+            Clipped = footprint.Clipped || !ResolvedFootprintSampler.IsSingleClosed(parts),
+            Bounds = ResolvedFootprintSampler.ComputeBounds(parts),
+            Parts = parts
+        };
     }
 
     public static void Validate(ProjectedSceneImageTransformV1 transform, int sourceWidthPixels, int sourceHeightPixels)
@@ -117,7 +164,7 @@ public static class ProjectedSceneImageTransform
         transform.BinX == 1 && transform.BinY == 1 && !transform.HorizontalMirror && !transform.VerticalMirror &&
         transform.Rotation == ProjectedSceneQuarterRotation.Degrees0;
 
-    private static bool ContainsCrop(ProjectedSceneImageTransformV1 transform, PixelPoint point) =>
+    internal static bool ContainsCrop(ProjectedSceneImageTransformV1 transform, PixelPoint point) =>
         point.X >= transform.CropX && point.X <= transform.CropX + transform.CropWidth &&
         point.Y >= transform.CropY && point.Y <= transform.CropY + transform.CropHeight;
 
