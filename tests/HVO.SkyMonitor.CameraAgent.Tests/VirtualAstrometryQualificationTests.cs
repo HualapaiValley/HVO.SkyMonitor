@@ -76,7 +76,9 @@ public sealed class VirtualAstrometryQualificationTests
                         {
                             priors[view.Name] = solved.Assessment;
                             mapCases.Add(new(caseId, view.Config.Rig, sceneUtc, nominal, solved.Assessment));
-                            if (index == 1) CheckIncompatiblePriors(input, nominal, catalog, measured, prior!);
+                            // A rejected blind solve is already a recorded failure and leaves no prior to probe; skipping the probe keeps
+                            // the remaining cases reporting instead of masking them behind a null-prior assertion.
+                            if (index == 1 && prior is not null) CheckIncompatiblePriors(input, nominal, catalog, measured, prior);
                         }
                         var payloadFile = Path.Combine(resultRoot, caseId + ".raw16");
                         await File.WriteAllBytesAsync(payloadFile, input.Payload.ToArray()).ConfigureAwait(false);
