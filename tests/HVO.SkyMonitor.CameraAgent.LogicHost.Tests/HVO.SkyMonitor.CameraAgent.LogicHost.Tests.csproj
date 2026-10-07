@@ -17,5 +17,6 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
     <Compile Include="..\HVO.SkyMonitor.Imaging.Tests\FocusStarMeasurerTests.cs" Link="Imaging\FocusStarMeasurerTests.cs" />
+    <Content Include="..\fixtures\catalog\hyg-v44-openngc-subset.sqlite" Link="Fixtures\hyg-v44-openngc-subset.sqlite" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
