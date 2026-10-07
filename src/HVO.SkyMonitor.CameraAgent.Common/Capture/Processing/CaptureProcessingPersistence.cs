@@ -64,6 +64,9 @@ internal sealed class CaptureProcessingPersistence(
         return await CreateSceneUploadManifestAsync(descriptor, output, cancellationToken).ConfigureAwait(false);
     }
 
+    internal ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(Guid captureId, CancellationToken cancellationToken)
+        => _store.ReadAbandonedStandardWorkReasonAsync(captureId, cancellationToken);
+
     internal async ValueTask<StructuredProcessingProductManifestV1> CreateSceneUploadManifestAsync(
         ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
     {

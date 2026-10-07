@@ -684,6 +684,29 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Returns why the capture's standard processing was abandoned, or <see langword="null"/> while that work can
+    /// still produce outputs. Abandoned standard work never commits a scene, so a scene-dependent consumer stops waiting.
+    /// </summary>
+    internal async ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COALESCE(work.failure_reason, 'abandoned')
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            WHERE raw.capture_id = $capture_id AND work.lane_name = 'standard' AND work.state = 'abandoned'
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]
     internal async ValueTask<IReadOnlyList<DurableCaptureProduct>> ReadCaptureProductsAsync(
         Guid captureId,

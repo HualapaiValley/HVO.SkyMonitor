@@ -513,7 +513,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new string('N', 64))
             ]);
 
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await Assert.ThrowsExactlyAsync<ProcessingPlanSupersededException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item, graph, persistence, telemetry, 2,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -816,7 +816,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
             using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var cloud = CreateRealCloudStep(root);
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await Assert.ThrowsExactlyAsync<ProcessingPlanSupersededException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     restartedFixture.Item,
                     new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", cloud, [], false,

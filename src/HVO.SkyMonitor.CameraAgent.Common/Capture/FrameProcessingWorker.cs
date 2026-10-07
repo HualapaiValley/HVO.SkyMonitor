@@ -137,6 +137,7 @@ internal sealed class FrameProcessingWorker
                 CaptureLaneHandlerOutcome.Completed => "completed",
                 CaptureLaneHandlerOutcome.Deferred => "waiting",
                 CaptureLaneHandlerOutcome.RetryableFailure => "retry",
+                CaptureLaneHandlerOutcome.Abandoned => "abandoned",
                 _ => "terminal"
             };
             telemetry.RecordGraph(outcome, graphStopwatch.Elapsed, executionClass);
@@ -169,7 +170,7 @@ internal sealed class FrameProcessingWorker
                     if (persistedNode is not null && !string.Equals(
                         persistedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
                     {
-                        throw new InvalidDataException(
+                        throw new ProcessingPlanSupersededException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
                     }
                 }
@@ -517,6 +518,14 @@ internal sealed class FrameProcessingWorker
             if (!graphFinished)
             {
                 Finish(cancellationDisposition?.Invoke() ?? CaptureLaneHandlerResult.Retry("processing.cancelled"));
+            }
+            throw;
+        }
+        catch (ProcessingPlanSupersededException)
+        {
+            if (!graphFinished)
+            {
+                Finish(CaptureLaneHandlerResult.Abandon(ProcessingPlanSupersededException.LaneReason));
             }
             throw;
         }

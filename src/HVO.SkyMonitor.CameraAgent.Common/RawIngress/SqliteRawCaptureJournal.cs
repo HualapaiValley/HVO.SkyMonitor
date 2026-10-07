@@ -733,7 +733,7 @@ internal sealed class SqliteRawCaptureJournal(
                     SELECT w.lane_name
                     FROM capture_lane_work w
                     JOIN capture_lane_definitions d ON d.lane_name = w.lane_name
-                    WHERE w.required = 1 AND w.state != 'completed' AND d.enabled = 0
+                    WHERE w.required = 1 AND w.state NOT IN ('completed', 'abandoned') AND d.enabled = 0
                     LIMIT 1;
                     """;
                 var orphanedLane = Convert.ToString(
@@ -770,7 +770,7 @@ internal sealed class SqliteRawCaptureJournal(
                     EXISTS (
                         SELECT 1 FROM capture_lane_work
                         WHERE capture_lane_work.raw_capture_row_id = raw_captures.raw_capture_row_id
-                          AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                          AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                     OR EXISTS (
                         SELECT 1
                         FROM transient_candidate_sources s

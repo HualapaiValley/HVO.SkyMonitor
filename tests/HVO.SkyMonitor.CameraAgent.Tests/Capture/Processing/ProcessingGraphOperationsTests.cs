@@ -1992,7 +1992,7 @@ public sealed class ProcessingGraphOperationsTests
             command.Parameters.AddWithValue("$work", lease.WorkId);
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual("quarantined", reader.GetString(0));
+            Assert.AreEqual("abandoned", reader.GetString(0));
             Assert.AreEqual(0L, reader.GetInt64(1));
         }
         finally

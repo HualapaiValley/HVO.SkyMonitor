@@ -43,6 +43,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private CameraModuleConfig? _baseConfiguration;
     private string? _configuredPipelineIdentity;
     private bool _configuredPipelineRetained;
+    private SupersessionCheck? _supersessionCheck;
     private string? _configuredModuleType;
 
     public ProcessingGraphOperationsCoordinator(
@@ -174,6 +175,48 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
         => _store.ReadRegistryAsync(cancellationToken);
+
+    /// <summary>
+    /// Reports a Named active revision whose stored node plans no longer match what this build compiles from the same
+    /// pipeline, typically a revision compiled before an upgrade. Live work bound to it can never run, so the standard
+    /// lane abandons each capture until an operator activates a compatible revision or rolls back to configured-basic.
+    /// Configured-basic is recompiled from configuration at startup and is never reported. The comparison is the one the
+    /// standard lane applies to each execution, and its result is cached per revision and base configuration.
+    /// </summary>
+    internal async ValueTask<ProcessingActiveRevisionSupersession?> FindSupersededActiveRevisionAsync(
+        CancellationToken cancellationToken)
+    {
+        var baseConfiguration = Volatile.Read(ref _baseConfiguration);
+        if (baseConfiguration is null) return null;
+        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        if (registry.Mode != ProcessingGraphRegistryMode.Named) return null;
+        var cached = Volatile.Read(ref _supersessionCheck);
+        if (cached is not null &&
+            string.Equals(cached.RevisionId, registry.ActiveRevisionId, StringComparison.Ordinal) &&
+            ReferenceEquals(cached.BaseConfiguration, baseConfiguration))
+        {
+            return cached.Result;
+        }
+        var revision = await _store.ReadRevisionAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        var stored = revision.Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        ProcessingActiveRevisionSupersession? result = null;
+        using (var graph = new DisposableProcessingGraph(
+            _pipelineFactory.CreateRetainedGraph(baseConfiguration with { Pipeline = revision.Pipeline })))
+        {
+            foreach (var node in graph.Value.Nodes)
+            {
+                if (stored.TryGetValue(node.Id, out var storedNode) &&
+                    !string.Equals(storedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
+                {
+                    result = new ProcessingActiveRevisionSupersession(
+                        revision.State.RevisionId, node.Id, storedNode.PlanSha256, node.PlanSha256);
+                    break;
+                }
+            }
+        }
+        Volatile.Write(ref _supersessionCheck, new SupersessionCheck(registry.ActiveRevisionId, baseConfiguration, result));
+        return result;
+    }
 
     internal void NotifyLiveWorkAccepted() => _replayWakeup.SignalLiveWork();
 
@@ -806,6 +849,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
     }
 
+    private sealed record SupersessionCheck(
+        string RevisionId,
+        CameraModuleConfig BaseConfiguration,
+        ProcessingActiveRevisionSupersession? Result);
+
     private sealed class DisposableProcessingGraph(CaptureProcessingGraph value) : IDisposable
     {
         internal CaptureProcessingGraph Value { get; } = value;
@@ -815,3 +863,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     public void Dispose() => _configurationGate.Dispose();
 }
+
+/// <summary>A Named active revision compiled under a node plan this build no longer produces.</summary>
+internal sealed record ProcessingActiveRevisionSupersession(
+    string RevisionId,
+    string NodeId,
+    string StoredPlanSha256,
+    string CurrentPlanSha256);

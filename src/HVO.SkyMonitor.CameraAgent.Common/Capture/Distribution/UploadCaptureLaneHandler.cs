@@ -39,7 +39,17 @@ internal sealed class UploadCaptureLaneHandler(
                         context.RawCapture.Manifest.Descriptor, cancellationToken).ConfigureAwait(false);
                     // Upload and standard processing are independent durable lanes. A normal
                     // raw-first arrival must not consume the transient-failure retry budget.
-                    if (scene is null) return CaptureLaneHandlerResult.Wait("outbox-scene-pending");
+                    if (scene is null)
+                    {
+                        // Abandoned standard work (a superseded plan or an expired live execution) never commits a
+                        // scene. The raw is already enqueued, so the upload finishes without one; the abandoned
+                        // standard row records why the scene is unavailable, and archived replay can rebuild it.
+                        var abandoned = await persistence.ReadAbandonedStandardWorkReasonAsync(
+                            context.RawCapture.Manifest.Descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
+                        return abandoned is null
+                            ? CaptureLaneHandlerResult.Wait("outbox-scene-pending")
+                            : CaptureLaneHandlerResult.Success;
+                    }
                     await _outbox.EnqueueAsync(_root, scene, cancellationToken).ConfigureAwait(false);
                 }
                 finally
