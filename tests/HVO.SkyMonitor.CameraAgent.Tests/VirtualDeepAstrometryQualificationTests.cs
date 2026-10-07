@@ -73,7 +73,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
         var family = VirtualAstrometryFixture.Family;
         Assert.IsTrue(!variant.Dense || family.Model == ProjectionModel.Perspective, $"{variant.Name} is declared for rectilinear families only.");
         var snapshot = VirtualAstrometryQualificationTests.Snapshot();
-        var options = VirtualAstrometryFixture.SolverOptions with { MaximumCatalogMagnitude = variant.SolveMagnitude, CatalogSelectionProfile = variant.Profile };
+        var options = (VirtualAstrometryFixture.SolverOptions with { MaximumCatalogMagnitude = variant.SolveMagnitude }).WithCatalogSelectionProfile(variant.Profile);
         var bound = AstrometricCatalogSelectionProfile.Find(variant.Profile)?.MaximumEntries ?? AstrometricCatalogData.MaximumEntries;
         var clock = Stopwatch.StartNew();
         var catalog = await snapshot.Catalog.ReadAsync(variant.SolveMagnitude, bound).ConfigureAwait(false);
@@ -421,8 +421,8 @@ public sealed class VirtualDeepAstrometryQualificationTests
         AstrometricCatalogData catalog, AstrometricDetection[] detections, AstrometricFrameAssessment prior, AstrometricSolverOptions options)
     {
         var (probe, expected) = variant.Profile is null
-            ? (options with { CatalogSelectionProfile = Deep }, "warm-context-incompatible")
-            : (options with { CatalogSelectionProfile = null }, "catalog-selection-unsupported");
+            ? (options.WithCatalogSelectionProfile(Deep), "warm-context-incompatible")
+            : (options.WithCatalogSelectionProfile(null), "catalog-selection-unsupported");
         var result = AstrometricSolver.Refine(frame, nominal, catalog, detections, prior, probe);
         return result.Assessment.ReasonCode == expected && !result.Assessment.HasMeasuredMapping ? null
             : $"fail-closed probe expected {expected}, got {result.Assessment.ReasonCode}";

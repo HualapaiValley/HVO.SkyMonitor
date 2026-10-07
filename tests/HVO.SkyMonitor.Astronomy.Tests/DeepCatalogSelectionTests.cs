@@ -6,9 +6,10 @@ using HVO.SkyMonitor.AgentCore;
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
 /// <summary>
-/// Issue #1167: opt-in catalog selections deeper than the legacy 2,500-entry bound. Settings without a profile keep
-/// their identity and bound; every consumer handles a selection up to the materialization ceiling; and the two solver
-/// rewrites that make deep selections affordable are pinned against the solver v2 code they replace.
+/// Issue #1167: catalog selections deeper than the legacy 2,500-entry bound. No deep profile qualified, so none is
+/// declared and public settings cannot select one; the measured profile stays internal so its harness remains runnable.
+/// Settings without a profile keep their identity and bound; every consumer handles a selection up to the
+/// materialization ceiling; and the two solver rewrites are pinned against the solver v2 code they replace.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -25,7 +26,7 @@ public sealed class DeepCatalogSelectionTests
     private const string DefaultSettingsIdentity = "f1edbb794f179f3d5dbec3d270e34f865291ec7ffb27c83655f3a6af4dcb2bb7";
     private const string Magnitude5SettingsIdentity = "e52c026406415332c9f638456ac94b79aa290998d644ac0bc818f31144b1f824";
 
-    private static readonly AstrometricSolverOptions Deep = new(MaximumCatalogMagnitude: 6, CatalogSelectionProfile: Profile);
+    private static readonly AstrometricSolverOptions Deep = new AstrometricSolverOptions(MaximumCatalogMagnitude: 6).WithCatalogSelectionProfile(Profile);
     private static readonly string[] UnmappedReasonCodes = ["acquisition-or-quality-failed", "ambiguous", "resource-limit", "time-budget"];
 
     private sealed record Solved(AstrometricCatalogData Catalog, AstrometricCalibration Calibration, AstrometricDetection[] Detections, AstrometricSolveResult Result);
@@ -41,25 +42,55 @@ public sealed class DeepCatalogSelectionTests
         Assert.AreEqual(DefaultSettingsIdentity, defaults.IdentitySha256);
         Assert.AreEqual(Magnitude5SettingsIdentity, new AstrometricSolverOptions(MaximumCatalogMagnitude: 5).IdentitySha256);
 
-        var deep = new AstrometricSolverOptions(CatalogSelectionProfile: Profile);
+        // The measured evidence pins this exact settings JSON for the profile, so it serializes last as it did at d3b78737.
+        var deep = new AstrometricSolverOptions().WithCatalogSelectionProfile(Profile);
         Assert.AreEqual(DefaultSettingsJson[..^1] + ",\"CatalogSelectionProfile\":\"hyg-deep-selection-v1\"}", JsonSerializer.Serialize(deep));
         Assert.AreNotEqual(DefaultSettingsIdentity, deep.IdentitySha256);
+        Assert.AreEqual(DefaultSettingsIdentity, deep.WithCatalogSelectionProfile(null).IdentitySha256);
     }
 
     [TestMethod]
-    public void DeclaredProfilesAreFixedAndSetTheCeiling()
+    public void TheProfileIsPartOfRecordEqualityAndSurvivesWith()
+    {
+        var copy = Deep with { MinimumFocalScale = .97 };
+        Assert.AreEqual(Profile, copy.CatalogSelectionProfile);
+        Assert.AreEqual(Deep, Deep with { });
+        Assert.AreEqual(Deep.GetHashCode(), (Deep with { }).GetHashCode());
+        Assert.AreNotEqual(new AstrometricSolverOptions(MaximumCatalogMagnitude: 6), Deep);
+        Assert.AreEqual(new AstrometricSolverOptions(MaximumCatalogMagnitude: 6), Deep.WithCatalogSelectionProfile(null));
+        Assert.AreEqual(Profile, Deep.CatalogSelectionProfile, "Copies never mutate their source.");
+    }
+
+    [TestMethod]
+    public void NoPublicSurfaceSelectsAProfile()
+    {
+        // Issue #1167 qualified no deep selection: the profile type and the settings member are internal, and serialized
+        // settings, the only external construction path besides the public constructor, cannot set the profile.
+        Assert.IsFalse(typeof(AstrometricCatalogSelectionProfile).IsPublic);
+        Assert.IsNull(typeof(AstrometricSolverOptions).GetProperty(nameof(AstrometricSolverOptions.CatalogSelectionProfile)));
+        Assert.HasCount(11, typeof(AstrometricSolverOptions).GetConstructors().Single().GetParameters());
+        var parsed = JsonSerializer.Deserialize<AstrometricSolverOptions>(JsonSerializer.Serialize(Deep));
+        Assert.IsNotNull(parsed);
+        Assert.IsNull(parsed.CatalogSelectionProfile);
+        Assert.AreEqual(AstrometricCatalogData.MaximumEntries, parsed.CatalogEntryBound);
+        Assert.AreEqual(new AstrometricSolverOptions(MaximumCatalogMagnitude: 6), parsed);
+    }
+
+    [TestMethod]
+    public void NoProfileIsDeclaredAndTheMeasuredProfileIsFixed()
     {
         var profile = AstrometricCatalogSelectionProfile.HygDeepSelectionV1;
         Assert.AreEqual("hyg-deep-selection-v1", profile.Name);
         Assert.AreEqual(8192, profile.MaximumEntries);
         Assert.AreEqual(6d, profile.QualifiedMaximumMagnitude);
-        Assert.HasCount(1, AstrometricCatalogSelectionProfile.Declared);
+        Assert.IsEmpty(AstrometricCatalogSelectionProfile.Declared);
+        Assert.HasCount(1, AstrometricCatalogSelectionProfile.Measured);
         Assert.AreSame(profile, AstrometricCatalogSelectionProfile.Find(Profile));
         Assert.IsNull(AstrometricCatalogSelectionProfile.Find("HYG-DEEP-SELECTION-V1"));
         Assert.IsNull(AstrometricCatalogSelectionProfile.Find(string.Empty));
         Assert.IsNull(AstrometricCatalogSelectionProfile.Find(null));
 
-        Assert.AreEqual(AstrometricCatalogData.MaterializationCeiling, AstrometricCatalogSelectionProfile.Declared.Max(p => p.MaximumEntries));
+        Assert.AreEqual(AstrometricCatalogData.MaterializationCeiling, AstrometricCatalogSelectionProfile.Measured.Max(p => p.MaximumEntries));
         Assert.AreEqual(2500, new AstrometricSolverOptions().CatalogEntryBound);
         Assert.AreEqual(profile.MaximumEntries, Deep.CatalogEntryBound);
     }
@@ -72,13 +103,13 @@ public sealed class DeepCatalogSelectionTests
     [DataRow(Profile, 7d)]
     [DataRow(Profile, double.NaN)]
     public void ProfileRejectsUndeclaredNamesAndUnqualifiedMagnitudes(string profile, double magnitude) =>
-        Assert.ThrowsExactly<ArgumentException>(() => new AstrometricSolverOptions(MaximumCatalogMagnitude: magnitude, CatalogSelectionProfile: profile).Validate());
+        Assert.ThrowsExactly<ArgumentException>(() => new AstrometricSolverOptions(MaximumCatalogMagnitude: magnitude).WithCatalogSelectionProfile(profile).Validate());
 
     [TestMethod]
     public void ProfileAcceptsItsQualifiedRangeAndNullKeepsTheLegacyRange()
     {
         Deep.Validate();
-        new AstrometricSolverOptions(MaximumCatalogMagnitude: -1, CatalogSelectionProfile: Profile).Validate();
+        new AstrometricSolverOptions(MaximumCatalogMagnitude: -1).WithCatalogSelectionProfile(Profile).Validate();
         // The legacy null profile remains valid at any finite magnitude, bounded only by its 2,500-entry read.
         new AstrometricSolverOptions(MaximumCatalogMagnitude: 7).Validate();
     }
@@ -91,7 +122,7 @@ public sealed class DeepCatalogSelectionTests
         var f = Shallow.Value;
         var source = new CapturingSource(new(f.Catalog.Metadata, f.Catalog.Stars, false, magnitude));
         var result = await AstrometricSolver.SolveAsync(f.Result.Assessment.Frame, f.Calibration, source, f.Detections,
-            new(MaximumCatalogMagnitude: magnitude, CatalogSelectionProfile: profile)).ConfigureAwait(false);
+            new AstrometricSolverOptions(MaximumCatalogMagnitude: magnitude).WithCatalogSelectionProfile(profile)).ConfigureAwait(false);
 
         Assert.AreEqual(magnitude, source.RequestedMagnitude);
         Assert.AreEqual(entries, source.RequestedEntries);

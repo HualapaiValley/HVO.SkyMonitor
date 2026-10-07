@@ -75,13 +75,18 @@ public sealed record AstrometricCatalogProvenance(
 public sealed class AstrometricCatalogData
 {
     /// <summary>
-    /// Legacy and default request bound. Settings without a <see cref="AstrometricCatalogSelectionProfile"/> read and solve
-    /// at most this many stars, exactly as solver v2 always has.
+    /// Request bound of every public settings value: the solver reads and solves at most this many stars, exactly as solver
+    /// v2 always has.
     /// </summary>
     public const int MaximumEntries = 2500;
 
-    /// <summary>Hard materialization ceiling: the largest request bound any declared selection profile may make.</summary>
-    public const int MaterializationCeiling = AstrometricCatalogSelectionProfile.HygDeepSelectionV1MaximumEntries;
+    /// <summary>
+    /// Capacity of this container and of catalog reads, independent of any selection profile. It promises no solve: the
+    /// solver and calibration session refuse a selection above <see cref="MaximumEntries"/> with
+    /// <c>catalog-selection-unsupported</c> for any settings public code can construct, because no deep selection is
+    /// qualified (issue #1167).
+    /// </summary>
+    public const int MaterializationCeiling = 8192;
 
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
         bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel,
@@ -127,51 +132,70 @@ public interface IAstrometricCatalogSource
 }
 
 /// <summary>
-/// An immutable, opt-in catalog selection envelope: the request bound a solve may materialize and the faintest magnitude
-/// at which that depth was qualified. A declared name never changes meaning; a different bound or magnitude needs a new name.
+/// An immutable catalog selection envelope: the request bound a solve may materialize and the faintest magnitude its
+/// measurement covered. A name never changes meaning; a different bound or magnitude needs a new name.
 /// </summary>
-public sealed class AstrometricCatalogSelectionProfile
+internal sealed class AstrometricCatalogSelectionProfile
 {
-    /// <summary>Name of the deep HYG selection qualified under issue #1167.</summary>
-    public const string HygDeepSelectionV1Name = "hyg-deep-selection-v1";
+    /// <summary>
+    /// The deep HYG selection measured under issue #1167. It is not qualified, so the name is burned: it is never declared,
+    /// and any later attempt uses a new name.
+    /// </summary>
+    internal const string HygDeepSelectionV1Name = "hyg-deep-selection-v1";
 
     internal const int HygDeepSelectionV1MaximumEntries = 8192;
 
     private AstrometricCatalogSelectionProfile(string name, int maximumEntries, double qualifiedMaximumMagnitude) =>
         (Name, MaximumEntries, QualifiedMaximumMagnitude) = (name, maximumEntries, qualifiedMaximumMagnitude);
 
-    public static AstrometricCatalogSelectionProfile HygDeepSelectionV1 { get; } = new(HygDeepSelectionV1Name, HygDeepSelectionV1MaximumEntries, 6.0);
+    internal static AstrometricCatalogSelectionProfile HygDeepSelectionV1 { get; } = new(HygDeepSelectionV1Name, HygDeepSelectionV1MaximumEntries, 6.0);
 
-    /// <summary>Every declared profile; <see cref="AstrometricCatalogData.MaterializationCeiling"/> is the largest bound among them.</summary>
-    public static IReadOnlyList<AstrometricCatalogSelectionProfile> Declared { get; } = [HygDeepSelectionV1];
+    /// <summary>Every qualified profile. None is: no deep selection is shown to meet the issue #1167 acceptance minimum.</summary>
+    internal static IReadOnlyList<AstrometricCatalogSelectionProfile> Declared { get; } = [];
 
-    public string Name { get; }
+    /// <summary>Profiles kept only so their evaluation harnesses stay runnable; never declared, never configurable.</summary>
+    internal static IReadOnlyList<AstrometricCatalogSelectionProfile> Measured { get; } = [HygDeepSelectionV1];
+
+    internal string Name { get; }
 
     /// <summary>Request bound passed to the catalog source, and the largest selection a solve under this profile accepts.</summary>
-    public int MaximumEntries { get; }
+    internal int MaximumEntries { get; }
 
-    /// <summary>Faintest requested magnitude this profile was qualified for; settings asking for more fail validation.</summary>
-    public double QualifiedMaximumMagnitude { get; }
+    /// <summary>Faintest requested magnitude qualified, or for a measured profile measured; settings asking for more fail validation.</summary>
+    internal double QualifiedMaximumMagnitude { get; }
 
-    /// <summary>The declared profile with this exact name, or null when none is declared.</summary>
-    public static AstrometricCatalogSelectionProfile? Find(string? name) =>
-        name is null ? null : Declared.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
+    /// <summary>The declared or measured profile with this exact name, or null when there is none.</summary>
+    internal static AstrometricCatalogSelectionProfile? Find(string? name) =>
+        name is null ? null : Declared.Concat(Measured).FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
 }
 
 /// <summary>Versioned finite work bounds. Quality thresholds remain declared geometric engineering gates.</summary>
-/// <param name="CatalogSelectionProfile">
-/// Opt-in deep selection envelope by declared name. Null keeps the legacy 2,500-entry bound and is omitted from the settings
-/// identity, so every configuration that does not opt in keeps its identity.
-/// </param>
 public sealed record AstrometricSolverOptions(
     double MinimumFocalScale = .90, double MaximumFocalScale = 1.10, double FocalScaleStep = .01,
     double MaximumCatalogMagnitude = 7, int TriangleDetectionCount = 28, int ImageTriangleLimit = 192,
     int HypothesisLimit = 200000, int CandidateLimit = 32, double ColdBudgetMilliseconds = 15000,
-    double WarmBudgetMilliseconds = 500, double MaximumWarmAgeSeconds = 600,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogSelectionProfile = null)
+    double WarmBudgetMilliseconds = 500, double MaximumWarmAgeSeconds = 600)
 {
+    private string? _catalogSelectionProfile;
+
     [JsonIgnore]
     public string IdentitySha256 => AstrometricIdentity.Hash(this with { });
+
+    /// <summary>
+    /// Evaluation-only selection envelope by name, set only through <see cref="WithCatalogSelectionProfile"/>. It has no
+    /// setter, so neither configuration nor deserialized settings can select one. Null keeps the 2,500-entry bound and is
+    /// omitted from the settings identity; a measured profile serializes last, as the issue #1167 evidence pins.
+    /// </summary>
+    [JsonInclude, JsonPropertyOrder(1), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal string? CatalogSelectionProfile => _catalogSelectionProfile;
+
+    /// <summary>A copy of these settings under the named selection profile, or the legacy bound when null.</summary>
+    internal AstrometricSolverOptions WithCatalogSelectionProfile(string? name)
+    {
+        var copy = this with { };
+        copy._catalogSelectionProfile = name;
+        return copy;
+    }
 
     /// <summary>Largest catalog selection these settings read and solve. Derived from the profile, never part of the identity.</summary>
     [JsonIgnore]
