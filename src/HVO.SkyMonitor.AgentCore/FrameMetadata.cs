@@ -51,7 +51,9 @@ public sealed record SceneProvenance(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageKey = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageIdentitySha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] VirtualExposureProvenance? VirtualExposure = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneSchemaVersion = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneSchemaVersion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogPackageVersion = null)
 {
     public const string RetainedProjectedSceneSchemaVersion = "projected-scene-v1";
 

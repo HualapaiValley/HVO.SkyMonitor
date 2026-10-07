@@ -228,7 +228,8 @@ internal sealed record LifecycleRequest : DeploymentCommand
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }
-        if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect &&
+        if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect
+                and not LifecycleOperationKind.CatalogCheck &&
             InstanceId is null)
         {
             throw new InstallUsageException("--instance-id is required.");
@@ -245,6 +246,10 @@ internal sealed record LifecycleRequest : DeploymentCommand
             CatalogBundle is null && CatalogManifest is null && CatalogIndex is null)
         {
             throw new InstallUsageException("catalog install requires --catalog-bundle, --catalog-manifest, or --catalog-index.");
+        }
+        if (Operation == LifecycleOperationKind.CatalogCheck && CatalogManifest is null && CatalogIndex is null)
+        {
+            throw new InstallUsageException("catalog check requires --catalog-manifest or --catalog-index.");
         }
         if (Operation == LifecycleOperationKind.CatalogGarbageCollect && !DryRun && CatalogVersion is null)
         {
@@ -353,6 +358,10 @@ internal sealed record LifecycleRequest : DeploymentCommand
             case LifecycleOperationKind.CatalogInstall:
                 Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null,
                     "Catalog install accepts only catalog acquisition and common options.");
+                break;
+            case LifecycleOperationKind.CatalogCheck:
+                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null || DryRun || Resume,
+                    "Catalog check is read-only and accepts only catalog locator and common options.");
                 break;
             case LifecycleOperationKind.CatalogSelect:
                 Reject(hasImage || hasCatalogSource || ConfirmationInstanceId is not null,

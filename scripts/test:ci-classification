@@ -253,6 +253,8 @@ verify_component_plan "deploy/split-host/compose.logichost.yml"                 
 verify_component_plan "deploy/sql/logichost-runtime-role.sql"                          full true  true  true  true  true  true  true
 verify_component_plan "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" full true true true true true true true
 verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false true  true  true  true  true  true
+verify_component_plan "docs/catalog/hyg-v44-attribution.md"                            full false true  true  true  true  true  true
+verify_component_plan "scripts/catalog/hyg-v44-common.sh"                              full true  true  true  true  true  true  true
 verify_component_plan "scripts/deploy/product-layout.sh"                               full true  true  true  true  true  true  true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  true  true  true  true  true  true
 

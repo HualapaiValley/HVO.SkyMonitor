@@ -19,15 +19,12 @@ internal sealed class DistributionAcquirer : IDisposable
     private const long MaximumCacheBytes = 40L * 1024 * 1024 * 1024;
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultAssetAttemptTimeout = TimeSpan.FromMinutes(30);
-    private static readonly HashSet<string> CatalogFiles = new(StringComparer.Ordinal)
-    {
-        "manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"
-    };
 
     private readonly HttpClient client;
     private readonly string cacheRoot;
     private readonly string stateRoot;
     private readonly DistributionTrustRoot trustRoot;
+    private readonly IApprovedCatalogSpecificationSource catalogSpecifications;
     private readonly TimeSpan requestTimeout;
     private readonly TimeSpan assetAttemptTimeout;
 
@@ -35,14 +32,17 @@ internal sealed class DistributionAcquirer : IDisposable
         HttpMessageHandler? handler = null,
         string? cacheRoot = null,
         DistributionTrustRoot? trustRoot = null,
-        string? stateRoot = null)
-        : this(handler, cacheRoot, trustRoot, stateRoot, DefaultRequestTimeout, DefaultAssetAttemptTimeout)
+        string? stateRoot = null,
+        IApprovedCatalogSpecificationSource? catalogSpecifications = null)
+        : this(handler, cacheRoot, trustRoot, stateRoot, DefaultRequestTimeout, DefaultAssetAttemptTimeout,
+            catalogSpecifications)
     {
     }
 
     /// <summary>
     /// Test seam: the attempt timeouts keep their production defaults through the public constructor; tests shorten
-    /// them so a stalled transfer can be proved without waiting for the real durations.
+    /// them so a stalled transfer can be proved without waiting for the real durations. Like the trust root, the
+    /// approved catalog specifications default to the reviewed production registry.
     /// </summary>
     internal DistributionAcquirer(
         HttpMessageHandler? handler,
@@ -50,13 +50,15 @@ internal sealed class DistributionAcquirer : IDisposable
         DistributionTrustRoot? trustRoot,
         string? stateRoot,
         TimeSpan requestTimeout,
-        TimeSpan assetAttemptTimeout)
+        TimeSpan assetAttemptTimeout,
+        IApprovedCatalogSpecificationSource? catalogSpecifications = null)
     {
         client = CreateClient(handler);
         client.Timeout = Timeout.InfiniteTimeSpan;
         this.cacheRoot = cacheRoot ?? DefaultCacheRoot();
         this.stateRoot = stateRoot ?? (cacheRoot is null ? DefaultStateRoot() : Path.Combine(cacheRoot, "test-state"));
         this.trustRoot = trustRoot ?? DistributionTrustRoot.Production;
+        this.catalogSpecifications = catalogSpecifications ?? ProductionCatalog.Specifications;
         this.requestTimeout = requestTimeout;
         this.assetAttemptTimeout = assetAttemptTimeout;
     }
@@ -95,6 +97,40 @@ internal sealed class DistributionAcquirer : IDisposable
                                            UnauthorizedAccessException or InvalidDataException or CryptographicException)
         {
             throw new InstallerException("The signed catalog distribution could not be acquired or verified.", exception);
+        }
+    }
+
+    /// <summary>
+    /// Resolves and verifies a signed catalog release without acquiring it. The manifest, its signature, the signed
+    /// index entry it was named through, and the approved-specification check are exactly the ones an install uses,
+    /// but the bundle is never downloaded or extracted, no metadata is cached or evicted, and no index rollback state
+    /// is committed. The read-only <c>catalog check</c> uses this to report an available package without changing
+    /// installed bytes or any selection. Returns <c>null</c> when no signed release was named.
+    /// </summary>
+    public async Task<ResolvedCatalogRelease?> ResolveCatalogAsync(InstallRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var inputs = TrainInputs.ForCatalog(request);
+        if (inputs.Manifest is null && inputs.Index is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var resolved = await ResolveVerifiedManifestAsync(
+                inputs, DistributionManifestKind.CatalogRelease, readOnly: true, cancellationToken).ConfigureAwait(false);
+            if (resolved.Manifest.Catalog is not { } catalog ||
+                resolved.Manifest.Artifacts.Count(static value => value.Role == DistributionArtifactRole.CatalogBundle) != 1)
+            {
+                throw new InstallerException("The signed catalog release does not identify exactly one bundle asset.");
+            }
+            return new ResolvedCatalogRelease(resolved.Manifest.Release, catalog);
+        }
+        catch (Exception exception) when (exception is DistributionValidationException or HttpRequestException or IOException or
+                                           UnauthorizedAccessException or InvalidDataException or CryptographicException)
+        {
+            throw new InstallerException("The signed catalog distribution could not be resolved or verified.", exception);
         }
     }
 
@@ -284,7 +320,8 @@ internal sealed class DistributionAcquirer : IDisposable
         DistributionReleaseManifest manifest;
         try
         {
-            manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
+            manifest = DistributionVerifier.VerifyManifest(
+                manifestBytes.Bytes, signatureBytes.Bytes, trustRoot, catalogSpecifications);
         }
         catch (DistributionValidationException) when (!inputs.NoDownload && (manifestBytes.FromCache || signatureBytes.FromCache))
         {
@@ -299,7 +336,8 @@ internal sealed class DistributionAcquirer : IDisposable
                 manifestSource, DistributionVerifier.MaximumManifestBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
             signatureBytes = await ReadMetadataAsync(
                 signatureSource, DistributionVerifier.MaximumSignatureTextBytes, noDownload: false, readOnly, cancellationToken, bypassCache: true).ConfigureAwait(false);
-            manifest = DistributionVerifier.VerifyManifest(manifestBytes.Bytes, signatureBytes.Bytes, trustRoot);
+            manifest = DistributionVerifier.VerifyManifest(
+                manifestBytes.Bytes, signatureBytes.Bytes, trustRoot, catalogSpecifications);
         }
         if (resolvedManifest.Reference is { } reference &&
             (manifestBytes.Bytes.Length != reference.ManifestLength ||
@@ -803,6 +841,10 @@ internal sealed class DistributionAcquirer : IDisposable
         var privateArchive = Path.Combine(extractionParent, $"catalog-{Guid.NewGuid():N}.tar.gz");
         SafeFileSystem.CreateOwnerDirectory(extractionRoot);
         var expectedPrefix = $"{catalog.PackageVersion}.bundle/";
+        // The signed identity was already admitted against the approved registry, which fixes the bundle file set.
+        if (!catalogSpecifications.TryGet(catalog.CatalogId, out var specification))
+            throw new InvalidDataException("The catalog archive names an unapproved catalog.");
+        var catalogFiles = specification.RetainedFileNames.ToHashSet(StringComparer.Ordinal);
         var extracted = new HashSet<string>(StringComparer.Ordinal);
         try
         {
@@ -820,11 +862,11 @@ internal sealed class DistributionAcquirer : IDisposable
                     throw new InvalidDataException("The catalog archive contains an unsupported entry.");
                 }
                 var name = entry.Name[expectedPrefix.Length..];
-                if (!CatalogFiles.Contains(name) || !extracted.Add(name) || name.Contains('/', StringComparison.Ordinal))
+                if (!catalogFiles.Contains(name) || !extracted.Add(name) || name.Contains('/', StringComparison.Ordinal))
                 {
                     throw new InvalidDataException("The catalog archive file set is invalid.");
                 }
-                var maximum = name == "hyg_v42.sqlite" ? catalog.DatabaseLength : 4L * 1024 * 1024;
+                var maximum = name == specification.DatabaseRelativePath ? catalog.DatabaseLength : 4L * 1024 * 1024;
                 if (entry.Length <= 0 || entry.Length > maximum || entry.DataStream is null)
                 {
                     throw new InvalidDataException($"Catalog archive entry '{name}' exceeds its bounded size.");
@@ -834,11 +876,11 @@ internal sealed class DistributionAcquirer : IDisposable
                 File.SetUnixFileMode(destination, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 await entry.DataStream.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
             }
-            if (!extracted.SetEquals(CatalogFiles))
+            if (!extracted.SetEquals(catalogFiles))
             {
                 throw new InvalidDataException("The catalog archive omits required files.");
             }
-            await VerifyExtractedCatalogAsync(extractionRoot, catalog, cancellationToken).ConfigureAwait(false);
+            await VerifyExtractedCatalogAsync(extractionRoot, catalog, specification, cancellationToken).ConfigureAwait(false);
             return extractionRoot;
         }
         catch
@@ -855,10 +897,11 @@ internal sealed class DistributionAcquirer : IDisposable
     private static async Task VerifyExtractedCatalogAsync(
         string root,
         DistributionCatalogIdentity catalog,
+        ApprovedCatalogContract specification,
         CancellationToken cancellationToken)
     {
         var manifestPath = Path.Combine(root, "manifest.json");
-        var databasePath = Path.Combine(root, "hyg_v42.sqlite");
+        var databasePath = Path.Combine(root, specification.DatabaseRelativePath);
         var manifestHash = await SafeFileSystem.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
         var databaseHash = await SafeFileSystem.ComputeSha256Async(databasePath, cancellationToken).ConfigureAwait(false);
         if (manifestHash != catalog.BundleManifestSha256 || databaseHash != catalog.DatabaseSha256 ||
@@ -1224,6 +1267,11 @@ internal sealed record ResolvedImageRelease(
     DistributionReleaseIdentity Release,
     DistributionImageIdentity Image,
     DistributionImagePlatform Platform);
+
+/// <summary>A verified signed catalog release resolved without acquiring or extracting its bundle.</summary>
+internal sealed record ResolvedCatalogRelease(
+    DistributionReleaseIdentity Release,
+    DistributionCatalogIdentity Catalog);
 
 /// <summary>The verified signed CameraAgent image release selected for this host.</summary>
 internal sealed record AcquiredImage(
