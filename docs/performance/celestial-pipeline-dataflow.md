@@ -921,8 +921,8 @@ set -euo pipefail
 E=~/development-state/HVO.SkyMonitor/evidence/1170 id=${ID:-cp-518}
 S=${S:-docs/validation/issue-1170-checkpoints.json} M=docs/validation/issue-1170-pipeline-manifest.json
 m=$(sha256sum < "$M" | cut -d' ' -f1)
-# Exactly one checkpoint with that id, with at least one cited pack.
-[[ $(jq --arg id "$id" '[.checkpoints[] | select(.id == $id and (.evidence | length) > 0)] | length' "$S") == 1 ]] ||
+# Exactly one checkpoint with that id, and it cites at least one pack.
+jq -e --arg id "$id" '[.checkpoints[] | select(.id == $id)] | length == 1 and (.[0].evidence | length) > 0' "$S" >/dev/null ||
     { echo "FAIL checkpoint $id"; exit 1; }
 rows=$(jq -er --arg id "$id" '.checkpoints[] | select(.id == $id) | .evidence[]
     | [.pack, .manifestSha256, .archiveSha256, .sha256SumsSha256] | @tsv' "$S")
@@ -946,9 +946,12 @@ python3 -I docs/validation/issue-1170-interleaved.py pairs "$r" "$r.pairs.json" 
 ```
 
 The block runs in a subshell and exits nonzero if the checkpoint is missing or empty, if any pack fails, or if
-the comparison fails. The comparison runs only after every pack verifies. Two negative checks must exit 1:
-`ID=cp-none`, and `S="$t"` after
-`t=$(mktemp); jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' docs/validation/issue-1170-checkpoints.json > "$t"`.
+the comparison fails. It also exits nonzero if the id matches more than one checkpoint, as the drift test does.
+The comparison runs only after every pack verifies. Three negative checks must exit 1: `ID=cp-none`, and `S="$t"`
+after each of
+`t=$(mktemp); jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' docs/validation/issue-1170-checkpoints.json > "$t"`
+and
+`t=$(mktemp); jq '.checkpoints += [.checkpoints[0] | .evidence = []]' docs/validation/issue-1170-checkpoints.json > "$t"`.
 
 Attribution needs `dotnet-trace` installed outside the repository tool manifest, in the directory named by
 `HVO_1170_TOOLS` (default `~/.local/share/hvo-1170-tools`):
