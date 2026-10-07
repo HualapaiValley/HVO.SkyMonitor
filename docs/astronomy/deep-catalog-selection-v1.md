@@ -491,3 +491,57 @@ Every other path in the table above is byte-identical at the merge head. The evi
 The evidence pack is kept outside the repository under the #520 evidence root, at `evidence/1167/d3b78737/`, with a
 `SHA256SUMS` manifest. It holds the tuning, held-out, magnitude-7 and A/B reports and logs, `decision.json`,
 `decision-ruling.json`, `freeze.json`, `steps.json` and the fit-05 diagnostic and attribution sessions.
+
+### Evidence completeness check
+
+Review PR-1181-R0 found three ways the frozen evaluator can pass incomplete evidence (F1–F3):
+
+- G0 takes the expected views from the report itself.
+- The A/B comparison lists only the report files that are present.
+- G4 accepts a bare p95, and G8 skips a missing `indexPrefix`.
+
+The frozen manifest and evaluator stay unchanged, and they still decide. A separate script,
+`docs/validation/issue-1167-evidence-check.py` (SHA-256
+`aa1524c202059829fd17605906d45860091f68cbe9ef8805fc07e9b45c812040`), checks that the evidence they decided on is
+complete.
+
+Its expected inventory comes only from committed sources, and the script quotes each source line at `d3b78737`:
+
+- the frozen #1167 manifest;
+- the #1126 manifest;
+- the #1126 and #1167 runner scripts;
+- the harness sources.
+
+The script then finds each quoted declaration again in the sources the pack itself records. For a final pack these are
+the harness blobs in its index. For an A/B pack they are the scripts at the A and B revisions.
+
+**`deep` mode.** A final pack is complete when all of the following hold:
+
+- its runs are exactly the manifest matrix;
+- every report hashes to its index entry;
+- every family, view, held-out date and capture appears exactly once, with its declared view, capture and UTC;
+- `selection` holds 30 finite samples after 5 warm-ups, and their nearest-rank p95, computed with the harness's own
+  definition, equals `p95Ms` exactly;
+- every perspective cold row carries an `indexPrefix` whose `boundBytes` equals the harness formula.
+
+A run with no report must be an `error` run. It is listed rather than counted as incomplete, because the frozen
+evaluator already makes every decision that depends on it undecidable.
+
+**`ab` mode.** An A/B pack is complete when all of the following hold:
+
+- each arm holds exactly the #1126 run and report inventory at its declared revision;
+- every report hashes to its index entry;
+- the B2 and A2 pixel reports are present for every family.
+
+**Declaration order.**
+
+1. The check was committed and pushed before it was run on any measured pack. Before that it was tested only on
+   synthetic packs built from its declared constants.
+2. It was then run on the `d3b78737` final and A/B packs.
+3. Finally, the reviewer's F1–F3 triggers were applied to scratch copies of those packs, outside the repository.
+
+The commit, the results and the trigger runs are recorded below once they exist.
+
+**Disclosure.** Before the check was written, while verifying the r0 findings, the #1167 owner inspected the `d3b78737`
+final reports: their view names, a recomputed p95, and whether `indexPrefix` was present and matched the bound formula.
+The check's constants do not come from that inspection. They come only from the committed sources it quotes.
