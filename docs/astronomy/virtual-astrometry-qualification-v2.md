@@ -407,3 +407,7 @@ virtual-only and makes no physical-lens claim.
 | rectilinear | Synthetic pinhole at the Kowa LM6HC 6 mm focal length | Blind and warm acquisition, resources, measured stars, optical calibration, uncertainty | Supported only inside the distortion domain: θ ≤ 77.64° at the held-out k1 −0.008, θ ≤ 78.42° at the tuning k1 −0.007; the reports' 85° mapping domain does not apply. Requires solver v2 (`spherical-triangle-astrometry-v2`). |
 | any new family | CFA | — | Untested; outside the envelope. |
 | rectilinear 8 mm | Declared fallback | — | Measured on tuning only, for the record; not part of the envelope. |
+
+Every row is qualified with the magnitude-5 HYG selection. A deeper selection was measured over the same families
+under #1167 and is not qualified; see [Deep HYG catalog selection](deep-catalog-selection-v1.md). This table is
+unchanged by it.
