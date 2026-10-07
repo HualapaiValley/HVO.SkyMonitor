@@ -7,6 +7,7 @@
 # Usage: HVO_ASTROMETRY_CATALOG_ROOT=<snapshot root> [HVO_HEAVY_LOCK=<lock file>] [HVO_CONTINUITY_BASE=<revision>] \
 #     docs/validation/issue-1168-qualification.sh tuning|final|continuity <new output directory>
 #   docs/validation/issue-1168-qualification.sh rescore <continuity pack> <new output directory>
+#   docs/validation/issue-1168-qualification.sh scorer-check <report>...
 #
 # "tuning" runs the manifest's tuning section and is never final evidence.
 # "final" runs the held-out, resource and renderer-capacity runs. "continuity"
@@ -19,7 +20,9 @@
 # rerun: it must descend from the manifest base, be an ancestor of this head,
 # and carry every declared base input and the #1126 manifest unchanged.
 # "rescore" builds and runs nothing: it verifies a sealed continuity pack and
-# classifies its recorded pairs again under this head's manifest.
+# classifies its recorded pairs again under this head's manifest. "scorer-check"
+# applies the continuity scorer-evidence check to the named reports, each with
+# its legacy block when it has one, and exits 0 only when every report passes.
 #
 # Requires bash, git, jq, sha256sum, GNU join and sort, the pinned .NET SDK
 # except to rescore, and flock when HVO_HEAVY_LOCK is set. Docker is not used. A
@@ -30,7 +33,8 @@
 # verdicts decide instead: a pair is invalid when its base does not reproduce
 # exactly the pinned #1126 outcome, which leaves the pack incomplete; failed on
 # an unexplained head outcome, a deterministic failure difference, a head-only
-# allocation miss or an unclassified leaf; and passed otherwise. Other resource
+# allocation miss, incomplete or inconsistent scorer evidence on either side, or
+# an unclassified leaf; and passed otherwise. Other resource
 # failures, matched by the manifest's patterns, are timing and only listed. The
 # script exits 0 only when the pack passed. Failing to copy, hash or index
 # evidence is fatal, and the index is validated against the manifest before
@@ -48,16 +52,73 @@ build_flags=(--configuration Release -warnaserror -v q -nodeReuse:false -p:UseSh
 
 fatal() { echo "$*" >&2; exit 1; }
 utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# scorer_evidence <report> <side> <legacy block: required|optional|none>: every incomplete or inconsistent measured-stars
+# scorer field, as a JSON array of {side, caseId, path, kind, detail}. Each reports[i], and its legacy block when required
+# or optional and present, must carry eligibleTruthStars and the v1.baseline and v2.candidate eligibleStars and recovered
+# as non-negative integers, each recall as a number, and v2.missedEligibleReasonCounts as an object of positive integers;
+# a field that is missing, null or of another type is incomplete. A complete block is inconsistent unless both
+# eligibleStars equal eligibleTruthStars, each recovered is at most its eligibleStars, each recall is exactly recovered /
+# eligibleStars (0 when none is eligible), and the missed reasons sum to the v2 eligible stars not recovered.
+scorer_evidence() {
+    jq -c --arg side "$2" --arg legacy "$3" '
+        def count: type == "number" and . == floor and . >= 0;
+        def lookup($p): reduce $p[] as $k ({found: true, value: .};
+            if .found and (.value | type) == "object" and (.value | has($k)) then .value = .value[$k] else {found: false, value: null} end);
+        def field($p; ok; $want): lookup($p) as $l
+            | if ($l.found | not) then {path: $p, detail: "missing"}
+              elif ($l.value | ok | not) then {path: $p, detail: "\($l.value | tojson) is not \($want)"} else empty end;
+        def scores: (["v1", "baseline"], ["v2", "candidate"]);
+        def incomplete: field(["eligibleTruthStars"]; count; "a non-negative integer"),
+            (scores as $s | field($s + ["eligibleStars"]; count; "a non-negative integer"),
+                field($s + ["recovered"]; count; "a non-negative integer"), field($s + ["recall"]; type == "number"; "a number")),
+            field(["v2", "missedEligibleReasonCounts"]; type == "object" and all(.[]; count and . > 0); "an object of positive integers");
+        def inconsistent: .eligibleTruthStars as $e
+            | (scores as $s | getpath($s) as $v | ($s | join(".")) as $n
+               | (if $v.eligibleStars != $e
+                  then {path: ($s + ["eligibleStars"]), detail: "\($n).eligibleStars \($v.eligibleStars) is not eligibleTruthStars \($e)"} else empty end),
+                 (if $v.recovered > $v.eligibleStars
+                  then {path: ($s + ["recovered"]), detail: "\($n).recovered \($v.recovered) exceeds its eligibleStars \($v.eligibleStars)"} else empty end),
+                 ((if $v.eligibleStars == 0 then 0 else $v.recovered / $v.eligibleStars end) as $recall
+                  | if $v.recall != $recall
+                    then {path: ($s + ["recall"]), detail: "\($n).recall \($v.recall) is not recovered / eligibleStars = \($recall)"} else empty end)),
+              ((.v2.missedEligibleReasonCounts | add // 0) as $missed | (.v2.candidate.eligibleStars - .v2.candidate.recovered) as $lost
+               | if $missed != $lost
+                 then {path: ["v2", "missedEligibleReasonCounts"], detail: "missed reasons sum to \($missed), not v2 eligibleStars - recovered = \($lost)"}
+                 else empty end);
+        (if type == "object" then .reports else null end) as $reports
+        | if ($reports | type) != "array" or ($reports | length) == 0
+        then [{side: $side, caseId: null, path: "reports", kind: "incomplete", detail: "not a non-empty array"}]
+        else [$reports | to_entries[] | .key as $i | .value as $r
+            | ([{prefix: ["reports", $i], block: $r}]
+               + (if $legacy == "required" or ($legacy == "optional" and ($r | type) == "object" and ($r | has("legacy")))
+                  then [{prefix: ["reports", $i, "legacy"], block: ($r | if type == "object" then .legacy else null end)}] else [] end))[]
+            | .prefix as $prefix | .block as $b | [$b | incomplete] as $missing
+            | (if $missing == [] then [$b | inconsistent | . + {kind: "inconsistent"}] else [$missing[] | . + {kind: "incomplete"}] end)[]
+            | {side: $side, caseId: ($r | if type == "object" then .caseId else null end),
+               path: ($prefix + .path | map(tostring) | join(".")), kind, detail}]
+        end' "$1"
+}
+
 repo=$(git rev-parse --show-toplevel) || exit 2
 manifest="$repo/docs/validation/issue-1168-qualification-manifest.json"
 usage="usage: issue-1168-qualification.sh tuning|final|continuity <new output directory> | rescore <continuity pack> <new output directory>"
+usage+=" | scorer-check <report>..."
 mode=${1:?$usage}
-case "$mode" in tuning) section=tuning ;; final) section=runs ;; continuity | rescore) section= ;; *) echo "$usage" >&2; exit 2 ;; esac
+case "$mode" in tuning) section=tuning ;; final) section=runs ;; continuity | rescore | scorer-check) section= ;; *) echo "$usage" >&2; exit 2 ;; esac
 if [[ $mode == rescore ]]; then
     [[ $# -eq 3 ]] || { echo "$usage" >&2; exit 2; }
     source_pack=$2; out=$3
     [[ "$source_pack" == /* ]] || source_pack="$PWD/$source_pack"
     [[ -f "$source_pack/SHA256SUMS" && -f "$source_pack/index.json" ]] || { echo "not a sealed pack: $source_pack" >&2; exit 2; }
+elif [[ $mode == scorer-check ]]; then
+    [[ $# -ge 2 ]] || { echo "$usage" >&2; exit 2; }
+    out=; checked=()
+    for report in "${@:2}"; do
+        [[ "$report" == /* ]] || report="$PWD/$report"
+        [[ -f "$report" ]] || { echo "not a report: $report" >&2; exit 2; }
+        checked+=("$report")
+    done
 else
     [[ $# -eq 2 ]] || { echo "$usage" >&2; exit 2; }
     out=$2
@@ -67,13 +128,32 @@ fi
 [[ -z "${HVO_CONTINUITY_BASE:-}" || $mode == continuity ]] || { echo "HVO_CONTINUITY_BASE applies only to continuity" >&2; exit 2; }
 # Resolve against the caller's directory before anything changes it, and create
 # the pack root with a plain mkdir so an existing directory is always refused.
-[[ "$out" == /* ]] || out="$PWD/$out"
+[[ -z "$out" || "$out" == /* ]] || out="$PWD/$out"
 for tool in jq sha256sum join sort; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 2; }; done
 cd "$repo" || exit 2
 # Untracked, non-ignored files can enter an SDK-style build, so they are refused too.
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo "commit or remove all changes and untracked files before measuring" >&2; exit 2; }
 revision=$(git rev-parse HEAD)
 manifest_sha=$(sha256sum "$manifest" | cut -d' ' -f1) || { echo "could not hash $manifest" >&2; exit 2; }
+# scorer-check builds, runs and writes nothing. Each named report must be one the continuity rules give scorer evidence,
+# and passes when neither it nor any legacy block it carries has an incomplete or inconsistent scorer field.
+if [[ $mode == scorer-check ]]; then
+    echo "revision $revision manifest $manifest_sha mode scorer-check $(utc)"
+    total=0
+    for report in "${checked[@]}"; do
+        jq -e --arg r "$(basename "$report")" '.continuity.reports[$r].scorerEvidence | type == "string"' "$manifest" >/dev/null ||
+            { echo "no continuity scorer-evidence rule for $(basename "$report")" >&2; exit 2; }
+        found=$(scorer_evidence "$report" report optional) && digest=$(sha256sum "$report" | cut -d' ' -f1) &&
+            counts=$(jq -r '(if type == "object" and (.reports | type) == "array" then .reports else [] end) as $r
+                | "reports=\($r | length) legacy=\([$r[] | select(type == "object" and has("legacy"))] | length)"' "$report") &&
+            n=$(jq length <<<"$found") || { echo "could not read $report" >&2; exit 2; }
+        echo "$digest  $report $counts failures=$n"
+        jq -r '.[] | "    \(.kind) \(.path) \(.caseId // "-"): \(.detail)"' <<<"$found" || exit 2
+        total=$((total + n))
+    done
+    echo "scorer-check reports=${#checked[@]} failures=$total $(utc)"
+    exit $((total == 0 ? 0 : 1))
+fi
 base=$(jq -re .base.revision "$manifest") || exit 2
 git cat-file -e "$base^{commit}" 2>/dev/null || { echo "base revision $base is not available; fetch it first" >&2; exit 2; }
 continuity_base=$base
@@ -211,13 +291,16 @@ leaves() {
 # path, exact path, base value, head value for every differing leaf) and prints the report's classification as JSON. A
 # scorer leaf is listed exactly, never by prefix, and is scorer-by-design only when its legacy counterpart, the exact path
 # with "legacy" inserted after the report index, does not differ; every differing leaf under reports.N.legacy is
-# unclassified. The counterpart is resolved after every leaf is read, and rows keep their join order.
+# unclassified. A scorer leaf present on one side only must also lie under a sparseScorer object, whose keys come and go
+# with the data; any other one-sided scorer leaf is unclassified. The counterpart is resolved after every leaf is read,
+# and rows keep their join order.
 classify() {
     local report=$1 before=$2 after=$3 prefix=$4 rules mirrors identical summary
     rules=$(jq -re --arg r "$report" '.continuity as $c | ($c.reports[$r] // error("no continuity rules for \($r)")) as $rep
         | ($c.identityLeaves[] | "identity\t\(.)"), ($c.runVaryingKeys[] | "runvarying\t\(.)"),
           ($rep.changed | to_entries[] | "changed\t\(.key)\t\(.value[0] | tojson)\t\(.value[1] | tojson)"),
-          ($rep.added[] | "added\t\(.)"), ($rep.scorer[] | "scorer\t\(.)")' "$manifest") || fatal "could not read continuity rules for $report"
+          ($rep.added[] | "added\t\(.)"), ($rep.scorer[] | "scorer\t\(.)"), ($rep.sparseScorer // [] | .[] | "sparse\t\(.)")' "$manifest") ||
+        fatal "could not read continuity rules for $report"
     mirrors=$(jq -ce --arg r "$report" '.continuity.reports[$r].legacyMirrors // [] | select(type == "array" and all(.[]; type == "string"))' "$manifest") ||
         fatal "continuity legacyMirrors for $report must be a string array"
     leaves "$before" "$mirrors" >"$prefix.base.tsv" || fatal "could not read leaves of $before"
@@ -242,9 +325,9 @@ classify() {
                         : listed(path, "scorer") ? "scorer" : "unclassified"
                 else if (b == missing)
                     class = under(path, "added") ? "declared-added" : resource(path) ? "resource-outcome" \
-                        : listed(path, "scorer") ? "scorer" : "unclassified"
+                        : listed(path, "scorer") && under(path, "sparse") ? "scorer" : "unclassified"
                 else
-                    class = resource(path) ? "resource-outcome" : listed(path, "scorer") ? "scorer" : "unclassified"
+                    class = resource(path) ? "resource-outcome" : listed(path, "scorer") && under(path, "sparse") ? "scorer" : "unclassified"
                 rows++; cls[rows] = class; pth[rows] = path; ex[rows] = $1; bv[rows] = b; hv[rows] = h
             }
             END {
@@ -319,12 +402,13 @@ note_status() {
 # evaluate_pair <id> <section> <base status> <head status> <reports json> <evidence root>: classifies one #1126 entry from
 # the reports and runs under <evidence root>, writes $out/continuity/<id>, notes the pack status and appends to $pairs.
 # A process failure counts only through its pair: the pinned base failures, identical head deterministic failures,
-# outcomes explained by the reports, classified leaves and no head-only allocation miss. Other resource outcomes are
-# timing, not output.
+# outcomes explained by the reports, classified leaves, no head-only allocation miss and, for a report with a
+# scorerEvidence rule, complete and consistent scorer fields on both sides, the head's legacy block included. Other
+# resource outcomes are timing, not output.
 evaluate_pair() {
     local id=$1 prior_section=$2 base_status=$3 head_status=$4 wanted=$5 root=$6
-    local classified='[]' verdict=passed reasons='[]' tripwire='[]' recorded_base recorded_head pinned pinned_message
-    local report before after summary misses pair
+    local classified='[]' verdict=passed reasons='[]' tripwire='[]' scorer='[]' recorded_base recorded_head pinned pinned_message
+    local report before after summary misses found base_evidence head_evidence pair
     recorded_base='{"all":[],"deterministic":[],"resource":[]}'; recorded_head=$recorded_base
     pinned=$(jq -c --arg id "$id" '.continuity.baseFailures.sets[$id] // [] | sort' "$manifest") || exit 1
     pinned_message=$(jq -r --arg id "$id" '.continuity.baseFailures.processMessages[$id] // empty' "$manifest") || exit 1
@@ -341,11 +425,18 @@ evaluate_pair() {
         classified=$(jq --argjson s "$summary" '. + [$s]' <<<"$classified") || exit 1
         misses=$(allocation_misses "$(basename "$report")" "$before" "$after") && tripwire=$(jq -c --argjson m "$misses" '. + $m' <<<"$tripwire") ||
             fatal "could not check the allocations of $id"
+        if jq -e --arg r "$(basename "$report")" '.continuity.reports[$r] | has("scorerEvidence")' "$manifest" >/dev/null; then
+            base_evidence=$(scorer_evidence "$before" base none) && head_evidence=$(scorer_evidence "$after" head required) &&
+                found=$(jq -cn --arg r "$(basename "$report")" --argjson b "$base_evidence" --argjson h "$head_evidence" '[($b + $h)[] | {report: $r} + .]') &&
+                scorer=$(jq -c --argjson f "$found" '. + $f' <<<"$scorer") || fatal "could not check the scorer evidence of $id"
+        fi
         recorded_base=$(jq -c --argjson s "$(split_failures "$before")" 'with_entries(.value += $s[.key])' <<<"$recorded_base") &&
             recorded_head=$(jq -c --argjson s "$(split_failures "$after")" 'with_entries(.value += $s[.key])' <<<"$recorded_head") ||
             fatal "could not read the failures of $id"
     done < <(jq -r '.[]' <<<"$wanted")
     [[ $tripwire == '[]' ]] || reasons=$(jq -c '. + ["head-only-allocation-miss"]' <<<"$reasons")
+    reasons=$(jq -c --argjson s "$scorer" '. + ([("incomplete", "inconsistent") as $k | select(any($s[]; .kind == $k)) | "scorer-\($k)"])' <<<"$reasons") ||
+        fatal "could not record the scorer evidence of $id"
     if [[ $verdict != incomplete ]]; then
         [[ "$(jq -c '.deterministic | sort' <<<"$recorded_base")" == "$pinned" ]] || reasons=$(jq -c '. + ["base-failures-not-pinned"]' <<<"$reasons")
         [[ "$(jq -c '.deterministic | sort' <<<"$recorded_head")" == "$(jq -c '.deterministic | sort' <<<"$recorded_base")" ]] ||
@@ -362,10 +453,11 @@ evaluate_pair() {
     pair=$(jq -n --arg id "$id" --arg section "$prior_section" --arg base "$base_status" --arg head "$head_status" \
         --argjson baseSeconds "$(elapsed_of "$id-base")" --argjson headSeconds "$(elapsed_of "$id-head")" \
         --argjson pinned "$pinned" --argjson baseFailures "$recorded_base" --argjson headFailures "$recorded_head" \
-        --argjson reasons "$reasons" --argjson tripwire "$tripwire" --argjson reports "$classified" --arg verdict "$verdict" \
+        --argjson reasons "$reasons" --argjson tripwire "$tripwire" --argjson scorer "$scorer" --argjson reports "$classified" \
+        --arg verdict "$verdict" \
         '{id: $id, section: $section, baseStatus: $base, headStatus: $head, baseElapsedSeconds: $baseSeconds,
           headElapsedSeconds: $headSeconds, pinnedBaseFailures: $pinned, baseFailures: $baseFailures, headFailures: $headFailures,
-          allocationTripwire: $tripwire, reasons: $reasons, reports: $reports, verdict: $verdict}') || exit 1
+          allocationTripwire: $tripwire, scorerEvidence: $scorer, reasons: $reasons, reports: $reports, verdict: $verdict}') || exit 1
     mkdir -p "$out/continuity/$id" && jq . <<<"$pair" >"$out/continuity/$id/continuity.json" || fatal "could not write continuity for $id"
     echo "    continuity $id: $verdict $(jq -c '[.reports[] | {(.report): (.counts // .verdict)}] | add' <<<"$pair")"
     pairs=$(jq --argjson p "$pair" '. + [$p]' <<<"$pairs") || exit 1
