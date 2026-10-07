@@ -70,13 +70,25 @@ internal sealed class AstrometricCatalogSourceTests
     [TestMethod]
     [DataRow(-1)]
     [DataRow(0)]
-    [DataRow(2501)]
+    [DataRow(AstrometricCatalogData.MaterializationCeiling + 1)]
     [DataRow(int.MaxValue)]
     public async Task UnsupportedEntryBoundIsRejected(int maximumEntries)
     {
         var catalog = DirectFixture();
         await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
             await catalog.ReadAsync(5, maximumEntries).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(AstrometricCatalogData.MaximumEntries + 1)]
+    [DataRow(AstrometricCatalogData.MaterializationCeiling)]
+    public async Task DeepSelectionBoundsUpToTheCeilingAreReadable(int maximumEntries)
+    {
+        var catalog = DirectFixture();
+        var selection = await catalog.ReadAsync(7, maximumEntries).ConfigureAwait(false);
+
+        Assert.HasCount(catalog.ObjectCount, selection.Stars);
+        Assert.IsFalse(selection.IsCompleteForRequestedMagnitude, "A direct fixture load never declares complete coverage.");
     }
 
     [TestMethod]

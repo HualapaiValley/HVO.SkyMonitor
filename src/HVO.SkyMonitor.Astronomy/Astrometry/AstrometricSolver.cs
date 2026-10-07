@@ -23,7 +23,7 @@ public static class AstrometricSolver
     {
         ArgumentNullException.ThrowIfNull(source);
         options ??= new(); options.Validate(); cancellationToken.ThrowIfCancellationRequested();
-        var catalog = await source.ReadAsync(options.MaximumCatalogMagnitude, AstrometricCatalogData.MaximumEntries, cancellationToken).ConfigureAwait(false);
+        var catalog = await source.ReadAsync(options.MaximumCatalogMagnitude, options.CatalogEntryBound, cancellationToken).ConfigureAwait(false);
         return Solve(frame, calibration, catalog, detections, options, cancellationToken);
     }
 
@@ -46,6 +46,8 @@ public static class AstrometricSolver
         AstrometricSolveResult Failure(AstrometricAssessmentStatus status, string code, string reason) =>
             Create(frame, calibration, catalog, options, mode, status, code, reason, null, null, [], new(control.ElapsedMilliseconds, 0, 0, 0, 0, 0, status == AstrometricAssessmentStatus.BudgetExceeded), previous?.IdentitySha256);
         if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < options.MaximumCatalogMagnitude) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.");
+        // Selections beyond the legacy bound are solved only under the profile that declares them.
+        if (catalog.Stars.Count > options.CatalogEntryBound) return Failure(AstrometricAssessmentStatus.Unavailable, "catalog-selection-unsupported", $"Catalog selection exceeds the {options.CatalogEntryBound}-entry bound of the requested selection profile; no fit was attempted.");
         if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel) return Failure(AstrometricAssessmentStatus.Unavailable, "coordinate-model-unsupported", "Only explicitly declared fixed-position J2000 precession is supported.");
         if (copy.Length < 12) return Failure(AstrometricAssessmentStatus.Rejected, "insufficient-detections", "At least12 measured sources are required.");
         if (previous is not null)
@@ -76,6 +78,13 @@ public static class AstrometricSolver
                 core = AstrometricSolverCore.SolveWarm(measured, catalog.Stars, prior, site, frame.MidpointUtc, options.WarmBudgetMilliseconds, options.MaximumCatalogMagnitude, previous.Parameters!.FocalScale, options.MinimumFocalScale, options.MaximumFocalScale, control);
             }
             control.Check();
+            // A deep selection can verify more stars than an assessment retains; report that bound rather than fail validation.
+            if (core.Accepted && core.Quality is { } evidence &&
+                AstrometricEvidenceJson.ExceedsEvidenceBound(evidence.ExpectedFittingStars, evidence.FittingStars, evidence.VerificationStars))
+                return Create(frame, calibration, catalog, options, mode, AstrometricAssessmentStatus.BudgetExceeded, "resource-limit",
+                    $"Accepted evidence exceeds the {AstrometricEvidenceJson.MaximumEvidenceStars}-star assessment bound; no proposed mapping replaces last-good evidence.",
+                    null, null, [], new(control.ElapsedMilliseconds, core.CatalogIndexStars, core.CatalogTriangles, core.ImageTriangles, core.Hypotheses, core.DistinctCandidates, true),
+                    previous?.IdentitySha256);
             AstrometricFitParameters? parameters = null;
             if (core.Accepted && core.Solution is { } solution)
             {

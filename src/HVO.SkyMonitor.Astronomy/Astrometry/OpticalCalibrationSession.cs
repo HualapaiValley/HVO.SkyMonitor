@@ -92,6 +92,8 @@ public static class OpticalCalibrationSession
 
         if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < solverOptions.MaximumCatalogMagnitude)
             return Result(OpticalCalibrationStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.", ["catalog-incomplete"]);
+        if (catalog.Stars.Count > solverOptions.CatalogEntryBound)
+            return Result(OpticalCalibrationStatus.Unavailable, "catalog-selection-unsupported", $"Catalog selection exceeds the {solverOptions.CatalogEntryBound}-entry bound of the requested selection profile; no fit was attempted.", ["catalog-selection-unsupported"]);
         if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel)
             return Result(OpticalCalibrationStatus.Unavailable, "coordinate-model-unsupported", "Only explicitly declared fixed-position J2000 precession is supported.", ["coordinate-model-unsupported"]);
         if (frames.Count < options.MinimumFrames)

@@ -74,8 +74,14 @@ public sealed record AstrometricCatalogProvenance(
 /// <summary>A bounded complete-for-request catalog result. Incomplete results must never become accepted fits.</summary>
 public sealed class AstrometricCatalogData
 {
-    /// <summary>Maximum materialized star count accepted by the bounded solver.</summary>
+    /// <summary>
+    /// Legacy and default request bound. Settings without a <see cref="AstrometricCatalogSelectionProfile"/> read and solve
+    /// at most this many stars, exactly as solver v2 always has.
+    /// </summary>
     public const int MaximumEntries = 2500;
+
+    /// <summary>Hard materialization ceiling: the largest request bound any declared selection profile may make.</summary>
+    public const int MaterializationCeiling = AstrometricCatalogSelectionProfile.HygDeepSelectionV1MaximumEntries;
 
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
         bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel,
@@ -87,8 +93,8 @@ public sealed class AstrometricCatalogData
         if (!double.IsFinite(completenessMagnitudeLimit)) throw new ArgumentException("Catalog completeness magnitude limit must be finite.", nameof(completenessMagnitudeLimit));
         if (string.IsNullOrWhiteSpace(metadata.Name) || string.IsNullOrWhiteSpace(metadata.Version) || string.IsNullOrWhiteSpace(metadata.License) || string.IsNullOrWhiteSpace(metadata.SchemaVersion) || metadata.SourceUrl is null || !metadata.SourceUrl.IsAbsoluteUri || metadata.Name.Length > 256 || metadata.Version.Length > 256 || metadata.SourceUrl.AbsoluteUri.Length > 2048 || metadata.License.Length > 2048 || metadata.SchemaVersion.Length > 256)
             throw new ArgumentException("Catalog metadata must identify an immutable source.", nameof(metadata));
-        var values = stars.Take(MaximumEntries + 1).ToArray();
-        if (values.Length > MaximumEntries) throw new ArgumentException("Catalog materialization exceeds2500 entries.", nameof(stars));
+        var values = stars.Take(MaterializationCeiling + 1).ToArray();
+        if (values.Length > MaterializationCeiling) throw new ArgumentException($"Catalog materialization exceeds {MaterializationCeiling} entries.", nameof(stars));
         foreach (var star in values)
             if (star is null || string.IsNullOrWhiteSpace(star.Id) || star.Id.Length > 256 || star.DisplayName is null || star.DisplayName.Length > 512 || star.HipparcosId?.Length > 128 || !double.IsFinite(star.RightAscensionHours) || star.RightAscensionHours is < 0 or >= 24 ||
                 !double.IsFinite(star.DeclinationDegrees) || star.DeclinationDegrees is < -90 or > 90 || !double.IsFinite(star.Magnitude)) throw new ArgumentException("Invalid catalog entry.", nameof(stars));
@@ -120,17 +126,62 @@ public interface IAstrometricCatalogSource
     ValueTask<AstrometricCatalogData> ReadAsync(double maximumMagnitude, int maximumEntries, CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// An immutable, opt-in catalog selection envelope: the request bound a solve may materialize and the faintest magnitude
+/// at which that depth was qualified. A declared name never changes meaning; a different bound or magnitude needs a new name.
+/// </summary>
+public sealed class AstrometricCatalogSelectionProfile
+{
+    /// <summary>Name of the deep HYG selection qualified under issue #1167.</summary>
+    public const string HygDeepSelectionV1Name = "hyg-deep-selection-v1";
+
+    internal const int HygDeepSelectionV1MaximumEntries = 8192;
+
+    private AstrometricCatalogSelectionProfile(string name, int maximumEntries, double qualifiedMaximumMagnitude) =>
+        (Name, MaximumEntries, QualifiedMaximumMagnitude) = (name, maximumEntries, qualifiedMaximumMagnitude);
+
+    public static AstrometricCatalogSelectionProfile HygDeepSelectionV1 { get; } = new(HygDeepSelectionV1Name, HygDeepSelectionV1MaximumEntries, 6.0);
+
+    /// <summary>Every declared profile; <see cref="AstrometricCatalogData.MaterializationCeiling"/> is the largest bound among them.</summary>
+    public static IReadOnlyList<AstrometricCatalogSelectionProfile> Declared { get; } = [HygDeepSelectionV1];
+
+    public string Name { get; }
+
+    /// <summary>Request bound passed to the catalog source, and the largest selection a solve under this profile accepts.</summary>
+    public int MaximumEntries { get; }
+
+    /// <summary>Faintest requested magnitude this profile was qualified for; settings asking for more fail validation.</summary>
+    public double QualifiedMaximumMagnitude { get; }
+
+    /// <summary>The declared profile with this exact name, or null when none is declared.</summary>
+    public static AstrometricCatalogSelectionProfile? Find(string? name) =>
+        name is null ? null : Declared.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
+}
+
 /// <summary>Versioned finite work bounds. Quality thresholds remain declared geometric engineering gates.</summary>
+/// <param name="CatalogSelectionProfile">
+/// Opt-in deep selection envelope by declared name. Null keeps the legacy 2,500-entry bound and is omitted from the settings
+/// identity, so every configuration that does not opt in keeps its identity.
+/// </param>
 public sealed record AstrometricSolverOptions(
     double MinimumFocalScale = .90, double MaximumFocalScale = 1.10, double FocalScaleStep = .01,
     double MaximumCatalogMagnitude = 7, int TriangleDetectionCount = 28, int ImageTriangleLimit = 192,
     int HypothesisLimit = 200000, int CandidateLimit = 32, double ColdBudgetMilliseconds = 15000,
-    double WarmBudgetMilliseconds = 500, double MaximumWarmAgeSeconds = 600)
+    double WarmBudgetMilliseconds = 500, double MaximumWarmAgeSeconds = 600,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogSelectionProfile = null)
 {
     [JsonIgnore]
     public string IdentitySha256 => AstrometricIdentity.Hash(this with { });
+
+    /// <summary>Largest catalog selection these settings read and solve. Derived from the profile, never part of the identity.</summary>
+    [JsonIgnore]
+    internal int CatalogEntryBound => AstrometricCatalogSelectionProfile.Find(CatalogSelectionProfile)?.MaximumEntries ?? AstrometricCatalogData.MaximumEntries;
+
     public void Validate()
     {
+        if (CatalogSelectionProfile is not null && (AstrometricCatalogSelectionProfile.Find(CatalogSelectionProfile) is not { } profile ||
+            MaximumCatalogMagnitude > profile.QualifiedMaximumMagnitude))
+            throw new ArgumentException("Catalog selection profile is undeclared, or the requested magnitude exceeds its qualified maximum.");
         if (!double.IsFinite(MinimumFocalScale) || MinimumFocalScale <= 0 || !double.IsFinite(MaximumFocalScale) || MaximumFocalScale < MinimumFocalScale ||
             !double.IsFinite(FocalScaleStep) || FocalScaleStep <= 0 || (MaximumFocalScale - MinimumFocalScale) / FocalScaleStep > 100 ||
             !double.IsFinite(MaximumCatalogMagnitude) || TriangleDetectionCount is < 3 or > 60 || ImageTriangleLimit is < 1 or > 5000 ||

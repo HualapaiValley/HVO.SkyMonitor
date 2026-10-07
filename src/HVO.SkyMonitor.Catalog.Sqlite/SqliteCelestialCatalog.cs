@@ -133,7 +133,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     {
         if (!double.IsFinite(maximumMagnitude))
             throw new ArgumentOutOfRangeException(nameof(maximumMagnitude));
-        if (maximumEntries is < 1 or > AstrometricCatalogData.MaximumEntries)
+        if (maximumEntries is < 1 or > AstrometricCatalogData.MaterializationCeiling)
             throw new ArgumentOutOfRangeException(nameof(maximumEntries));
         cancellationToken.ThrowIfCancellationRequested();
 
