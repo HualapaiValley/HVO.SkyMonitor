@@ -651,6 +651,7 @@ public static class ProjectedSceneJson
             .ToDictionary(static item => item.Id, StringComparer.Ordinal);
         if (footprintsById.Count > selection.MaximumFootprints)
             throw new ArgumentException("Deep-sky footprints exceed the selected bound.", nameof(scene));
+        var extentSource = $"{section.SourceName} {section.SourceVersion}";
         var linkedOutlines = 0;
         var linkedFootprints = 0;
         for (var index = 0; index < section.Objects.Count; index++)
@@ -710,7 +711,8 @@ public static class ProjectedSceneJson
                     outlinesById.TryGetValue(item.Id, out var outline) && outline.Level == item.OutlineLevel,
                 DeepSkyRepresentation.Footprint => !stellar && item.OutlineLevel is null &&
                     item.Degradation is null or DeepSkyDegradation.OutlineLimit &&
-                    footprintsById.TryGetValue(item.Id, out var footprint) && FootprintMatches(item, footprint),
+                    footprintsById.TryGetValue(item.Id, out var footprint) &&
+                    FootprintMatches(item, footprint, extentSource, scene.EffectiveUtc),
                 DeepSkyRepresentation.StellarGlyph => stellar && item.MessierNumber is not null && item.Degradation is null,
                 DeepSkyRepresentation.UnknownExtentGlyph => !stellar && item.MajorAxisArcminutes is null,
                 DeepSkyRepresentation.SizedGlyph => !stellar && item.MajorAxisPixels is not null,
@@ -725,13 +727,30 @@ public static class ProjectedSceneJson
         if (linkedOutlines != outlinesById.Count || linkedFootprints != footprintsById.Count)
             throw new ArgumentException("Every deep-sky outline and footprint must belong to one placed object.", nameof(scene));
 
-        static bool FootprintMatches(ProjectedDeepSkyObject item, ProjectedResolvedFootprint footprint) =>
+        // The footprint is the catalog's extent: its source, its axes, and its shape. Equal axes are a circle, which
+        // has no orientation. An ellipse's position angle is the catalog's, turned from J2000 north to north of date
+        // at the scene time.
+        static bool FootprintMatches(
+            ProjectedDeepSkyObject item, ProjectedResolvedFootprint footprint, string source, DateTimeOffset utc) =>
             item.MajorAxisArcminutes is { } major && item.MinorAxisArcminutes is { } minor &&
-            (item.PositionAngleDegrees is not null || major == minor) &&
             string.Equals(footprint.DisplayName, item.DisplayName, StringComparison.Ordinal) &&
+            string.Equals(footprint.Extent.Source, source, StringComparison.Ordinal) &&
             footprint.GeometricCenter == item.GeometricHorizontal && footprint.ApparentCenter == item.ApparentHorizontal &&
             Math.Abs(footprint.Extent.SemiMajorAxisDegrees - major / 120d) <= DirectionTolerance &&
-            Math.Abs(footprint.Extent.SemiMinorAxisDegrees - minor / 120d) <= DirectionTolerance;
+            Math.Abs(footprint.Extent.SemiMinorAxisDegrees - minor / 120d) <= DirectionTolerance &&
+            (major == minor
+                ? footprint.Extent.Shape == ResolvedFootprintShape.Circle
+                : footprint.Extent.Shape == ResolvedFootprintShape.Ellipse && item.PositionAngleDegrees is { } angle &&
+                    AxialDifference(footprint.Extent.PositionAngleDegrees, DeepSkySceneProjector.PositionAngleOfDate(
+                        item.J2000Equatorial.RightAscensionHours, item.J2000Equatorial.DeclinationDegrees, angle, utc)) <=
+                    DirectionTolerance);
+    }
+
+    /// <summary>Returns the difference in degrees between two axis orientations, which repeat every 180 degrees.</summary>
+    private static double AxialDifference(double left, double right)
+    {
+        var difference = Math.Abs(left - right) % 180d;
+        return Math.Min(difference, 180d - difference);
     }
 
     private static void ValidateParts(ProjectedSceneV1 scene, IReadOnlyList<ResolvedFootprintPart> parts, string path)

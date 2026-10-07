@@ -261,6 +261,44 @@ public sealed class DeepSkySceneTests
     }
 
     [TestMethod]
+    public async Task Validate_RejectsAFootprintWhoseShapeOrientationOrSourceContradictsItsCatalogExtent()
+    {
+        var catalog = Catalog(
+            [
+                Galaxy("NGC5457", At(70, 120, EffectiveUtc), 24, 23, 28, messier: 101),
+                Galaxy("NGC6720", At(50, 200, EffectiveUtc), 20, 20, null, messier: 57, type: "PN")
+            ]);
+        var projected = Create((await BuildAsync(EffectiveUtc, Fisheye()).ConfigureAwait(false))
+            .WithDeepSky(catalog, ProjectedSceneDeepSkySelection.Default));
+        ProjectedSceneJson.Validate(projected);
+        var section = projected.DeepSky!;
+        var ellipse = section.Objects.Single(static item => item.CatalogObjectId == "NGC5457");
+        var ellipseFootprint = projected.ResolvedFootprints!.Single(item => item.Id == ellipse.Id);
+        var circleFootprint = projected.ResolvedFootprints!.Single(static item => item.Id == "deep-sky:NGC6720");
+        Assert.AreEqual(ResolvedFootprintShape.Ellipse, ellipseFootprint.Extent.Shape);
+        Assert.AreEqual(ResolvedFootprintShape.Circle, circleFootprint.Extent.Shape);
+        Assert.AreNotEqual(28, ellipseFootprint.Extent.PositionAngleDegrees, 1e-6, "The angle of date is not the J2000 angle.");
+
+        // The catalog angle turns a right angle and the footprint stays as drawn, or the reverse.
+        AssertRejected(projected with
+        {
+            DeepSky = section with { Objects = Replace(section.Objects, ellipse, ellipse with { PositionAngleDegrees = 118 }) }
+        });
+        AssertRejected(WithExtent(projected, ellipseFootprint, ellipseFootprint.Extent with
+        {
+            PositionAngleDegrees = (ellipseFootprint.Extent.PositionAngleDegrees + 90) % 180
+        }));
+        // The footprint keeps the catalog's J2000 angle instead of the angle of date.
+        AssertRejected(WithExtent(projected, ellipseFootprint, ellipseFootprint.Extent with { PositionAngleDegrees = 28 }));
+        // Equal axes are a circle, and unequal axes are an ellipse.
+        AssertRejected(WithExtent(projected, circleFootprint, circleFootprint.Extent with { Shape = ResolvedFootprintShape.Ellipse }));
+        AssertRejected(WithExtent(projected, ellipseFootprint, ResolvedFootprintExtent.Circle(
+            ellipseFootprint.Extent.SemiMajorAxisDegrees, ellipseFootprint.Extent.Source)));
+        // The extent names another catalog.
+        AssertRejected(WithExtent(projected, ellipseFootprint, ellipseFootprint.Extent with { Source = "OpenNGC v20250101" }));
+    }
+
+    [TestMethod]
     [DataRow("fisheye-off-axis")]
     [DataRow("perspective-off-axis")]
     [DataRow("fisheye-horizon")]
@@ -427,6 +465,15 @@ public sealed class DeepSkySceneTests
         var reidentified = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
         Assert.ThrowsExactly<ArgumentException>(() => ProjectedSceneJson.Validate(reidentified));
     }
+
+    private static ProjectedSceneV1 WithExtent(
+        ProjectedSceneV1 scene,
+        ProjectedResolvedFootprint footprint,
+        ResolvedFootprintExtent extent) => scene with
+        {
+            ResolvedFootprints = scene.ResolvedFootprints!
+                .Select(item => item.Id == footprint.Id ? item with { Extent = extent } : item).ToArray()
+        };
 
     private static ProjectedDeepSkyObject[] Replace(
         IReadOnlyList<ProjectedDeepSkyObject> objects,
