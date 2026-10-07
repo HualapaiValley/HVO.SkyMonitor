@@ -730,7 +730,11 @@ public static class CatalogSnapshotResolver
         };
 
     private const int LinuxCloseOnExec = 0x80000;
-    private static int LinuxRetainedOpenFlags => GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture) | LinuxCloseOnExec;
+    // O_NONBLOCK lets a FIFO planted under a retained name open and then fail type validation instead of blocking
+    // until a writer appears; it has no effect on reads of the regular files that pass validation.
+    private const int LinuxNonBlocking = 0x800;
+    private static int LinuxRetainedOpenFlags =>
+        GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture) | LinuxCloseOnExec | LinuxNonBlocking;
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The returned FileStream owns the native handle.")]
@@ -738,7 +742,7 @@ public static class CatalogSnapshotResolver
     {
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-            const int macOsOpenFlags = 0x01000100;
+            const int macOsOpenFlags = 0x01000104; // O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
             var descriptor = Open(path, OperatingSystem.IsLinux() ? LinuxRetainedOpenFlags : macOsOpenFlags);
             if (descriptor < 0)
             {

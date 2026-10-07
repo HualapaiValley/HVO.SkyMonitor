@@ -13,6 +13,8 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 internal static partial class Program
 {
     private const string Repository = "RoySalisbury/HVO.SkyMonitor";
+    // Matches the catalog snapshot resolver's manifest bound, so an oversized manifest is refused before it is buffered.
+    private const int MaximumCatalogManifestLength = 65_536;
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];
     private static readonly string[] SpdxCreators = ["Tool: HVO.SkyMonitor.Deployment.ReleaseTool"];
 
@@ -183,11 +185,24 @@ internal static partial class Program
     /// Copies the bundle's exact registry file set into a private staging root and resolves it through the approved
     /// snapshot resolver, which checks the manifest, database bytes, schema, preprocessing, row count and retained
     /// notices against the registry. Every release artifact is then built from the staged copy, so the archive
-    /// carries exactly the bytes that were validated and a refused bundle produces no release output.
+    /// carries exactly the bytes that were validated and a refused bundle produces no release output. Each original
+    /// input is read only through a handle that proved it is a regular, singly linked file, and the manifest is staged
+    /// from the same bytes that were parsed.
     /// </summary>
     private static string StageValidatedCatalogBundle(string source, string stagingRoot)
     {
-        using var inner = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(source, "manifest.json")));
+        byte[] manifestBytes;
+        using (var manifestSource = AuthenticateCatalogBundleFile(source, "manifest.json"))
+        {
+            if (manifestSource.Stream.Length > MaximumCatalogManifestLength)
+            {
+                throw new ReleaseToolException("The catalog manifest exceeds its maximum length.");
+            }
+            using var buffer = new MemoryStream();
+            manifestSource.Stream.CopyTo(buffer);
+            manifestBytes = buffer.ToArray();
+        }
+        using var inner = JsonDocument.Parse(manifestBytes);
         var root = inner.RootElement;
         var packageVersion = root.GetProperty("package").GetProperty("version").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits package.version.");
@@ -204,9 +219,15 @@ internal static partial class Program
         }
         var staged = Path.Combine(stagingRoot, "versions", packageVersion);
         Directory.CreateDirectory(staged);
-        foreach (var name in expected)
+        foreach (var name in expected.Where(static name => name != "manifest.json"))
         {
-            File.Copy(Path.Combine(source, name), Path.Combine(staged, name));
+            using var input = AuthenticateCatalogBundleFile(source, name);
+            using var destination = new FileStream(Path.Combine(staged, name), FileMode.CreateNew, FileAccess.Write);
+            input.Stream.CopyTo(destination);
+        }
+        using (var destination = new FileStream(Path.Combine(staged, "manifest.json"), FileMode.CreateNew, FileAccess.Write))
+        {
+            destination.Write(manifestBytes);
         }
         try
         {
@@ -223,6 +244,23 @@ internal static partial class Program
                 $"The catalog bundle does not match its approved specification: {exception.Message}", exception);
         }
         return staged;
+    }
+
+    /// <summary>
+    /// Opens one original bundle input through the catalog resolver's no-follow, non-blocking open and accepts it only
+    /// when both its handle and its path identify the same regular file with exactly one link, so a FIFO, device,
+    /// socket, symbolic link or hard link planted under a registry name is refused before any byte is read.
+    /// </summary>
+    private static CatalogSnapshotResolver.AuthenticatedFile AuthenticateCatalogBundleFile(string source, string name)
+    {
+        try
+        {
+            return CatalogSnapshotResolver.AuthenticateFile(Path.Combine(source, name), $"Catalog bundle file '{name}'");
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new ReleaseToolException(exception.Message, exception);
+        }
     }
 
     private static async Task CreateCatalogArtifactsAsync(

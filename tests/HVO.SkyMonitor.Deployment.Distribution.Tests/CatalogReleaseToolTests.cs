@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Catalog.Sqlite;
@@ -86,6 +87,50 @@ public sealed class CatalogReleaseToolTests
         Assert.IsFalse(Directory.Exists(fixture.Output), "A relabelled bundle must not produce release output.");
     }
 
+    [TestMethod]
+    [Timeout(60_000)]
+    [DataRow("fifo-database")]
+    [DataRow("fifo-manifest")]
+    [DataRow("symlinked-database")]
+    [DataRow("hard-linked-database")]
+    public async Task CreateCatalog_NonRegularOrLinkedSourceFile_IsRefusedBeforeAnyOutput(string source)
+    {
+        // A FIFO under a registry name would block the copy or the manifest read indefinitely, and a hard-linked input
+        // can be rewritten through its other name after validation, so each original input must be proven a regular,
+        // singly linked file through the handle that is then read.
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("FIFO and hard-link source cases are created on Linux.");
+        using var fixture = CatalogReleaseFixture.Create(RequireBundle("HVO_HYG_V44_CATALOG_BUNDLE"));
+        var database = Path.Combine(fixture.Bundle, "hyg_v44.sqlite");
+        switch (source)
+        {
+            case "fifo-database":
+                ReplaceWithFifo(database);
+                break;
+            case "fifo-manifest":
+                ReplaceWithFifo(Path.Combine(fixture.Bundle, "manifest.json"));
+                break;
+            case "symlinked-database":
+                var target = Path.Combine(fixture.Root, "hyg_v44.sqlite");
+                File.Move(database, target);
+                File.CreateSymbolicLink(database, target);
+                break;
+            default:
+                Assert.AreEqual(0, NativeLink(database, Path.Combine(fixture.Root, "alias.sqlite")),
+                    $"link failed with errno {Marshal.GetLastPInvokeError()}.");
+                break;
+        }
+
+        Assert.AreEqual(1, await ReleaseTool.Program.Main(fixture.Arguments()));
+
+        Assert.IsFalse(Directory.Exists(fixture.Output), "A refused source file must not produce release output.");
+    }
+
+    private static void ReplaceWithFifo(string path)
+    {
+        File.Delete(path);
+        Assert.AreEqual(0, NativeMkFifo(path, 0x180), $"mkfifo failed with errno {Marshal.GetLastPInvokeError()}.");
+    }
+
     private static string RequireBundle(string variable)
     {
         var bundle = Environment.GetEnvironmentVariable(variable);
@@ -130,4 +175,14 @@ public sealed class CatalogReleaseToolTests
             if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
         }
     }
+
+#pragma warning disable SYSLIB1054 // Test-only creation of an actual FIFO and hard link for the Linux qualification case.
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "mkfifo", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeMkFifo(string path, uint mode);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int NativeLink(string existingPath, string newPath);
+#pragma warning restore SYSLIB1054
 }
