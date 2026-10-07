@@ -918,8 +918,13 @@ manifest and still matches its recorded hashes, then re-runs the comparison:
 ```bash
 (
 set -euo pipefail
-E=~/development-state/HVO.SkyMonitor/evidence/1170 id=${ID:-cp-518}
+E=${E:-~/development-state/HVO.SkyMonitor/evidence/1170} id=${ID:-cp-518}
 S=${S:-docs/validation/issue-1170-checkpoints.json} M=docs/validation/issue-1170-pipeline-manifest.json
+# Read only the bytes committed at HEAD, whose shape the drift test enforces; fail closed if git cannot say.
+committed() { local w c; w=$(git hash-object --no-filters -- "$1") && c=$(git rev-parse --verify -q "HEAD:$2") &&
+    [[ -n $w && $w == "$c" ]]; }
+committed "$S" docs/validation/issue-1170-checkpoints.json && committed "$M" "$M" ||
+    { echo "FAIL $S or $M is not the version committed at HEAD"; exit 1; }
 m=$(sha256sum < "$M" | cut -d' ' -f1)
 # One JSON document whose checkpoints array holds exactly one checkpoint with that id, citing at least one pack.
 jq -se --arg id "$id" 'length == 1 and (.[0].checkpoints | type) == "array"
@@ -947,25 +952,33 @@ python3 -I docs/validation/issue-1170-interleaved.py pairs "$r" "$r.pairs.json" 
 )
 ```
 
+The block reads only the sidecar and manifest committed at `HEAD`. It compares their raw bytes, with no line-ending
+conversion, against the `HEAD` blobs before any `jq` call. The sidecar's shape is enforced only by
+`Issue1170CheckpointsTests`, which runs in the Unit selection, and the block makes no claim of parser
+equivalence with that test. Its `jq` guard is defense in depth. At another revision the block verifies that
+revision's committed sidecar, which is only as sound as the drift test's pass there.
+
 The block runs in a subshell and exits nonzero in any of these cases:
 
+- git cannot read `HEAD`, for example outside a repository;
+- the bytes at `$S` or `$M` differ from the blobs committed at `HEAD`, including an uncommitted edit or a CRLF
+  checkout;
 - the sidecar is not a single JSON document with a `checkpoints` array;
-- the id matches no checkpoint, or more than one (the drift test also rejects a duplicate);
+- the id matches no checkpoint, or more than one;
 - that checkpoint's `evidence` is not a nonempty array;
 - any pack fails;
 - the comparison fails.
 
 The comparison runs only after every pack verifies.
 
-The negative checks below must each exit 1, with `S0=docs/validation/issue-1170-checkpoints.json` and
-`t=$(mktemp)`. The first runs the block with `ID=cp-none`. Each of the others runs it with `S="$t"` after writing
-`$t`:
+Each negative check below must exit 1, with `S0=docs/validation/issue-1170-checkpoints.json` and `t=$(mktemp)`:
 
-- a wrong hash: `jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' "$S0" > "$t"`;
-- a duplicate id with empty evidence: `jq '.checkpoints += [.checkpoints[0] | .evidence = []]' "$S0" > "$t"`;
-- `checkpoints` not an array: `jq '.checkpoints = {"cp-518": .checkpoints[0]}' "$S0" > "$t"`;
-- `evidence` not an array: `jq '.checkpoints[0].evidence = {"a": .checkpoints[0].evidence[0]}' "$S0" > "$t"`;
-- two JSON documents: `cat "$S0" "$S0" > "$t"`.
+- `ID=cp-none`;
+- `S="$t"` after writing any changed sidecar to `$t`, for example `jq '.checkpoints += [null]' "$S0" > "$t"` or
+  `{ printf '\xef\xbb\xbf'; cat "$S0"; } > "$t"`, which fails at the binding;
+- an uncommitted edit to the sidecar or the manifest;
+- `E="$x"`, where `x=$(mktemp -d); cp -as "$E0"/cp518 "$x"/` mirrors the pack root `E0` and one cited pack's
+  `.tar.zst`, or one file its `SHA256SUMS` lists, is then replaced by a different file.
 
 Attribution needs `dotnet-trace` installed outside the repository tool manifest, in the directory named by
 `HVO_1170_TOOLS` (default `~/.local/share/hvo-1170-tools`):
