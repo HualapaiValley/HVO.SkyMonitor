@@ -1,0 +1,137 @@
+{
+  "schema": "virtual-deep-astrometry-qualification-manifest-v1",
+  "issue": 1167,
+  "epic": 520,
+  "declaredBeforeMeasurement": true,
+  "base": { "branch": "development/v1", "revision": "0639e27d8c3fdf6ea895389f9ce1443d20198a72" },
+  "rules": [
+    "Everything in this manifest, including the decision rule, is frozen at a committed, clean revision before any tuning, held-out, A/B or magnitude-7 measurement. Changing it after a measurement invalidates every measurement taken under it.",
+    "HVO_PROJECTION_FAMILY selects one family and HVO_DEEP_VARIANT one variant per process; an unknown name fails the run. Seeds, sky times, pointings, readouts, render depths and tolerances are those compiled into VirtualDeepAstrometryQualificationTests, VirtualAstrometryFixture and VirtualAstrometryReference at the measured revision, and every harness source blob id is recorded in the evidence index.",
+    "Every run executes at one committed, clean revision built in Release with DOTNET_TieredCompilation=0; HVO_EVIDENCE_REVISION must equal that revision.",
+    "Tuning runs are never evidence for the decision. They exist so that a harness defect is found and fixed by a commit made before any held-out run. Held-out runs are never used to change a variant, the solver, a gate, a tolerance or this manifest.",
+    "A gate failure inside a run is an outcome: it is retained, published and never retried. A run that executes no test, executes more than one, or leaves no single report is an infrastructure error; the decision is then undecidable and nothing is repeated without coordinator approval.",
+    "Runs are sequential on one otherwise idle host that holds /tmp/hvo-520-heavy.lock exclusively for the whole measured run. Docker is not used.",
+    "The measurer is StellarDetector v1 through VirtualAstrometryFixture.Measure, exactly as the #1102/#1126 pixel harness, so m50 runs the #1126 pixel settings identity on this issue's seed block.",
+    "If issue #1168 merges a solver change before #1167 merges, the A/B is repeated on the new base; if that requires an output change, measurement stops and the coordinator is told."
+  ],
+  "environment": {
+    "configuration": "Release",
+    "DOTNET_TieredCompilation": "0",
+    "HVO_ASTROMETRY_CATALOG_ROOT": "Installed, verified hyg-v42-production snapshot root (HYG 4.2, 119,625 rows, database SHA-256 B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2)",
+    "sdk": "global.json 10.0.401; installed SDKs 10.0.100, 10.0.302, 10.0.400, 10.0.401"
+  },
+  "catalog": {
+    "snapshot": "hyg-v42-production",
+    "databaseSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+    "rows": 119625,
+    "completeSelectionRows": { "5": 1637, "5.5": 2865, "6": 5070, "6.5": 8920, "7": 15598 }
+  },
+  "profile": {
+    "name": "hyg-deep-selection-v1",
+    "candidateBounds": { "5.5": 4096, "6": 8192 },
+    "materializationCeiling": 8192,
+    "legacyNullProfile": "The null profile keeps the 2,500-entry read bound; it admits complete selections between magnitude 5.0 and about 5.3 without this qualification."
+  },
+  "families": {
+    "variable": "HVO_PROJECTION_FAMILY",
+    "envelope": ["equidistant", "equisolid", "stereographic", "orthographic", "rectilinear"],
+    "recordedOnly": ["rectilinear-8mm"]
+  },
+  "variants": {
+    "variable": "HVO_DEEP_VARIANT",
+    "values": [
+      { "name": "m50", "render": [5, 2000], "solveMagnitude": 5, "profile": null, "densePointing": false, "baseline": true },
+      { "name": "m55", "render": [5.5, 32768], "solveMagnitude": 5.5, "profile": "hyg-deep-selection-v1", "densePointing": false, "baseline": "m50" },
+      { "name": "m60", "render": [6, 32768], "solveMagnitude": 6, "profile": "hyg-deep-selection-v1", "densePointing": false, "baseline": "m50" },
+      { "name": "d55", "render": [6.5, 32768], "solveMagnitude": 5.5, "profile": "hyg-deep-selection-v1", "densePointing": false, "baseline": "m50" },
+      { "name": "d60", "render": [6.5, 32768], "solveMagnitude": 6, "profile": "hyg-deep-selection-v1", "densePointing": false, "baseline": "m50" },
+      { "name": "x50", "render": [5, 2000], "solveMagnitude": 5, "profile": null, "densePointing": true, "baseline": true },
+      { "name": "x55", "render": [6.5, 32768], "solveMagnitude": 5.5, "profile": "hyg-deep-selection-v1", "densePointing": true, "baseline": "x50" },
+      { "name": "x60", "render": [6.5, 32768], "solveMagnitude": 6, "profile": "hyg-deep-selection-v1", "densePointing": true, "baseline": "x50" }
+    ],
+    "meaning": "m: render depth equals solve depth. d: faint distractors, rendered to 6.5 and solved shallower. x: d's render at the frozen densest rectilinear pointing, each profile keeping its roll. Render [magnitude, results] is a private equivalent of #1168's VirtualRenderDepth; [5, 2000] is QualificationDepth and leaves the fixture options untouched."
+  },
+  "matrix": [
+    { "family": "equidistant", "variants": ["m50", "m55", "m60", "d55", "d60"] },
+    { "family": "equisolid", "variants": ["m50", "m55", "m60", "d55", "d60"] },
+    { "family": "stereographic", "variants": ["m50", "m55", "m60", "d55", "d60"] },
+    { "family": "orthographic", "variants": ["m50", "m55", "m60", "d55", "d60"] },
+    { "family": "rectilinear", "variants": ["m50", "m55", "m60", "d55", "d60", "x50", "x55", "x60"] },
+    { "family": "rectilinear-8mm", "variants": ["m50", "m55", "m60", "d55", "d60", "x50", "x55", "x60"] }
+  ],
+  "partitions": {
+    "tuning": [{ "date": "2026-02-10", "seed": 116710 }],
+    "heldOut": [{ "date": "2026-01-15", "seed": 116711 }, { "date": "2026-05-15", "seed": 116715 }, { "date": "2026-09-15", "seed": 116719 }],
+    "captures": "08:00:00Z plus 0, 60 and 120 s; index 0 is blind (cold), 1 and 2 are warm from the previous accepted assessment of the same view"
+  },
+  "densePointings": {
+    "rule": "Densest rectilinear 6 mm field at 08:00Z on a 1-degree altitude/azimuth grid whose four frame corners are all at least 10 degrees up at roll 13. At roll -57 the 6 mm corners reach 3.9 degrees, still above the geometric horizon.",
+    "values": [
+      { "date": "2026-02-10", "altitude": 52, "azimuth": 260, "starsTo6": 653, "starsTo5_5": 366 },
+      { "date": "2026-01-15", "altitude": 52, "azimuth": 235, "starsTo6": 777, "starsTo5_5": 439 },
+      { "date": "2026-05-15", "altitude": 56, "azimuth": 70, "starsTo6": 643, "starsTo5_5": 363 },
+      { "date": "2026-09-15", "altitude": 66, "azimuth": 35, "starsTo6": 687, "starsTo5_5": 381 }
+    ]
+  },
+  "runs": {
+    "tuning": {
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualDeepAstrometryQualificationTests.TuningDeepSelection",
+      "report": "virtual-deep-astrometry.json"
+    },
+    "final": {
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualDeepAstrometryQualificationTests.HeldOutDeepSelection",
+      "report": "virtual-deep-astrometry.json"
+    },
+    "mag7": {
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualDeepAstrometryQualificationTests.Magnitude7Evaluation",
+      "report": "virtual-deep-astrometry-mag7.json"
+    }
+  },
+  "decision": {
+    "scope": "Held-out runs only. Envelope families gate; rectilinear-8mm and tuning are recorded and never gate.",
+    "variantSets": { "5.5": ["m55", "d55", "x55"], "6": ["m60", "d60", "x60"] },
+    "baselineOf": "the variant's baseline above, in the same family and partition set",
+    "falseAssociation": "an accepted association whose catalog star's truth pixel is more than 1.5 px from its detection",
+    "gates": [
+      { "id": "G0", "depths": ["5.5", "6"], "rule": "Every gated run and its baseline produced exactly one report at the measured revision whose schema, partition, family, variant, catalog SHA-256 and complete selection count match this manifest, with partitions x views x 3 case rows. Otherwise the decision is undecidable." },
+      { "id": "G1", "depths": ["5.5", "6"], "rule": "The variant's case ids equal its baseline's, and no case outside the baseline's failingCases is in the variant's failingCases. A new rejection, ambiguity, budget overrun, tolerance miss, mapping failure or probe failure is a new failure. The baseline's own failures carry over ungated and are reported." },
+      { "id": "G2", "depths": ["5.5", "6"], "rule": "In every accepted case, falseAssociations <= 0.01 x associationCount." },
+      { "id": "G3", "depths": ["5.5", "6"], "rule": "In the variant and its baseline: sourceProbe.matches is true, and no case reports a fail-closed probe, re-capture or re-solve failure." },
+      { "id": "G4", "depths": ["5.5", "6"], "rule": "selection.p95Ms <= 20 at 5.5 and <= 40 at 6.0, over 30 measured reads after 5 warm-up reads." },
+      { "id": "G5", "depths": ["5.5", "6"], "rule": "coldP95Ms <= 2 x the baseline's coldP95Ms, per family and variant; every cold solve <= 15000 ms and every warm solve <= 500 ms." },
+      { "id": "G6", "depths": ["5.5"], "rule": "Mean solveAllocatedBytes over cold rows <= 2 x the baseline's mean." },
+      { "id": "G7", "depths": ["6"], "rule": "process.peakWorkingSetBytes - the baseline's process.peakWorkingSetBytes <= 134217728 (128 MiB)." },
+      { "id": "G8", "depths": ["5.5", "6"], "rule": "Every perspective cold row's indexPrefix.boundBytes <= 16777216 (16 MiB)." }
+    ],
+    "qualifies": "Depth D qualifies when every gate listed for D holds for every envelope family and every variant of D declared for that family. 6.0 qualifies only if 5.5 qualifies.",
+    "outcomes": [
+      { "when": "5.5 and 6.0 qualify", "maximumEntries": 8192, "qualifiedMaximumMagnitude": 6.0, "change": "none; the merged constants stand" },
+      { "when": "only 5.5 qualifies", "maximumEntries": 4096, "qualifiedMaximumMagnitude": 5.5, "change": "the profile constants change to 4,096 and 5.5 before review; the bound is in no identity, so the measured 5.5 selections and assessments are unchanged" },
+      { "when": "5.5 fails", "maximumEntries": null, "qualifiedMaximumMagnitude": null, "change": "nothing is advertised; one follow-up issue under #520 records the evidence" }
+    ],
+    "immutability": "Once merged, hyg-deep-selection-v1 maps permanently to its bound and qualified maximum magnitude; any change needs a new profile name."
+  },
+  "evaluateGrid": {
+    "rows": "Held-out cold rows of m60, d60 and x60 in envelope families, from the harness's isolation timing (median of 5 runs each for the grid and solver v2's pairwise rule on the truth-projected above-horizon selection).",
+    "keep": "Keep the grid when the median estimatedPairwiseShare is >= 0.05, or any row's pairwiseMs x distinctCandidates is >= 1500 ms.",
+    "otherwise": "Revert the grid before review. The numbers are recorded in either case."
+  },
+  "ab": {
+    "arms": { "A": "base.revision", "B": "the measured revision" },
+    "order": [
+      "A: docs/validation/issue-1126-qualification.sh final, then tuning (A1)",
+      "B: docs/validation/issue-1126-qualification.sh final, then tuning (B1)",
+      "for each #1126 family: B ActualPixelsBlindWarmReadouts (B2), then A ActualPixelsBlindWarmReadouts (A2)"
+    ],
+    "identity": "For every report of A1 and B1 (final and tuning, every family), the set of JSON paths whose key ends in IdentitySha256 (case-insensitive) and their values are equal, and every associations or associationRows array is equal as canonical JSON. Any other difference is listed informationally. A difference in an identity or association is an output change: measurement stops and the coordinator is told.",
+    "known": "Under #1126 the measured-stars harness fails at its baseline for equidistant, equisolid and stereographic; a nonzero #1126 exit is accepted when every listed run executed its one test and left its report.",
+    "performance": "Per family, the median of cold (index 0) metrics.elapsedMilliseconds in the held-out pixel report. A resolvable regression is B/A > 1.10 in both adjacent pairs (A1, B1) and (B2, A2) for the same family; it blocks merge until explained."
+  },
+  "magnitude7": {
+    "disposition": "Evaluation only; never advertised. The complete 15,598-row selection reaches the solver only through the internal evaluation overload, with the default search, the 15 s cold budget, every family and profile view, 2026-01-15T08:00Z, seed 116771 and render [7, 32768].",
+    "recorded": "acceptance, reason, time-budget exhaustion, elapsed, allocated bytes, process CPU, index stars and triangles, image triangles, hypotheses, candidates, evidence-cap outcome, pose and focal error, false associations, working set and peak"
+  }
+}

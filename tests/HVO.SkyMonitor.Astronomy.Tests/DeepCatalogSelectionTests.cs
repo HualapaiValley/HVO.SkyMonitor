@@ -16,8 +16,9 @@ public sealed class DeepCatalogSelectionTests
 {
     private const string Profile = AstrometricCatalogSelectionProfile.HygDeepSelectionV1Name;
 
-    // Settings JSON and identities of solver v2 before #1167. The default identity was computed from base 94883101's
-    // build; the magnitude-5 identity is the settingsIdentitySha256 recorded in the retained #1126 virtual evidence.
+    // Settings JSON and identities of solver v2 before #1167, computed from the Release build of development/v1 at
+    // 0639e27d, the base this branch is synchronized to (unchanged from 94883101). The magnitude-5 identity is also the
+    // settingsIdentitySha256 recorded in the retained #1126 virtual evidence.
     private const string DefaultSettingsJson = "{\"MinimumFocalScale\":0.9,\"MaximumFocalScale\":1.1,\"FocalScaleStep\":0.01,\"MaximumCatalogMagnitude\":7," +
         "\"TriangleDetectionCount\":28,\"ImageTriangleLimit\":192,\"HypothesisLimit\":200000,\"CandidateLimit\":32,\"ColdBudgetMilliseconds\":15000," +
         "\"WarmBudgetMilliseconds\":500,\"MaximumWarmAgeSeconds\":600}";
