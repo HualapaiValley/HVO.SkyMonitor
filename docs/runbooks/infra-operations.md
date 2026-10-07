@@ -428,7 +428,16 @@ incomplete or durable findings await review and `Unhealthy` when progress is
 stalled. Inspect events `2120`-`2129`, span `central-artifact.reconcile`, and
 `skymonitor.central.recovery.*` metrics for scanned/matched/missing/corrupt/
 orphan counts and bytes, cycle duration, retry, and backlog. These signals use
-bounded outcomes only and never object keys or payload paths. Do not delete
+bounded outcomes only and never object keys or payload paths.
+
+A source whose evidence fails integrity validation while recovery schedules its
+derivatives (for example a projected scene that does not match its raw source)
+does not fail the cycle or stop LogicHost. The artifact keeps its verified
+object, records `StateReasonCode = object.derivative-scheduling-rejected`,
+emits Error event `2141` with the bounded integrity reason code, and counts
+`skymonitor.central.ingest.reconciled{outcome=scheduling-rejected}`. The next
+recovery generation or an edge retry schedules it again; correct the evidence
+or validator rather than deleting the artifact. Do not delete
 quarantine objects or disposition rows until SQL/object counts, checksums,
 lineage, jobs, and retention references have been reviewed.
 
