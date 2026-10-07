@@ -450,8 +450,8 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - cp-518 therefore measures the production composition. Footprint-free scenes keep `projected-scene-v1` and the
     released annotation identity (`AnnotationRenderer.AlgorithmVersionFor`, #518 commit `72c9fc45`).
   - A disks-on cell would measure synthetic-source cost that no production camera pays.
-- **Windows and quiet neighbour.** By the owner's account, each window held `home-dev-02`'s heavy lock for its whole length. A 5 s
-  sampler there recorded load and CPU busy. A 1 s sampler on `home-dev-01` recorded aggregate steal ticks
+- **Windows and quiet neighbour.** By the owner's account, each window held `home-dev-02`'s heavy lock for its whole length. By the owner's account, a 5 s
+  sampler there recorded load and CPU busy and a 1 s sampler on `home-dev-01` recorded aggregate steal ticks
   (`clk_tck` 100, 12 vCPUs).
 
   | Window | `home-dev-02` lock held (owner's account) | Runs | `home-dev-01` steal | `home-dev-02` during the window |
