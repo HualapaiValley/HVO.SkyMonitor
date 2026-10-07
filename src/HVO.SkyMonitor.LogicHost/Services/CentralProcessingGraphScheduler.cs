@@ -1594,11 +1594,11 @@ internal sealed partial class CentralProcessingGraphScheduler(
     private async Task<CentralProcessingGraphExecution?> LoadExecutionAsync(
         Guid id,
         CancellationToken cancellationToken)
-        => await dbContext.CentralProcessingGraphExecutions
+    {
+        var execution = await dbContext.CentralProcessingGraphExecutions
             .Include(item => item.Sources).ThenInclude(source => source.Artifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(item => item.Jobs).ThenInclude(job => job.InputRequirements).ThenInclude(requirement => requirement.ExpectedArtifact)!
                 .ThenInclude(artifact => artifact!.Frame)
-            .Include(item => item.Jobs).ThenInclude(job => job.Attempts)
             .Include(item => item.Jobs).ThenInclude(job => job.Inputs)
             .Include(item => item.Jobs).ThenInclude(job => job.CanonicalInputs)
             .Include(item => item.Jobs).ThenInclude(job => job.Outputs).ThenInclude(output => output.ResultArtifact)!
@@ -1609,6 +1609,25 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 .ThenInclude(job => job!.Outputs).ThenInclude(output => output.ResultArtifact)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
+        if (execution is null || execution.Jobs.Count == 0)
+        {
+            return execution;
+        }
+        // Attempts are read under read-committed locking, not the caller's serializable range locks. A serializable
+        // attempt read range-locks the gaps beside this execution's attempt keys, which belong to other executions'
+        // jobs. A claim of such a job updates its job row and then inserts the attempt, while convergence held this
+        // range first and then needed the job row for the terminal-node trigger's read, so the two deadlocked. An
+        // ordinary claim of one of this execution's own jobs still blocks at its job update, because convergence holds
+        // serializable shared locks on every job row above, so it cannot add an attempt that this read misses.
+        var jobIds = execution.Jobs.Select(job => job.Id).ToArray();
+        var attempts = dbContext.Database.IsSqlServer()
+            ? dbContext.CentralDerivativeJobAttempts.FromSql(
+                $"SELECT * FROM [CentralDerivativeJobAttempts] WITH (READCOMMITTEDLOCK)")
+            : dbContext.CentralDerivativeJobAttempts;
+        await attempts.Where(attempt => jobIds.Contains(attempt.CentralDerivativeJobId))
+            .LoadAsync(cancellationToken).ConfigureAwait(false);
+        return execution;
+    }
 
     private async Task<IReadOnlyDictionary<Guid, CentralSourceProvenance>> LoadSourceProvenanceAsync(
         IEnumerable<Guid> centralArtifactIds,
