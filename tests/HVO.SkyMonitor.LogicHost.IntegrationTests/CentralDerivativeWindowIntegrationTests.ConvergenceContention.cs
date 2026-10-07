@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -7,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -209,7 +211,9 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     /// block. The reclaim then expires the attempt, taking an exclusive lock on it, and waits to convert its job lock to
     /// lease the job again, which convergence's shared lock blocks; if convergence's attempt read then waits on the
     /// expired attempt, each side waits on the other. Neither session is given a deadlock priority, so SQL Server
-    /// chooses the victim, and both sides' waits are reported if either fails.
+    /// chooses the victim, and both sides' waits are reported if either fails. Convergence, holding no writes, is the
+    /// victim and reruns its transaction, so the test also requires that a rerun happened: a pass without one would
+    /// mean the interleaving was missed, not survived.
     /// </summary>
     [TestMethod]
     public async Task GraphConvergence_DoesNotDeadlockWithAnExpiredLeaseReclaimBetweenItsJobAndAttemptReads()
@@ -247,8 +251,9 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
         var convergenceSession = new SessionIdInterceptor();
         await using var convergenceDb = CreateContentionContext(host, parkConvergence, convergenceSession);
         await using var convergenceScope = host.Services.CreateAsyncScope();
+        var convergenceLog = new SchedulerLogRecorder();
         var scheduler = ActivatorUtilities.CreateInstance<CentralProcessingGraphScheduler>(
-            convergenceScope.ServiceProvider, convergenceDb);
+            convergenceScope.ServiceProvider, convergenceDb, convergenceLog);
         var convergence = Task.Run(() => scheduler.ConvergeAsync(executionId, DateTimeOffset.UtcNow, CancellationToken.None));
         var reclaimSession = new SessionIdInterceptor();
         await using var reclaimDb = CreateContentionContext(host, reclaimSession);
@@ -283,6 +288,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
         {
             reclaimWaitsOn.Should().Be("CentralDerivativeJobs.PK_CentralDerivativeJobs");
         }
+        convergenceLog.DeadlockRetries.Should().NotBeEmpty(waits);
         lease.Should().NotBeNull();
         lease!.JobId.Should().Be(jobId);
         await WithDbAsync(host.Services, async db =>
@@ -296,6 +302,74 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
             job.Attempts.OrderBy(attempt => attempt.AttemptNumber).Select(attempt => attempt.Outcome).Should().Equal(
                 CentralDerivativeAttemptOutcome.LeaseExpired, CentralDerivativeAttemptOutcome.Leased);
         }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Convergence reruns a deadlocked transaction a bounded number of times. Every attempt here reads the attempts
+    /// into an injected deadlock, so all three attempts fail: the first two are absorbed and logged, without a failed
+    /// convergence being recorded, and the third deadlock propagates and is recorded once as a failure.
+    /// </summary>
+    [TestMethod]
+    public async Task GraphConvergence_RetriesADeadlockABoundedNumberOfTimesAndThenPropagatesIt()
+    {
+        await using var host = await IsolatedWindowHost.CreateAsync().ConfigureAwait(false);
+        var executionId = await SeedRunningExecutionAsync(host, $"convergence-exhaustion-{Guid.NewGuid():N}")
+            .ConfigureAwait(false);
+        var deadlocks = new DeadlockInjectingInterceptor();
+        await using var convergenceDb = CreateContentionContext(host, deadlocks);
+        await using var convergenceScope = host.Services.CreateAsyncScope();
+        var convergenceLog = new SchedulerLogRecorder();
+        using var outcomes = new ConvergenceOutcomeCollector();
+        var scheduler = ActivatorUtilities.CreateInstance<CentralProcessingGraphScheduler>(
+            convergenceScope.ServiceProvider, convergenceDb, convergenceLog, outcomes.Telemetry);
+
+        var thrown = await FluentActions.Awaiting(() => scheduler.ConvergeAsync(
+                executionId, DateTimeOffset.UtcNow, CancellationToken.None))
+            .Should().ThrowAsync<Exception>().ConfigureAwait(false);
+
+        CentralProcessingGraphScheduler.IsDeadlock(thrown.Which).Should().BeTrue();
+        deadlocks.Injected.Should().Be(3);
+        convergenceLog.DeadlockRetries.Should().Equal(1, 2);
+        outcomes.Outcomes.Should().Equal("failed");
+    }
+
+    /// <summary>
+    /// A deadlock that arrives once the caller has canceled is not rerun: it propagates from the first attempt and is
+    /// recorded as a failure.
+    /// </summary>
+    [TestMethod]
+    public async Task GraphConvergence_DoesNotRetryADeadlockOnceCanceled()
+    {
+        await using var host = await IsolatedWindowHost.CreateAsync().ConfigureAwait(false);
+        var executionId = await SeedRunningExecutionAsync(host, $"convergence-canceled-{Guid.NewGuid():N}")
+            .ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        var deadlocks = new DeadlockInjectingInterceptor(cancellation.Cancel);
+        await using var convergenceDb = CreateContentionContext(host, deadlocks);
+        await using var convergenceScope = host.Services.CreateAsyncScope();
+        var convergenceLog = new SchedulerLogRecorder();
+        using var outcomes = new ConvergenceOutcomeCollector();
+        var scheduler = ActivatorUtilities.CreateInstance<CentralProcessingGraphScheduler>(
+            convergenceScope.ServiceProvider, convergenceDb, convergenceLog, outcomes.Telemetry);
+
+        var thrown = await FluentActions.Awaiting(() => scheduler.ConvergeAsync(
+                executionId, DateTimeOffset.UtcNow, cancellation.Token))
+            .Should().ThrowAsync<Exception>().ConfigureAwait(false);
+
+        CentralProcessingGraphScheduler.IsDeadlock(thrown.Which).Should().BeTrue();
+        deadlocks.Injected.Should().Be(1);
+        convergenceLog.DeadlockRetries.Should().BeEmpty();
+        outcomes.Outcomes.Should().Equal("failed");
+    }
+
+    private static async Task<Guid> SeedRunningExecutionAsync(IsolatedWindowHost host, string scenario)
+    {
+        var source = await SeedAndScheduleSourceAsync(
+            scenario, Guid.NewGuid(), 1, DateTimeOffset.UtcNow.AddMinutes(-10), CreatePayload(10), "compatible",
+            graphNodeIds: ["Preview"], services: host.Services).ConfigureAwait(false);
+        var jobId = await ReadJobIdAsync(host.Services, source, BuiltInProcessingRecipes.EncodedPreview)
+            .ConfigureAwait(false);
+        return (await ReadJobAsync(host.Services, jobId).ConfigureAwait(false)).GraphExecutionId!.Value;
     }
 
     /// <summary>
@@ -465,6 +539,164 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                 entered.TrySetResult();
                 await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Fails every read of the attempts table with the error SQL Server raises for a deadlock victim, before the read
+    /// reaches the server, and optionally runs an action first.
+    /// </summary>
+    private sealed class DeadlockInjectingInterceptor(Action? beforeEach = null) : DbCommandInterceptor
+    {
+        private int injected;
+
+        public int Injected => Volatile.Read(ref injected);
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("[CentralDerivativeJobAttempts]", StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref injected);
+                beforeEach?.Invoke();
+                throw CreateDeadlockVictimException();
+            }
+            return ValueTask.FromResult(result);
+        }
+
+        /// <summary>
+        /// <see cref="SqlException"/> has no public constructor; build the deadlock-victim error through SqlClient's
+        /// internal factory.
+        /// </summary>
+        private static SqlException CreateDeadlockVictimException()
+        {
+            const System.Reflection.BindingFlags nonPublic =
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public;
+            var errorType = typeof(SqlError);
+            var errorConstructor = errorType.GetConstructors(nonPublic)
+                .Where(candidate => candidate.GetParameters().Length > 0 &&
+                    candidate.GetParameters()[0].ParameterType == typeof(int))
+                .OrderByDescending(candidate => candidate.GetParameters().Length)
+                .First();
+            var arguments = errorConstructor.GetParameters().Select((parameter, index) => index == 0
+                ? 1205
+                : parameter.ParameterType == typeof(string)
+                    ? "Injected deadlock victim."
+                    : parameter.ParameterType.IsValueType
+                        ? Activator.CreateInstance(parameter.ParameterType)
+                        : null).ToArray();
+            var collectionType = typeof(SqlErrorCollection);
+            var collection = Activator.CreateInstance(collectionType, nonPublic, null, null, null)!;
+            _ = collectionType.GetMethod("Add", nonPublic, [errorType])!
+                .Invoke(collection, [errorConstructor.Invoke(arguments)]);
+            var factory = typeof(SqlException).GetMethod(
+                "CreateException", nonPublic, [collectionType, typeof(string)])!;
+            return (SqlException)factory.Invoke(null, [collection, "16.0"])!;
+        }
+    }
+
+    /// <summary>Records the attempt numbers of the convergence deadlocks the scheduler logged as retried.</summary>
+    private sealed class SchedulerLogRecorder : ILogger<CentralProcessingGraphScheduler>
+    {
+        private const int DeadlockRetriedEventId = 2155;
+        private readonly List<int> deadlockRetries = [];
+
+        public IReadOnlyList<int> DeadlockRetries
+        {
+            get
+            {
+                lock (deadlockRetries)
+                {
+                    return [.. deadlockRetries];
+                }
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id != DeadlockRetriedEventId || state is not IReadOnlyList<KeyValuePair<string, object?>> values)
+            {
+                return;
+            }
+            var attempt = values.Single(value => value.Key == "Attempt").Value;
+            lock (deadlockRetries)
+            {
+                deadlockRetries.Add((int)attempt!);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Owns a telemetry instance and records the outcome of every graph convergence it counts. Only that instance's
+    /// counter is listened to: it is recognized as the one published on this thread while the instance is constructed,
+    /// so convergences counted by other hosts in the same process are not seen.
+    /// </summary>
+    private sealed class ConvergenceOutcomeCollector : IDisposable
+    {
+        private readonly MeterListener listener = new();
+        private readonly List<string> outcomes = [];
+        private int constructingThread;
+
+        public ConvergenceOutcomeCollector()
+        {
+            listener.InstrumentPublished = (instrument, current) =>
+            {
+                if (Environment.CurrentManagedThreadId == Volatile.Read(ref constructingThread)
+                    && instrument.Meter.Name == CentralDerivativeWorkerTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.processing_graph.convergences")
+                {
+                    current.EnableMeasurementEvents(instrument);
+                }
+            };
+            listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "outcome" && tag.Value is string outcome)
+                    {
+                        lock (outcomes)
+                        {
+                            outcomes.Add(outcome);
+                        }
+                    }
+                }
+            });
+            listener.Start();
+            Volatile.Write(ref constructingThread, Environment.CurrentManagedThreadId);
+            Telemetry = new CentralDerivativeWorkerTelemetry();
+            Volatile.Write(ref constructingThread, 0);
+        }
+
+        public CentralDerivativeWorkerTelemetry Telemetry { get; }
+
+        public IReadOnlyList<string> Outcomes
+        {
+            get
+            {
+                lock (outcomes)
+                {
+                    return [.. outcomes];
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            listener.Dispose();
+            Telemetry.Dispose();
         }
     }
 

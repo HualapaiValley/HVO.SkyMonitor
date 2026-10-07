@@ -78,6 +78,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
     private const string LiveActor = "logic-host";
     internal const string RevisionRetiredReasonCode = "revision-retired";
     private const int MaximumLiveExpansionAttempts = 2;
+    private const int MaximumConvergenceAttempts = 3;
+    private const int SqlServerDeadlockVictim = 1205;
     internal const string SourceRetentionExpiredReasonCode = "source-retention-expired";
     private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
         Enum.GetValues<EnvironmentalObservationSourceKind>();
@@ -259,6 +261,39 @@ internal sealed partial class CentralProcessingGraphScheduler(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // A deadlock victim's transaction is rolled back whole, so convergence reruns it whole, but only when it began the
+        // transaction itself; a caller's transaction holds the caller's own work and is the caller's to retry. The retry
+        // is immediate: the session that won the deadlock already holds the locks it needed, and the rerun waits for it.
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        for (var attempt = 1; ; attempt++)
+        {
+            var deadlock = await ConvergeOnceAsync(
+                executionId,
+                now,
+                absorbDeadlock: ownsTransaction && attempt < MaximumConvergenceAttempts,
+                cancellationToken).ConfigureAwait(false);
+            if (deadlock is null)
+            {
+                return;
+            }
+            if (logger is not null)
+            {
+                Log.ConvergenceDeadlockRetried(logger, deadlock, executionId, attempt);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Converges the execution in one transaction. Returns null once it has converged, or the deadlock that rolled the
+    /// transaction back when <paramref name="absorbDeadlock"/> allows it to be retried; any other failure is recorded
+    /// and thrown.
+    /// </summary>
+    private async Task<Exception?> ConvergeOnceAsync(
+        Guid executionId,
+        DateTimeOffset now,
+        bool absorbDeadlock,
+        CancellationToken cancellationToken)
+    {
         var started = timeProvider.GetTimestamp();
         var executionClass = "other";
         IDbContextTransaction? transaction = null;
@@ -285,7 +320,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 {
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 }
-                return;
+                return null;
             }
             executionClass = execution.ExecutionClass.ToString();
             await ConvergeCoreAsync(execution, now, cancellationToken).ConfigureAwait(false);
@@ -296,6 +331,16 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
             telemetry.RecordGraphConvergence(
                 executionClass, execution.Status.ToString(), timeProvider.GetElapsedTime(started));
+            return null;
+        }
+        catch (Exception exception) when (
+            absorbDeadlock && !cancellationToken.IsCancellationRequested && IsDeadlock(exception))
+        {
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            return exception;
         }
         catch
         {
@@ -1591,6 +1636,23 @@ internal sealed partial class CentralProcessingGraphScheduler(
             .AsSplitQuery()
             .SingleAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
 
+    /// <summary>
+    /// Whether SQL Server chose this session as a deadlock victim, however the provider or EF Core wrapped the error.
+    /// </summary>
+    internal static bool IsDeadlock(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException sql
+                && (sql.Number == SqlServerDeadlockVictim
+                    || sql.Errors.Cast<Microsoft.Data.SqlClient.SqlError>().Any(error => error.Number == SqlServerDeadlockVictim)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private async Task<CentralProcessingGraphExecution?> LoadExecutionAsync(
         Guid id,
         CancellationToken cancellationToken)
@@ -2095,5 +2157,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2154, LogLevel.Warning,
             "Replay window resolution deferred to the worker after the seal committed. ExecutionId={ExecutionId}, JobId={JobId}")]
         public static partial void ReplayWindowResolutionDeferred(ILogger logger, Exception exception, Guid executionId, Guid jobId);
+
+        [LoggerMessage(2155, LogLevel.Warning,
+            "Processing graph convergence was chosen as a deadlock victim and is retried. ExecutionId={ExecutionId}, Attempt={Attempt}")]
+        public static partial void ConvergenceDeadlockRetried(ILogger logger, Exception exception, Guid executionId, int attempt);
     }
 }
