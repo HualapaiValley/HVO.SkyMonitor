@@ -363,7 +363,8 @@ re-run there with the same runner, method and verdict rule.
   - The `home-dev-02` heavy lock was held from 03:36:45Z to 04:14:10Z (holder pid 244494, 75-minute cap). It
     was released early, after the last timing trial (04:01:37Z), while S1 ran. S1 is output identity only.
   - The `home-dev-02` sampler over the window, 03:36:46–04:14:08Z (449 samples): busy median 1.1%, p95 2.6%,
-    max 10.7%; load1 median 0.16. load1 stayed above 2 only until 03:37:51Z, the decay of a gate that exited
+    max 10.7%; load1 median 0.16. Busy p95 here and below is the nearest-rank 95th percentile of the 5 s
+    intervals. load1 stayed above 2 only until 03:37:51Z, the decay of a gate that exited
     just before the lock was taken.
 - **Steal.** `home-dev-01` steal ticks were sampled once a second (`clk_tck` 100, 12 vCPUs) and attributed to
   each trial:
@@ -541,8 +542,8 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
     on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
     the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
     - The run was outside a quiet window. `home-dev-02` was the probable co-resident host, and #526's Tier C
-      held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z. No sampler ran in
-      this window, so no retained record holds that reading.
+      held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z; its decisions ledger
+      (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window.
     - The gate has only about 1.2–1.4× headroom on this host (4× over the A r2 ratios below). The headroom belongs to the #520 software envelope,
       and neither the gate nor the test is changed here.
   - B, 09:43:56–10:04:02Z, rc=0, also outside a quiet window.

@@ -29,7 +29,7 @@
             "S1 A 09:22:49Z-09:43:56Z rc=1",
             "S1 B 09:43:56Z-10:04:02Z rc=0"
           ],
-          "disclosure": "Outside a quiet window. home-dev-02 was the probable co-resident host and #526's Tier C held its lock; home-dev-02 load 15.67/14.83/10.37 at 09:43:09Z, as read by the #520 coordinator at the time; no sampler ran in this window, so no retained record holds it."
+          "disclosure": "Outside a quiet window. home-dev-02 was the probable co-resident host and #526's Tier C held its lock; home-dev-02 load 15.67/14.83/10.37 at 09:43:09Z, as read by the #520 coordinator; its decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window."
         },
         {
           "slot": "a",
