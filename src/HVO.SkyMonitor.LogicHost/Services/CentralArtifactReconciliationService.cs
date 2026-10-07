@@ -28,7 +28,6 @@ internal sealed partial class CentralArtifactReconciliationService(
     internal const int MaximumObjectStoreInventoryObjectsPerCycle = 100;
     internal const int MaximumRecoveryDispositionsPerCycle = 25;
     internal const int MaximumStagingObjectsPerCycle = 1000;
-    internal const string SchedulingRejectedReason = "object.derivative-scheduling-rejected";
     internal static readonly TimeSpan StagingObjectGracePeriod = TimeSpan.FromMinutes(15);
     internal static readonly TimeSpan VerificationInterval = TimeSpan.FromHours(24);
     internal static readonly TimeSpan InitialReferenceRetryDelay = TimeSpan.FromSeconds(30);
@@ -1449,8 +1448,10 @@ internal sealed partial class CentralArtifactReconciliationService(
                 // Evidence that fails integrity validation while derivatives are scheduled is a per-artifact finding,
                 // not a cycle failure: the verified object is kept, the refusal is recorded durably, and the next
                 // recovery generation or an edge retry schedules again once the evidence validates.
-                await RecordSchedulingRejectedAsync(db, artifact.Id, cancellationToken).ConfigureAwait(false);
-                telemetry.RecordReconciled("scheduling-rejected");
+                db.ChangeTracker.Clear();
+                await CentralDerivativeSchedulingRejection.RecordAsync(db, artifact.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                telemetry.RecordReconciled(CentralDerivativeSchedulingRejection.Outcome);
                 LogSchedulingRejected(exception.ReasonCode);
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 return completed;
@@ -1462,22 +1463,6 @@ internal sealed partial class CentralArtifactReconciliationService(
             telemetry.RecordReconciled("completed");
         }
         return completed;
-    }
-
-    private static async Task RecordSchedulingRejectedAsync(
-        ApplicationDbContext db,
-        Guid artifactId,
-        CancellationToken cancellationToken)
-    {
-        db.ChangeTracker.Clear();
-        await db.CentralArtifacts
-            .Where(artifact => artifact.Id == artifactId
-                && artifact.ObjectState == CentralArtifactObjectState.Available
-                && artifact.ReconstructionState == CentralReconstructionState.Complete
-                && artifact.StateReasonCode == null)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(
-                artifact => artifact.StateReasonCode, SchedulingRejectedReason), cancellationToken)
-            .ConfigureAwait(false);
     }
 
     private async Task RestoreImmediatelyDueSchedulingMarkerAsync(Guid artifactId)
