@@ -961,7 +961,7 @@ public sealed class VirtualSkyCameraModuleTests
         "2025-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
     private static readonly string[] ExpectedRgbGraph = ["ProjectedScene", "Preview", "Annotation"];
     private static readonly string[] ExpectedStandaloneGraph =
-        ["Calibration", "ProjectedScene", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "Telemetry"];
+        ["Calibration", "ProjectedScene", "MeasuredStellarAssociations", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "Telemetry"];
     private static readonly string[] ExpectedTestConstellationIds = ["TST"];
     private static readonly CanonicalAsi174Expectation[] CanonicalAsi174Expectations =
         LoadCanonicalAsi174Expectations();

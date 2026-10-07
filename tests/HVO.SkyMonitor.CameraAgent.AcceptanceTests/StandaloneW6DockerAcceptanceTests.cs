@@ -41,11 +41,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedAgentId = "cameraagent-standalone-w6-asi676mc";
     private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string ExpectedRigSha256 = "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B";
-    private const string ExpectedProcessingSha256 = "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE";
-    private const string ExpectedLocalProfileSha256 = "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8";
+    private const string ExpectedProcessingSha256 = "0C3980AE2E509859D94271E7E71E90B86D815030D442999814AC6BE83B69AE40";
+    private const string ExpectedLocalProfileSha256 = "7ED7E298F45DFDF6EB5E0D9FEE2C1E478FC0F4E91435C7D06333EB5B84AFF32E";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
-    private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
-    private const string ExpectedEffectiveGraphSha256 = "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2";
+    private const string ExpectedDesiredGraphSha256 = "EDF6F332FBD313B4A0A2C0F752D18933B8A59E087D06CCC72B7FF1F6BF44866D";
+    private const string ExpectedEffectiveGraphSha256 = "C287B413E0D89169B3501B8DB68CD595F08A170E78B66D70EC836BCCA4597FD9";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631";
@@ -69,13 +69,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
     // `CameraAgentRecipeExecutionAdapter.ExecuteAsync(context, request, ct)`, directly or through the
     // wrapper at `CaptureDescriptorProcessingContext.ExecuteAsync(adapter, ...)`, because that
     // overload is the only one carrying the context whose execution class and configured profile
-    // select the LocalRunner branch. Eleven step classes reach it: eight from their own file, plus
+    // select the LocalRunner branch. Twelve step classes reach it: nine from their own file, plus
     // the three sealed previews that share the single call site in their abstract base. That base is
-    // never registered and never appears in a template, so counting it as a ninth direct class
-    // yields twelve and is wrong. Seven of the eleven appear in the W6 template.
+    // never registered and never appears in a template, so counting it as a tenth direct class
+    // yields thirteen and is wrong. Eight of the twelve appear in the W6 template.
     private static readonly string[] ReplayRecipeBackedNodeIds =
     [
-        "projected-scene", "calibration", "calibrated-preview", "rolling",
+        "projected-scene", "measured-stellar-associations", "calibration", "calibrated-preview", "rolling",
         "combined-preview", "quality", "cloud"
     ];
 
@@ -86,7 +86,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     ];
 
     // `quality` and `cloud` are declared optional in the template, and the suite already has a path
-    // that disables optional quality. A trial that disables them leaves five recipe-backed nodes,
+    // that disables optional quality. A trial that disables them leaves six recipe-backed nodes,
     // and the partition above would then be wrong rather than merely narrower.
     private static readonly string[] ReplayOptionalRecipeBackedNodeIds = ["quality", "cloud"];
     private static readonly IReadOnlyDictionary<string, DurableQueueBound> DurableQueueBounds =
@@ -1584,7 +1584,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         TimeSpan timeout,
         string agentId = ExpectedAgentId,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
-        int expectedNodeCount = 14,
+        int expectedNodeCount = 15,
         DockerResourceSampler? sampler = null,
         bool requireTransientDrain = true)
     {
@@ -2097,7 +2097,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             minimumSequence,
             TimeSpan.FromMinutes(3),
             ExpectedRoles,
-            expectedNodeCount: 13).ConfigureAwait(false);
+            expectedNodeCount: 14).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         Assert.IsTrue(captures.All(static capture => capture.ProcessingNodes.All(node => node.NodeId != "quality")));
         Assert.IsTrue(captures.All(static capture => capture.Artifacts.Any(
@@ -2111,7 +2111,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             minimumSequence,
             TimeSpan.FromMinutes(3)).ConfigureAwait(false)).Single();
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
-        Assert.HasCount(14, restored.ProcessingNodes);
+        Assert.HasCount(15, restored.ProcessingNodes);
         Assert.IsTrue(restored.ProcessingNodes.All(static node => node.Status == "Completed"));
         Assert.IsTrue(restored.ProcessingNodes.Any(static node => node.NodeId == "quality"));
         Assert.IsTrue(restored.ProcessingNodes.Any(static node => node.NodeId == "storage" && node.Required));
@@ -2150,7 +2150,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             nodes.Add(new RestoredNodeIdentity(reader.GetString(0), reader.GetString(1), reader.GetInt32(2)));
         }
-        Assert.HasCount(14, nodes);
+        Assert.HasCount(15, nodes);
         return new RestoredCaptureIdentity(
             capture.CaptureId,
             capture.CaptureSequence,
@@ -2370,7 +2370,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var completed = await session.GetFromJsonAsync<CameraAgentGalleryCapture>(
                 $"/api/v1/operations/gallery/{degradation.CaptureId:D}").ConfigureAwait(false);
             Assert.IsNotNull(completed);
-            Assert.HasCount(14, completed.ProcessingNodes);
+            Assert.HasCount(15, completed.ProcessingNodes);
             Assert.AreEqual("TerminalFailure", completed.ProcessingNodes.Single(static node =>
                 node.NodeId == "cloud-presentation").Status);
             Assert.IsTrue(completed.ProcessingNodes.Where(static node => node.NodeId != "cloud-presentation")
@@ -3394,14 +3394,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
             latest = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
                 $"/api/v1/operations/gallery/{captureId:D}").ConfigureAwait(false);
             if (latest?.Detail is { EvidenceAvailability: "Available" } &&
-                latest.ProcessingNodes.Count == 14 &&
+                latest.ProcessingNodes.Count == 15 &&
                 latest.ProcessingNodes.All(static node => node.Status == "Completed"))
             {
                 return latest;
             }
             await Task.Delay(250).ConfigureAwait(false);
         }
-        Assert.Fail($"Capture {captureId:D} did not recover all 14 processing nodes: " +
+        Assert.Fail($"Capture {captureId:D} did not recover all 15 processing nodes: " +
             string.Join(", ", latest?.ProcessingNodes.Select(static node => $"{node.NodeId}={node.Status}") ?? []));
         throw new InvalidOperationException("Unreachable after Assert.Fail.");
     }
@@ -3573,7 +3573,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         long minimumSequence,
         TimeSpan timeout,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
-        int expectedNodeCount = 14)
+        int expectedNodeCount = 15)
     {
         expectedRoles ??= ExpectedRoles;
         var captures = new Dictionary<long, CameraAgentGalleryCapture>();
@@ -3626,7 +3626,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var provenance = new List<CaptureProvenanceEvidence>(captures.Length);
         foreach (var capture in captures)
         {
-            Assert.HasCount(14, capture.ProcessingNodes);
+            Assert.HasCount(15, capture.ProcessingNodes);
             // Issue #770. Every digest this loop recomputes is retained rather than discarded at
             // the assertion. An assertion that runs and is not recorded proves the property to the
             // process that ran it and to nobody afterwards, and the artefact outlives the run.
@@ -4307,7 +4307,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             Assert.IsTrue(manifests.TryGetValue(capture.CaptureId, out var manifest));
             Assert.IsTrue(nodesByCapture.TryGetValue(capture.CaptureId, out var nodes));
-            Assert.HasCount(14, nodes);
+            Assert.HasCount(15, nodes);
             var evidence = manifest.Descriptor.CycleEvidence!;
             var moduleDuration = evidence.Decision.StartedUtc - evidence.ModuleCallStartedUtc;
             var graphStartedUtc = DateTimeOffset.FromUnixTimeMilliseconds(nodes.Min(static node => node.StartedUnixMs));

@@ -47,7 +47,7 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual($"rig-{rigSha256[..16]}", sensorTemperature.RigId);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE",
+            "0C3980AE2E509859D94271E7E71E90B86D815030D442999814AC6BE83B69AE40",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
@@ -56,22 +56,22 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8",
+            "7ED7E298F45DFDF6EB5E0D9FEE2C1E478FC0F4E91435C7D06333EB5B84AFF32E",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         Assert.AreEqual(
-            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
+            "701E1E7225D11E5844F73C48F2AE748A1B20D2C8D8CE0AEED54A04799239DBE7",
             HistoricalCatalogCapProfileSha256(configuration));
         Assert.AreEqual(
-            "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069",
+            "EDF6F332FBD313B4A0A2C0F752D18933B8A59E087D06CCC72B7FF1F6BF44866D",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2",
+            "C287B413E0D89169B3501B8DB68CD595F08A170E78B66D70EC836BCCA4597FD9",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
-        Assert.HasCount(14, preview.EffectiveNodes);
+        Assert.HasCount(15, preview.EffectiveNodes);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Id is "sky-annotation" or "weather-overlay"));
         Assert.IsFalse(preview.EffectiveNodes.Single(static node => node.Id == "cloud").Required);
         Assert.IsFalse(preview.EffectiveNodes.Single(static node => node.Id == "cloud-presentation").Required);
@@ -162,7 +162,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "A7C84CBE5B6BCA51537F52E378C9327ACB17D360B20A8DFA00D7C6D29B3D8192",
+            "995420F11CAB69DC4D5E092C3E736236D66482042A62BEA34474F40BF1A8FC94",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -211,7 +211,7 @@ public sealed class StandaloneW6ProfileTests
         var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
             configuration with { Pipeline = configuration.Pipeline with { Steps = steps } });
 
-        Assert.HasCount(12, graph.Nodes);
+        Assert.HasCount(13, graph.Nodes);
         Assert.IsFalse(graph.Nodes.Any(node => removed.Contains(node.Id)));
         Assert.IsTrue(PresentationLayerKinds.Matches("scene-annotation", "star-annotations"));
         Assert.IsTrue(PresentationLayerKinds.Matches("scene-annotation", "scene-cardinals"));

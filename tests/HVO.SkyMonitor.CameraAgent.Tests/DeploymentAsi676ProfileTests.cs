@@ -176,8 +176,8 @@ public sealed class DeploymentAsi676ProfileTests
         var colorPlan = factory.PreviewPlan(color);
         var monoPlan = factory.PreviewPlan(mono);
 
-        Assert.HasCount(12, colorPlan.EffectiveNodes);
-        Assert.HasCount(12, monoPlan.EffectiveNodes);
+        Assert.HasCount(13, colorPlan.EffectiveNodes);
+        Assert.HasCount(13, monoPlan.EffectiveNodes);
         Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
             colorPlan.EffectiveNodes.Single(node => node.Id == "calibration").RecipeName);
         Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
