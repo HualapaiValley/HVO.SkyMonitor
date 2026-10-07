@@ -443,9 +443,10 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - Both arms are real branch heads with no scratch commits. The runner's manifest still names product base
     `b13f0d0e`, so `productSourceUnchangedFromBase` is false in both arms' indexes. That is expected: the field
     describes the primary matrix's base, not these arms.
-- **Protocol.** Every arm ran on `home-dev-01` (each pack's `host.hostname`) between 09:22:49Z and 13:19:42Z, the
-  earliest start and latest finish in the packs' `runs[]` records. Odd manifest cells run A then B, and even
-  cells run B then A. Each cell is compared only against its adjacent pair.
+- **Protocol.** Every arm ran on `home-dev-01` (each pack's `host.hostname`) between 09:22:49Z, the first arm's
+  start in `prof.log`, and 13:19:48Z, the last arm's finish in `attr.log`. The packs' `runs[]` records span
+  09:22:49Z–13:19:42Z. Odd manifest cells run A then B, and even cells run B then A. Each cell is compared only
+  against its adjacent pair.
 - **Named exclusion: `renderSolarSystemDisks`.** cp-518 has no disks-on cell.
   - The option is an opt-in on the VirtualSky source. It defaults to false and is absent from
     `cameraagent.sample.json`.
