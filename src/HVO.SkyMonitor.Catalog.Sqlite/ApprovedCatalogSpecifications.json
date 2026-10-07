@@ -151,8 +151,8 @@
       },
       "database": {
         "relativePath": "hyg_v44_openngc.sqlite",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "length": 1,
+        "sha256": "eea1181ffae1dca2935aeed2c7790305b28045061f38ca6dda5eaf19694a8f1f",
+        "length": 23244800,
         "rowCount": 119613,
         "solCount": 0,
         "requiredColumn": "hipparcos_id",

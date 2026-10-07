@@ -1,0 +1,18 @@
+id,display_name,right_ascension_hours,declination_degrees,magnitude,color_index,hipparcos_id,proper_motion_ra_cos_dec_mas_per_year,proper_motion_dec_mas_per_year,proper_name,bayer,flamsteed,constellation,bayer_flamsteed,henry_draper_id,harvard_revised_id,gliese_id
+103879,103879,21.114794,38.749415,5.2,1.069,104214,4155.1,3258.9,,,61,Cyg,"61    Cyg",201091,8085,"Gl 820A"
+103883,103883,21.115163,38.742055,6.05,1.309,104217,4107.4,3143.72,,,61,Cyg,"61    Cyg",201092,8086,"Gl 820B"
+11734,Polaris,2.52975,89.264109,1.97,0.636,11767,44.22,-11.74,Polaris,Alp,1,UMi,"1Alp UMi",8890,424,
+24129,"Kapteyn's Star",5.194169,-45.018417,8.86,1.543,24186,6506.05,-5731.39,"Kapteyn's Star",,,Pic,,33793,,"Gl 191"
+26155,26155,5.587728,-5.387315,4.98,,26220,-0.92,0.13,,The-1,41,Ori,41The1Ori,37020,1893,
+26156,26156,5.587907,-5.389696,5.13,0.02,26221,-0.92,0.13,,The-1,41,Ori,41The1Ori,37022,1895,
+26159,26159,5.588111,-5.38768,6.71,0.08,26224,-0.92,0.13,,The-1,41,Ori,41The1Ori,37023,1896,
+26246,Alnilam,5.603559,-1.20192,1.69,-0.184,26311,1.49,-1.06,Alnilam,Eps,46,Ori,"46Eps Ori",37128,1903,
+27919,Betelgeuse,5.919529,7.407063,0.45,1.5,27989,27.33,10.86,Betelgeuse,Alp,58,Ori,"58Alp Ori",39801,2061,
+30365,Canopus,6.399195,-52.69566,-0.62,0.164,30438,19.99,23.67,Canopus,Alp,,Car,"Alp Car",45348,2326,
+32263,Sirius,6.752481,-16.716116,-1.44,0.009,32349,-546.01,-1223.08,Sirius,Alp,9,CMa,"9Alp CMa",48915,2491,"Gl 244A"
+57767,"Groombridge 1830",11.88282,37.718679,6.42,0.754,57939,4003.69,-5813,"Groombridge 1830",,,UMa,,103095,4550,"Gl 451A"
+69451,Arcturus,14.26103,19.18241,-0.05,1.239,69673,-1093.45,-1999.4,Arcturus,Alp,16,Boo,"16Alp Boo",124897,5340,"Gl 541"
+70666,"Proxima Centauri",14.495985,-62.679485,11.01,1.807,70890,-3775.64,768.16,"Proxima Centauri",,,Cen,,,,"Gl 551"
+71456,"Rigil Kentaurus",14.660765,-60.833976,-0.01,0.71,71683,-3678.19,481.84,"Rigil Kentaurus",Alp-1,,Cen,Alp1Cen,128620,5459,"Gl 559A"
+87665,"Barnard's Star",17.963472,4.693388,9.54,1.57,87937,,,"Barnard's Star",,,Oph,,,,"Gl 699"
+90979,Vega,18.61564,38.783692,0.03,-0.001,91262,201.02,287.46,Vega,Alp,3,Lyr,"3Alp Lyr",172167,7001,"Gl 721"

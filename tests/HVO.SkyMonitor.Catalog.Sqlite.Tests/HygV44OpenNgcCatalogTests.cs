@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 [DoNotParallelize]
 internal sealed class HygV44OpenNgcCatalogTests
 {
-    private const string FixtureChecksum = PendingExtraction;
+    private const string FixtureChecksum = "1459299e1592b0770e6fef263f8abbe028796c7f89e989e19de8d162a22bf6e0";
     private const string FixtureCatalogId = "hyg-v44-openngc-fixture";
     private const string SnapshotVersion = "hyg-v44-openngc-fixture-1";
     private const string DatabaseFile = "hyg_v44_openngc.sqlite";
@@ -26,7 +26,7 @@ internal sealed class HygV44OpenNgcCatalogTests
     // Eight objects, two tombstones, and outlines for NGC 650 (levels 1-3, two rings at level 3) and NGC 2023
     // (levels 2-3); SOURCE-v44-openngc.md records the selection.
     private static readonly CatalogDeepSkyCounts FixtureCounts =
-        new(8, PendingExtraction, 2, 2, 5, 6, PendingExtraction);
+        new(8, 59, 2, 2, 5, 6, 679);
     private static readonly string[] FixtureObjectIds =
         ["M040", "NGC0224", "NGC0253", "NGC0650", "NGC1990", "NGC2023", "NGC5457", "NGC5866"];
     private static readonly int[] LittleDumbbellLevels = [1, 2, 3];

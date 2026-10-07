@@ -1,0 +1,60 @@
+alias,object_id,kind
+"2MASX J00424433+4116074",NGC0224,identifier
+"2MASX J00473313-2517196",NGC0253,identifier
+"2MASX J01421808+5134243",NGC0650,identifier
+"2MASX J15062956+5545479",NGC5866,identifier
+"46 Ori",NGC1990,identifier
+Alnilam,NGC1990,common
+"Andromeda Galaxy",NGC0224,common
+"BD -01 0969",NGC1990,identifier
+"BD -02 1345",NGC2023,identifier
+"Barbell Nebula",NGC0650,common
+C65,NGC0253,caldwell
+"Cork Nebula",NGC0650,common
+"ESO 474-029",NGC0253,identifier
+"ESO-LV 474-0290",NGC0253,identifier
+"Eps Ori",NGC1990,identifier
+"HD 037128",NGC1990,identifier
+"HD 037903",NGC2023,identifier
+"HIP 26311",NGC1990,hipparcos
+"HIP 26816",NGC2023,hipparcos
+"IDS 05311-0116 A",NGC1990,identifier
+"IRAS 00400+4059",NGC0224,identifier
+"IRAS 00450-2533",NGC0253,identifier
+"IRAS 01391+5119",NGC0650,identifier
+"IRAS 14013+5435",NGC5457,identifier
+"IRAS 15051+5557",NGC5866,identifier
+"LBN 954",NGC2023,identifier
+"Little Dumbbell Nebula",NGC0650,common
+M101,NGC5457,messier
+M102,NGC5457,disputed
+M31,NGC0224,messier
+M40,M040,designation
+M76,NGC0650,messier
+"MCG +07-02-016",NGC0224,identifier
+"MCG +09-23-028",NGC5457,identifier
+"MCG +09-25-017",NGC5866,identifier
+"MCG -04-03-009",NGC0253,identifier
+"NGC 1990",NGC1990,designation
+"NGC 2023",NGC2023,designation
+"NGC 224",NGC0224,designation
+"NGC 253",NGC0253,designation
+"NGC 5457",NGC5457,designation
+"NGC 5866",NGC5866,designation
+"NGC 650",NGC0650,designation
+"NGC 651",NGC0650,duplicate
+"PGC 002557",NGC0224,identifier
+"PGC 002789",NGC0253,identifier
+"PGC 050063",NGC5457,identifier
+"PGC 053933",NGC5866,identifier
+"PN G130.9-10.5",NGC0650,identifier
+"SDSS J140312.52+542056.2",NGC5457,identifier
+"Sculptor Filament",NGC0253,common
+"Silver Coin",NGC0253,common
+"TYC 4766-2450-1",NGC1990,identifier
+"UGC 00454",NGC0224,identifier
+"UGC 08981",NGC5457,identifier
+"UGC 09723",NGC5866,identifier
+"UGCA 013",NGC0253,identifier
+"WDS J05362-0112A",NGC1990,identifier
+"WDS J12222+5805AB",M040,identifier

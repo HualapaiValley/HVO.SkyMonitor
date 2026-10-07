@@ -26,10 +26,11 @@ transformation, from the composed production database
 `hyg-v4.4-openngc-v20260501-p5-s4-r1`. That database was built from the exact
 sources above by preprocessing version 5
 (`scripts/catalog/hyg-v44-openngc-common.sh`), and its SHA-256 is
-`COMPOSED_DATABASE_SHA256`. The script writes each real value with the fewest
-of 15, 16 or 17 significant digits that read back as the same double. It then
-builds the fixture and proves that every fixture row equals its production row
-and that each selection below is complete.
+`eea1181ffae1dca2935aeed2c7790305b28045061f38ca6dda5eaf19694a8f1f`. The
+script writes each real value with the fewest of 15, 16 or 17 significant
+digits that read back as the same double. It then builds the fixture and proves
+that every fixture row equals its production row and that each selection below
+is complete.
 
 - `hyg-v44-openngc-subset-star-objects.csv` holds the 16 stars of the schema-3
   fixture (`SOURCE-v44.md`) and Alnilam (HYG Hipparcos ID `26311`).

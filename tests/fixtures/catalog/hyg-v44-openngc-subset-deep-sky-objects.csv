@@ -1,0 +1,9 @@
+id,designation,display_name,object_type,right_ascension_hours,declination_degrees,constellation,major_axis_arcminutes,minor_axis_arcminutes,position_angle_degrees,b_magnitude,v_magnitude,surface_brightness,hubble_type,messier_number,caldwell_number,hipparcos_id,common_name
+M040,M40,M40,**,12.37113888888889,58.08444444444444,UMa,,,,,8,,,40,,,
+NGC0224,"NGC 224",M31,G,0.7123194444444444,41.26905555555555,And,177.83,69.66,35,4.29,3.44,23.63,Sb,31,,,"Andromeda Galaxy"
+NGC0253,"NGC 253","NGC 253",G,0.7925333333333333,-25.288222222222224,Scl,26.79,4.58,53,7.94,11.11,22.42,SABc,,65,,"Sculptor Filament"
+NGC0650,"NGC 650",M76,PN,1.7054694444444445,51.575472222222224,Per,1.12,,,12.2,10.1,,,76,,,"Barbell Nebula"
+NGC1990,"NGC 1990","NGC 1990",*,5.6035611111111105,-1.2019166666666665,Ori,,,,1.51,1.69,,,,,26311,Alnilam
+NGC2023,"NGC 2023","NGC 2023",RfN,5.693997222222222,-2.259027777777778,Ori,10,8,,,,,,,,26816,
+NGC5457,"NGC 5457",M101,G,14.053483333333334,54.34894444444445,UMa,23.99,23.07,28,8.36,7.9,23.97,SABc,101,,,
+NGC5866,"NGC 5866","NGC 5866",G,15.108194444444445,55.763222222222225,Dra,6.31,2.72,126,10.74,9.89,23.4,S0-a,,,,
