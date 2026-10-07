@@ -106,6 +106,17 @@ length/checksum/row count, license, attribution, and topology contract. The
 bootstrap script verifies the signed installer manifest and selected
 architecture archive before extracting the CLI.
 
+The release tool verifies catalog bundles for every ID in the embedded
+approved-catalog registry: HYG 4.2 (`hyg-v42-production`) and HYG 4.4
+(`hyg-v44-production`). Each package version is its own catalog release, for
+example `catalog-hyg-v4.4-p4-s3-r1`. The catalog train in
+`.github/workflows/release.yml` currently builds only the HYG 4.2 package
+(`scripts/catalog/build-hyg-v42.sh`). Publishing a HYG 4.4 release needs explicit
+operator approval and a reviewed workflow change. Until then, distribute the
+4.4 bundle built by `scripts/catalog/build-hyg-v44.sh` and
+`scripts/catalog/bundle-hyg-v44.sh` offline, and install it with `catalog install`
+([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
+
 ## Mirrors And Cache
 
 A mirror must preserve exact metadata and asset bytes. Configure an immutable

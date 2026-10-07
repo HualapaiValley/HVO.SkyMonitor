@@ -68,6 +68,8 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<ICelestialCatalogMetadataSource>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+        services.AddSingleton<ICelestialCatalogDetailsSource>(static serviceProvider =>
+            serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
 
         return services;
     }

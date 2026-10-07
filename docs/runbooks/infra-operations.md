@@ -130,6 +130,12 @@ The expected digest is
 `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`.
 The fixture digest is never valid for a production host.
 
+This local harness mounts HYG 4.2. Each host's catalog health entry also reports
+`CatalogId`, `PackageVersion`, `CatalogVersion`, `SchemaVersion`, the database
+checksum and the row count of the snapshot it resolved, so a host started
+against a different approved lineage, such as HYG 4.4, is identifiable from
+health alone ([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
+
 ## Reset
 
 Reset is destructive and requires an approved backup and rollback decision:

@@ -57,8 +57,9 @@ internal static class CameraAgentStateResetManager
             throw new InstallerException("Run the CameraAgent state reset as the Docker-capable runtime user, not as root.");
         }
         var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        paths = paths.WithCatalog(ProductionCatalog.Get(manifest.Catalog?.CatalogId).CatalogId);
         if (manifest.InstanceId != instanceId || manifest.Component != DeploymentComponent.CameraAgent ||
             manifest.StateRoot != paths.StateRoot)
         {

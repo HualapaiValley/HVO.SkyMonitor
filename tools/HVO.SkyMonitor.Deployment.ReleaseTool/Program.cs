@@ -13,6 +13,8 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 internal static partial class Program
 {
     private const string Repository = "RoySalisbury/HVO.SkyMonitor";
+    // Matches the catalog snapshot resolver's manifest bound; the release tool reads at most one byte past it.
+    internal const int MaximumCatalogManifestLength = 65_536;
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];
     private static readonly string[] SpdxCreators = ["Tool: HVO.SkyMonitor.Deployment.ReleaseTool"];
 
@@ -166,21 +168,131 @@ internal static partial class Program
         var revision = RequireGitOid(options, "--revision");
         var tree = RequireGitOid(options, "--tree");
         var createdUtc = RequireUtc(options, "--created-utc");
-        var bundle = RequireExistingDirectory(options, "--bundle");
-        var output = PrepareOutput(options);
-        var innerManifestPath = Path.Combine(bundle, "manifest.json");
-        using var inner = JsonDocument.Parse(await File.ReadAllBytesAsync(innerManifestPath, cancellationToken).ConfigureAwait(false));
+        var source = RequireExistingDirectory(options, "--bundle");
+        var staging = Directory.CreateTempSubdirectory("hvo-catalog-release-");
+        try
+        {
+            var bundle = StageValidatedCatalogBundle(source, staging.FullName);
+            await CreateCatalogArtifactsAsync(options, revision, tree, createdUtc, bundle, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            staging.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Copies the bundle's exact registry file set into a private staging root and resolves it through the approved
+    /// snapshot resolver, which checks the manifest, database bytes, schema, preprocessing, row count and retained
+    /// notices against the registry. Every release artifact is then built from the staged copy, so the archive
+    /// carries exactly the bytes that were validated and a refused bundle produces no release output. Each original
+    /// input is read only through a handle that proved it is a regular, singly linked file, and the manifest is staged
+    /// from the same bytes that were parsed.
+    /// </summary>
+    private static string StageValidatedCatalogBundle(string source, string stagingRoot)
+    {
+        byte[] manifestBytes;
+        using (var manifestSource = AuthenticateCatalogBundleFile(source, "manifest.json"))
+        {
+            manifestBytes = ReadCatalogManifest(manifestSource.Stream);
+        }
+        using var inner = JsonDocument.Parse(manifestBytes);
         var root = inner.RootElement;
         var packageVersion = root.GetProperty("package").GetProperty("version").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits package.version.");
         ValidateSafeIdentifier(packageVersion, "catalog package version");
         var catalogId = root.GetProperty("catalog").GetProperty("id").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits catalog.id.");
+        var specification = ReleaseCatalogs.Get(catalogId, packageVersion);
+        var expected = ReleaseCatalogs.OrderedFiles(specification);
+        var entries = new DirectoryInfo(source).EnumerateFileSystemInfos().ToArray();
+        if (!entries.Select(static entry => entry.Name).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal) ||
+            entries.Any(static entry => entry is not FileInfo || entry.LinkTarget is not null))
+        {
+            throw new ReleaseToolException("The catalog bundle does not contain the exact release file set.");
+        }
+        var staged = Path.Combine(stagingRoot, "versions", packageVersion);
+        Directory.CreateDirectory(staged);
+        foreach (var name in expected.Where(static name => name != "manifest.json"))
+        {
+            using var input = AuthenticateCatalogBundleFile(source, name);
+            using var destination = new FileStream(Path.Combine(staged, name), FileMode.CreateNew, FileAccess.Write);
+            input.Stream.CopyTo(destination);
+        }
+        using (var destination = new FileStream(Path.Combine(staged, "manifest.json"), FileMode.CreateNew, FileAccess.Write))
+        {
+            destination.Write(manifestBytes);
+        }
+        try
+        {
+            _ = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(stagingRoot, specification.CatalogId)
+            {
+                ExpectedPackageKind = CatalogSnapshotPackageKind.Production,
+                ExpectedPackageVersion = packageVersion
+            });
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or
+                                           System.Data.Common.DbException)
+        {
+            throw new ReleaseToolException(
+                $"The catalog bundle does not match its approved specification: {exception.Message}", exception);
+        }
+        return staged;
+    }
+
+    /// <summary>
+    /// Reads the authenticated manifest handle once, never past one byte beyond the limit. Authentication fixes the
+    /// file's identity, not its length, so the bound is enforced on the bytes actually read rather than on a length
+    /// reported before the read.
+    /// </summary>
+    internal static byte[] ReadCatalogManifest(Stream manifest)
+    {
+        var buffer = new byte[MaximumCatalogManifestLength + 1];
+        var length = manifest.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        if (length > MaximumCatalogManifestLength)
+        {
+            throw new ReleaseToolException("The catalog manifest exceeds its maximum length.");
+        }
+        return buffer[..length];
+    }
+
+    /// <summary>
+    /// Opens one original bundle input through the catalog resolver's no-follow, non-blocking open and accepts it only
+    /// when both its handle and its path identify the same regular file with exactly one link, so a FIFO, device,
+    /// socket, symbolic link or hard link planted under a registry name is refused before any byte is read.
+    /// </summary>
+    private static CatalogSnapshotResolver.AuthenticatedFile AuthenticateCatalogBundleFile(string source, string name)
+    {
+        try
+        {
+            return CatalogSnapshotResolver.AuthenticateFile(Path.Combine(source, name), $"Catalog bundle file '{name}'");
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new ReleaseToolException(exception.Message, exception);
+        }
+    }
+
+    private static async Task CreateCatalogArtifactsAsync(
+        IReadOnlyDictionary<string, string> options,
+        string revision,
+        string tree,
+        DateTimeOffset createdUtc,
+        string bundle,
+        CancellationToken cancellationToken)
+    {
+        var output = PrepareOutput(options);
+        var innerManifestPath = Path.Combine(bundle, "manifest.json");
+        using var inner = JsonDocument.Parse(await File.ReadAllBytesAsync(innerManifestPath, cancellationToken).ConfigureAwait(false));
+        var root = inner.RootElement;
+        var packageVersion = root.GetProperty("package").GetProperty("version").GetString()!;
+        var catalogId = root.GetProperty("catalog").GetProperty("id").GetString()!;
+        var specification = ReleaseCatalogs.Get(catalogId, packageVersion);
         var archiveName = $"{packageVersion}.bundle.tar.gz";
-        await WriteCatalogArchiveAsync(bundle, Path.Combine(output, archiveName), packageVersion, createdUtc, cancellationToken)
+        await WriteCatalogArchiveAsync(bundle, Path.Combine(output, archiveName), packageVersion, specification, createdUtc, cancellationToken)
             .ConfigureAwait(false);
-        File.Copy(Path.Combine(bundle, "LICENSE-HYG.md"), Path.Combine(output, "LICENSE-HYG.md"));
-        File.Copy(Path.Combine(bundle, "ATTRIBUTION-HYG.md"), Path.Combine(output, "ATTRIBUTION-HYG.md"));
+        File.Copy(Path.Combine(bundle, specification.LicenseFile), Path.Combine(output, specification.LicenseFile));
+        File.Copy(Path.Combine(bundle, specification.AttributionFile), Path.Combine(output, specification.AttributionFile));
 
         var provenanceName = "catalog-provenance.json";
         await WriteJsonAsync(Path.Combine(output, provenanceName), new
@@ -206,8 +318,8 @@ internal static partial class Program
             (DistributionArtifactRole.CatalogBundle, archiveName, "application/gzip", (string?)null, (string?)null),
             (DistributionArtifactRole.Sbom, sbomName, "application/spdx+json", (string?)null, (string?)null),
             (DistributionArtifactRole.Provenance, provenanceName, "application/json", (string?)null, (string?)null),
-            (DistributionArtifactRole.License, "LICENSE-HYG.md", "text/markdown", (string?)null, (string?)null),
-            (DistributionArtifactRole.Attribution, "ATTRIBUTION-HYG.md", "text/markdown", (string?)null, (string?)null)
+            (DistributionArtifactRole.License, specification.LicenseFile, "text/markdown", (string?)null, (string?)null),
+            (DistributionArtifactRole.Attribution, specification.AttributionFile, "text/markdown", (string?)null, (string?)null)
         };
         var artifacts = await CreateArtifactsAsync(output, payloads, cancellationToken).ConfigureAwait(false);
         const string checksumsName = "SHA256SUMS";
@@ -232,8 +344,8 @@ internal static partial class Program
             root.GetProperty("database").GetProperty("length").GetInt64(),
             root.GetProperty("database").GetProperty("rowCount").GetInt64(),
             root.GetProperty("license").GetProperty("identifier").GetString() ?? string.Empty,
-            "LICENSE-HYG.md",
-            "ATTRIBUTION-HYG.md",
+            specification.LicenseFile,
+            specification.AttributionFile,
             root.GetProperty("topology").GetProperty("identity").GetString() ?? string.Empty,
             root.GetProperty("topology").GetProperty("sha256").GetString() ?? string.Empty);
         var manifest = new DistributionReleaseManifest(
@@ -924,7 +1036,7 @@ internal static partial class Program
         switch (metadataKind)
         {
             case "manifest":
-                _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot);
+                _ = DistributionVerifier.VerifyManifest(bytes, signatureText, trustRoot, ReleaseCatalogs.Specifications);
                 break;
             case "index":
                 _ = DistributionVerifier.VerifyIndex(bytes, signatureText, trustRoot);
@@ -977,7 +1089,7 @@ internal static partial class Program
         }
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var manifestSignature = await File.ReadAllBytesAsync(manifestSignaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, manifestSignature, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, manifestSignature, trustRoot, ReleaseCatalogs.Specifications);
         if (manifest.Release.Train != train)
         {
             throw new ReleaseToolException("The release manifest does not match --train.");
@@ -1081,7 +1193,7 @@ internal static partial class Program
             : DistributionTrustRoot.Production;
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var signature = await File.ReadAllBytesAsync(signaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signature, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signature, trustRoot, ReleaseCatalogs.Specifications);
         foreach (var artifact in manifest.Artifacts)
         {
             var path = Path.Combine(assetRoot, artifact.AssetName);
@@ -1161,10 +1273,8 @@ internal static partial class Program
         Directory.CreateDirectory(versionRoot);
         try
         {
-            var expected = new HashSet<string>(StringComparer.Ordinal)
-            {
-                "ATTRIBUTION-HYG.md", "LICENSE-HYG.md", "hyg_v42.sqlite", "manifest.json"
-            };
+            var expected = new HashSet<string>(
+                ReleaseCatalogs.Get(catalog.CatalogId, catalog.PackageVersion).RetainedFileNames, StringComparer.Ordinal);
             using var file = File.OpenRead(archivePath);
             using var gzip = new GZipStream(file, CompressionMode.Decompress);
             using var reader = new TarReader(gzip);
@@ -1349,7 +1459,7 @@ internal static partial class Program
             : DistributionTrustRoot.Production;
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
         var signatureBytes = await File.ReadAllBytesAsync(signaturePath, cancellationToken).ConfigureAwait(false);
-        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signatureBytes, trustRoot);
+        var manifest = DistributionVerifier.VerifyManifest(manifestBytes, signatureBytes, trustRoot, ReleaseCatalogs.Specifications);
         foreach (var artifact in manifest.Artifacts.OrderBy(static artifact => artifact.AssetName, StringComparer.Ordinal))
         {
             await Console.Out.WriteLineAsync($"{artifact.AssetName}\t{artifact.Length.ToString(CultureInfo.InvariantCulture)}")
@@ -1435,10 +1545,11 @@ internal static partial class Program
         string bundle,
         string output,
         string packageVersion,
+        ApprovedCatalogContract specification,
         DateTimeOffset timestamp,
         CancellationToken cancellationToken)
     {
-        var expected = new[] { "ATTRIBUTION-HYG.md", "LICENSE-HYG.md", "hyg_v42.sqlite", "manifest.json" };
+        var expected = ReleaseCatalogs.OrderedFiles(specification);
         var actual = Directory.EnumerateFiles(bundle).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
         if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
         {
