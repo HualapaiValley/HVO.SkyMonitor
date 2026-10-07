@@ -375,15 +375,7 @@ internal sealed class AnnotationCaptureProcessingStep(
     internal (IReadOnlyList<ProjectedAnnotationObject> Objects, IReadOnlyList<ProjectedAnnotationSegment> Segments,
         ProjectedAnnotationOverlay? Overlay) CreateProjectedSceneInputs(ProjectedSceneV1 scene)
     {
-        var footprints = (scene.ResolvedFootprints ?? [])
-            .ToDictionary(static item => item.Id, static item => item.Parts, StringComparer.Ordinal);
-        var objects = scene.Objects.Select(item =>
-        {
-            var annotate = IsNamed(item.Id, item.DisplayName) &&
-                (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= Options.MaximumLabelMagnitude);
-            return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate,
-                footprints.GetValueOrDefault(item.Id));
-        }).ToArray();
+        var objects = ProjectedSceneAnnotation.CreateObjects(scene, Options.MaximumLabelMagnitude);
         IReadOnlyList<ProjectedAnnotationSegment> segments = Options.DrawConstellationLines
             ? scene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
                 .Select(static item => new ProjectedAnnotationSegment(

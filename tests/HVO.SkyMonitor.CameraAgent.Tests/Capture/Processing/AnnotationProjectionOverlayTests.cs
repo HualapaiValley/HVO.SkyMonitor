@@ -53,6 +53,9 @@ public sealed class AnnotationProjectionOverlayTests
         Assert.IsFalse(Lit(preview.Pixels.Span, 100, 450), "A single source radius would overshoot the binned axis.");
         Assert.AreSame(scene.ResolvedFootprints!.Single().Parts,
             objects.Single(static item => item.Id == "solar-system:Sun").FootprintParts);
+        // The edge maps the scene through the same shared adapter the central host uses for the same artifact.
+        CollectionAssert.AreEqual(ProjectedSceneAnnotation.CreateObjects(scene,
+            new AnnotationProcessingStepOptions().MaximumLabelMagnitude).ToArray(), objects.ToArray());
     }
 
     [TestMethod]

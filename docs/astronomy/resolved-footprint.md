@@ -118,3 +118,7 @@ Planets other than the Sun and Moon keep the geocentric `astronomy-engine-2.1.19
   `ResolvedFootprintSourceKind.DeepSkyObject` and a `null` appearance.
 - Use a stable, ordinal-sortable id with a non-`solar-system:` prefix.
 - Annotation layers draw `parts` as they are given. They must not re-project the extent.
+- Annotation layers map a scene through `ProjectedSceneAnnotation.CreateObjects`, so the edge, the central host and
+  presentation draw the same outlines and labels from the same artifact. A footprint whose centre object the scene
+  omits is still outlined and named at `ProjectedSceneAnnotation.FootprintAnchor`: its `centerPixel` when that lies in
+  the emitted image, otherwise the centre of its `bounds`.

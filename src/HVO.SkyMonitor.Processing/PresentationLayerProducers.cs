@@ -183,10 +183,19 @@ public static class PresentationLayerProducers
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
         var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
+        // the same anchor the raster annotation uses.
+        var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var footprintOnly = footprints.Values.Where(item => !objectIds.Contains(item.Id) && IsNamed(item.Id, item.DisplayName))
+            .OrderBy(static item => item.Id, StringComparer.Ordinal)
+            .Select(item => (Footprint: item, Anchor: ProjectedSceneAnnotation.FootprintAnchor(item, scene.ImageTransform)))
+            .ToArray();
         // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
         var markers = includeMarkers ? annotatedObjects
             .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint) <= style.MarkerRadius)
-            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true)) : [];
+            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
+            .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint) <= style.MarkerRadius)
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
         var segments = new List<PresentationSegmentV1>();
         PixelPoint? previousEnd = null;
         var dashOffset = 0d;
@@ -207,8 +216,9 @@ public static class PresentationLayerProducers
         if (includeMarkers)
             foreach (var footprint in footprints.Values.OrderBy(static item => item.Id, StringComparer.Ordinal))
             {
-                if (PaddedHalfExtent(footprint) <= style.MarkerRadius && annotatedObjects.Any(item => item.Id == footprint.Id)) continue;
-                var outline = Outline(footprint, markerColor);
+                if (PaddedHalfExtent(footprint) <= style.MarkerRadius && (annotatedObjects.Any(item => item.Id == footprint.Id) ||
+                    footprintOnly.Any(item => item.Footprint.Id == footprint.Id))) continue;
+                var outline = Outline(footprint, scene.ImageTransform, markerColor);
                 // Bounded deterministically: an outline that would exceed the payload budget is omitted whole.
                 if (segments.Count + footprintSegments.Count + outline.Count > PresentationLayerPayloadV1.MaximumSegments) continue;
                 footprintSegments.AddRange(outline);
@@ -292,7 +302,10 @@ public static class PresentationLayerProducers
             var discs = footprints.Values.Select(item => (item.Id, Bounds: new SKRect(
                 (float)(item.Bounds.MinX - ResolvedFootprintPaddingPixels), (float)(item.Bounds.MinY - ResolvedFootprintPaddingPixels),
                 (float)(item.Bounds.MaxX + ResolvedFootprintPaddingPixels), (float)(item.Bounds.MaxY + ResolvedFootprintPaddingPixels)))).ToArray();
-            foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)
+            var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
+                .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
+                    Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue)));
+            foreach (var item in labelled.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
@@ -374,10 +387,11 @@ public static class PresentationLayerProducers
 
         // Pushes each limb point outward along its ray from the centre. Sun, Moon and catalogue ellipses are convex,
         // so the ray is a valid outward direction; clipped parts stay open and keep their frame-edge endpoints.
-        static List<PresentationSegmentV1> Outline(ProjectedResolvedFootprint footprint, PresentationColor color)
+        static List<PresentationSegmentV1> Outline(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform, PresentationColor color)
         {
-            var center = footprint.CenterPixel ?? new PixelPoint((footprint.Bounds.MinX + footprint.Bounds.MaxX) / 2,
-                (footprint.Bounds.MinY + footprint.Bounds.MaxY) / 2);
+            // Padded from the same anchor as the raster outline, so a cropped disc grows toward its visible centre.
+            var center = ProjectedSceneAnnotation.FootprintAnchor(footprint, transform);
             var result = new List<PresentationSegmentV1>();
             foreach (var part in footprint.Parts)
             {

@@ -241,12 +241,17 @@ internal sealed class CentralProjectedSceneResolver(
     }
 
     internal static ProcessingAnnotationInput CreateAnnotation(ProjectedSceneV1 scene, string sceneId)
-        => CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
-                item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
-                item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray());
+    {
+        var segments = scene.Segments.Select(static item => new ProjectedSegmentProvenance(
+            item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
+            item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray();
+        // A projected-scene-v1 artifact keeps its released point-mark mapping, so its bytes and identity are unchanged.
+        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal)
+            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments)
+            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
+                scene.Objects.Select(static item => new ProjectedObjectProvenance(
+                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments);
+    }
 
     // The existing immutable requirement selector carries the compact reference. The artifact input keeps
     // retention, invalidation and frozen input-set identity authoritative without a second persistence schema.

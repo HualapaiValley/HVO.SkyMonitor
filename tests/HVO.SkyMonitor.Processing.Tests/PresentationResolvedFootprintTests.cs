@@ -60,6 +60,27 @@ public sealed class PresentationResolvedFootprintTests
     }
 
     [TestMethod]
+    public async Task DiscCentredBelowTheGeometricHorizonIsOutlinedAndNamedAtTheRasterAnchor()
+    {
+        var scene = await ProjectedSceneAnnotationTests.SceneAsync(0, new AltAzPoint(-.2, 0), .5).ConfigureAwait(false);
+        Assert.IsFalse(scene.Objects.Any(static item => item.Id == "solar-system:Sun"));
+        var footprint = scene.ResolvedFootprints!.Single();
+        var anchor = ProjectedSceneAnnotation.FootprintAnchor(footprint, scene.ImageTransform);
+
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+
+        // Regression for #518 r0: the outline was drawn but the body went unnamed, unlike the raster annotation.
+        // The horizon clips the limb into an open part, which has one segment fewer than it has points.
+        Assert.IsTrue(footprint.Clipped);
+        Assert.HasCount(footprint.Parts.Sum(static part => part.Points.Count - (part.Closed ? 0 : 1)),
+            groups.StarAnnotations.Segments);
+        Assert.IsEmpty(groups.StarAnnotations.Markers);
+        var label = groups.StarAnnotations.TextBlocks.Single(static block => block.Lines[0] == "Sun");
+        Assert.IsTrue(label.Point.X >= footprint.Bounds.MaxX + PresentationLayerProducers.ResolvedFootprintPaddingPixels);
+        Assert.AreEqual(Math.Round(anchor.Y - 3 * label.Scale, MidpointRounding.AwayFromZero), label.Point.Y);
+    }
+
+    [TestMethod]
     public async Task MarkersOffLeaveNoOutline()
     {
         var scene = await SceneAsync(4000).ConfigureAwait(false);
