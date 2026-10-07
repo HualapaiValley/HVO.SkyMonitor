@@ -25,6 +25,7 @@ public sealed class DeepCatalogSelectionTests
     private const string Magnitude5SettingsIdentity = "e52c026406415332c9f638456ac94b79aa290998d644ac0bc818f31144b1f824";
 
     private static readonly AstrometricSolverOptions Deep = new(MaximumCatalogMagnitude: 6, CatalogSelectionProfile: Profile);
+    private static readonly string[] UnmappedReasonCodes = ["acquisition-or-quality-failed", "ambiguous", "resource-limit", "time-budget"];
 
     private sealed record Solved(AstrometricCatalogData Catalog, AstrometricCalibration Calibration, AstrometricDetection[] Detections, AstrometricSolveResult Result);
 
@@ -57,9 +58,8 @@ public sealed class DeepCatalogSelectionTests
         Assert.IsNull(AstrometricCatalogSelectionProfile.Find(string.Empty));
         Assert.IsNull(AstrometricCatalogSelectionProfile.Find(null));
 
-        Assert.AreEqual(AstrometricCatalogSelectionProfile.Declared.Max(p => p.MaximumEntries), AstrometricCatalogData.MaterializationCeiling);
-        Assert.AreEqual(2500, AstrometricCatalogData.MaximumEntries);
-        Assert.AreEqual(AstrometricCatalogData.MaximumEntries, new AstrometricSolverOptions().CatalogEntryBound);
+        Assert.AreEqual(AstrometricCatalogData.MaterializationCeiling, AstrometricCatalogSelectionProfile.Declared.Max(p => p.MaximumEntries));
+        Assert.AreEqual(2500, new AstrometricSolverOptions().CatalogEntryBound);
         Assert.AreEqual(profile.MaximumEntries, Deep.CatalogEntryBound);
     }
 
@@ -208,7 +208,7 @@ public sealed class DeepCatalogSelectionTests
         var result = AstrometricSolver.Solve(f.Result.Assessment.Frame, f.Calibration, catalog, f.Detections, Deep with { ColdBudgetMilliseconds = 5000 });
 
         Assert.IsFalse(result.Assessment.HasMeasuredMapping, result.Assessment.Reason);
-        CollectionAssert.Contains(new[] { "acquisition-or-quality-failed", "ambiguous", "resource-limit", "time-budget" }, result.Assessment.ReasonCode);
+        Assert.Contains(result.Assessment.ReasonCode, UnmappedReasonCodes);
         _ = AstrometricEvidenceJson.Serialize(result.Assessment);
     }
 
