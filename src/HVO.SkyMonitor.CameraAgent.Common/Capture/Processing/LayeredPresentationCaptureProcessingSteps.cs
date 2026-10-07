@@ -391,6 +391,7 @@ internal sealed class OverlayManifestCaptureProcessingStep(
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => OverlayManifestV1.CurrentSchemaVersion;
     public string? OutputMediaType => PresentationProcessingProducts.ManifestMediaType;
+    internal string? DeepSkyVariant => Options.DeepSkyVariant;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
@@ -483,6 +484,7 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputMediaType => "application/x-hvo-packed-image";
+    internal string? DeepSkyVariant => Options.DeepSkyVariant;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [

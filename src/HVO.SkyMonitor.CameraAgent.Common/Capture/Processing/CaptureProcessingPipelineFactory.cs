@@ -262,6 +262,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            ValidateDeepSkyPresentationWiring(configured, nodesById);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
@@ -327,6 +328,25 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             if (uploadsImages && !dependencies.Contains(sceneId, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
                     $"Storage step '{step.Name}' uploading scene-bearing images must explicitly depend on ProjectedScene step '{sceneId}'.");
+        }
+    }
+
+    // A materializer renders only the layers its manifest declares, so one configured for a deep-sky variant that its
+    // manifest does not declare would fail every capture it is given.
+    private static void ValidateDeepSkyPresentationWiring(
+        IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        foreach (var item in configured)
+        {
+            if (item.Step is not PresentationMaterializerCaptureProcessingStep { DeepSkyVariant: { } variant }) continue;
+            if ((item.Config.DependsOn ?? [])
+                .Where(static dependency => !IsRawDependency(dependency))
+                .Select(dependency => nodesById[dependency].Step)
+                .OfType<OverlayManifestCaptureProcessingStep>()
+                .Any(manifest => !string.Equals(manifest.DeepSkyVariant, variant, StringComparison.Ordinal)))
+                throw new InvalidOperationException(
+                    $"Presentation materializer '{item.Step.Name}' renders deep-sky variant '{variant}', which its overlay manifest does not declare.");
         }
     }
 

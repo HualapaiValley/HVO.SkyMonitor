@@ -773,9 +773,7 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    [DataRow(false, DisplayName = "consumers without the variant are not supplied the layer")]
-    [DataRow(true, DisplayName = "a materializer configured for an undeclared layer fails")]
-    public async Task ProductionLayeredPresentation_DeepSkyOutputReachesOnlyConsumersConfiguredForIt(bool materializerConfigured)
+    public async Task ProductionLayeredPresentation_DeepSkyOutputReachesOnlyConsumersConfiguredForIt()
     {
         var root = CreateTestRoot();
         try
@@ -785,7 +783,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
             using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var graph = await CreateProductionLayeredGraphAsync(fixture, root, ProductionDeepSkyCatalog(),
-                new DeepSkyWiring("deep-sky-layer", null, materializerConfigured ? "deep-sky-layer" : null)).ConfigureAwait(false);
+                new DeepSkyWiring("deep-sky-layer", null, null)).ConfigureAwait(false);
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
@@ -797,20 +795,11 @@ public sealed partial class DurableCaptureProcessingTests
             CollectionAssert.AreEqual(ExpectedProductionLayerOrder, manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
             var materializer = (await store.ReadNodeAsync(captureId, "presentation-materializer", CancellationToken.None)
                 .ConfigureAwait(false))!;
-            if (materializerConfigured)
-            {
-                // The manifest never declared the layer, so a materializer configured for it refuses to render.
-                Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, result.Outcome);
-                Assert.AreEqual(DurableProcessingNodeStatus.RetryableFailure, materializer.Status);
-                Assert.AreEqual("processing.step-exception", materializer.Reason);
-                Assert.IsEmpty(materializer.Outputs);
-            }
-            else
-            {
-                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-                Assert.AreEqual(DurableProcessingNodeStatus.Completed, materializer.Status);
-                Assert.HasCount(9, materializer.Outputs.Single().Artifact.SourceArtifactIds);
-            }
+            // A materializer configured for a layer its manifest does not declare never reaches processing; graph
+            // construction rejects it (StandaloneW6ProfileTests.DeepSkyWiringIsCheckedWhenTheGraphIsBuilt).
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, materializer.Status);
+            Assert.HasCount(9, materializer.Outputs.Single().Artifact.SourceArtifactIds);
         }
         finally
         {

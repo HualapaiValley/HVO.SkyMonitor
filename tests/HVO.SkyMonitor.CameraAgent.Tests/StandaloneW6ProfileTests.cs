@@ -340,6 +340,54 @@ public sealed class StandaloneW6ProfileTests
     }
 
     [TestMethod]
+    [DataRow("deep-sky-layer", "deep-sky-layer", "deep-sky-layer", null, DisplayName = "consistent wiring builds")]
+    [DataRow("deep-sky-layer", "deep-sky-layer", null, null, DisplayName = "a materializer without the variant builds")]
+    [DataRow("deep-sky-layer", null, null, null, DisplayName = "a scene output nothing consumes builds")]
+    [DataRow("deep-sky-layer", null, "deep-sky-layer", "which its overlay manifest does not declare",
+        DisplayName = "a materializer variant the manifest does not declare is rejected")]
+    [DataRow("deep-sky-layer", "other-layer", "deep-sky-layer", "required dependency inputs",
+        DisplayName = "a manifest variant the scene does not produce is rejected")]
+    [DataRow(null, null, "deep-sky-layer", "required dependency inputs",
+        DisplayName = "a materializer variant the scene does not produce is rejected")]
+    public async Task DeepSkyWiringIsCheckedWhenTheGraphIsBuilt(
+        string? scene, string? manifest, string? materializer, string? rejection)
+    {
+        var configuration = WithDeepSkyWiring(
+            await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false), scene, manifest, materializer);
+        using var provider = CreateProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+
+        if (rejection is null)
+        {
+            factory.CreateGraph(configuration).DisposeSteps();
+            return;
+        }
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(configuration));
+        StringAssert.Contains(exception.Message, rejection, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task ConfigurationInitializer_RejectsADeepSkyMaterializerItsManifestDoesNotDeclare()
+    {
+        var configuration = WithDeepSkyWiring(
+            await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false),
+            "deep-sky-layer", null, "deep-sky-layer");
+        using var provider = CreateProvider();
+        var accessor = new CameraAgentConfigurationAccessor();
+        var initializer = new CameraAgentConfigurationInitializer(
+            new Capture.Processing.StaticConfigurationLoader(configuration),
+            accessor,
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+            NullLogger<CameraAgentConfigurationInitializer>.Instance);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            initializer.StartAsync(CancellationToken.None)).ConfigureAwait(false);
+
+        StringAssert.Contains(exception.Message, "which its overlay manifest does not declare", StringComparison.Ordinal);
+        Assert.IsFalse(accessor.IsConfigured);
+    }
+
+    [TestMethod]
     public async Task StoragePolicyMatchesSecondaryOutputAndRejectsItsUpload()
     {
         var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
@@ -378,6 +426,30 @@ public sealed class StandaloneW6ProfileTests
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
             factory.CreateGraph(WithSecondaryPolicy(queueForUpload: true)));
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
+    }
+
+    private static CameraModuleConfig WithDeepSkyWiring(
+        CameraModuleConfig configuration, string? scene, string? manifest, string? materializer)
+    {
+        var steps = configuration.Pipeline.Steps.Select(step => step.Id switch
+        {
+            "scene-presentation" when scene is not null =>
+                step with { Options = WithOption(step.Options!.Value, "deepSky", new { outputVariant = scene }) },
+            "overlay-manifest" when manifest is not null =>
+                step with { Options = WithOption(step.Options!.Value, "deepSkyVariant", manifest) },
+            "presentation-materializer" when materializer is not null =>
+                step with { Options = WithOption(step.Options!.Value, "deepSkyVariant", materializer) },
+            _ => step
+        }).ToArray();
+        return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
+
+        static System.Text.Json.JsonElement WithOption(System.Text.Json.JsonElement options, string name, object value)
+        {
+            var values = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
+                options.GetRawText())!;
+            values[name] = System.Text.Json.JsonSerializer.SerializeToElement(value);
+            return System.Text.Json.JsonSerializer.SerializeToElement(values);
+        }
     }
 
     private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
