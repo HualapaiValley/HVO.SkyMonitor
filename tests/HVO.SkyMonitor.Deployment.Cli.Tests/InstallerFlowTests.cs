@@ -450,7 +450,8 @@ public sealed class InstallerFlowTests
         private int stateReadCount;
         public string CurrentInstallationState { get; set; } = "owner-password-change-required";
 
-        public Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
+        public Task WaitForHealthAsync(
+            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
@@ -594,7 +595,8 @@ public sealed class InstallerFlowTests
     {
         private int stateCount;
 
-        public Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
+        public Task WaitForHealthAsync(
+            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;

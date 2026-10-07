@@ -25,6 +25,10 @@ internal sealed class CameraAgentLifecycleManager
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        if (request.Operation == LifecycleOperationKind.CatalogCheck)
+        {
+            return await CatalogLifecycleManager.CheckAsync(request, distributionFactory, cancellationToken).ConfigureAwait(false);
+        }
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
             return await CatalogLifecycleManager.ExecuteAsync(request, processRunner, uid, gid, cancellationToken)
@@ -35,7 +39,9 @@ internal sealed class CameraAgentLifecycleManager
             return await ListAsync(request.ProductRoot, cancellationToken).ConfigureAwait(false);
         }
         var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        // Instance paths start from the default catalog and are re-bound to the instance's selected catalog once its
+        // retained manifest has been read; only the catalog root and reference root depend on the selection.
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         // A signed image upgrade resolves and verifies its release before the instance is touched, so an unsupported
         // architecture, a missing platform, or a tampered archive fails while the running instance is untouched.
         // The platform is selected for the architecture of the Docker daemon the instance was installed against,
@@ -73,6 +79,7 @@ internal sealed class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
         }
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         var retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
@@ -124,6 +131,7 @@ internal sealed class CameraAgentLifecycleManager
         using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
         EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
@@ -557,6 +565,7 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
+        CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
         if (!rollback && !request.MigrationBackwardCompatible)
         {
             throw new InstallerException("The candidate does not declare backward-compatible state migration; an explicit transactional restore path is required.");
@@ -1185,7 +1194,7 @@ internal sealed class CameraAgentLifecycleManager
         string? ownerBootstrapState = null,
         bool allowCompletedPasswordReplacement = true)
     {
-        await owner.WaitForHealthAsync(cancellationToken).ConfigureAwait(false);
+        await owner.WaitForHealthAsync(ProductionCatalog.Get(manifest.Catalog.CatalogId), cancellationToken).ConfigureAwait(false);
         var verifiedOwnerState = await owner.VerifyInstallationAsync(
             verificationToken,
             new InstallationVerificationExpectation(
@@ -1691,6 +1700,15 @@ internal sealed class CameraAgentLifecycleManager
         var value = await ReadSecretAsync(path, cancellationToken).ConfigureAwait(false);
         if (value != packageVersion && value != resumablePackageVersion)
             throw new InstallerException("The catalog selection credential does not match the retained lifecycle state.");
+        // The required catalog ID names the lineage the host enforces; it must name the same approved catalog as the
+        // selected package version, which an interrupted cross-lineage selection may have advanced to its candidate.
+        var catalogIdPath = Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredCatalogId");
+        if (!File.Exists(catalogIdPath))
+            throw new InstallerException("The catalog selection credential does not match the retained instance manifest.");
+        var catalogId = await ReadSecretAsync(catalogIdPath, cancellationToken).ConfigureAwait(false);
+        if (catalogId != ProductionCatalog.ForPackageVersion(packageVersion).CatalogId &&
+            (resumablePackageVersion is null || catalogId != ProductionCatalog.ForPackageVersion(resumablePackageVersion).CatalogId))
+            throw new InstallerException("The catalog selection credential does not match the retained lifecycle state.");
     }
 
     internal static void ValidateLifecycleControlToken(InstanceManifest manifest, string token)
@@ -1719,6 +1737,7 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
             !IsSha256(manifest.LifecycleControlTokenSha256) ||
             !IsCanonicalImage(
@@ -1835,7 +1854,7 @@ internal sealed class CameraAgentLifecycleManager
                 : null);
     }
 
-    private static string ReplaceEnvironmentValue(string environment, string key, string value)
+    internal static string ReplaceEnvironmentValue(string environment, string key, string value)
     {
         var prefix = key + "=";
         var lines = environment.Split('\n');
@@ -1864,7 +1883,7 @@ internal sealed class CameraAgentLifecycleManager
            image.Architecture == daemonArchitecture &&
            (image.ArchiveSha256 is null || IsSha256(image.ArchiveSha256)) &&
            image.Component == CameraAgentImageContract.Component && image.ConfigurationContract == configurationContract &&
-            image.CatalogContract == CameraAgentImageContract.CatalogContract && IsSourceRevision(image.SourceRevision) &&
+            CameraAgentImageContract.IsKnownCatalogContract(image.CatalogContract) && IsSourceRevision(image.SourceRevision) &&
             (!requireReplayRunner || image.ReplayRunnerContract == CameraAgentImageContract.ReplayRunnerContract) &&
            (image.Distribution is null || IsValidDistribution(image.Distribution) &&
             image.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
@@ -1875,10 +1894,7 @@ internal sealed class CameraAgentLifecycleManager
             image.ArchiveSha256 is not null && image.Distribution.AssetSha256 == image.ArchiveSha256);
 
     private static bool IsValidCatalog(CatalogInstallationIdentity? value)
-        => value is not null && value.CatalogId == ProductionCatalog.CatalogId && HasValue(value.PackageVersion) &&
-           value.SchemaVersion == "2" && value.PreprocessingVersion == "3" &&
-           value.DatabaseSha256 == ProductionCatalog.DatabaseSha256 &&
-           value.DatabaseLength == ProductionCatalog.DatabaseLength && value.RowCount == ProductionCatalog.RowCount &&
+        => ProductionCatalog.IsPinned(value) &&
            HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline" &&
            (value.Distribution is null || IsValidDistribution(value.Distribution) &&
             value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&

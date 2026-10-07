@@ -56,7 +56,7 @@ is_reduced_path() {
   fi
 
   case "$path" in
-    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md)
+    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
       return 1
       ;;
   esac

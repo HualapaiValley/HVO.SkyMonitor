@@ -1,0 +1,69 @@
+alias,object_id,kind
+"1 UMi",11734,flamsteed
+"16 Boo",69451,flamsteed
+"3 Lyr",90979,flamsteed
+"41 Ori",26155,flamsteed
+"41 Ori",26156,flamsteed
+"41 Ori",26159,flamsteed
+"58 Ori",27919,flamsteed
+"61 Cyg",103879,flamsteed
+"61 Cyg",103883,flamsteed
+"9 CMa",32263,flamsteed
+"Alp Boo",69451,bayer
+"Alp CMa",32263,bayer
+"Alp Car",30365,bayer
+"Alp Lyr",90979,bayer
+"Alp Ori",27919,bayer
+"Alp UMi",11734,bayer
+"Alp-1 Cen",71456,bayer
+Arcturus,69451,proper
+"Barnard's Star",87665,proper
+Betelgeuse,27919,proper
+Canopus,30365,proper
+"Gl 191",24129,gliese
+"Gl 244A",32263,gliese
+"Gl 451A",57767,gliese
+"Gl 541",69451,gliese
+"Gl 551",70666,gliese
+"Gl 559A",71456,gliese
+"Gl 699",87665,gliese
+"Gl 721",90979,gliese
+"Gl 820A",103879,gliese
+"Gl 820B",103883,gliese
+"Groombridge 1830",57767,proper
+"HD 103095",57767,hd
+"HD 124897",69451,hd
+"HD 128620",71456,hd
+"HD 172167",90979,hd
+"HD 201091",103879,hd
+"HD 201092",103883,hd
+"HD 33793",24129,hd
+"HD 37020",26155,hd
+"HD 37022",26156,hd
+"HD 37023",26159,hd
+"HD 39801",27919,hd
+"HD 45348",30365,hd
+"HD 48915",32263,hd
+"HD 8890",11734,hd
+"HR 1893",26155,hr
+"HR 1895",26156,hr
+"HR 1896",26159,hr
+"HR 2061",27919,hr
+"HR 2326",30365,hr
+"HR 2491",32263,hr
+"HR 424",11734,hr
+"HR 4550",57767,hr
+"HR 5340",69451,hr
+"HR 5459",71456,hr
+"HR 7001",90979,hr
+"HR 8085",103879,hr
+"HR 8086",103883,hr
+"Kapteyn's Star",24129,proper
+Polaris,11734,proper
+"Proxima Centauri",70666,proper
+"Rigil Kentaurus",71456,proper
+Sirius,32263,proper
+"The-1 Ori",26155,bayer
+"The-1 Ori",26156,bayer
+"The-1 Ori",26159,bayer
+Vega,90979,proper
