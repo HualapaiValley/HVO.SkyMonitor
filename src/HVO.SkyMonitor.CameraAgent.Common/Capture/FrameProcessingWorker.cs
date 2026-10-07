@@ -170,6 +170,8 @@ internal sealed class FrameProcessingWorker
                     if (persistedNode is not null && !string.Equals(
                         persistedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
                     {
+                        // Abandonment is reserved for intact evidence; damaged raw payload must still quarantine.
+                        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
                         throw new ProcessingPlanSupersededException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
                     }

@@ -200,6 +200,40 @@ public sealed class EdgeUpgradeLaneTests
     }
 
     [TestMethod]
+    public async Task SupersededPlanOverCorruptRawPayloadStillQuarantines()
+    {
+        var root = CreateRoot("plan-superseded-corrupt");
+        try
+        {
+            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
+            using var provider = CreateProvider(root, clock);
+            var fixture = await StartAsync(provider, root).ConfigureAwait(false);
+            var first = await fixture.AcceptAsync(0).ConfigureAwait(false);
+            await ExecuteAsync(root, "UPDATE processing_execution_nodes SET plan_sha256 = $plan;",
+                ("$plan", SupersededPlan)).ConfigureAwait(false);
+            // A same-length flip leaves the sidecar and journal checks green, so only payload reconstruction sees it.
+            var payloadPath = fixture.Receipts[first].StoredFrame.AbsolutePath;
+            var bytes = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
+            var corrupt = bytes.ToArray();
+            corrupt[0] ^= 0xFF;
+            await File.WriteAllBytesAsync(payloadPath, corrupt).ConfigureAwait(false);
+
+            var result = await fixture.ProcessStandardAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, result.Handled.Outcome, result.Handled.Reason);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, result.Acknowledged);
+            Assert.AreEqual("quarantined", (await ReadLaneAsync(root, first, "standard").ConfigureAwait(false)).State);
+            await File.WriteAllBytesAsync(payloadPath, bytes).ConfigureAwait(false);
+            Assert.IsTrue(await fixture.IsHeldAsync(first).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(async () =>
+                await fixture.AcceptAsync(1).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     public async Task SceneRequiredUploadWaitingForAbandonedWorkCompletesWithTheRawOnly()
     {
         var root = CreateRoot("scene-abandoned");

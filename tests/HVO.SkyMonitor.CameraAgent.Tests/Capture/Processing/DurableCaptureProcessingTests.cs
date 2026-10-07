@@ -537,6 +537,66 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    [DataRow(true, DisplayName = "corrupt raw payload quarantines")]
+    [DataRow(false, DisplayName = "intact raw payload is abandoned")]
+    public async Task StalePlanHash_QuarantinesCorruptRawPayloadAndAbandonsIntactEvidence(bool corruptPayload)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var annotation = new PackedAnnotationProducingStep();
+            var oldHash = new string('A', 64);
+            var first = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([new CaptureProcessingGraphNode("sky-annotation", annotation, [],
+                    true, annotation.RecipeName, annotation.OutputRole, annotation.OutputVariant, oldHash)]),
+                persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome, first.Reason);
+            var persisted = (await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "sky-annotation", CancellationToken.None).ConfigureAwait(false))!;
+
+            if (corruptPayload)
+            {
+                // A same-length flip keeps the sidecar and journal checks green; only payload reconstruction sees it.
+                var payloadPath = fixture.Item.RawCapture!.StoredFrame.AbsolutePath;
+                var payload = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
+                payload[0] ^= 0xFF;
+                await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            }
+            var incompatible = new PackedAnnotationProducingStep();
+            var graph = new CaptureProcessingGraph([new CaptureProcessingGraphNode("sky-annotation", incompatible, [],
+                true, incompatible.RecipeName, incompatible.OutputRole, incompatible.OutputVariant, new string('N', 64))]);
+            // The exception type is the lane contract: corruption quarantines through the evidence path, while a
+            // superseded plan over intact evidence abandons without touching committed state.
+            Func<Task> run = async () => await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, graph, persistence, telemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            if (corruptPayload)
+            {
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(run).ConfigureAwait(false);
+            }
+            else
+            {
+                await Assert.ThrowsExactlyAsync<ProcessingPlanSupersededException>(run).ConfigureAwait(false);
+            }
+            Assert.AreEqual(0, incompatible.ExecutionCount);
+            var unchanged = (await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "sky-annotation", CancellationToken.None).ConfigureAwait(false))!;
+            Assert.AreEqual(oldHash, unchanged.PlanSha256);
+            Assert.AreEqual(persisted.Status, unchanged.Status);
+            Assert.AreEqual(persisted.Attempt, unchanged.Attempt);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public async Task ProductionLayeredPresentation_RestartRestoresExactFinalBytesIdentityAndSourceOrder()
     {
         var root = CreateTestRoot();
