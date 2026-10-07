@@ -98,6 +98,61 @@ public sealed class DeepSkyCatalogTests
     }
 
     [TestMethod]
+    public void ChangingTheConstructorInputsAfterwardsChangesNothing()
+    {
+        DeepSkyObject[] objects = [Spindle, Pinwheel, Alnilam, Winnecke];
+        var aliases = Aliases().ToList();
+        string[] candidates = ["NGC5457", "NGC5866"];
+        List<DeepSkyTombstone> tombstones =
+            [new("IC9999", "IC 9999", DeepSkyTombstoneReasons.DuplicateConflict, candidates)];
+        var original = Ring(210.8, 54.3);
+        var points = original.Points.ToList();
+        List<DeepSkyOutlineRing> rings = [new(points)];
+        List<DeepSkyOutline> outlines = [new("NGC5457", 2, rings)];
+        var catalog = new DeepSkyCatalog(Semantics, objects, aliases, tombstones, outlines);
+
+        objects[0] = Spindle with { Id = "NGC9999", Designation = "NGC 9999", DisplayName = "NGC 9999" };
+        aliases.Clear();
+        candidates[0] = "NGC0001";
+        tombstones.Clear();
+        points[1] = new(0, 0);
+        rings.Add(Ring(10, 10));
+        outlines.Clear();
+
+        CollectionAssert.AreEqual(ExpectedObjectOrder, catalog.Objects.Select(static item => item.Id).ToArray());
+        Assert.AreEqual(8, catalog.AliasCount);
+        Assert.AreEqual(1, catalog.FindByAlias("M101").Count);
+        Assert.IsTrue(catalog.TryGetTombstone("IC9999", out var tombstone));
+        CollectionAssert.AreEqual(ConflictCandidates, tombstone.Candidates.ToArray());
+        Assert.AreEqual(1, catalog.Tombstones.Count);
+        var outline = catalog.GetOutlines("NGC5457").Single();
+        Assert.AreEqual(1, outline.Rings.Count);
+        CollectionAssert.AreEqual(original.Points.ToArray(), outline.Rings[0].Points.ToArray());
+        Assert.AreEqual(1, catalog.OutlineCount);
+        Assert.AreEqual(5L, catalog.OutlinePointCount);
+    }
+
+    [TestMethod]
+    public void EveryReturnedCollectionRejectsMutation()
+    {
+        var catalog = Create(tombstones:
+            [new DeepSkyTombstone("IC9999", "IC 9999", DeepSkyTombstoneReasons.DuplicateConflict, ConflictCandidates)]);
+        Assert.IsTrue(catalog.TryGetTombstone("IC9999", out var tombstone));
+        var outline = catalog.GetOutlines("NGC5457")[0];
+
+        AssertReadOnly(catalog.Objects, Pinwheel);
+        AssertReadOnly(catalog.Tombstones, tombstone);
+        AssertReadOnly(tombstone.Candidates, "NGC0001");
+        AssertReadOnly(catalog.FindByAlias("M101"), new DeepSkyAlias("M101", "NGC5866", DeepSkyAliasKinds.Messier));
+        AssertReadOnly(catalog.GetOutlines("NGC5457"), outline);
+        AssertReadOnly(outline.Rings, Ring(10, 10));
+        AssertReadOnly(outline.Rings[0].Points, new DeepSkyOutlinePoint(0, 0));
+        Assert.IsTrue(((ICollection<DeepSkyOutline>)catalog.GetOutlines("NGC5866")).IsReadOnly);
+        Assert.IsTrue(((ICollection<DeepSkyAlias>)catalog.FindByAlias("M103")).IsReadOnly);
+        CollectionAssert.AreEqual(ExpectedObjectOrder, catalog.Objects.Select(static item => item.Id).ToArray());
+    }
+
+    [TestMethod]
     public void ObjectPropertiesClassifyExtentsAndStellarRows()
     {
         Assert.IsTrue(Pinwheel.HasOrientedExtent);
@@ -446,6 +501,15 @@ public sealed class DeepSkyCatalogTests
         new("HIP 26311", "NGC1990", DeepSkyAliasKinds.Hipparcos),
         new("Eps Ori", "NGC1990", DeepSkyAliasKinds.Identifier),
     ];
+
+    // An array returned as IReadOnlyList<T> still accepts element replacement through IList<T>; a frozen list does not.
+    private static void AssertReadOnly<T>(IReadOnlyList<T> values, T replacement)
+    {
+        var list = (IList<T>)values;
+        Assert.IsTrue(list.IsReadOnly);
+        Assert.ThrowsExactly<NotSupportedException>(() => list[0] = replacement);
+        Assert.ThrowsExactly<NotSupportedException>(() => list.Add(replacement));
+    }
 
     // A closed four-point ring of 0.1 degree squares; its points are distinct and stay in range for a valid corner.
     private static DeepSkyOutlineRing Ring(double rightAscension, double declination) => new(

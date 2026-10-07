@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Globalization;
 
 namespace HVO.SkyMonitor.Astronomy;
@@ -228,19 +229,21 @@ public interface IDeepSkyCatalogSource
 
 /// <summary>
 /// The storage-neutral validated deep-sky collection. Construction proves the invariants every consumer relies on,
-/// so a loader only proves that its rows are the ones it was asked to load.
+/// so a loader only proves that its rows are the ones it was asked to load. Construction copies every collection it
+/// is given, down to outline points and tombstone candidates, and validates the copies, so a caller that changes its
+/// inputs afterwards cannot change the catalog, and every collection the catalog returns is read-only.
 /// </summary>
 public sealed class DeepSkyCatalog : IDeepSkyCatalog
 {
     /// <summary>The smallest number of points in a closed outline ring.</summary>
     public const int MinimumRingPointCount = 4;
 
-    private readonly DeepSkyObject[] _objects;
+    private readonly ReadOnlyCollection<DeepSkyObject> _objects;
     private readonly Dictionary<string, DeepSkyObject> _objectsById;
-    private readonly Dictionary<string, DeepSkyOutline[]> _outlinesById;
-    private readonly DeepSkyTombstone[] _tombstones;
+    private readonly Dictionary<string, ReadOnlyCollection<DeepSkyOutline>> _outlinesById;
+    private readonly ReadOnlyCollection<DeepSkyTombstone> _tombstones;
     private readonly Dictionary<string, DeepSkyTombstone> _tombstonesById;
-    private readonly Dictionary<string, DeepSkyAlias[]> _aliases;
+    private readonly Dictionary<string, ReadOnlyCollection<DeepSkyAlias>> _aliases;
 
     /// <summary>Validates and freezes a deep-sky collection.</summary>
     /// <exception cref="InvalidDataException">The collection breaks an invariant.</exception>
@@ -258,9 +261,10 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         ArgumentNullException.ThrowIfNull(outlines);
         Semantics = ValidateSemantics(semantics);
 
-        _objects = objects.ToArray();
-        Array.Sort(_objects, static (left, right) => string.CompareOrdinal(left?.Id, right?.Id));
-        _objectsById = new Dictionary<string, DeepSkyObject>(_objects.Length, StringComparer.Ordinal);
+        var objectRows = objects.ToArray();
+        Array.Sort(objectRows, static (left, right) => string.CompareOrdinal(left?.Id, right?.Id));
+        _objects = Array.AsReadOnly(objectRows);
+        _objectsById = new Dictionary<string, DeepSkyObject>(objectRows.Length, StringComparer.Ordinal);
         var designations = new HashSet<string>(StringComparer.Ordinal);
         var displayNames = new HashSet<string>(StringComparer.Ordinal);
         var caldwell = new HashSet<int>();
@@ -278,9 +282,10 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             }
         }
 
-        _tombstones = tombstones.ToArray();
-        Array.Sort(_tombstones, static (left, right) => string.CompareOrdinal(left?.Id, right?.Id));
-        _tombstonesById = new Dictionary<string, DeepSkyTombstone>(_tombstones.Length, StringComparer.Ordinal);
+        var tombstoneRows = tombstones.Select(FreezeTombstone).ToArray();
+        Array.Sort(tombstoneRows, static (left, right) => string.CompareOrdinal(left.Id, right.Id));
+        _tombstones = Array.AsReadOnly(tombstoneRows);
+        _tombstonesById = new Dictionary<string, DeepSkyTombstone>(tombstoneRows.Length, StringComparer.Ordinal);
         foreach (var item in _tombstones)
         {
             ValidateTombstone(item);
@@ -311,7 +316,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     public int OutlineObjectCount => _outlinesById.Count;
 
     /// <summary>Gets the number of (object, level) outlines.</summary>
-    public int OutlineCount => _outlinesById.Values.Sum(static item => item.Length);
+    public int OutlineCount => _outlinesById.Values.Sum(static item => item.Count);
 
     /// <summary>Gets the number of outline rings.</summary>
     public int OutlineRingCount => _outlinesById.Values.Sum(static item => item.Sum(static outline => outline.Rings.Count));
@@ -331,14 +336,14 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     public IReadOnlyList<DeepSkyOutline> GetOutlines(string objectId)
     {
         ArgumentNullException.ThrowIfNull(objectId);
-        return _outlinesById.TryGetValue(objectId, out var outlines) ? outlines : [];
+        return _outlinesById.TryGetValue(objectId, out var outlines) ? outlines : ReadOnlyCollection<DeepSkyOutline>.Empty;
     }
 
     /// <inheritdoc />
     public IReadOnlyList<DeepSkyAlias> FindByAlias(string designation)
     {
         ArgumentNullException.ThrowIfNull(designation);
-        return _aliases.TryGetValue(designation.Trim(), out var matches) ? matches : [];
+        return _aliases.TryGetValue(designation.Trim(), out var matches) ? matches : ReadOnlyCollection<DeepSkyAlias>.Empty;
     }
 
     /// <inheritdoc />
@@ -402,7 +407,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         }
     }
 
-    private static Dictionary<string, DeepSkyAlias[]> BuildAliasIndex(
+    private static Dictionary<string, ReadOnlyCollection<DeepSkyAlias>> BuildAliasIndex(
         IEnumerable<DeepSkyAlias> aliases,
         Dictionary<string, DeepSkyObject> objects,
         out int count)
@@ -454,22 +459,21 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         }
 
         count = rows.Length;
-        var result = new Dictionary<string, DeepSkyAlias[]>(grouped.Count, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, ReadOnlyCollection<DeepSkyAlias>>(grouped.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (alias, matches) in grouped)
         {
-            result.Add(alias, matches.ToArray());
+            result.Add(alias, Freeze(matches));
         }
         return result;
     }
 
-    private static Dictionary<string, DeepSkyOutline[]> BuildOutlineIndex(
+    private static Dictionary<string, ReadOnlyCollection<DeepSkyOutline>> BuildOutlineIndex(
         IEnumerable<DeepSkyOutline> outlines,
         Dictionary<string, DeepSkyObject> objects)
     {
         var grouped = new Dictionary<string, List<DeepSkyOutline>>(StringComparer.Ordinal);
-        foreach (var item in outlines)
+        foreach (var item in outlines.Select(FreezeOutline))
         {
-            ArgumentNullException.ThrowIfNull(item);
             if (item.ObjectId is null || !objects.ContainsKey(item.ObjectId) ||
                 item.Level is < DeepSkyOutline.WidestLevel or > DeepSkyOutline.NarrowestLevel ||
                 item.Rings is not { Count: > 0 } || item.Rings.Any(static ring => !IsValidRing(ring)))
@@ -487,14 +491,32 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             levels.Add(item);
         }
 
-        var result = new Dictionary<string, DeepSkyOutline[]>(grouped.Count, StringComparer.Ordinal);
+        var result = new Dictionary<string, ReadOnlyCollection<DeepSkyOutline>>(grouped.Count, StringComparer.Ordinal);
         foreach (var (id, levels) in grouped)
         {
             levels.Sort(static (left, right) => left.Level.CompareTo(right.Level));
-            result.Add(id, levels.ToArray());
+            result.Add(id, Freeze(levels));
         }
         return result;
     }
+
+    // The copies are validated, so nothing a caller still holds can change what passed validation.
+    private static DeepSkyTombstone FreezeTombstone(DeepSkyTombstone item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        return item.Candidates is null ? item : item with { Candidates = Freeze(item.Candidates) };
+    }
+
+    private static DeepSkyOutline FreezeOutline(DeepSkyOutline item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        return item.Rings is null ? item : item with { Rings = Freeze(item.Rings.Select(FreezeRing)) };
+    }
+
+    private static DeepSkyOutlineRing FreezeRing(DeepSkyOutlineRing ring)
+        => ring?.Points is null ? ring! : ring with { Points = Freeze(ring.Points) };
+
+    private static ReadOnlyCollection<T> Freeze<T>(IEnumerable<T> values) => new(values.ToArray());
 
     private static bool IsValidRing(DeepSkyOutlineRing ring)
     {
