@@ -3708,9 +3708,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(3552, raw.Descriptor.Layout.Height);
             Assert.AreEqual(25_233_408L, raw.Descriptor.Layout.ByteLength);
             Assert.AreEqual(CameraPixelFormat.BayerRggb16, raw.Descriptor.Layout.PixelFormat);
-            var sceneObjects = raw.Scene?.Objects
-                ?? throw new InvalidDataException("The measured W6 projected scene is missing.");
-            var segmentEndpointIds = (raw.Scene.Segments ?? [])
+            var retainedScene = ReadRetainedProjectedScene(root, raw, productManifests.Values);
+            var sceneObjects = retainedScene.Objects;
+            var segmentEndpointIds = retainedScene.Segments
                 .SelectMany(static segment => new[] { segment.FromObjectId, segment.ToObjectId })
                 .ToHashSet(StringComparer.Ordinal);
             var nonEndpointObjects = sceneObjects.Where(item => !segmentEndpointIds.Contains(item.Id)).ToArray();
@@ -3841,6 +3841,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var scene = raw.Manifest.Scene ?? throw new InvalidDataException("The W6 scene is missing.");
         var sceneUtc = scene.SceneUtc
             ?? throw new InvalidDataException("The W6 scene UTC is missing.");
+        var retainedScene = ReadRetainedProjectedScene(
+            root, raw.Manifest, ReadProductManifests(root, ExpectedAgentId).Select(static item => item.Manifest));
         var rawPayload = await File.ReadAllBytesAsync(Path.Combine(root, raw.Manifest.RelativeArtifactPath)).ConfigureAwait(false);
         var annotated = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Capture.CaptureId == captureId &&
@@ -3858,12 +3860,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         foreach (var expected in fixtureRoot.GetProperty("objects").EnumerateArray())
         {
             var rowId = expected.GetProperty("rowId").GetString()!;
-            var projected = scene.Objects!.Single(item => item.Id == rowId);
+            var projected = retainedScene.Objects.Single(item => item.Id == rowId);
             Assert.AreEqual(expected.GetProperty("name").GetString(), projected.DisplayName);
             var expectedPixel = expected.GetProperty("expectedPixel");
             var expectedX = expectedPixel.GetProperty("x").GetDouble();
             var expectedY = expectedPixel.GetProperty("y").GetDouble();
-            var projectedError = Distance(projected.PixelX, projected.PixelY, expectedX, expectedY);
+            var projectedError = Distance(projected.Pixel.X, projected.Pixel.Y, expectedX, expectedY);
             Assert.IsLessThanOrEqualTo(projectedTolerance, projectedError, rowId);
             var centroid = CalculateRawCentroid(
                 rawPayload,
@@ -3890,8 +3892,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 rowId,
                 expectedX,
                 expectedY,
-                projected.PixelX,
-                projected.PixelY,
+                projected.Pixel.X,
+                projected.Pixel.Y,
                 projectedError,
                 centroid.X,
                 centroid.Y,
@@ -4985,13 +4987,28 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var manifests = ReadManifests(root, ExpectedMonoAgentId)
             .GroupBy(static item => item.Manifest.Descriptor.Artifact.ArtifactId)
             .ToDictionary(static group => group.Key, static group => group.First().Manifest);
+        var productManifests = ReadProductManifests(root, ExpectedMonoAgentId)
+            .GroupBy(static item => item.Manifest.Artifact.ArtifactId)
+            .ToDictionary(static group => group.Key, static group => group.First().Manifest);
         var evidence = new List<MonoReadoutEvidence>(captures.Length);
         foreach (var capture in captures)
         {
-            Assert.HasCount(4, capture.ProcessingNodes);
+            // ProjectedScene, preview, annotation, storage and telemetry: #1055 added the ProjectedScene node
+            // (730d6ac8, cameraagent.standalone-w6-mono8.json) that the annotation now requires.
+            Assert.HasCount(5, capture.ProcessingNodes);
             Assert.IsFalse(capture.ProcessingNodes.Any(static node => node.NodeId is "calibration" or "rolling"));
             foreach (var artifact in capture.Artifacts)
             {
+                if (productManifests.TryGetValue(artifact.ArtifactId, out var product))
+                {
+                    // A durable processing product carries no rig or processing profile; those are asserted on
+                    // the raw ingress manifest it derives from.
+                    Assert.AreEqual(capture.CaptureId, product.Capture.CaptureId);
+                    var productPayload = File.ReadAllBytes(Path.Combine(root, product.RelativeArtifactPath));
+                    Assert.AreEqual(product.Artifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(productPayload)));
+                    Assert.AreEqual(product.ByteLength, productPayload.LongLength);
+                    continue;
+                }
                 Assert.IsTrue(manifests.TryGetValue(artifact.ArtifactId, out var manifest));
                 var descriptor = manifest.Descriptor;
                 Assert.AreEqual(ExpectedMonoRigSha256, descriptor.Profiles.Rig.Sha256);
@@ -5029,8 +5046,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(480, readout.RoiHeight);
             Assert.AreEqual(TimeSpan.FromSeconds(1), raw.Descriptor.Controls.EffectiveExposure);
             Assert.AreEqual(150d, raw.Descriptor.Controls.EffectiveGain);
-            var sceneObjects = raw.Scene?.Objects
-                ?? throw new InvalidDataException("The measured Mono8 projected scene is missing.");
+            var sceneObjects = ReadRetainedProjectedScene(root, raw, productManifests.Values).Objects;
             Assert.IsLessThanOrEqualTo(300, sceneObjects.Count);
             Assert.IsTrue(sceneObjects.All(static item => item.Magnitude <= 6.5));
             var admission = raw.Descriptor.CycleEvidence?.ScheduleAdmission
@@ -5059,6 +5075,39 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 raw.Descriptor.Location!));
         }
         return evidence;
+    }
+
+    /// <summary>
+    /// Since #1055 (730d6ac8) a scene-bearing raw manifest is compact: ArtifactManifestV2.Validate rejects inline
+    /// geometry when the scene requires a projected scene, and RawCaptureIngress refuses a new capture that is not
+    /// compact. The geometry lives in the capture's retained projected-scene product, which must be the one product
+    /// of the declared schema that is bound to this raw artefact.
+    /// </summary>
+    private static ProjectedSceneV1 ReadRetainedProjectedScene(
+        string root,
+        ArtifactManifestV2 raw,
+        IEnumerable<IDurableProcessingProductManifest> products)
+    {
+        var provenance = raw.Scene ?? throw new InvalidDataException("The raw scene provenance is missing.");
+        Assert.IsTrue(provenance.RequiresProjectedScene);
+        Assert.IsNull(provenance.Objects);
+        Assert.IsNull(provenance.Segments);
+        var captureId = raw.Descriptor.Capture.CaptureId;
+        var artifactId = raw.Descriptor.Artifact.ArtifactId;
+        var bound = new List<ProjectedSceneV1>();
+        foreach (var product in products.Where(product =>
+                     product.Capture.CaptureId == captureId &&
+                     string.Equals(product.ProductSchemaVersion, provenance.ProjectedSceneSchemaVersion, StringComparison.Ordinal)))
+        {
+            var parsed = ProjectedSceneJson.Parse(File.ReadAllBytes(Path.Combine(root, product.RelativeArtifactPath)));
+            Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+            if (parsed.Scene!.Source.ArtifactId == artifactId && parsed.Scene.Source.CaptureId == captureId)
+            {
+                bound.Add(parsed.Scene);
+            }
+        }
+        Assert.HasCount(1, bound, $"Capture {captureId:D} must retain exactly one projected scene bound to its raw artefact.");
+        return bound[0];
     }
 
     private static IEnumerable<ProductManifestObservation> ReadProductManifests(string root, string agentId)
