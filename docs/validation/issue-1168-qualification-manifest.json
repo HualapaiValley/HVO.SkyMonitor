@@ -140,7 +140,7 @@
     "sections": ["tuning", "runs"],
     "cell": {},
     "order": "Both revisions are built in Release first; then, for each #1126 manifest run in order, the base process runs and then the head process, in one heavy-lock session, each with HVO_EVIDENCE_REVISION set to its own revision.",
-    "pass": "A pair passes only when every condition holds: both processes complete with every listed report present; the base's deterministic failures equal exactly the set baseFailures pins for that pair (none for an unlisted pair); the head's deterministic failures equal the base's, with the same case IDs and reason codes; each process outcome satisfies processRule; and every differing report leaf is classified below. A base that records any other deterministic failure, or whose outcome processRule does not explain, invalidates the run as environment or setup: the pair is invalid, the pack is incomplete, and it is not a continuity pass. A resourceFailures entry is timing, not output: with no src/ change, one that appears or disappears between revisions is a classified timing difference, recorded with both revisions' elapsed seconds, never a continuity failure. Any deterministic failure appearing or disappearing, any unclassified leaf, and any solver, measurement, mapping, uncertainty or identity-hash difference fails continuity.",
+    "pass": "A pair passes only when every condition holds: both processes complete with every listed report present; the base's deterministic failures equal exactly the set baseFailures pins for that pair (none for an unlisted pair); the head's deterministic failures equal the base's, with the same case IDs and reason codes; each process outcome satisfies processRule; and every differing report leaf is classified below. A base that records any other deterministic failure, or whose outcome processRule does not explain, invalidates the run as environment or setup: the pair is invalid, the pack is incomplete, and it is not a continuity pass. A resourceFailures entry is timing, not output: with no src/ change, one that appears or disappears between revisions is a classified timing difference, recorded with both revisions' elapsed seconds, and fails continuity only as a head-only allocation miss under resourceFailures.allocationTripwire. Any deterministic failure appearing or disappearing, any head-only allocation miss, any unclassified leaf, any legacy difference, and any solver, measurement, mapping, uncertainty or identity-hash difference fails continuity.",
     "identityLeaves": ["revision", "binaryRevision"],
     "runVaryingKeys": [
       "acquisitionMilliseconds", "allocatedBytes", "allocatedBytesPerPixel", "captureMedianMs", "captureMs", "captureP95Ms", "cpuMs",
@@ -156,17 +156,29 @@
           "finalExposureQualification": ["pending-522-1106", "virtual-astrometry-long-exposure-v1"]
         },
         "added": ["exposureSeconds", "measurer", "variant", "renderedTruthStars", "roundTrips", "cases", "cells", "unsupported", "negativeControl"],
-        "scorer": ["reports.N.score"]
+        "scorer": []
       },
       "virtual-measured-stars.json": {
         "changed": { "schema": ["virtual-measured-stars-v1", "virtual-measured-stars-v2"] },
         "added": ["exposureSeconds", "v1ComparisonGated", "tolerances.trailMetadata", "reports.N.truncatedTruthTrails", "reports.N.trailMetadata"],
-        "scorer": ["reports.N.eligibleTruthStars", "reports.N.v1.baseline", "reports.N.v2.candidate", "reports.N.v2.missedEligibleReasonCounts"]
+        "legacyMirrors": ["eligibleTruthStars", "v1.baseline", "v2.candidate", "v2.missedEligibleReasonCounts"],
+        "scorer": [
+          "reports.N.eligibleTruthStars",
+          "reports.N.v1.baseline.eligibleStars", "reports.N.v1.baseline.recovered", "reports.N.v1.baseline.recall",
+          "reports.N.v2.candidate.eligibleStars", "reports.N.v2.candidate.recovered", "reports.N.v2.candidate.recall",
+          "reports.N.v2.missedEligibleReasonCounts.background-unavailable", "reports.N.v2.missedEligibleReasonCounts.image-edge",
+          "reports.N.v2.missedEligibleReasonCounts.extended-region", "reports.N.v2.missedEligibleReasonCounts.masked-aperture",
+          "reports.N.v2.missedEligibleReasonCounts.saturated-excessive", "reports.N.v2.missedEligibleReasonCounts.hot-pixel-or-cosmic-ray",
+          "reports.N.v2.missedEligibleReasonCounts.too-broad", "reports.N.v2.missedEligibleReasonCounts.trail-too-long",
+          "reports.N.v2.missedEligibleReasonCounts.centroid-unconverged", "reports.N.v2.missedEligibleReasonCounts.blended",
+          "reports.N.v2.missedEligibleReasonCounts.crowded", "reports.N.v2.missedEligibleReasonCounts.low-snr",
+          "reports.N.v2.missedEligibleReasonCounts.no-candidate"
+        ]
       },
       "virtual-optical-calibration.json": {
         "changed": {},
         "added": ["exposureSeconds"],
-        "scorer": ["reports.N.withheldScores.N.score"]
+        "scorer": []
       },
       "virtual-astrometric-uncertainty.json": {
         "changed": {},
@@ -181,8 +193,24 @@
         "scorer": []
       }
     },
-    "classification": "Array indices collapse to N. Before classification every failures list is split by resourceFailures. A leaf present on both sides with a different value is identity, run-varying (its final key is listed), resource-outcome (in a resourceFailures list), declared-changed (exact base and head values) or scorer-by-design (under a scorer prefix). A leaf present on one side only must be head-only under an added prefix, a resource-outcome, or under a scorer prefix. Scorer-by-design and resource-outcome leaves are reported, not failed: the scorers became trail-aware by design, and resource outcomes are timing.",
+    "classification": "Array indices collapse to N. Before classification every failures list is split by resourceFailures, and a report with legacyMirrors gains a synthesized base legacy block (see legacy). A leaf present on both sides with a different value is identity, run-varying (its final key is listed), resource-outcome (in a resourceFailures list), declared-changed (exact base and head values) or scorer-by-design. Scorer-by-design is enumerated, never a prefix: the leaf's collapsed path is listed exactly under its report's scorer, and its legacy counterpart, the same exact path with legacy inserted after the report index, does not differ: it is identical on both sides, or absent from both because the missed-reason counts list only the reasons that occur. A leaf present on one side only must be head-only under an added prefix, a resource-outcome, or scorer-by-design by that rule. Any differing or one-sided leaf under reports.N.legacy is unclassified. Scorer-by-design and resource-outcome leaves are reported, not failed: a scorer-by-design leaf is a trail-aware eligibility, recovery or recall count for a report whose #1126 point-rule counterpart reproduces the base exactly, and resource outcomes are timing.",
+    "legacy": {
+      "rule": "The measured-stars head report carries reports.N.legacy: eligibleTruthStars, v1.baseline, v2.candidate and v2.missedEligibleReasonCounts computed by the #1126 point rule, verbatim from base 0639e27d. Over the visible stars (trails whose mid-exposure sample projects), in the same order, a star is legacy-eligible when its mid-exposure pixel is more than 6 px inside the nominal frame border, inside a circular aperture by more than 12 px (IsApertureInterior margin 12), and more than 12 px from every other visible star's mid-exposure pixel; legacy recovery is a detection within 1.5 px of that pixel; the scores and missed reasons are the base Score and MissedReasons. The base report predates the block, so the runner synthesizes the base's reports[i].legacy from that report's own legacyMirrors paths and refuses a base that already has one. Legacy equality is exact: any difference fails the pair, and no legacy leaf or case is ever dropped.",
+      "invariants": [
+        "1. Every trail-eligible star is legacy-eligible.",
+        "2. For v1 and for v2, a trail-eligible star that the measurer recovers at its mid-exposure point (a detection within 1.5 px) is recovered on its trail (a detection within 1.5 px of the trail polyline).",
+        "3. A reclassified star, legacy-eligible but not trail-eligible, has a geometric cause within its reach. Its reach r is the largest pixel distance from its mid-exposure pixel to any of its nine samples above the horizon, projected without image-circle or readout clipping, plus epsilon 1e-9 px. At least one must hold: its mid-exposure pixel fails the point rule's interior test with both margins widened by r (more than 6 + r px inside the nominal frame border, inside a circular aperture by more than 12 + r px); another visible star's mid-exposure pixel lies within 12 + r + that star's reach; a sample lies at or below the horizon; or a sample above the horizon lies outside the projection's supported domain."
+      ],
+      "invariantScope": "The measured-stars harness checks the three invariants at every exposure, in every pack that runs it, including continuity, tuning, final and the revision rerun. A violation is a harness failure '<caseId>: invariant <n>: ...', matches no resourceFailures pattern, and fails its process and pack. The invariants may not be narrowed after evidence."
+    },
     "resourceFailures": {
+      "allocationPatterns": [
+        "^[^:]+: v2 allocated [0-9.,]+ B/pixel$",
+        "^window pressure: allocated [0-9.,]+ B/pixel$",
+        "^[^:]+: allocated [0-9.,]+ MiB exceeds [0-9.,]+ MiB$",
+        "^[^:]+: estimator allocated [0-9]+ bytes$"
+      ],
+      "allocationTripwire": "A head-only allocation miss fails the pair. Within one report of a pair, every resource failure on the head, in any failures list, that matches an allocationPatterns entry needs a base resource failure in the same report matching the same entry with the same subject, the text before the first colon. One without is recorded in the pair's allocationTripwire with its report and message, and the pair fails with reason head-only-allocation-miss. Working-set and time misses are listed, never failed. allocationPatterns is a subset of patterns.",
       "rule": "A report failure matching one of these anchored patterns is a timing or resource outcome: a measured elapsed time, allocation or working set over its declared budget. Each failures list is split before classification, its matching entries moving to a sibling resourceFailures list so the indices of deterministic failures never shift. The patterns cover the pixel solve time budget; the measured-stars time-ratio, allocation and working-set budgets; the resources warm-solve, capture, detection and process-peak budgets; and the calibration and uncertainty time, allocation and working-set budgets. None matches a solve mode, reason code, association, accuracy, coverage, count, mapping or round-trip failure.",
       "patterns": [
         "^[^:]+: solve exceeded declared cold/warm time budget$",

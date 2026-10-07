@@ -192,6 +192,67 @@ public sealed class VirtualLongExposureFixtureTests
         }
     }
 
+    [TestMethod]
+    public void Project_UnclippedKeepsTheClippedArithmeticAndExtendsPastTheReadout()
+    {
+        var equidistant = VirtualAstrometryFixture.Families.Single(f => f.Name == "equidistant");
+        var profiles = VirtualAstrometryFixture.Profiles(1, equidistant, VirtualAstrometryFixture.Variants[0]);
+        var native = profiles.Single(p => p.Name == "mono-native").Config.Rig;
+        var roiBin = profiles.Single(p => p.Name == "mono-roi-bin2").Config.Rig;
+        // Inside the image circle but above the 240,96 ROI origin: the binned ROI readout clips it.
+        var outside = VirtualAstrometryReference.Unproject(native, new(968, 50))!.Value;
+        Assert.IsNull(VirtualAstrometryReference.Project(roiBin, outside));
+        var unclipped = VirtualAstrometryReference.Project(roiBin, outside, clip: false)!.Value;
+        Assert.AreEqual((968 - 240) / 2d, unclipped.X, 1e-6);
+        Assert.AreEqual((50 - 96) / 2d, unclipped.Y, 1e-6);
+        var inside = VirtualAstrometryReference.Unproject(native, new(900, 600))!.Value;
+        Assert.AreEqual(VirtualAstrometryReference.Project(roiBin, inside), VirtualAstrometryReference.Project(roiBin, inside, clip: false));
+        Assert.AreEqual(VirtualAstrometryReference.Project(native, inside), VirtualAstrometryReference.Project(native, inside, clip: true));
+    }
+
+    [TestMethod]
+    public void InvariantFailures_AcceptOnlyGeometricReclassificationAndNameEveryViolation()
+    {
+        // A 100 px frame with the #1126 border margin, widened as the invariant widens it.
+        static bool Interior(PixelPoint p, double widen) => p.X > 6 + widen && p.Y > 6 + widen && p.X < 94 - widen && p.Y < 94 - widen;
+        (string, bool, bool)[] both = [("v1", true, true), ("v2", true, true)];
+        VirtualMeasuredStarQualificationTests.ReclassificationStar Candidate(string id, double x, double y, double reach, bool legacy, bool trail,
+            bool belowHorizon = false, bool outsideDomain = false, (string, bool, bool)[]? recovered = null) =>
+            new(id, new(x, y), reach, belowHorizon, outsideDomain, legacy, trail, recovered ?? both);
+
+        VirtualMeasuredStarQualificationTests.ReclassificationStar[] explained =
+        [
+            Candidate("whole", 30, 30, 2, legacy: true, trail: true),
+            Candidate("border", 8, 60, 2, legacy: true, trail: false),
+            Candidate("pair-a", 60, 30, 1, legacy: true, trail: false),
+            Candidate("pair-b", 60, 44, 1, legacy: true, trail: false),
+            Candidate("horizon", 80, 80, 0.5, legacy: true, trail: false, belowHorizon: true),
+            Candidate("domain", 30, 80, 0.5, legacy: true, trail: false, outsideDomain: true),
+            Candidate("never", 50, 3, 0, legacy: false, trail: false)
+        ];
+        Assert.IsEmpty(VirtualMeasuredStarQualificationTests.InvariantFailures("c", explained, Interior),
+            "Border within the reach (inclusive), mids within 12 + both reaches, the horizon and the domain edge all explain a loss.");
+
+        VirtualMeasuredStarQualificationTests.ReclassificationStar[] defects =
+        [
+            Candidate("widened", 70, 20, 2, legacy: true, trail: true, recovered: [("v1", true, true), ("v2", true, false)]),
+            Candidate("gained", 50, 3, 0, legacy: false, trail: true),
+            Candidate("border", 8.5, 60, 2, legacy: true, trail: false),
+            // Isolation applied at 24 px instead of 12: 20 px apart with 1 px reaches is no geometric cause.
+            Candidate("far-a", 40, 70, 1, legacy: true, trail: false),
+            Candidate("far-b", 60, 70, 1, legacy: true, trail: false)
+        ];
+        string[] expected =
+        [
+            "c: invariant 2: v2 recovers widened at its mid-exposure point but not on its trail",
+            "c: invariant 1: gained is trail-eligible but not legacy-eligible",
+            "c: invariant 3: border lost eligibility with no geometric cause within its 2.000 px reach",
+            "c: invariant 3: far-a lost eligibility with no geometric cause within its 1.000 px reach",
+            "c: invariant 3: far-b lost eligibility with no geometric cause within its 1.000 px reach"
+        ];
+        CollectionAssert.AreEqual(expected, VirtualMeasuredStarQualificationTests.InvariantFailures("c", defects, Interior));
+    }
+
     private static VirtualAstrometryReference.TruthTrail Trail(PixelPoint?[] samples) => new(Star, samples);
 
     private static PixelPoint?[] Line(PixelPoint start, PixelPoint end) =>

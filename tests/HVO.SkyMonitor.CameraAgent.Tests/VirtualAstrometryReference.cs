@@ -140,7 +140,13 @@ internal static class VirtualAstrometryReference
     /// </summary>
     internal static bool IsSupportedIdealRadius(double ideal, double k1) => 1 + 3 * k1 * ideal * ideal >= .5;
     internal static bool IsCircular(CameraRigConfig rig) => Model(rig) != ProjectionModel.Perspective;
-    internal static PixelPoint? Project(CameraRigConfig rig, Vector enu)
+    internal static PixelPoint? Project(CameraRigConfig rig, Vector enu) => Project(rig, enu, clip: true);
+
+    /// <summary>
+    /// Readout coordinates of <paramref name="enu"/>. With <paramref name="clip"/> false the image circle and readout bounds
+    /// are not applied, so the result can lie outside the frame; only the projection's supported domain returns null.
+    /// </summary>
+    internal static PixelPoint? Project(CameraRigConfig rig, Vector enu, bool clip)
     {
         var basis = Pose(rig); var model = Model(rig);
         var qx = Vector.Dot(enu, basis.Right); var qy = Vector.Dot(enu, basis.Up); var qz = Vector.Dot(enu, basis.Forward);
@@ -148,12 +154,12 @@ internal static class VirtualAstrometryReference
         if (IdealRadius(model, theta) is not { } g || !IsSupportedIdealRadius(g, rig.Optics.RadialDistortionK1)) return null;
         // Family normalized radius g(theta), scaled by the one-coefficient radial term 1 + k1 g^2.
         var distance = NativeFocal(rig) * g * (1 + rig.Optics.RadialDistortionK1 * g * g);
-        if (model != ProjectionModel.Perspective && distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
+        if (clip && model != ProjectionModel.Perspective && distance > rig.Optics.ImageCircleRadiusPixels!.Value) return null;
         var x = rig.Optics.PrincipalPointX!.Value + (length < 1e-12 ? 0 : distance * qx / length);
         var y = rig.Optics.PrincipalPointY!.Value - (length < 1e-12 ? 0 : distance * qy / length);
         var readout = rig.Readout!;
         x = (x - readout.Roi.X) / readout.BinX; y = (y - readout.Roi.Y) / readout.BinY;
-        return x >= 0 && y >= 0 && x < readout.Roi.Width / readout.BinX && y < readout.Roi.Height / readout.BinY ? new(x, y) : null;
+        return !clip || x >= 0 && y >= 0 && x < readout.Roi.Width / readout.BinX && y < readout.Roi.Height / readout.BinY ? new(x, y) : null;
     }
     internal static Vector? Unproject(CameraRigConfig rig, PixelPoint pixel)
     {
@@ -316,10 +322,13 @@ internal static class VirtualAstrometryReference
     internal static TruthTrail[] Trails(CameraRigConfig rig, DateTimeOffset sceneUtc, TimeSpan exposure, IEnumerable<CelestialCatalogObject> stars) =>
         [.. stars.Select(star => new TruthTrail(star, [.. Enumerable.Range(0, TrailSamples).Select(k =>
         {
-            var utc = k == TrailSamples / 2 ? sceneUtc : sceneUtc + exposure * ((k - TrailSamples / 2) / (double)(TrailSamples - 1));
-            var ray = ToEnu(J2000(star), utc, VirtualAstrometryFixture.Observer);
+            var ray = ToEnu(J2000(star), SampleUtc(sceneUtc, exposure, k), VirtualAstrometryFixture.Observer);
             return ray.Z > 0 ? Project(rig, ray) : null;
         })])).Where(trail => trail.Visible)];
+
+    /// <summary>The instant of trail sample <paramref name="k"/>; the middle sample is exactly the scene (mid-exposure) time.</summary>
+    internal static DateTimeOffset SampleUtc(DateTimeOffset sceneUtc, TimeSpan exposure, int k) =>
+        k == TrailSamples / 2 ? sceneUtc : sceneUtc + exposure * ((k - TrailSamples / 2) / (double)(TrailSamples - 1));
 
     /// <summary>
     /// Scores one accepted mapping against truth trails. Each association's nearest source is its nearest solver-catalog

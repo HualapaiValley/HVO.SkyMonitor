@@ -79,6 +79,7 @@ public sealed class VirtualMeasuredStarQualificationTests
                 var nominal = VirtualAstrometryFixture.NominalCalibration(profile);
                 var caseId = $"{month:D2}-{profile.Name}";
                 var truth = Truth(profile.Config.Rig, sceneUtc, exposure, catalog, nominal);
+                var legacy = LegacyTruth(profile.Config.Rig, truth, nominal);
 
                 var (v1, v1Resources) = Sample(() => VirtualAstrometryFixture.Measure(input, nominal));
                 var v1Ms = v1Resources.WallMs;
@@ -92,6 +93,12 @@ public sealed class VirtualMeasuredStarQualificationTests
                 var candidate = Score(truth, v2.Detections, v2Solved);
                 var missed = MissedReasons(truth, v2);
                 var trails = TrailMetadata(truth, v2);
+                var legacyBaseline = LegacyScore(legacy, v1.Detections, v1Solved);
+                var legacyCandidate = LegacyScore(legacy, v2.Detections, v2Solved);
+                var legacyMissed = LegacyMissedReasons(legacy, v2);
+                var width = nominal.Projection.WidthPixels; var height = nominal.Projection.HeightPixels;
+                failures.AddRange(InvariantFailures(caseId, Reclassification(profile.Config.Rig, sceneUtc, exposure, truth, legacy,
+                    [("v1", v1.Detections), ("v2", v2.Detections)]), (pixel, widen) => PointInterior(profile.Config.Rig, width, height, pixel, widen)));
                 if (!v2Solved.Assessment.HasMeasuredMapping) failures.Add($"{caseId}: v2 {v2Solved.Assessment.Reason}");
                 if (candidate.FalseAssociations > 0) failures.Add($"{caseId}: v2 {candidate.FalseAssociations} false associations");
                 if (candidate.CentroidRmsPixels > MaximumCentroidRmsPixels ||
@@ -124,6 +131,13 @@ public sealed class VirtualMeasuredStarQualificationTests
                     eligibleTruthStars = truth.Count(t => t.Eligible),
                     truncatedTruthTrails = truth.Count(t => t.Trail.Truncated),
                     trailMetadata = trails,
+                    // The #1126 point-rule scores, so continuity can require them to reproduce the base exactly.
+                    legacy = new
+                    {
+                        eligibleTruthStars = legacy.Count(t => t.Eligible),
+                        v1 = new { baseline = legacyBaseline },
+                        v2 = new { candidate = legacyCandidate, missedEligibleReasonCounts = legacyMissed }
+                    },
                     v1 = new
                     {
                         algorithm = StellarDetector.AlgorithmVersion,
@@ -281,6 +295,107 @@ public sealed class VirtualMeasuredStarQualificationTests
         return [.. visible.Select(v => new TruthStar(v.Star.Id, v.Mid!.Value,
             !v.Truncated && v.Samples.All(sample => Interior(sample!.Value)) &&
             visible.All(o => ReferenceEquals(o, v) || o.BoundsGapTo(v) > 12 || v.Samples.All(sample => o.DistanceTo(sample!.Value) > 12)), v))];
+    }
+
+    // The #1126 point rule, verbatim from base 0639e27d, over the same visible stars in the same order: each star's
+    // mid-exposure sample is the base's scene-time projection. Only continuity and the invariants read it.
+    private static TruthStar[] LegacyTruth(CameraRigConfig rig, TruthStar[] truth, AstrometricCalibration nominal)
+    {
+        var visible = truth.Select(t => (t.Id, t.Pixel, t.Trail)).ToArray();
+        var width = nominal.Projection.WidthPixels; var height = nominal.Projection.HeightPixels;
+        return [.. visible.Select(v => new TruthStar(v.Id, v.Pixel,
+            v.Pixel.X > 6 && v.Pixel.Y > 6 && v.Pixel.X < width - 6 && v.Pixel.Y < height - 6 &&
+            VirtualAstrometryReference.IsApertureInterior(rig, v.Pixel, 12) &&
+            visible.All(o => o.Id == v.Id || VirtualAstrometryReference.Distance(o.Pixel, v.Pixel) > 12), v.Trail))];
+    }
+
+    private static SortedDictionary<string, int> LegacyMissedReasons(TruthStar[] truth, StellarMeasurementResult measured)
+    {
+        var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        foreach (var star in truth.Where(t => t.Eligible && !measured.Detections.Any(d => VirtualAstrometryReference.Distance(d.Pixel, t.Pixel) < 1.5)))
+        {
+            var reason = measured.Exclusions.Where(e => VirtualAstrometryReference.Distance(e.Peak, star.Pixel) < 2)
+                .MinBy(e => VirtualAstrometryReference.Distance(e.Peak, star.Pixel))?.ReasonCode ?? "no-candidate";
+            counts[reason] = counts.GetValueOrDefault(reason) + 1;
+        }
+        return counts;
+    }
+
+    private static MeasuredStarScore LegacyScore(TruthStar[] truth, IReadOnlyList<StellarDetection> detections, AstrometricSolveResult solved)
+    {
+        var eligible = truth.Where(t => t.Eligible).ToArray();
+        var recovered = eligible.Count(t => detections.Any(d => VirtualAstrometryReference.Distance(d.Pixel, t.Pixel) < 1.5));
+        var byIndex = detections.ToDictionary(d => d.Index);
+        var byId = truth.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        var errors = new List<double>(); var falseAssociations = 0;
+        foreach (var association in solved.Associations)
+        {
+            var pixel = byIndex[association.DetectionIndex].Pixel;
+            var nearest = truth.MinBy(t => VirtualAstrometryReference.Distance(t.Pixel, pixel))!;
+            if (nearest.Id != association.CatalogId || !byId.ContainsKey(association.CatalogId)) { falseAssociations++; continue; }
+            errors.Add(VirtualAstrometryReference.Distance(pixel, nearest.Pixel));
+        }
+        var sorted = errors.Order().ToArray();
+        return new(eligible.Length, recovered, eligible.Length == 0 ? 0 : recovered / (double)eligible.Length, solved.Associations.Count,
+            falseAssociations, sorted.Length == 0 ? double.NaN : Math.Sqrt(sorted.Sum(e => e * e) / sorted.Length),
+            sorted.Length == 0 ? double.NaN : sorted[(int)Math.Ceiling(.95 * sorted.Length) - 1]);
+    }
+
+    /// <summary>
+    /// One visible star's eligibility under both rules, with the geometry that can explain a difference. The reach is the
+    /// largest distance from the mid-exposure pixel to any sample above the horizon, projected without image-circle or
+    /// readout clipping; a sample above the horizon outside the projection's supported domain sets OutsideDomain instead.
+    /// </summary>
+    internal sealed record ReclassificationStar(string Id, PixelPoint Mid, double ReachPixels, bool BelowHorizon, bool OutsideDomain,
+        bool LegacyEligible, bool TrailEligible, (string Measurer, bool Legacy, bool Trail)[] Recovered);
+
+    // Rounding allowance for the invariant 3 bounds, far below any pixel quantity the rules compare.
+    internal const double InvariantEpsilonPixels = 1e-9;
+
+    private static ReclassificationStar[] Reclassification(CameraRigConfig rig, DateTimeOffset sceneUtc, TimeSpan exposure, TruthStar[] truth,
+        TruthStar[] legacy, (string Measurer, IReadOnlyList<StellarDetection> Detections)[] measured) =>
+        [.. truth.Select((t, i) =>
+        {
+            if (legacy[i].Id != t.Id) throw new InvalidOperationException($"legacy truth order differs at {i}");
+            var rays = Enumerable.Range(0, VirtualAstrometryReference.TrailSamples).Select(k => VirtualAstrometryReference.ToEnu(
+                VirtualAstrometryReference.J2000(t.Trail.Star), VirtualAstrometryReference.SampleUtc(sceneUtc, exposure, k), VirtualAstrometryFixture.Observer)).ToArray();
+            var unclipped = rays.Where(ray => ray.Z > 0).Select(ray => VirtualAstrometryReference.Project(rig, ray, clip: false)).ToArray();
+            var reach = unclipped.Where(p => p is not null).Select(p => VirtualAstrometryReference.Distance(p!.Value, t.Pixel)).DefaultIfEmpty(0).Max();
+            return new ReclassificationStar(t.Id, t.Pixel, reach, rays.Any(ray => ray.Z <= 0), unclipped.Any(p => p is null), legacy[i].Eligible, t.Eligible,
+                [.. measured.Select(m => (m.Measurer, m.Detections.Any(d => VirtualAstrometryReference.Distance(d.Pixel, t.Pixel) < 1.5),
+                    m.Detections.Any(d => t.Trail.DistanceTo(d.Pixel) < 1.5)))]);
+        })];
+
+    // The #1126 point rule's interior test with both margins widened by widen px: 6 from the nominal frame border, 12 from a circular aperture.
+    private static bool PointInterior(CameraRigConfig rig, double width, double height, PixelPoint pixel, double widen) =>
+        pixel.X > 6 + widen && pixel.Y > 6 + widen && pixel.X < width - 6 - widen && pixel.Y < height - 6 - widen &&
+        VirtualAstrometryReference.IsApertureInterior(rig, pixel, 12 + widen);
+
+    /// <summary>
+    /// The three declared trail-eligibility invariants, checked at every exposure:
+    /// 1. every trail-eligible star is legacy-eligible;
+    /// 2. a trail-eligible star that a measurer recovers at its mid-exposure point is recovered on its trail;
+    /// 3. a star that is legacy-eligible but not trail-eligible, with r its reach plus <see cref="InvariantEpsilonPixels"/>, fails
+    ///    the point rule's interior test widened by r, or has another visible star whose mid-exposure pixel is within
+    ///    12 + r + that star's reach, or has a sample below the horizon, or a sample outside the projection's supported domain.
+    /// </summary>
+    internal static List<string> InvariantFailures(string caseId, IReadOnlyList<ReclassificationStar> stars, Func<PixelPoint, double, bool> pointInterior)
+    {
+        var failures = new List<string>();
+        foreach (var star in stars)
+        {
+            if (star.TrailEligible && !star.LegacyEligible)
+                failures.Add($"{caseId}: invariant 1: {star.Id} is trail-eligible but not legacy-eligible");
+            if (star.TrailEligible)
+                foreach (var (measurer, _, _) in star.Recovered.Where(r => r.Legacy && !r.Trail))
+                    failures.Add($"{caseId}: invariant 2: {measurer} recovers {star.Id} at its mid-exposure point but not on its trail");
+            if (!star.LegacyEligible || star.TrailEligible) continue;
+            var reach = star.ReachPixels + InvariantEpsilonPixels;
+            if (!pointInterior(star.Mid, reach) || star.BelowHorizon || star.OutsideDomain ||
+                stars.Any(o => !ReferenceEquals(o, star) && VirtualAstrometryReference.Distance(o.Mid, star.Mid) <= 12 + reach + o.ReachPixels)) continue;
+            failures.Add($"{caseId}: invariant 3: {star.Id} lost eligibility with no geometric cause within its {star.ReachPixels:F3} px reach");
+        }
+        return failures;
     }
 
     // Why each unrecovered eligible star was lost: the nearest reason-coded exclusion within 2 px of its trail, else no candidate.
