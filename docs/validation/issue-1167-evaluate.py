@@ -180,8 +180,9 @@ def deep(manifest_path, final, output, tuning=None, mag7=None):
         if report["selection"]["p95Ms"] > limit: found.append(("G4", f"selection p95 {report['selection']['p95Ms']:.2f} ms > {limit}"))
         if report["coldP95Ms"] > 2 * baseline["coldP95Ms"]:
             found.append(("G5", f"cold p95 {report['coldP95Ms']:.0f} ms > 2 x {baseline['coldP95Ms']:.0f}"))
+        # The limit follows the solve actually run: a warm-index capture without a warm prior is solved blind (cold).
         for r in report["reports"]:
-            limit_ms = 15000 if r["index"] == 0 else 500
+            limit_ms = 500 if (r.get("assessment") or {}).get("mode") == "Warm" else 15000
             if r["metrics"]["elapsedMilliseconds"] > limit_ms: found.append(("G5", f"{r['caseId']} {r['metrics']['elapsedMilliseconds']:.0f} ms"))
         allocation = statistics.mean(r["solveAllocatedBytes"] for r in cold(report))
         base_allocation = statistics.mean(r["solveAllocatedBytes"] for r in cold(baseline))

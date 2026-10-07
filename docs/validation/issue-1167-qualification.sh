@@ -63,7 +63,7 @@ host=$(jq -n --arg kernel "$(uname -sr)" --arg cpu "$(lscpu 2>/dev/null | sed -n
     fatal "could not record host"
 
 sources='[]'
-files=$(git ls-files tests | grep -E '/(VirtualDeepAstrometryQualificationTests|VirtualAstrometryQualificationTests|VirtualAstrometryFixture|VirtualAstrometryReference|VirtualAstrometryPixels)\.cs$') ||
+files=$(git ls-files tests | grep -E '/(VirtualDeepAstrometryQualificationTests|VirtualAstrometryQualificationTests|VirtualAstrometryFixture|VirtualAstrometryReference)\.cs$') ||
     fatal "no harness sources found"
 while read -r file; do
     blob=$(git rev-parse "HEAD:$file") || fatal "could not resolve $file"
@@ -126,7 +126,7 @@ jq -e --slurpfile m "$manifest" --arg revision "$revision" --arg manifest "$mani
     | .revision == $revision and .manifestSha256 == $manifest and ($manifest | sha256)
       and ((.final | not) or .pairs == $matrix)
       and (.runs | length) == (.pairs | length)
-      and (.harnessSources | length) == 5 and all(.harnessSources[]; .blob | test("^[0-9a-f]{40}$"))
+      and (.harnessSources | length) == 4 and all(.harnessSources[]; .blob | test("^[0-9a-f]{40}$"))
       and (.status != "measured"
            or all(.runs[]; (.trx.sha256 | sha256) and (.reports | length) == 1 and (.reports[0].sha256 | sha256)))' \
     "$out/index.json" >/dev/null || fatal "index $out/index.json does not cover the manifest"
