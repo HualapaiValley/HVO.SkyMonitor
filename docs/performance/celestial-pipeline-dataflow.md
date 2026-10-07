@@ -921,8 +921,10 @@ set -euo pipefail
 E=~/development-state/HVO.SkyMonitor/evidence/1170 id=${ID:-cp-518}
 S=${S:-docs/validation/issue-1170-checkpoints.json} M=docs/validation/issue-1170-pipeline-manifest.json
 m=$(sha256sum < "$M" | cut -d' ' -f1)
-# Exactly one checkpoint with that id, and it cites at least one pack.
-jq -e --arg id "$id" '[.checkpoints[] | select(.id == $id)] | length == 1 and (.[0].evidence | length) > 0' "$S" >/dev/null ||
+# One JSON document whose checkpoints array holds exactly one checkpoint with that id, citing at least one pack.
+jq -se --arg id "$id" 'length == 1 and (.[0].checkpoints | type) == "array"
+    and ([.[0].checkpoints[] | select(.id == $id)] | length == 1 and (.[0].evidence | type) == "array"
+        and (.[0].evidence | length) > 0)' "$S" >/dev/null ||
     { echo "FAIL checkpoint $id"; exit 1; }
 rows=$(jq -er --arg id "$id" '.checkpoints[] | select(.id == $id) | .evidence[]
     | [.pack, .manifestSha256, .archiveSha256, .sha256SumsSha256] | @tsv' "$S")
@@ -945,13 +947,25 @@ python3 -I docs/validation/issue-1170-interleaved.py pairs "$r" "$r.pairs.json" 
 )
 ```
 
-The block runs in a subshell and exits nonzero if the checkpoint is missing or empty, if any pack fails, or if
-the comparison fails. It also exits nonzero if the id matches more than one checkpoint, as the drift test does.
-The comparison runs only after every pack verifies. Three negative checks must exit 1: `ID=cp-none`, and `S="$t"`
-after each of
-`t=$(mktemp); jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' docs/validation/issue-1170-checkpoints.json > "$t"`
-and
-`t=$(mktemp); jq '.checkpoints += [.checkpoints[0] | .evidence = []]' docs/validation/issue-1170-checkpoints.json > "$t"`.
+The block runs in a subshell and exits nonzero in any of these cases:
+
+- the sidecar is not a single JSON document with a `checkpoints` array;
+- the id matches no checkpoint, or more than one (the drift test also rejects a duplicate);
+- that checkpoint's `evidence` is not a nonempty array;
+- any pack fails;
+- the comparison fails.
+
+The comparison runs only after every pack verifies.
+
+The negative checks below must each exit 1, with `S0=docs/validation/issue-1170-checkpoints.json` and
+`t=$(mktemp)`. The first runs the block with `ID=cp-none`. Each of the others runs it with `S="$t"` after writing
+`$t`:
+
+- a wrong hash: `jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' "$S0" > "$t"`;
+- a duplicate id with empty evidence: `jq '.checkpoints += [.checkpoints[0] | .evidence = []]' "$S0" > "$t"`;
+- `checkpoints` not an array: `jq '.checkpoints = {"cp-518": .checkpoints[0]}' "$S0" > "$t"`;
+- `evidence` not an array: `jq '.checkpoints[0].evidence = {"a": .checkpoints[0].evidence[0]}' "$S0" > "$t"`;
+- two JSON documents: `cat "$S0" "$S0" > "$t"`.
 
 Attribution needs `dotnet-trace` installed outside the repository tool manifest, in the directory named by
 `HVO_1170_TOOLS` (default `~/.local/share/hvo-1170-tools`):
