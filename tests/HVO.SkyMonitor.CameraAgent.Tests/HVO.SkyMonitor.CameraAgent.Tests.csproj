@@ -44,6 +44,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\virtual-sky\cloud-scenarios-v1.json" Link="Fixtures\cloud-scenarios-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

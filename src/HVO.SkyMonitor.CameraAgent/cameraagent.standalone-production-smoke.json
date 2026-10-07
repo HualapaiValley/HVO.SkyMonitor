@@ -115,7 +115,8 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
-      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },{
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
+      { "id": "MeasuredStellarAssociations", "type": "MeasuredStellarAssociations", "order": 16, "dependsOn": ["ProjectedScene"] },{
       "id": "Calibration",
       "type": "Calibration",
       "order": 10,
@@ -188,7 +189,7 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
-      "dependsOn": ["Preview", "ProjectedScene"],
+      "dependsOn": ["Preview", "ProjectedScene", "MeasuredStellarAssociations"],
       "options": {
           "requireProjectedSceneDependency": true,
         "markRadius": 6,

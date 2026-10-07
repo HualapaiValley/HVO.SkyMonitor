@@ -238,6 +238,12 @@
         }
       },
       {
+        "id": "measured-stellar-associations",
+        "type": "MeasuredStellarAssociations",
+        "order": 6,
+        "dependsOn": [ "projected-scene" ]
+      },
+      {
         "id": "calibration",
         "type": "Calibration",
         "order": 10,
@@ -307,7 +313,7 @@
         "id": "scene-presentation",
         "type": "ScenePresentationLayer",
         "order": 70,
-        "dependsOn": [ "projected-scene" ],
+        "dependsOn": [ "projected-scene", "measured-stellar-associations" ],
         "publication": { "persistence": "durable-local" },
         "options": {
           "annotationOutputVariant": "w6-scene-annotation-layer",

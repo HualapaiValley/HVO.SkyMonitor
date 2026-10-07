@@ -62,9 +62,10 @@
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
       { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
+      { "id": "MeasuredStellarAssociations", "type": "MeasuredStellarAssociations", "order": 16, "dependsOn": ["ProjectedScene"] },
       { "id": "RollingCombination", "type": "RollingCombination", "order": 25, "dependsOn": ["$raw"] },
       { "id": "Preview", "type": "Preview", "order": 50, "dependsOn": ["RollingCombination"] },
-      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview", "ProjectedScene"], "options": { "requireProjectedSceneDependency": true } }
+      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview", "ProjectedScene", "MeasuredStellarAssociations"], "options": { "requireProjectedSceneDependency": true } }
     ]
   },
   "schedule": {
