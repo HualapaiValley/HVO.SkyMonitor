@@ -19,12 +19,14 @@ envelope.
 - **Measured.** Continuity, tuning and the single held-out pack then ran on the re-frozen manifest; see
   [results](#results). Three held-out uncertainty processes failed, so covariance above 1 s is withheld from the
   [supported envelope](#supported-envelope).
-- **Continuity tightened after review.** The independent r0 review found two gaps in the continuity rules. Before any
-  evidence existed for the corrected head, the manifest's continuity section was tightened, and nothing else in it
-  changed; see [continuity](#continuity-with-1126). `continuity-f7e69d99` was scored under the earlier rules.
+- **Continuity tightened after review, twice.** The independent r0 review found two gaps in the continuity rules,
+  and r1 found that one of them was only partly closed. Each correction changed only the manifest's continuity
+  section; see [continuity](#continuity-with-1126). `continuity-f7e69d99` was scored under the rules before r0.
+  The r1 correction only adds rejections. The sealed rerun packs were checked again under it, not rerun.
 - **Rerun once.** `development/v1` then changed paths that this manifest's revision-rerun rule covers. The
   [revision rerun](#revision-rerun) ran once, at the synchronized head `99301c2d`:
-  - Continuity under the tightened rules passed. That pack is the continuity evidence of record.
+  - Continuity under the tightened rules passed, and passed again when re-scored under the r1 rules. That pack is the
+    continuity evidence of record.
   - The final pack reproduced every process outcome of the held-out pack, including the same three uncertainty
     failures. The envelope claims only cells that pass in both.
 
@@ -206,10 +208,30 @@ ways: the runner now enforces the allocation tripwire, and scorer-by-design beca
 each checked against a #1126 point-rule score. Nothing else in the manifest changed. The matrix, refusals,
 tolerances, floors and held-out criteria are byte-identical.
 
+**Tightened again in response to r1.** The r1 review of `fc10e61d` found that F2 was only partly closed (N1). An
+enumerated scorer path still accepted any value, and its deletion, whenever its legacy counterpart did not differ:
+- Removing `eligibleTruthStars` from a head report passed as scorer-by-design.
+- So did a scorer defect that halved every trail-aware `eligibleStars` and `recovered` count and kept recall. The
+  invariants receive per-star eligibility and recovery, not the emitted scores, so they never saw it.
+
+The rerun packs already existed, so this tightening came after evidence. It only adds ways to reject. The manifest's
+`continuity` section changed in exactly two ways, and the measured-stars harness gained one check:
+- **Scorer evidence.** Every measured-stars report must carry complete, self-consistent scores, on both sides and in
+  the head's `legacy` block; see [scorer evidence](#scorer-evidence).
+- **Sparse scorer leaves.** A scorer leaf present on one side only can be scorer-by-design only under
+  `v2.missedEligibleReasonCounts`, whose keys are the reasons that occur. Any other one-sided scorer leaf, such as a
+  deleted count, is unclassified.
+- **Score check.** The harness checks every emitted score against the population the invariants check; see
+  [score check](#score-check).
+
+Nothing else in the manifest changed. The matrix, refusals, tolerances, floors and held-out criteria are still
+byte-identical.
+
 | Manifest | SHA-256 |
 | --- | --- |
-| Before, at `39119200`; every pack under [results](#results) | `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65` |
-| After, tightened | `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05` |
+| Before, at `39119200`; the first three packs under [results](#results) | `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65` |
+| Tightened after r0, at `fc10e61d`; the two revision-rerun packs | `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05` |
+| Tightened after r1, at `b1cde08a`; the [checks after r1](#checked-again-after-r1) | `c3dc62a7d6c3e9a5767d7f68d65ec07c8ebf10b05638c314d6aa01e3d1ba052e` |
 
 A pair passes only when all of these hold:
 
@@ -224,6 +246,7 @@ A pair passes only when all of these hold:
   base is the one exception: it must fail with exactly the pinned #1126 grid-count assertion, 725 of 750, as v2
   records. The head counts only accepted sources there, so it reaches `Assert.IsEmpty`.
 - **No head-only allocation miss**, under the allocation tripwire below.
+- **Scorer evidence.** Every report with a [scorer-evidence](#scorer-evidence) rule passes it on both sides.
 - Every differing report leaf is classified, and the [legacy score](#legacy-point-rule-score) is identical.
 
 A base that records any other deterministic failure, or fails any other way, invalidates the run as environment or
@@ -256,11 +279,12 @@ Every report leaf that differs must be classified. Array indices collapse to `N`
 | resource-outcome | A resource failure, split out of `failures` before classification. |
 | declared-changed | An exact base and head value named in the manifest, such as the schema versions. |
 | declared-added | A new field, such as `exposureSeconds`, `cases`, `cells` or `negativeControl`. |
-| scorer-by-design | A leaf whose exact path is listed under its report's `scorer`: a trail-aware eligibility, recovery or recall count, or a missed-reason count. Its legacy counterpart, the same path under `reports.N.legacy`, must not differ. It must be identical on both sides, or absent from both, because missed-reason counts list only the reasons that occur. Only the measured-stars reports list any. |
+| scorer-by-design | A leaf whose exact path is listed under its report's `scorer`: a trail-aware eligibility, recovery or recall count, or a missed-reason count. Its legacy counterpart, the same path under `reports.N.legacy`, must not differ. It must be identical on both sides, or absent from both, because missed-reason counts list only the reasons that occur. A scorer leaf present on one side only must be a missed-reason count. Scorer-by-design passes only with its report's scorer evidence. Only the measured-stars reports list any. |
 
-A leaf present on one side only must be head-only under a declared-added prefix, a resource outcome, or
-scorer-by-design by that rule. Any unclassified leaf fails continuity. So does any legacy difference, and any
-difference in solver, measurement, mapping, uncertainty or identity hashes.
+A leaf present on one side only must be head-only under a declared-added prefix, a resource outcome, or a
+scorer-by-design missed-reason count. A deleted count is unclassified. Any unclassified leaf fails continuity. So does
+any legacy difference, any incomplete or inconsistent scorer evidence, and any difference in solver, measurement,
+mapping, uncertainty or identity hashes.
 
 ### Legacy point-rule score
 
@@ -296,6 +320,44 @@ evidence.
      - another visible star's mid-exposure pixel lies within 12 + `r` + that star's reach;
      - a sample lies at or below the horizon;
      - a sample above the horizon lies outside the projection's supported domain.
+
+### Scorer evidence
+
+The runner checks the scores each measured-stars report emits. Each `reports[i]`, and on the head its
+`reports[i].legacy`, must be:
+- **Complete.** `eligibleTruthStars`, and the v1 `baseline` and v2 `candidate` `eligibleStars` and `recovered`, are
+  non-negative integers. Each `recall` is a number, and `v2.missedEligibleReasonCounts` is an object of positive
+  integers. A field that is missing, null or of another JSON type fails the pair with reason `scorer-incomplete`.
+- **Consistent.** Both `eligibleStars` equal `eligibleTruthStars`, and each `recovered` is at most its
+  `eligibleStars`. Each `recall` is exactly `recovered / eligibleStars`, or 0 when none is eligible.
+  System.Text.Json writes doubles that round-trip, so there is no tolerance. The missed-reason counts sum to the v2
+  `eligibleStars` minus `recovered`. A complete block that breaks any of these fails the pair with reason
+  `scorer-inconsistent`.
+
+Every finding is recorded in the pair's `scorerEvidence`, with its side, case ID and exact path. The runner's
+`scorer-check` mode applies the same check to any measured-stars report, and exits 0 only when every report passes.
+
+**What the runner cannot see.** The report carries no per-star data. A rewrite that keeps every scorer number
+self-consistent passes this check: for example, halving `eligibleTruthStars` together with every count that follows
+from it. The runner cannot reject that. The harness does.
+
+### Score check
+
+At every exposure, in every pack that runs it, the measured-stars harness checks each emitted score against the
+population the invariants check. Each `eligibleTruthStars`, `eligibleStars`, `recovered`, `recall` and v2
+missed-reason total, trail-aware and legacy, must equal the count from the same stars by the same predicates. A
+mismatch is a harness failure, `<caseId>: score: <name> is <emitted>, not <expected>`. Like an invariant violation,
+it matches no resource-failure pattern, so it fails its process and its pack.
+
+The check applies the scorers' own predicates to the scorers' own stars:
+- trail eligibility is each truth star's `Eligible`, and legacy eligibility is its legacy counterpart's `Eligible`,
+  matched one to one by ID;
+- recovery uses the same 1.5 px point and trail thresholds, over the same v1 and v2 detections;
+- each unrecovered eligible star has exactly one missed reason, and recall is the same expression.
+
+So on honest data it is an identity. It cannot fire on, or throw for, a report its scorers emitted correctly. A Unit
+test pins it: a consistent population passes, while halved, self-consistently rewritten and misstated scores each
+fail with their exact messages.
 
 ### Harness defects found on continuity
 
@@ -340,6 +402,7 @@ docs/validation/issue-1168-qualification.sh tuning <new pack directory>
 docs/validation/issue-1168-metrics.sh floors <tuning pack>
 docs/validation/issue-1168-qualification.sh final <new pack directory>
 docs/validation/issue-1168-metrics.sh summary <pack>
+docs/validation/issue-1168-qualification.sh scorer-check <measured-stars report>...
 ```
 
 The runner refuses a dirty tree and runs one process per declared cell. It records the host, the load average at
@@ -381,8 +444,8 @@ There is no tuning rerun. This is a revision rerun, not a re-roll.
 
 **Outcome.** The rerun ran once, after #518 merged, at `99301c2d`. That head merges `development/v1` at `87f947c6`
 and changes no `src/` path relative to it.
-- **Continuity.** `continuity-99301c2d`, base `87f947c6` against head `99301c2d`, passed under the tightened rules;
-  see [continuity result](#continuity-result).
+- **Continuity.** `continuity-99301c2d`, base `87f947c6` against head `99301c2d`, passed under the tightened rules. It
+  passed again when re-scored under the r1 rules; see [continuity result](#continuity-result).
 - **Final.** In `final-99301c2d`, 37 of 40 processes passed. The same three uncertainty processes failed as in
   `final-350044f8`, with the same failure messages; see [results](#results).
 - **Both packs.** No cell's outcome differs between the packs, so no difference needs a code explanation. The envelope
@@ -398,7 +461,8 @@ logical processors, SDK 10.0.401.
   probably shares this host.
 - **The two revision-rerun packs** used the tightened manifest,
   `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05`. Both VMs' heavy locks were held for their whole
-  window, and the other VM was idle.
+  window, and the other VM was idle. After r1 they were [checked again](#checked-again-after-r1) under manifest
+  `c3dc62a7`.
 
 See [measurement environment](#measurement-environment).
 
@@ -543,7 +607,8 @@ plausibly contention.
 **Evidence of record: `continuity-99301c2d`.** It compared base `87f947c6` with head `99301c2d` on the #1126
 manifest (`issue-1126-qualification-manifest.json`, SHA-256
 `8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee`). Under the [tightened
-rules](#continuity-with-1126) of manifest `42fb87dd`, its verdict is `passed`:
+rules](#continuity-with-1126) of manifest `42fb87dd`, its verdict is `passed`. [Re-scored](#checked-again-after-r1)
+under manifest `c3dc62a7` after r1, it passes again, with the same classification:
 - Every pair passes, with no recorded reason. Every differing report leaf is classified, and none is unclassified.
 - No solver, measurement, mapping, uncertainty or identity hash differs.
 - **Legacy score.** No `reports.N.legacy` leaf differs.
@@ -572,6 +637,42 @@ rules](#continuity-with-1126) of manifest `42fb87dd`, its verdict is `passed`:
   - `02-mono-roi-bin2-1: expected Warm solve`
 - **Resource failures listed.** The only one in the pack is `02-mono-roi-bin2-1: solve exceeded declared cold/warm
   time budget` in `pixels-tuning`, on both base and head. No pair has a `resource-outcome` leaf.
+
+#### Checked again after r1
+
+`continuity-99301c2d` and both final packs ran before the [r1 tightening](#continuity-with-1126), under manifest
+`42fb87dd`, and their harness had no [score check](#score-check). They were checked again under manifest `c3dc62a7`,
+not rerun:
+- **Rescore.** `issue-1168-qualification.sh rescore` re-classified `continuity-99301c2d` at `823518f1`, from 14:12:52Z
+  to 14:13:47Z. The runner and the manifest are unchanged since `b1cde08a`. Its verdict is `passed`: 9 of 9 pairs, with
+  no recorded reason and no allocation miss.
+  - The copied pack verified against its `SHA256SUMS`: all 334 listed files, and no unlisted file.
+  - The scorer evidence is complete and consistent in all 84 blocks. Those are the base, head and head `legacy` blocks
+    of the 7 tuning and 21 held-out cases.
+  - Every pair's classification is unchanged, including the 38 scorer-by-design leaves. Apart from the new, empty
+    `scorerEvidence`, each pair's record equals the original.
+  - Pack `rescore-continuity-99301c2d-823518f1`, `SHA256SUMS` SHA-256
+    `6bdf18b72099423688b866eb0b91a6d4793e32a9993366823daeabf89591ade8`.
+- **Scorer check.** `issue-1168-qualification.sh scorer-check`, at `48e82c6b`, on the five held-out measured-stars
+  reports of each final pack. Each run had 0 failures and exit status 0.
+  - `final-99301c2d`: 99 cases, each with a `legacy` block, and each block checked too.
+  - `final-350044f8`: 99 cases. They predate the legacy score, so only the trail-aware scores are checked.
+- **Score check, by static equivalence.** At `48e82c6b` the harness emits the same values as at `99301c2d`:
+  - The score check reads the reclassified stars the invariants already compute.
+  - The two emitted `eligibleTruthStars` counts are the same expressions, moved into locals.
+  - The check can only add failures, and on honest data it adds none.
+
+  So these packs' reports are what `48e82c6b` would emit, and the check would pass on them.
+- **Wiring run.** The one path no Unit test reaches is the score check inside a real harness run. One tuning-partition
+  run exercised it at `48e82c6b`: equidistant, 1 s, in a scratch directory, never a qualification pack.
+  - It passed, with exit status 0, in 40 s: 1 report, 7 cases, each with a `legacy` block.
+  - Its failures list is empty, so it has no `: score:` and no `: invariant` entry. `scorer-check` on the report had 0
+    failures.
+  - A first attempt failed at setup, before any render: the catalog root pointed one level above the snapshot. It is
+    not evidence, and it is recorded.
+- **Both packs.** Recomputed from the two metrics summaries, the both-packs comparison is unchanged. 37 of 40
+  processes pass in each pack, and the same 3 uncertainty processes fail. 29 runs are identical and 11 differ only in
+  timing and resource fields.
 
 **Earlier pack: `continuity-f7e69d99`.** It compared base `0639e27d` with head `f7e69d99` on the same #1126
 manifest. Under the continuity rules of manifest `cd046476`, before r0, its verdict is `passed`:
