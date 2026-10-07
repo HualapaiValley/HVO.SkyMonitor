@@ -457,12 +457,25 @@ public sealed partial class ArtifactIngestTests
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var job = await db.CentralDerivativeJobs.Include(item => item.InputRequirements)
-            .SingleAsync(item => item.SourceArtifact!.Frame!.FrameId == data.Raw.Descriptor.Capture.CaptureId &&
-                item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
-        var reference = CentralProjectedSceneResolver.ReadReference(job);
-        reference.Should().NotBeNull();
-        reference!.Source.ArtifactIdentitySha256.Should().Be(data.Raw.IdempotencyKey);
+        var captureId = data.Raw.Descriptor.Capture.CaptureId;
+        try
+        {
+            var job = await db.CentralDerivativeJobs.Include(item => item.InputRequirements).Include(item => item.Inputs)
+                .SingleAsync(item => item.SourceArtifact!.Frame!.FrameId == captureId &&
+                    item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
+            var reference = CentralProjectedSceneResolver.ReadReference(job);
+            reference.Should().NotBeNull();
+            reference!.Source.ArtifactIdentitySha256.Should().Be(data.Raw.IdempotencyKey);
+        }
+        finally
+        {
+            // Tests in this assembly claim the next job from the shared database; leave none of this capture's claimable.
+            await db.CentralDerivativeJobs.Where(item => item.SourceArtifact!.Frame!.FrameId == captureId &&
+                    (item.Status == CentralDerivativeJobStatus.Waiting || item.Status == CentralDerivativeJobStatus.Pending ||
+                        item.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+        }
     }
 
     private sealed class RejectSceneRawCopyStore(IObjectStore inner) : PerformanceObjectStoreDecorator(inner)
