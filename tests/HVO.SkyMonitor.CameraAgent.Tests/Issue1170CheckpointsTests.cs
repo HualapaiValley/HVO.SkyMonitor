@@ -6,8 +6,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
 /// Keeps the #1170 composition-checkpoint sidecar bound to the committed pipeline manifest. Every retained pack
-/// records the SHA-256 of the manifest it was measured with, and the interleaved comparator rejects a pack whose
-/// manifest differs from the committed one, so a checkpoint is recorded in the sidecar and never by editing the
+/// records the SHA-256 of the manifest it was measured with, and the interleaved comparator rejects a measure pack,
+/// and the documented checkpoint check any cited pack, whose manifest differs from the committed one, so a checkpoint is recorded in the sidecar and never by editing the
 /// manifest. The manifest changes only together with a re-measure under its new SHA-256.
 /// </summary>
 [TestClass]
@@ -38,7 +38,7 @@ public sealed partial class Issue1170CheckpointsTests
             {
                 var path = pack.GetProperty("pack").GetString()!;
                 Assert.IsTrue(packs.Add(path), $"{id} cites {path} twice");
-                Assert.AreEqual(manifestSha, pack.GetProperty("manifestSha256").GetString(), $"{id} {path} was measured with another manifest");
+                Assert.AreEqual(manifestSha, pack.GetProperty("manifestSha256").GetString(), $"{id} records a manifest SHA-256 other than the committed one for {path}");
                 Assert.IsTrue(Sha256().IsMatch(pack.GetProperty("archiveSha256").GetString()!), $"{id} {path} archive");
                 Assert.IsTrue(Sha256().IsMatch(pack.GetProperty("sha256SumsSha256").GetString()!), $"{id} {path} SHA256SUMS");
             }

@@ -876,8 +876,8 @@ Attribution separates them by frame.
 
 Each sibling merge triggers a `cp-<issue>` refresh. The refresh re-runs the manifest at the new
 `development/v1` head and records identity changes the sibling intends. Every retained pack records the
-SHA-256 of the manifest it was measured with, and the comparator rejects a pack whose manifest differs from
-the committed one. A checkpoint is therefore recorded in `docs/validation/issue-1170-checkpoints.json`, and
+SHA-256 of the manifest it was measured with, and the comparator rejects a measure pack whose manifest differs from
+the committed one; the checkpoint check under [Reproduce](#reproduce) rejects any pack a checkpoint cites whose recorded manifest differs. A checkpoint is therefore recorded in `docs/validation/issue-1170-checkpoints.json`, and
 the manifest stays byte-unchanged. The manifest changes only together with a re-measure under its new
 SHA-256. `Issue1170CheckpointsTests` fails when the sidecar cites any manifest other than the committed one.
 
