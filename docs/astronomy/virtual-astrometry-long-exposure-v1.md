@@ -10,7 +10,7 @@ sensor-pixel frames, using the [#1168 manifest](../validation/issue-1168-qualifi
 the single statement of which exposures the virtual milestone supports. v2 remains the 1 s projection-family
 envelope.
 
-**Status: measured; revision rerun pending.**
+**Status: measured, including the revision rerun.**
 
 - **Declared before measurement.** The matrix, refusals, withheld cells, tolerances, floor rule and continuity
   rules below were committed in the manifest at `27c611dc`, before any continuity, tuning or held-out run.
@@ -22,11 +22,15 @@ envelope.
 - **Continuity tightened after review.** The independent r0 review found two gaps in the continuity rules. Before any
   evidence existed for the corrected head, the manifest's continuity section was tightened, and nothing else in it
   changed; see [continuity](#continuity-with-1126). `continuity-f7e69d99` was scored under the earlier rules.
-- **Rerun pending.** `development/v1` has since changed paths that this manifest's revision-rerun rule covers. The
-  envelope is final only after the [revision rerun](#revision-rerun).
+- **Rerun once.** `development/v1` then changed paths that this manifest's revision-rerun rule covers. The
+  [revision rerun](#revision-rerun) ran once, at the synchronized head `99301c2d`:
+  - Continuity under the tightened rules passed. That pack is the continuity evidence of record.
+  - The final pack reproduced every process outcome of the held-out pack, including the same three uncertainty
+    failures. The envelope claims only cells that pass in both.
 
 This is a virtual qualification only. It makes no claim about physical accuracy, and no profile here is a physical
-lens certification. No product code changed: `src/` is identical to `development/v1` at `0639e27d`.
+lens certification. No product code changed: this branch changes no `src/` path relative to its `development/v1`
+merge base, `87f947c6`.
 
 ## Reference time: the exposure midpoint
 
@@ -188,8 +192,8 @@ these are not outcomes. The 1 s floors are unchanged.
 
 With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds a
 base revision and this head in Release. It then runs every #1126 manifest entry on base and then on head, in one
-heavy-lock session. The base is `0639e27d`; the [revision rerun](#revision-rerun) uses a later `development/v1`
-revision. No `src/` path differs between base and head.
+heavy-lock session. The base is `0639e27d`; the [revision rerun](#revision-rerun) uses `development/v1` at
+`87f947c6`. No `src/` path differs between base and head.
 
 **Tightened in response to r0.** The independent r0 review of `39119200` found two ways continuity could pass on
 evidence it should reject:
@@ -375,23 +379,38 @@ There is no tuning rerun. This is a revision rerun, not a re-roll.
 - [List, don't absorb](#continuity-result) and the [allocation tripwire](#continuity-result) apply to the rerun
   pack as they did to the held-out pack.
 
+**Outcome.** The rerun ran once, after #518 merged, at `99301c2d`. That head merges `development/v1` at `87f947c6`
+and changes no `src/` path relative to it.
+- **Continuity.** `continuity-99301c2d`, base `87f947c6` against head `99301c2d`, passed under the tightened rules;
+  see [continuity result](#continuity-result).
+- **Final.** In `final-99301c2d`, 37 of 40 processes passed. The same three uncertainty processes failed as in
+  `final-350044f8`, with the same failure messages; see [results](#results).
+- **Both packs.** No cell's outcome differs between the packs, so no difference needs a code explanation. The envelope
+  claims the 37 cells that pass in both. Nothing was rerun, and no floor, tolerance or partition changed.
+
 ## Results
 
-All three packs ran sequentially under the heavy lock, from a clean tree on hvo-dev-02:
-- Intel Core Ultra 9 285H, 8 logical processors, SDK 10.0.401;
-- manifest SHA-256 `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65`, before the continuity
-  criteria were [tightened in response to r0](#continuity-with-1126).
+Every pack ran sequentially under the heavy lock, from a clean tree on hvo-dev-02: an Intel Core Ultra 9 285H, 8
+logical processors, SDK 10.0.401.
+- **The first three packs** used manifest SHA-256
+  `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65`, before the continuity criteria were
+  [tightened in response to r0](#continuity-with-1126). They ran while another measured workload ran on a VM that
+  probably shares this host.
+- **The two revision-rerun packs** used the tightened manifest,
+  `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05`. Both VMs' heavy locks were held for their whole
+  window, and the other VM was idle.
 
-They ran while another measured workload ran on a VM that probably shares this host; see
-[measurement environment](#measurement-environment).
+See [measurement environment](#measurement-environment).
 
 Each pack is sealed by its `SHA256SUMS`, and the table gives that file's SHA-256. Times are UTC on 2026-10-07.
 
 | Pack | Revision | Time | Outcome | `SHA256SUMS` SHA-256 |
 | --- | --- | --- | --- | --- |
-| `continuity-f7e69d99` | `f7e69d99` against base `0639e27d` | 05:22:25–06:05:30 | passed, 9 of 9 pairs | `63a1d0efc58af4cac6d65171600c61f5c6e991e115498249600388978caa5dac` |
+| `continuity-f7e69d99` | `f7e69d99` against base `0639e27d` | 05:22:25–06:05:30 | passed, 9 of 9 pairs, under the rules before r0 | `63a1d0efc58af4cac6d65171600c61f5c6e991e115498249600388978caa5dac` |
 | `tuning-f7e69d99` | `f7e69d99` | 06:07:02–06:28:14 | 26 of 29 processes passed; the 3 failures are the provisional uncertainty runs, which are not outcomes | `c8d9c647ff486f45e34df29b52e8268ad8c511b4034cc2f0d57b9554ac6b697d` |
 | `final-350044f8` | `350044f8` | 06:30:36–07:59:38 | `status: failed`: 37 of 40 processes passed and 3 uncertainty processes failed | `ef50c44284f28eb38ea2193efece64350881a0a8d3d6f69d9a188f01d6c6d690` |
+| `continuity-99301c2d` | `99301c2d` against base `87f947c6` | 09:55:22–10:35:21 | passed, 9 of 9 pairs, under the tightened rules | `dee550a847772bef4b150bf6822aae8ef539b64b3633445e4d8999a50a410d66` |
+| `final-99301c2d` | `99301c2d` | 10:36:10–11:58:07 | `status: failed`: 37 of 40 processes passed and the same 3 uncertainty processes failed | `4ef63347ff98c2f66e67a3574b5091e3c3e8a353cbcedf180aa428d572177eeb` |
 
 **The held-out pack.**
 - `350044f8` adds only the declared floors to `f7e69d99`: the C# initializer, `issue-1168-floors.json` and the
@@ -416,21 +435,57 @@ Each pack is sealed by its `SHA256SUMS`, and the table gives that file's SHA-256
 - the floors, re-derived from the tuning pack's reports: they are bit-identical medians with the same declared
   values.
 
+**The revision rerun pack, `final-99301c2d`.**
+- `99301c2d` carries the floors of `350044f8` unchanged. Neither `issue-1168-floors.json` nor
+  `VirtualAstrometricUncertaintyQualificationTests.cs`, blob `79fad2bb`, differs between them. The manifest changed
+  only in its `continuity` section.
+- **Process outcomes.** Every run executed exactly its expected test and attached exactly one report. The 40 process
+  names, their order and their statuses equal those of `final-350044f8`. The three failed processes are
+  `astrometric-uncertainty-held-out` for equidistant 20 s, equidistant 60 s and rectilinear 20 s. Their TRX failure
+  messages are byte-identical to those in `final-350044f8`.
+- **Metrics.** The `issue-1168-metrics.sh summary` of each pack was compared run by run, over every summary field
+  except the revision and elapsed seconds.
+  - The two summaries' SHA-256s are `42010f94…` for `final-350044f8`, and
+    `f1b3cd93b1372756f41adc9aec19798ee684b9a87d2b544e1062716205c7e686` for `final-99301c2d`.
+  - 29 of the 40 runs are identical in every compared field. These include every pixel, readout, measured-star,
+    calibration and uncertainty run, every disposition, refusal and negative-control field.
+  - The other 11 are the 10 resource runs and the renderer-capacity run. They differ only in measured times,
+    operations per second, the probes' elapsed milliseconds, and the median allocated bytes. The median allocated
+    bytes differ by at most 35,160 bytes, 0.015%.
+  - The summary does not include CPU time or working set, so those were not compared.
+  - The comparison's SHA-256 is `c657a8058dab101f4537fc878470871a6949d19284c393890088cfadde0b564f`.
+- **Independent verification.** The #520 coordinator independently verified:
+  - the seal;
+  - the index;
+  - the failed set;
+  - the per-run TRX message hashes against `final-350044f8`;
+  - that the manifest change is confined to `continuity`;
+  - that `issue-1168-floors.json` is unchanged.
+
 ### Measurement environment
 
 hvo-dev-02 and hvo-dev-03 are both 8-vCPU KVM guests on an Intel Core Ultra 9 285H and probably share one physical
-host. The 285H is a hybrid part, so a busy neighbour can slow a guest without visible steal time. Every #1168 run on
-hvo-dev-02 overlapped #1167's measured matrix on hvo-dev-03, which ran from 03:58:50 to 08:18:01:
+host. The 285H is a hybrid part, so a busy neighbour can slow a guest without visible steal time.
 
-| Run on hvo-dev-02 | Time |
-| --- | --- |
-| `continuity-27c611dc`, a diagnostic | 04:26:59–05:11:33 |
-| `continuity-f7e69d99` | 05:22:25–06:05:30 |
-| `tuning-f7e69d99` | 06:07:02–06:28:14 |
-| `final-350044f8` | 06:30:36–07:59:38 |
+- **Before the rerun.** Every #1168 run on hvo-dev-02 overlapped #1167's measured matrix on hvo-dev-03, which ran
+  from 03:58:50 to 08:18:01.
+- **The revision rerun.** By then the two VMs were treated as one measurement domain. Both VMs' heavy locks were
+  held from 09:42:13 and 09:42:16 to 12:00:11 and 12:00:14. hvo-dev-03 was held idle under the #520 coordinator's
+  window; its load average at release was 0.00, 0.00, 0.00.
+  - In `final-99301c2d`, the 1-minute load average at each process's start and end was at most 1.51.
+  - In `continuity-99301c2d`, it was at most 12.86, at the start of the first process. That was the decaying load of
+    this window's own base and head builds; from the eighth process on it was at most 1.08.
 
-The two VMs are now treated as one measurement domain. The revision rerun holds both VMs' heavy lock for its whole
-window. Every result here falls in one of five classes.
+| Run on hvo-dev-02 | Time | hvo-dev-03 |
+| --- | --- | --- |
+| `continuity-27c611dc`, a diagnostic | 04:26:59–05:11:33 | #1167 measuring |
+| `continuity-f7e69d99` | 05:22:25–06:05:30 | #1167 measuring |
+| `tuning-f7e69d99` | 06:07:02–06:28:14 | #1167 measuring |
+| `final-350044f8` | 06:30:36–07:59:38 | #1167 measuring |
+| `continuity-99301c2d` | 09:55:22–10:35:21 | idle, lock held |
+| `final-99301c2d` | 10:36:10–11:58:07 | idle, lock held |
+
+Every result here falls in one of five classes.
 
 **Decided by geometry or determinism.** No boundary or claim is derived from a timing measurement:
 - **Renderer capacity.** The slot count is `ceil(exposureSeconds × speedBound / 0.15)`. The renderer's "temporal
@@ -444,15 +499,22 @@ calibration session budget.
 - Exceeding one can only turn an acceptance into a rejection, `time-budget` or `resource-limit`. It never alters an
   accepted solution.
 - So the accuracy, coverage and uncertainty of accepted solves are timing-independent.
-- Acceptance and rejection counts are timing-independent only where no case hit a budget. In `final-350044f8`:
+- Acceptance and rejection counts are timing-independent only where no case hit a budget. In `final-350044f8`, and
+  identically in `final-99301c2d`:
   - The 720 pixel dispositions are 570 `accepted` and 150 `rejected-acquisition-or-quality-failed`, with no
     `rejected-time-budget` or `rejected-resource-limit`. Every fail-closed rejection there is deterministic.
   - None of the 30 uncertainty failures is `solve not accepted`.
 - **Continuity acceptance counts are not claimed timing-independent.** One continuity case hit a time budget:
   `02-mono-roi-bin2-1: solve exceeded declared cold/warm time budget` in `pixels-tuning`. It occurred on both base
-  and head, and it is pinned from #1126.
-- The raw tuning and continuity reports are searched for `time-budget`, `resource-limit` and `solve not accepted`
-  once both VMs are free. The result is recorded in the PR ledger.
+  and head, in both continuity packs. Its case's deterministic failure is pinned from #1126.
+- **Raw reports searched.** Every text file in the raw reports of four packs was searched for `time-budget`,
+  `resource-limit` and `solve not accepted`:
+  - `tuning-f7e69d99` and `continuity-f7e69d99`, on 2026-10-07 at 09:53:06Z;
+  - `continuity-99301c2d` and `final-99301c2d`, at 12:08:13Z.
+
+  No file in any of them matches. A control search, for `solve exceeded declared cold/warm time budget`, matches 9
+  files in each continuity pack and none in the tuning or final pack. All 9 in each are in the `pixels-tuning` pair,
+  and every occurrence names `02-mono-roi-bin2-1`. The results are recorded in the PR ledger.
 
 **Compared within one session.** Both sides of each comparison ran under roughly the same neighbour load:
 - continuity elapsed seconds, base against head, since each pair ran base then head;
@@ -465,24 +527,69 @@ under contention, and so were the time-budget checks of every harness.
 - Each passing check passed by a wide margin: capture p95 at most 1,137 ms against 10 s or 40 s, and solve p95 at
   most 11.3 ms against 500 ms. Under contention a pass is conservative.
 - The absolute values are not comparable with figures from a quiet host.
+- `final-99301c2d` measured the same resource cells with hvo-dev-03 idle.
+  - Its largest capture p95 is 931 ms, and its largest solve p95 is 11.5 ms.
+  - Per cell, its capture, detection and solve medians and p95s differ from `final-350044f8`'s by −46% to +74%. The
+    extremes are rectilinear solve p95s under 4 ms.
+  - No timing conclusion is drawn from this comparison.
 - Allocation is set by the program, and working set is local to the VM. Neither follows neighbour CPU load. Both were
-  measured on the shared host.
+  measured on the shared host. The median allocations of the two final packs agree within 0.015%.
 
 **Not evidence.** The `continuity-27c611dc` diagnostic. Its base-only `v2 measurement 44 ms vs v1 10 ms` miss was
 plausibly contention.
 
 ### Continuity result
 
-`continuity-f7e69d99` compared base `0639e27d` with head `f7e69d99` on the #1126 manifest
-(`issue-1126-qualification-manifest.json`, SHA-256 `8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee`).
-Under the continuity rules of manifest `cd046476`, before r0, its verdict is `passed`:
+**Evidence of record: `continuity-99301c2d`.** It compared base `87f947c6` with head `99301c2d` on the #1126
+manifest (`issue-1126-qualification-manifest.json`, SHA-256
+`8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee`). Under the [tightened
+rules](#continuity-with-1126) of manifest `42fb87dd`, its verdict is `passed`:
+- Every pair passes, with no recorded reason. Every differing report leaf is classified, and none is unclassified.
+- No solver, measurement, mapping, uncertainty or identity hash differs.
+- **Legacy score.** No `reports.N.legacy` leaf differs.
+- **Scorer-by-design.** `measured-stars-held-out` has 38 leaves, the same 7 enumerated paths as before:
+  - `eligibleTruthStars` and the v1 and v2 `eligibleStars` and `recovered`, 6 each;
+  - v1 `recall`, 6;
+  - v2 `recall`, 2.
+
+  Each has an identical legacy counterpart.
+- **Allocation tripwire.** It recorded no allocation miss in any pair.
+
+| Pair | Base / head | Elapsed base / head (s) | Identical leaves | Classified differing leaves |
+| --- | --- | ---: | ---: | --- |
+| `pixels-tuning` | failed / failed | 42 / 51 | 462,641 | declared-added 3,672, declared-changed 2, identity 1, run-varying 90 |
+| `measured-stars-tuning` | passed / passed | 42 / 42 | 2,098 | declared-added 62, declared-changed 1, identity 1, run-varying 73 |
+| `optical-calibration-tuning` | passed / passed | 42 / 42 | 12,259 | declared-added 1, identity 1, run-varying 40 |
+| `astrometric-uncertainty-tuning` | passed / passed | 74 / 74 | 2,416 | declared-added 2, identity 1, run-varying 390 |
+| `actual-pixels-blind-warm-readouts` | passed / passed | 132 / 148 | 1,406,999 | declared-added 10,973, declared-changed 2, identity 1, run-varying 270 |
+| `actual-configured-resolution-resources` | passed / passed | 62 / 67 | 2,662 | declared-added 1,208, identity 2, run-varying 733 |
+| `measured-stars-held-out` | passed / passed | 107 / 116 | 6,061 | declared-added 174, declared-changed 1, identity 1, run-varying 201, scorer-by-design 38 |
+| `optical-calibration-held-out` | passed / passed | 116 / 120 | 36,420 | declared-added 1, identity 1, run-varying 115 |
+| `astrometric-uncertainty-held-out` | passed / passed | 350 / 351 | 14,682 | declared-added 2, identity 1, run-varying 3,018 |
+
+- **`pixels-tuning`.** Base and head each record exactly the pinned deterministic failures:
+  - `02-mono-roi-bin2-0: Ambiguous: multiple independently verified orientations`
+  - `02-mono-roi-bin2-1: expected Warm solve`
+- **Resource failures listed.** The only one in the pack is `02-mono-roi-bin2-1: solve exceeded declared cold/warm
+  time budget` in `pixels-tuning`, on both base and head. No pair has a `resource-outcome` leaf.
+
+**Earlier pack: `continuity-f7e69d99`.** It compared base `0639e27d` with head `f7e69d99` on the same #1126
+manifest. Under the continuity rules of manifest `cd046476`, before r0, its verdict is `passed`:
 - Every pair passes, and every differing report leaf is classified.
 - No solver, measurement, mapping, uncertainty or identity hash differs.
 
-It is not continuity evidence under the [tightened rules](#continuity-with-1126). Its head, `f7e69d99`, predates the
-legacy score, so its measured-stars reports carry no `legacy` block. The pack is re-scored under the tightened manifest
-with `issue-1168-qualification.sh rescore`, and the result is recorded with the revision rerun. Continuity under the
-tightened rules is the revision rerun's continuity pack.
+It is not continuity evidence under the tightened rules. Its head, `f7e69d99`, predates the legacy score, so its
+measured-stars reports carry no `legacy` block.
+
+`issue-1168-qualification.sh rescore` re-scored it under manifest `42fb87dd`, at `99301c2d`, from 09:53:49Z to
+09:54:36Z. That is supporting evidence only. The rescore's verdict is `failed`, with reason `unclassified-leaves`, in
+two pairs:
+- `measured-stars-tuning`: 113 unclassified leaves, every one under `reports.N.legacy`, present at base only.
+- `measured-stars-held-out`: 376 unclassified leaves:
+  - 338 under `reports.N.legacy`;
+  - the 38 scorer leaves above, which cannot be scorer-by-design without a head legacy counterpart.
+
+The other seven pairs pass with the same counts as before.
 
 | Pair | Base / head | Elapsed base / head (s) | Identical leaves | Classified differing leaves |
 | --- | --- | ---: | ---: | --- |
@@ -496,9 +603,7 @@ tightened rules is the revision rerun's continuity pack.
 | `optical-calibration-held-out` | passed / passed | 129 / 128 | 36,421 | declared-added 1, identity 1, run-varying 114 |
 | `astrometric-uncertainty-held-out` | passed / passed | 376 / 382 | 14,843 | declared-added 2, identity 1, run-varying 2,857 |
 
-- **`pixels-tuning`.** Base and head each record exactly the pinned deterministic failures:
-  - `02-mono-roi-bin2-0: Ambiguous: multiple independently verified orientations`
-  - `02-mono-roi-bin2-1: expected Warm solve`
+- **`pixels-tuning`.** Base and head each record exactly the two pinned deterministic failures.
 - **Two conditions set before this run reported:**
   - **List, don't absorb.** The verdict lists every resource failure by pair, with its message and both revisions'
     values, even though none fails continuity.
@@ -845,8 +950,8 @@ only for the rectilinear boundary, above.
 ## Supported envelope
 
 This table is the single statement of which exposures the virtual milestone supports. Every row is virtual-only and
-makes no physical claim. Every row is subject to the [revision rerun](#revision-rerun): support stands only for a
-cell that also passes in the rerun pack.
+makes no physical claim. Support stands only for a cell that passes in both `final-350044f8` and the
+[revision rerun](#revision-rerun)'s `final-99301c2d`. Every cell's outcome is the same in both packs.
 
 | Family | Exposure | Supported | Not supported or limited |
 | --- | --- | --- | --- |
