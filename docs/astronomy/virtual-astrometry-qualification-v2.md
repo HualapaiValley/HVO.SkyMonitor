@@ -350,8 +350,9 @@ and full-training-set selection applies only to perspective (rectilinear) fields
 - **Ambiguous solve, stereographic: named unsupported gap.** On `05-mono-roi-bin2` the v2 measurer recovered all
   164 eligible stars, but the v2 solve was rejected fail-closed as `ambiguous` ("multiple independently verified
   orientations"). The v1 detector path on the same frame was accepted. This is not caused by the solver change:
-  the fisheye held-out index peaks at 260,572 triangles and 120 stars, well inside the bound, so the solver takes
-  the v1-identical full-index path. It is the same failure class as the
+  a fisheye field takes the unchanged brightest-120 index selection in both solver versions (the held-out index
+  peaks at 120 stars and 260,572 triangles), and the changed prefix selection applies only to perspective fields.
+  It is the same failure class as the
   [equidistant ROI+2×2 tuning finding](#pre-existing-finding-against-the-v1-equidistant-envelope). Named gap:
   **stereographic ROI+2×2 measured-star blind solve can fail closed as ambiguous** (1 of 18 held-out cases). No
   model term or tolerance was changed.
