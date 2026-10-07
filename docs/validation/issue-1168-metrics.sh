@@ -55,6 +55,8 @@ pixels='
    trailedAssociations: ([.cases[].sources.trailedAssociations] | add),
    unmodeledSourceAssociations: ([.cases[].sources.unmodeledSourceAssociations] | add)},
  maximumRoundTripErrorPixels: ([.roundTrips[].maximumErrorPixels] | maximum),
+ maximumRoundTripErrorPixelsByDestination: (.roundTrips | group_by(.destination // "same-frame")
+   | map({key: (.[0].destination // "same-frame"), value: ([.[].maximumErrorPixels] | maximum)}) | from_entries),
  score: ([.reports[].score | objects] as $s | {
    scoredCases: ($s | length),
    worstPrecision: ([$s[].precision] | minimum),

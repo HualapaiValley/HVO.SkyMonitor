@@ -18,9 +18,13 @@
 # flock when HVO_HEAVY_LOCK is set. Docker is not used. A process is passed when
 # it executed exactly its expected tests and they passed, failed when it executed
 # them and attached every report but a test failed, and incomplete otherwise. The
-# pack is incomplete if any process is, failed if any process or continuity
-# classification failed, and passed otherwise; the script exits 0 only when it
-# passed. Failing to copy, hash or index evidence is fatal, and the index is
+# pack is incomplete if any process is, failed if any process failed, and passed
+# otherwise. In continuity mode the pair verdicts decide instead: a pair is
+# invalid when its base does not reproduce exactly the pinned #1126 outcome,
+# which leaves the pack incomplete; failed on an unexplained head outcome, a
+# deterministic failure difference or an unclassified leaf; and passed
+# otherwise. Resource failures, matched by the manifest's patterns, are timing,
+# never a pair failure. The script exits 0 only when the pack passed. Failing to copy, hash or index evidence is fatal, and the index is
 # validated against the manifest before SHA256SUMS seals the pack.
 set -uo pipefail
 
@@ -155,9 +159,14 @@ run_process() {
         fatal "could not record run $name"
 }
 
-# Every report leaf, including empty containers, as: exact path, path with array indices collapsed to N, JSON value.
+# Every report leaf, including empty containers, as: exact path, path with array indices collapsed to N, JSON value. Each
+# failures list is split first: entries matching a continuity resource-failure pattern move to a sibling resourceFailures
+# list, so a timing or resource outcome never shifts the indices of the deterministic failures.
 leaves() {
-    jq -r 'tostream | select(length == 2)
+    jq -r --argjson patterns "$resource_patterns" 'def resource: type == "string" and (. as $f | any($patterns[]; . as $p | $f | test($p)));
+        walk(if type == "object" and (.failures | type) == "array"
+            then .resourceFailures = [.failures[] | select(resource)] | .failures |= map(select(resource | not)) else . end)
+        | tostream | select(length == 2)
         | [(.[0] | tojson), (.[0] | map(if type == "number" then "N" else tostring end) | join(".")), (.[1] | tojson)] | @tsv' "$1" |
         LC_ALL=C sort -t "$tab" -k1,1
 }
@@ -177,18 +186,21 @@ classify() {
             FNR == NR { kind = $1; rule[kind, ++n[kind]] = $2; if (kind == "changed") { from[$2] = $3; to[$2] = $4 }; next }
             function listed(p, kind,   i) { for (i = 1; i <= n[kind]; i++) if (p == rule[kind, i]) return 1; return 0 }
             function under(p, kind,   i, q) { for (i = 1; i <= n[kind]; i++) { q = rule[kind, i]; if (p == q || index(p, q ".") == 1) return 1 } return 0 }
+            function resource(p) { return p ~ /(^|\.)resourceFailures(\.|$)/ }
             {
                 path = $2 != missing ? $2 : $3; b = $4; h = $5
                 if (b == h) { identical++; next }
                 key = path; sub(/(\.N)+$/, "", key); sub(/.*\./, "", key)
                 if (b != missing && h != missing)
                     class = listed(path, "identity") ? "identity" : listed(key, "runvarying") ? "run-varying" \
+                        : resource(path) ? "resource-outcome" \
                         : (path in from) && b == from[path] && h == to[path] ? "declared-changed" \
                         : under(path, "scorer") ? "scorer-by-design" : "unclassified"
                 else if (b == missing)
-                    class = under(path, "added") ? "declared-added" : under(path, "scorer") ? "scorer-by-design" : "unclassified"
+                    class = under(path, "added") ? "declared-added" : resource(path) ? "resource-outcome" \
+                        : under(path, "scorer") ? "scorer-by-design" : "unclassified"
                 else
-                    class = under(path, "scorer") ? "scorer-by-design" : "unclassified"
+                    class = resource(path) ? "resource-outcome" : under(path, "scorer") ? "scorer-by-design" : "unclassified"
                 print class, path, $1, b, h
             }
             END { print identical + 0 > identical_file }' <(printf '%s\n' "$rules") - >"$prefix.differences.tsv" ||
@@ -207,13 +219,49 @@ classify() {
     printf '%s' "$summary"
 }
 
+# split_failures <report>: its top-level failures in order, and split into {deterministic, resource} by the continuity
+# resource-failure patterns.
+split_failures() {
+    jq -c --argjson patterns "$resource_patterns" 'def resource: type == "string" and (. as $f | any($patterns[]; . as $p | $f | test($p)));
+        (.failures // []) as $f | {all: $f, deterministic: [$f[] | select(resource | not)], resource: [$f[] | select(resource)]}' "$1"
+}
+
+# trx_message <run directory>: the decoded text of the run's TRX failure message; fails unless there is exactly one.
+trx_message() {
+    local trx
+    trx=$(find "$1" -name run.trx -print -quit); [[ -n "$trx" && "$(grep -c '<Message>' "$trx")" == 1 ]] || return 1
+    awk '/<Message>/ { on = 1; sub(/^.*<Message>/, "") } on { if (sub(/<\/Message>.*$/, "")) { print; exit } print }' "$trx" |
+        sed -e 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&apos;/'"'"'/g; s/&amp;/\&/g'
+}
+
+# explained <run directory> <status> <recorded failures json> [pinned message]: true when the process outcome is the one
+# its report records. Without a pinned message, no recorded failure must pass, and a failure must be exactly the
+# harness's final Assert.IsEmpty(failures) over the recorded failures in order. With one, the process must fail with
+# exactly that message.
+explained() {
+    local dir=$1 status=$2 recorded=$3 pinned=${4-} message expected
+    if [[ -z "$pinned" && "$(jq '.all | length' <<<"$recorded")" == 0 ]]; then [[ $status == passed ]]; return; fi
+    [[ $status == failed ]] && message=$(trx_message "$dir") || return 1
+    [[ -n "$pinned" ]] && { [[ "$message" == "$pinned" ]]; return; }
+    expected=$(jq -r '.all | "Assertion failed. Expected collection to be empty.\n\(join("\n"))\n\nexpected count: 0\nactual count:   \(length)\n\nAssert.IsEmpty(failures)"' \
+        <<<"$recorded") || return 1
+    [[ "$message" == "$expected" ]]
+}
+
+elapsed_of() { jq --arg n "$1" '[.[] | select(.name == $n) | .elapsedSeconds][0]' <<<"$results"; }
+
 pack_status=passed
 note_status() {
     case "$1" in incomplete) pack_status=incomplete ;; failed) [[ $pack_status == incomplete ]] || pack_status=failed ;; esac
 }
 
-continuity='null'; sections='[]'
+continuity='null'; sections='[]'; resource_patterns='[]'
 if [[ "$mode" == continuity ]]; then
+    resource_patterns=$(jq -ce '.continuity.resourceFailures.patterns | select(type == "array" and length > 0 and all(.[]; type == "string"))' "$manifest") ||
+        fatal "continuity.resourceFailures.patterns must be a non-empty string array"
+    jq -n --argjson patterns "$resource_patterns" '[$patterns[] as $p | "" | test($p)] | length' >/dev/null || fatal "a resource-failure pattern does not compile"
+    jq -e '.continuity.baseFailures.sets | type == "object" and all(.[]; type == "array" and all(.[]; type == "string"))' "$manifest" >/dev/null ||
+        fatal "continuity.baseFailures.sets must map pair ids to string arrays"
     prior_path=$(jq -re .continuity.manifest "$manifest") || exit 2
     [[ "$(jq -r .continuity.baseRevision "$manifest")" == "$base" ]] || fatal "continuity base must be the manifest base"
     [[ "$(git rev-parse "$base:$prior_path")" == "$(git rev-parse "HEAD:$prior_path")" ]] || fatal "$prior_path differs between base and head"
@@ -237,9 +285,13 @@ if [[ "$mode" == continuity ]]; then
             expected=$(jq -r .expectedPassed <<<"$entry"); wanted=$(jq -c .reports <<<"$entry")
             run_process "$id-base" "$basetree" "$base" "$project" "$filter" "$expected" "$wanted" "$out/reports/$id/base"; base_status=$last_status
             run_process "$id-head" "$repo" "$revision" "$project" "$filter" "$expected" "$wanted" "$out/reports/$id/head"; head_status=$last_status
-            note_status "$base_status"; note_status "$head_status"
-            classified='[]'; verdict=passed
-            [[ $base_status == passed && $head_status == passed ]] || verdict=failed
+            # A process failure counts only through its pair: the pinned base failures, identical head deterministic
+            # failures, outcomes explained by the reports, and classified leaves. Resource outcomes are timing, not output.
+            classified='[]'; verdict=passed; reasons='[]'
+            recorded_base='{"all":[],"deterministic":[],"resource":[]}'; recorded_head=$recorded_base
+            pinned=$(jq -c --arg id "$id" '.continuity.baseFailures.sets[$id] // [] | sort' "$manifest") || exit 1
+            pinned_message=$(jq -r --arg id "$id" '.continuity.baseFailures.processMessages[$id] // empty' "$manifest") || exit 1
+            [[ $base_status == incomplete || $head_status == incomplete ]] && verdict=incomplete
             while read -r report; do
                 before="$out/reports/$id/base/$(basename "$report")"; after="$out/reports/$id/head/$(basename "$report")"
                 if [[ ! -f "$before" || ! -f "$after" ]]; then
@@ -248,13 +300,32 @@ if [[ "$mode" == continuity ]]; then
                 fi
                 mkdir -p "$out/continuity/$id" || exit 1
                 summary=$(classify "$(basename "$report")" "$before" "$after" "$out/continuity/$id/$(basename "$report" .json)") || exit 1
-                [[ "$(jq -r .verdict <<<"$summary")" == passed ]] || { [[ $verdict == incomplete ]] || verdict=failed; }
+                [[ "$(jq -r .verdict <<<"$summary")" == passed ]] || reasons=$(jq -c '. + ["unclassified-leaves"]' <<<"$reasons")
                 classified=$(jq --argjson s "$summary" '. + [$s]' <<<"$classified") || exit 1
+                recorded_base=$(jq -c --argjson s "$(split_failures "$before")" 'with_entries(.value += $s[.key])' <<<"$recorded_base") &&
+                    recorded_head=$(jq -c --argjson s "$(split_failures "$after")" 'with_entries(.value += $s[.key])' <<<"$recorded_head") ||
+                    fatal "could not read the failures of $id"
             done < <(jq -r '.[]' <<<"$wanted")
-            note_status "$verdict"
+            if [[ $verdict != incomplete ]]; then
+                [[ "$(jq -c '.deterministic | sort' <<<"$recorded_base")" == "$pinned" ]] || reasons=$(jq -c '. + ["base-failures-not-pinned"]' <<<"$reasons")
+                [[ "$(jq -c '.deterministic | sort' <<<"$recorded_head")" == "$(jq -c '.deterministic | sort' <<<"$recorded_base")" ]] ||
+                    reasons=$(jq -c '. + ["deterministic-failures-differ"]' <<<"$reasons")
+                explained "$out/runs/$id-base" "$base_status" "$recorded_base" "$pinned_message" ||
+                    reasons=$(jq -c '. + ["base-outcome-unexplained"]' <<<"$reasons")
+                explained "$out/runs/$id-head" "$head_status" "$recorded_head" || reasons=$(jq -c '. + ["head-outcome-unexplained"]' <<<"$reasons")
+                # A base that does not reproduce exactly the recorded #1126 outcome invalidates the run as environment or setup.
+                if jq -e 'index("base-failures-not-pinned") or index("base-outcome-unexplained")' <<<"$reasons" >/dev/null; then verdict=invalid
+                elif [[ $reasons != '[]' ]]; then verdict=failed; fi
+            fi
+            # An invalid pair is not evidence; the pack records it as incomplete.
+            if [[ $verdict == invalid ]]; then note_status incomplete; else note_status "$verdict"; fi
             pair=$(jq -n --arg id "$id" --arg section "$prior_section" --arg base "$base_status" --arg head "$head_status" \
-                --argjson reports "$classified" --arg verdict "$verdict" \
-                '{id: $id, section: $section, baseStatus: $base, headStatus: $head, reports: $reports, verdict: $verdict}') || exit 1
+                --argjson baseSeconds "$(elapsed_of "$id-base")" --argjson headSeconds "$(elapsed_of "$id-head")" \
+                --argjson pinned "$pinned" --argjson baseFailures "$recorded_base" --argjson headFailures "$recorded_head" \
+                --argjson reasons "$reasons" --argjson reports "$classified" --arg verdict "$verdict" \
+                '{id: $id, section: $section, baseStatus: $base, headStatus: $head, baseElapsedSeconds: $baseSeconds,
+                  headElapsedSeconds: $headSeconds, pinnedBaseFailures: $pinned, baseFailures: $baseFailures, headFailures: $headFailures,
+                  reasons: $reasons, reports: $reports, verdict: $verdict}') || exit 1
             mkdir -p "$out/continuity/$id" && jq . <<<"$pair" >"$out/continuity/$id/continuity.json" || fatal "could not write continuity for $id"
             echo "    continuity $id: $verdict $(jq -c '[.reports[] | {(.report): (.counts // .verdict)}] | add' <<<"$pair")"
             pairs=$(jq --argjson p "$pair" '. + [$p]' <<<"$pairs") || exit 1
@@ -262,7 +333,8 @@ if [[ "$mode" == continuity ]]; then
     done
     continuity=$(jq -n --arg base "$base" --arg prior "$prior_path" --arg sha "$(sha256sum "$prior" | cut -d' ' -f1)" --argjson pairs "$pairs" \
         '{baseRevision: $base, priorManifest: $prior, priorManifestSha256: $sha, pairs: $pairs,
-          verdict: (if any($pairs[]; .verdict == "incomplete") then "incomplete" elif all($pairs[]; .verdict == "passed") then "passed" else "failed" end)}') ||
+          verdict: (if any($pairs[]; .verdict == "invalid") then "invalid" elif any($pairs[]; .verdict == "incomplete") then "incomplete"
+                    elif all($pairs[]; .verdict == "passed") then "passed" else "failed" end)}') ||
         fatal "could not record continuity"
     entries=$(jq -c '[(.tuning[], .runs[]) | {id, filter}]' "$prior") || exit 1
     harness='[]'

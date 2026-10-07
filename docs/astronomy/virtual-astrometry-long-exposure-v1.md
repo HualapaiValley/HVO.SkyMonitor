@@ -10,9 +10,11 @@ sensor-pixel frames, using the [#1168 manifest](../validation/issue-1168-qualifi
 the single statement of which exposures the virtual milestone supports. v2 remains the 1 s projection-family
 envelope.
 
-**Status: declared at `27c611dc`, not yet measured.** The matrix, refusals, withheld cells, tolerances, floor rule
-and continuity rules below were committed in the manifest before any continuity, tuning or held-out run. Results
-and the [supported envelope](#supported-envelope) are added after measurement.
+**Status: declared, not yet measured.** The matrix, refusals, withheld cells, tolerances, floor rule and continuity
+rules below were committed in the manifest at `27c611dc`, before any continuity, tuning or held-out run. The first
+continuity run found two harness declaration defects. Their correction re-froze the manifest before any evidence
+run; see [harness defects found on continuity](#harness-defects-found-on-continuity). Results and the
+[supported envelope](#supported-envelope) are added after measurement.
 
 This is a virtual qualification only. It makes no claim about physical accuracy, and no profile here is a physical
 lens certification. No product code changed: `src/` is identical to `development/v1` at `0639e27d`.
@@ -103,8 +105,15 @@ renderer-capacity run measures this boundary, and the follow-up tracks raising i
 
 Every #1106/#1126 tolerance is unchanged. Nothing is weakened. The manifest names these additions:
 
-- Same-frame and cross-frame round trips within 1e-6 px. Points that leave the horizon or aperture are counted as
+- Same-frame and cross-frame round trips within 1e-4 px. Points that leave the horizon or aperture are counted as
   excluded, not failed.
+  - Near the optical axis the fisheye projectors take θ = acos(Up). A ray whose Up returns k ulps below 1 lands
+    about √(2kε)·f px off axis, with ε = 2⁻⁵³, so one ulp is f·2⁻²⁶ px.
+  - The bound covers a single-ulp axis error only while f ≤ 6,711 px/rad. The matrix satisfies that: its largest
+    fitted focal is 735.6 px/rad, where one ulp is 1.096e-5 px and the bound admits 83 ulps.
+  - The bound is 7,500 times below the unchanged 0.75 px mapping tolerance.
+  - The report records the maximum round-trip error for each destination, so the typical value and the on-axis value
+    are both visible.
 - Truth is the midpoint of each star's rendered trail. A trail truncated by the horizon, the aperture or the frame
   is excluded from scoring and counted.
 - Saturated detections are scored unless excluded as `saturated-excessive`. Every exclusion reason is counted per
@@ -145,7 +154,34 @@ exposure is withheld; it is never retuned.
 
 With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds
 base `0639e27d` and this head in Release. It then runs every #1126 manifest entry on base and then on head, in one
-heavy-lock session on hvo-dev-02.
+heavy-lock session on hvo-dev-02. No `src/` path differs between the two.
+
+A pair passes only when all of these hold:
+
+- Both processes complete, with every listed report present.
+- **Pinned base failures.** The base's deterministic failures equal exactly the set the manifest pins for that pair,
+  and none for any other pair. Only `pixels-tuning` has a pinned set: the two #1126 tuning failures v2 records,
+  `02-mono-roi-bin2-0` rejected as ambiguous and `02-mono-roi-bin2-1` expected Warm.
+- **Same deterministic failures.** The head's deterministic failures equal the base's, with the same case IDs and
+  reason codes.
+- **Explained outcomes.** A process that records no failure passes. A failed process fails with exactly its
+  harness's final `Assert.IsEmpty(failures)` message, listing its report's failures in order. The `pixels-tuning`
+  base is the one exception: it must fail with exactly the pinned #1126 grid-count assertion, 725 of 750, as v2
+  records. The head counts only accepted sources there, so it reaches `Assert.IsEmpty`.
+- Every differing report leaf is classified.
+
+A base that records any other deterministic failure, or fails any other way, invalidates the run as environment or
+setup. That pair is `invalid`, the pack is incomplete, and it is not a continuity pass.
+
+**Timing is kept apart.** A report failure that matches one of the manifest's anchored resource-failure patterns is
+a timing or resource outcome, not output: a measured time, allocation or working set over its declared budget.
+
+- The patterns cover the pixel solve time budget, and the measured-stars, resources, calibration and uncertainty
+  time, allocation and working-set budgets.
+- None matches a solve mode, reason code, association, accuracy, count, mapping or round-trip failure.
+- With no `src/` change, a resource failure that appears or disappears between revisions is a classified timing
+  difference. Both revisions' elapsed seconds are recorded. It never fails continuity.
+- A deterministic failure that appears or disappears always fails continuity.
 
 Every report leaf that differs must be classified:
 
@@ -153,12 +189,45 @@ Every report leaf that differs must be classified:
 | --- | --- |
 | identity | The revision fields. |
 | run-varying | Timing and resource fields. |
+| resource-outcome | A resource failure, split out of `failures` before classification. |
 | declared-changed | An exact base and head value named in the manifest, such as the schema versions. |
 | declared-added | A new field, such as `exposureSeconds`, `cases`, `cells` or `negativeControl`. |
 | scorer-by-design | Under a scorer prefix: the scorers became trail-aware by design. |
 
-Any unclassified leaf fails continuity. So does any difference in solver, measurement, mapping, uncertainty,
-identity hashes or failures.
+Any unclassified leaf fails continuity. So does any difference in solver, measurement, mapping, uncertainty or
+identity hashes.
+
+### Harness defects found on continuity
+
+The first continuity run, at `27c611dc`, found two harness declaration defects. Neither is a product change, and
+neither changed a deterministic output between base and head. That run is kept as a labelled diagnostic, not as
+evidence:
+
+- Pack `continuity-27c611dc`, status `failed`.
+- Archive `continuity-27c611dc.diagnostic.tar.zst`, SHA-256
+  `9e3512d122f12a83fc5168b5b55cf02c6f42270f21fcf38e209244396b20d0bd`.
+
+The correction changes only the test's tolerance constant, the manifest, the runner, the metrics script and this
+report. Every continuity pair is rerun from scratch on the re-frozen manifest, including the six that passed.
+
+1. **Round-trip tolerance.**
+   - Cause: the declared 1e-6 px bound was below the projectors' conditioning on the optical axis. 16 head round
+     trips, in `pixels-tuning` and `actual-pixels-blind-warm-readouts`, missed it at 2.83e-6 to 1.096e-5 px. Each
+     equals f·2⁻²⁶ for its source's fitted focal (189.7, 379.3 or 735.6 px/rad) to within 1e-8 relative: one ulp of
+     Up at a grid point on the axis. Every other round trip was at most 1.8e-10 px.
+   - Correction: the 1e-4 px bound [derived above](#tolerances).
+   - Check: the largest diagnostic error is 9 times below the new bound.
+2. **Process-status equality.**
+   - Cause: continuity required equal process status on both revisions. Two #1126 outcomes break that without any
+     output difference:
+     - A timing budget can fail on one revision only. The `measured-stars-held-out` base failed
+       `01-mono-roi-bin2: v2 measurement 44 ms vs v1 10 ms`, the time-ratio miss v2 records; the head passed.
+     - The frozen #1126 pixel harness stops on its grid-count assertion before its failure list.
+   - Correction: the pinned base failures, the exact process-outcome rule and the resource-outcome class above.
+   - Check: applied to all nine diagnostic pairs, the corrected rules explain every base and head process outcome,
+     and every base matches its pinned set. `measured-stars-held-out` passes with two `resource-outcome` leaves. The
+     only remaining failures are the 16 round-trip misses that the first correction removes. Truncated, reordered and
+     wrong failure messages are rejected.
 
 ## Reproduction
 
@@ -187,6 +256,12 @@ Pending measurement.
 ## Supported envelope
 
 Pending measurement.
+
+## Observations
+
+- The equidistant projector's θ = acos(Up) loses about 1.5e-8 rad on the optical axis, where atan2(hypot(x, y), z)
+  would not. The product impact is at most about 1e-5 px, 75,000 times below the mapping tolerance. The product is
+  unchanged and no issue is filed.
 
 ## Not claimed
 

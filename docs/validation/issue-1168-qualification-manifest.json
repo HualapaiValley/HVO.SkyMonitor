@@ -110,7 +110,8 @@
   ],
   "addedTolerances": {
     "midpointDeltaTicks": 0,
-    "roundTripTolerancePixels": 1e-6,
+    "roundTripTolerancePixels": 1e-4,
+    "roundTripConditioning": "Near the optical axis the fisheye projectors take theta = acos(camera.Up), so a ray whose Up returns k ulps below 1 lands about sqrt(2 k eps) * f px off axis, with eps = 2^-53; one ulp gives f * 2^-26 px. The bound therefore covers a single-ulp axis error only while f <= 6,711 px/rad (1e-4 * 2^26), which the matrix satisfies: its largest fitted focal is 735.6 px/rad, where one ulp is 1.096e-5 px and the bound admits 83 ulps. It stays 7,500 times below the unchanged 0.75 px mapping tolerance. The report records the maximum observed round-trip error for each destination. The bound was 1e-6 px at 27c611dc; see the continuity correction in the report.",
     "unmodeledSourceRadiusPixels": 1.5,
     "trailAwareTruth": "Truth is the midpoint of each star's rendered trail; a trail truncated by the horizon, aperture or frame is excluded from scoring and counted. Saturated detections are scored unless excluded as saturated-excessive; every exclusion reason is counted per cell.",
     "measuredStarV1Comparison": "The v1 recall, centroid-regression and time-ratio comparisons gate only 1 s; at 20 s and 60 s v1 is reported, not compared.",
@@ -139,7 +140,7 @@
     "sections": ["tuning", "runs"],
     "cell": {},
     "order": "Both revisions are built in Release first; then, for each #1126 manifest run in order, the base process runs and then the head process, in one heavy-lock session, each with HVO_EVIDENCE_REVISION set to its own revision.",
-    "pass": "Every pair passes on both revisions, every listed report is present on both sides, and every differing report leaf is classified below. Any unclassified leaf, any failures difference and any solver, measurement, mapping, uncertainty or identity-hash difference fails continuity.",
+    "pass": "A pair passes only when every condition holds: both processes complete with every listed report present; the base's deterministic failures equal exactly the set baseFailures pins for that pair (none for an unlisted pair); the head's deterministic failures equal the base's, with the same case IDs and reason codes; each process outcome satisfies processRule; and every differing report leaf is classified below. A base that records any other deterministic failure, or whose outcome processRule does not explain, invalidates the run as environment or setup: the pair is invalid, the pack is incomplete, and it is not a continuity pass. A resourceFailures entry is timing, not output: with no src/ change, one that appears or disappears between revisions is a classified timing difference, recorded with both revisions' elapsed seconds, never a continuity failure. Any deterministic failure appearing or disappearing, any unclassified leaf, and any solver, measurement, mapping, uncertainty or identity-hash difference fails continuity.",
     "identityLeaves": ["revision", "binaryRevision"],
     "runVaryingKeys": [
       "acquisitionMilliseconds", "allocatedBytes", "allocatedBytesPerPixel", "captureMedianMs", "captureMs", "captureP95Ms", "cpuMs",
@@ -180,7 +181,38 @@
         "scorer": []
       }
     },
-    "classification": "Array indices collapse to N. A leaf present on both sides with a different value is identity, run-varying (its final key is listed), declared-changed (exact base and head values) or scorer-by-design (under a scorer prefix). A leaf present on one side only must be head-only under an added prefix, or under a scorer prefix. Scorer-by-design leaves are reported, not failed: the scorers became trail-aware by design."
+    "classification": "Array indices collapse to N. Before classification every failures list is split by resourceFailures. A leaf present on both sides with a different value is identity, run-varying (its final key is listed), resource-outcome (in a resourceFailures list), declared-changed (exact base and head values) or scorer-by-design (under a scorer prefix). A leaf present on one side only must be head-only under an added prefix, a resource-outcome, or under a scorer prefix. Scorer-by-design and resource-outcome leaves are reported, not failed: the scorers became trail-aware by design, and resource outcomes are timing.",
+    "resourceFailures": {
+      "rule": "A report failure matching one of these anchored patterns is a timing or resource outcome: a measured elapsed time, allocation or working set over its declared budget. Each failures list is split before classification, its matching entries moving to a sibling resourceFailures list so the indices of deterministic failures never shift. The patterns cover the pixel solve time budget; the measured-stars time-ratio, allocation and working-set budgets; the resources warm-solve, capture, detection and process-peak budgets; and the calibration and uncertainty time, allocation and working-set budgets. None matches a solve mode, reason code, association, accuracy, coverage, count, mapping or round-trip failure.",
+      "patterns": [
+        "^[^:]+: solve exceeded declared cold/warm time budget$",
+        "^[^:]+: v2 measurement [0-9.,]+ ms vs v1 [0-9.,]+ ms$",
+        "^[^:]+: v2 allocated [0-9.,]+ B/pixel$",
+        "^[^:]+: peak working set [0-9.,]+ MiB$",
+        "^window pressure: [0-9.,]+ ms$",
+        "^window pressure: allocated [0-9.,]+ B/pixel$",
+        "^[^:]+: warm solve [0-9]+ms exceeds 500ms$",
+        "^[^:]+: (capture|detection) p95 [0-9.,E+-]+ms exceeds budget$",
+        "^[^:]+: cumulative process peak [0-9]+ exceeds 2 GiB; run this resource workload in its own test process$",
+        "^[^:]+: [0-9.,]+ ms exceeds [0-9.,]+ ms$",
+        "^[^:]+: allocated [0-9.,]+ MiB exceeds [0-9.,]+ MiB$",
+        "^[^:]+: estimator [0-9.,]+ ms exceeds [0-9.,]+ ms$",
+        "^[^:]+: estimator allocated [0-9]+ bytes$"
+      ]
+    },
+    "baseFailures": {
+      "rule": "The deterministic base failures each pair must reproduce exactly: the #1126 failures v2 records, by case ID and reason. A pair not listed must record none. pixels-tuning is v2's pre-existing finding: 02-mono-roi-bin2-0 rejected as ambiguous, and 02-mono-roi-bin2-1 therefore cold rather than warm. Its 02-mono-roi-bin2-1 time-budget failure is a resource outcome, as is v2's held-out measured-stars time-ratio miss.",
+      "sets": {
+        "pixels-tuning": [
+          "02-mono-roi-bin2-0: Ambiguous: multiple independently verified orientations",
+          "02-mono-roi-bin2-1: expected Warm solve"
+        ]
+      },
+      "processMessages": {
+        "pixels-tuning": "Assertion failed. Expected values to be equal.\nEvery accepted blind/warm source requires its own grid.\n\nexpected: 750\nactual:   725\n\nAssert.AreEqual(reports.Count * 25, mappings.SourceGeometry.Count)"
+      }
+    },
+    "processRule": "A process whose reports record no failure must pass. A failed process must report exactly one TRX failure message, equal exactly to its harness's final Assert.IsEmpty(failures) message over its report's failures in order: \"Assertion failed. Expected collection to be empty.\", one failure per line, a blank line, \"expected count: 0\", \"actual count:   N\", a blank line and \"Assert.IsEmpty(failures)\". A base process with a baseFailures processMessages entry must instead fail with exactly that message: pixels-tuning's base stops on the frozen #1126 grid-count assertion, 725 of 750, as v2 records, while the head counts only accepted sources there and reaches Assert.IsEmpty. Any other outcome, including an exception, a different assertion or a missing TRX, is unexplained: invalid at base, failed at head."
   },
   "tuning": [
     {

@@ -444,8 +444,13 @@ public sealed class VirtualAstrometryQualificationTests
     private sealed record MappingEvidence(List<object> Grids, List<object> SourceGeometry,
         List<object> SourceCoverage, List<object> MappingCoverage, List<object> RoundTrips);
 
-    /// <summary>Numerical round-trip invariant: mapping a pixel out and back must reproduce it to this many pixels.</summary>
-    internal const double RoundTripTolerancePixels = 1e-6;
+    /// <summary>
+    /// Numerical round-trip invariant: mapping a pixel out and back must reproduce it to this many pixels. Near the axis
+    /// the fisheye projectors take θ = acos(camera.Up), so a ray whose Up returns k ulps below 1 lands about √(2kε)·f px
+    /// off axis, ε = 2⁻⁵³; one ulp is f·2⁻²⁶ px. The bound covers a single-ulp axis error only while f ≤ 6,711 px/rad,
+    /// which the matrix satisfies: its largest fitted focal, 735.6 px/rad, gives 1.096e-5 px per ulp.
+    /// </summary>
+    internal const double RoundTripTolerancePixels = 1e-4;
 
     private static MappingEvidence ScoreMappings(List<MapCase> cases, List<string> failures)
     {
