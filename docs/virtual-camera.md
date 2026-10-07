@@ -466,6 +466,10 @@ Annotations draw the footprint, not a fixed marker:
   layers, other labels that would fall on the disc are dropped.
 - A footprint whose padded half-extent fits inside the point marker keeps the
   released marker and label, byte for byte.
+- A capture without resolved footprints (`projected-scene-v1`) keeps the
+  `projected-annotation-raster-v3` algorithm version and the same annotation
+  identity, so a retry of work retained before the upgrade reproduces the same
+  output under the same key.
 - Unresolved planets and stars keep the fixed minimum marker. Annotation size
   never implies a planetary diameter.
 - Open outline parts left by the frame, aperture or horizon are drawn without a

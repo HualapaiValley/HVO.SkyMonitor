@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.Imaging;
@@ -63,6 +64,7 @@ public sealed record ProjectedAnnotationObject(
     PixelPoint Pixel,
     bool DrawMark = true,
     bool DrawLabel = true,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyList<ResolvedFootprintPart>? FootprintParts = null);
 
 /// <summary>An immutable line segment whose endpoints were resolved from the same projected scene.</summary>
@@ -76,6 +78,7 @@ public sealed record ProjectedAnnotationOverlay(
     PixelPoint East,
     PixelPoint South,
     PixelPoint West,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     double? ImageCircleRadiusY = null);
 
 /// <summary>Exact bounded metadata lines placed at the four image corners.</summary>
@@ -98,6 +101,25 @@ public sealed record AnnotationResult(
 public static class AnnotationRenderer
 {
     public const string AlgorithmVersion = "projected-annotation-raster-v4-resolved-footprints";
+
+    /// <summary>
+    /// The version recorded for inputs that carry no resolved footprint or elliptical image circle. The v4 raster
+    /// draws exactly the v3 bytes for them, and keeping the v3 version keeps a retry of work retained before the
+    /// upgrade on the same output identity with the same product manifest.
+    /// </summary>
+    public const string PointAnnotationAlgorithmVersion = "projected-annotation-raster-v3";
+
+    /// <summary>Selects the version describing how the given inputs are drawn.</summary>
+    public static string AlgorithmVersionFor(
+        IReadOnlyList<ProjectedAnnotationObject> objects,
+        ProjectedAnnotationOverlay? projectionOverlay)
+    {
+        ArgumentNullException.ThrowIfNull(objects);
+        return projectionOverlay?.ImageCircleRadiusY is not null ||
+            objects.Any(static item => item.FootprintParts is not null)
+            ? AlgorithmVersion
+            : PointAnnotationAlgorithmVersion;
+    }
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
