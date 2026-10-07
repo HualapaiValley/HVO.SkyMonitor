@@ -20,7 +20,6 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
     ILogger<CentralTransientRetrospectiveScheduler> logger) : ICentralTransientRetrospectiveScheduler
 {
     private const int BatchSize = 100;
-    private const int MaxStaleCameraRequeries = 8;
 
     /// <summary>The candidate sources taken per query; a test seam, production always uses the default.</summary>
     internal int CandidateBatchSize { get; init; } = BatchSize;
@@ -60,7 +59,7 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
         Dictionary<CentralProcessingGraphUnexpandableRevision, int>? deferred = null;
         // A re-query returns again every earlier candidate that is still one; each source is attempted once a pass.
         var considered = new HashSet<(Guid DevicePublicId, Guid ArtifactId)>();
-        for (var requery = 0; ; requery++)
+        while (true)
         {
             var excludedCameraIds = staleCameras?.Keys.ToArray() ?? [];
             var artifacts = await CreateRetrospectiveCandidateQuery(
@@ -120,13 +119,11 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
                     Log.SchedulingRejected(logger, exception.ReasonCode);
                 }
             }
+            // Each re-query follows a batch that found a camera not yet excluded and excludes it, so a pass ends after
+            // at most one query per distinct stale camera plus one, and a schedulable source behind any number of them
+            // is reached in this pass. A fixed cap would leave it behind the same cameras on every pass.
             if (!foundStaleCamera || artifacts.Count == 0)
             {
-                break;
-            }
-            if (requery == MaxStaleCameraRequeries)
-            {
-                Log.StaleCameraRequeryLimitReached(logger, MaxStaleCameraRequeries, staleCameras!.Count);
                 break;
             }
         }
@@ -184,12 +181,6 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
             "reassigns a revision published on the current recipe versions.")]
         public static partial void UnexpandableGraphRevision(
             ILogger logger, int artifactCount, Guid? assignmentId, Guid revisionId, string nodeAlias, string reasonCode);
-
-        [LoggerMessage(2177, LogLevel.Warning,
-            "Central transient retrospective scheduling stopped after {RequeryCount} re-queries excluding {CameraCount} " +
-            "cameras whose central graph revision this binary cannot expand; schedulable sources behind further such " +
-            "cameras wait for a later pass.")]
-        public static partial void StaleCameraRequeryLimitReached(ILogger logger, int requeryCount, int cameraCount);
 
         [LoggerMessage(2142, LogLevel.Error,
             "Central transient retrospective scheduling recorded a derivative scheduling rejection: ReasonCode={ReasonCode}")]

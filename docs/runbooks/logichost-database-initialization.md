@@ -213,12 +213,15 @@ the change appends the next chain entry. Treat it as an upgrade:
    reconciliation and retrospective work recovers on its next pass.
 
 Retrospective scheduling excludes a stale camera and re-queries within the same
-pass, at most 8 times. The stale set is per pass and is not persisted. If more
-than 8 consecutive candidate batches contain only distinct newly stale cameras,
-the pass stops with Warning `2177`, the remaining sources wait for a later pass,
-and that pathological ordering is rediscovered on every pass until the operator
-acts. With real interleaved capture times one batch normally discovers many
-cameras at once. Signal: `2177` with `2169`. Action: end or reassign the stale
+pass. There is no fixed re-query cap. A re-query runs only after a batch found
+a camera not yet excluded, so per-pass cost scales with the number of distinct
+stale cameras: at most one query, and one expansion attempt, per stale camera,
+plus one more query. Schedulable sources behind any number of stale cameras are
+reached in that pass. A source without a camera installation never reaches graph
+expansion, so it is scheduled through legacy routing and is never excluded. The
+stale set is per pass and is not persisted, so an ended or reassigned assignment
+takes effect on the next pass. Signal: `2169`, unchanged, one Error per stale
+assignment and revision per pass. Action: end or reassign the stale
 assignments.
 
 Rollback hazard: a binary whose chain lacks the newer entry does not fail

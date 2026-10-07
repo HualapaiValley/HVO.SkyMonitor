@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -7,6 +8,7 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -375,7 +377,7 @@ public sealed partial class ArtifactIngestTests
                 entry.Message.Contains(stale[0].AssignmentId.ToString(), StringComparison.Ordinal) &&
                 entry.Message.Contains(stale[0].RevisionId.ToString(), StringComparison.Ordinal));
             logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Warning,
-                "one re-query reaches the healthy source, far below the per-pass limit");
+                "one re-query reaches the healthy source");
         }
         finally
         {
@@ -392,6 +394,398 @@ public sealed partial class ArtifactIngestTests
                 await ClearStaleReconciliationStateAsync(artifactId).ConfigureAwait(false);
             }
             await RetireStaleGraphCameraAsync(stale[0]).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task RetrospectiveTransientScheduling_ReachesTheHealthySourceBehindMoreStaleCamerasThanAnyFixedCap()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        // Ten stale cameras, each filling one two-candidate batch, all older than the healthy source: more consecutive
+        // batches of newly stale cameras than the former re-query cap of eight, which every pass met again identically.
+        const int staleCameraCount = 10;
+        var stale = new List<IReadOnlyList<StaleAssignmentArtifact>>();
+        for (var camera = 0; camera < staleCameraCount; camera++)
+        {
+            stale.Add(await SeedStaleAssignmentArtifactsAsync(
+                $"stale-graph-retrospective-many-{camera}", [5241 + (2 * camera), 5242 + (2 * camera)])
+                .ConfigureAwait(false));
+        }
+        var healthyArtifactId = await SeedHealthyPendingArtifactAsync("stale-graph-retrospective-many-healthy", 5299)
+            .ConfigureAwait(false);
+        var ordered = stale.SelectMany(static camera => camera.Select(static item => item.CentralArtifactId))
+            .Append(healthyArtifactId)
+            .ToArray();
+        var restoreReceivedAt = new Dictionary<Guid, DateTimeOffset>();
+        try
+        {
+            await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                for (var index = 0; index < ordered.Length; index++)
+                {
+                    await ClearStaleReconciliationStateAsync(ordered[index]).ConfigureAwait(false);
+                    var artifactId = ordered[index];
+                    var artifact = await db.CentralArtifacts.SingleAsync(item => item.Id == artifactId)
+                        .ConfigureAwait(false);
+                    artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+                    restoreReceivedAt[artifactId] = artifact.ReceivedAtUtc;
+                    artifact.ReceivedAtUtc = RetrospectiveCandidateEpoch.AddMinutes(index + 1);
+                }
+                await db.SaveChangesAsync().ConfigureAwait(false);
+            }
+
+            var options = new CentralTransientOptions { Mode = TransientDetectorExecutionMode.Central };
+            // Successive passes, each in its own scope as the worker runs them; nothing of a pass carries to the next.
+            // The fixture schedules no transient work, so the healthy source stays a candidate and every pass meets
+            // the same queue again.
+            const int passes = 3;
+            var reached = new List<bool>();
+            var results = new List<(BatchRecordingScheduler Scheduler, CandidateQueryCounter Queries,
+                RecordingLogger<CentralTransientRetrospectiveScheduler> Logger)>();
+            for (var pass = 0; pass < passes; pass++)
+            {
+                var logger = new RecordingLogger<CentralTransientRetrospectiveScheduler>();
+                var queries = new CandidateQueryCounter();
+                await using var scope = fixture.Factory.Services.CreateAsyncScope();
+                await using var db = CreateCountingDbContext(queries);
+                var scheduler = new BatchRecordingScheduler(
+                    scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>(), ordered);
+                var retrospective = new CentralTransientRetrospectiveScheduler(
+                    db,
+                    scheduler,
+                    new CentralDerivativeRecipeCatalog(options),
+                    Options.Create(options),
+                    scope.ServiceProvider.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
+                    logger)
+                {
+                    CandidateBatchSize = 2
+                };
+                await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None)
+                    .ConfigureAwait(false);
+                reached.Add(scheduler.Completed.Contains(healthyArtifactId));
+                results.Add((scheduler, queries, logger));
+            }
+            reached.Should().Equal(Enumerable.Repeat(true, passes),
+                "every pass reaches the healthy source behind the stale cameras");
+            for (var pass = 0; pass < passes; pass++)
+            {
+                var (scheduler, queries, logger) = results[pass];
+                // Every pass reaches the healthy source: one attempt names each stale camera, whose second source is
+                // then deferred without another attempt, and one query per stale camera plus a last one ends the pass.
+                scheduler.Attempted.Should().Equal(
+                    stale.Select(static camera => camera[0].CentralArtifactId).Append(healthyArtifactId),
+                    "pass {0} attempts each stale camera once and reaches the healthy source", pass);
+                scheduler.Completed.Should().Equal(new[] { healthyArtifactId }, "pass {0} schedules the healthy source", pass);
+                queries.Count.Should().Be(staleCameraCount + 1,
+                    "pass {0} re-queries once per newly stale camera and stops at the first batch with none", pass);
+                foreach (var camera in stale)
+                {
+                    logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Error &&
+                        entry.Message.Contains("deferred 2 source artifacts", StringComparison.Ordinal) &&
+                        entry.Message.Contains(camera[0].AssignmentId.ToString(), StringComparison.Ordinal),
+                        "pass {0} reports each stale revision once", pass);
+                }
+                logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Warning,
+                    "no pass stops before it has excluded every stale camera");
+            }
+            await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var staleIds = ordered.Where(id => id != healthyArtifactId).ToArray();
+                (await db.CentralDerivativeJobs.CountAsync(job => staleIds.Contains(job.SourceCentralArtifactId))
+                    .ConfigureAwait(false)).Should().Be(0, "nothing is written for a source whose revision cannot be expanded");
+                (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == healthyArtifactId)
+                    .ConfigureAwait(false)).Should().BePositive("the healthy source behind every stale camera is scheduled");
+            }
+        }
+        finally
+        {
+            await using var scope = fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            foreach (var (artifactId, receivedAt) in restoreReceivedAt)
+            {
+                await db.CentralArtifacts.Where(item => item.Id == artifactId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ReceivedAtUtc, receivedAt))
+                    .ConfigureAwait(false);
+            }
+            foreach (var artifactId in ordered)
+            {
+                await ClearStaleReconciliationStateAsync(artifactId).ConfigureAwait(false);
+            }
+            foreach (var camera in stale)
+            {
+                await RetireStaleGraphCameraAsync(camera[0]).ConfigureAwait(false);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task RetrospectiveTransientScheduling_SchedulesAReassignedCameraOnTheNextPass()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var reassigned = await SeedStaleAssignmentArtifactsAsync("stale-graph-retrospective-reassigned", [5281, 5282])
+            .ConfigureAwait(false);
+        var stillStale = await SeedStaleAssignmentArtifactsAsync("stale-graph-retrospective-still-stale", [5283, 5284])
+            .ConfigureAwait(false);
+        var healthyArtifactId = await SeedHealthyPendingArtifactAsync("stale-graph-retrospective-reassigned-healthy", 5285)
+            .ConfigureAwait(false);
+        var ordered = reassigned.Concat(stillStale).Select(static item => item.CentralArtifactId)
+            .Append(healthyArtifactId)
+            .ToArray();
+        var restoreReceivedAt = await MakeOldestRetrospectiveCandidatesAsync(ordered).ConfigureAwait(false);
+        try
+        {
+            var first = await RunRetrospectivePassAsync(ordered).ConfigureAwait(false);
+            first.Attempted.Should().Equal(reassigned[0].CentralArtifactId, stillStale[0].CentralArtifactId,
+                healthyArtifactId);
+            first.Completed.Should().Equal(healthyArtifactId);
+
+            // The operator correction between passes: no exclusion outlives the pass that found it.
+            await ReassignToCurrentSeedRevisionAsync(reassigned[0]).ConfigureAwait(false);
+            var second = await RunRetrospectivePassAsync(ordered).ConfigureAwait(false);
+
+            // The reassigned camera's two sources fill the first batch and both expand, so the pass has found no stale
+            // camera and ends there; the camera that is still stale waits behind it for a later pass.
+            second.Attempted.Should().Equal(reassigned.Select(static item => item.CentralArtifactId));
+            second.Completed.Should().Equal(reassigned.Select(static item => item.CentralArtifactId));
+            foreach (var source in reassigned)
+            {
+                (await CountGraphExecutionsAsync(source.CentralArtifactId).ConfigureAwait(false)).Should().Be(1,
+                    "the reassigned revision expands for every source of the camera");
+            }
+            second.Logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Error);
+        }
+        finally
+        {
+            await RestoreRetrospectiveCandidatesAsync(restoreReceivedAt).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(reassigned[0]).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(stillStale[0]).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The candidate query readmits sources whose frame no camera installation covered, and the retrospective has no
+    /// camera to exclude for them. They never reach the unexpandable-revision branch: graph scheduling returns
+    /// NotApplicable for a frame without a live installation before it resolves any assignment
+    /// (<c>CentralProcessingGraphScheduler.ScheduleLiveAsync</c>), and resolving and compiling a revision is the only
+    /// source of that failure, so they take legacy scheduling even at an observatory whose assignment cannot expand.
+    /// </summary>
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task RetrospectiveTransientScheduling_SourcesWithoutACameraNeverReachTheirObservatorysUnexpandableRevision()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        const string name = "stale-graph-retrospective-uninstalled";
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig($"{name}-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        // An unexpandable revision assigned to the whole observatory, and a camera installed only from a later
+        // instant, so captures before it have no camera while the one after it resolves the observatory assignment.
+        var installedFromUtc = DateTimeOffset.UnixEpoch.AddDays(1);
+        StaleAssignmentArtifact covered;
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
+                .ConfigureAwait(false);
+            var camera = new LogicalCamera
+            {
+                ObservatoryId = registration.ObservatoryId,
+                Slug = $"{name}-{Guid.NewGuid():N}",
+                Name = "Later Camera",
+                Description = "Camera installed after the uninstalled captures",
+                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
+                CreatedByUserId = registration.OwnerUserId
+            };
+            var installation = new LogicalCameraInstallation
+            {
+                LogicalCamera = camera,
+                LogicalCameraId = camera.Id,
+                RegistrationId = registration.Id,
+                InstallationPublicId = Guid.NewGuid(),
+                AssignedAtUtc = installedFromUtc,
+                AssignedByUserId = registration.OwnerUserId,
+                AssignmentReasonCode = "stale-graph-test"
+            };
+            camera.Installations.Add(installation);
+            var revision = CreateStaleRevision(
+                scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>(),
+                name,
+                registration.OwnerUserId);
+            var assignment = new CentralProcessingGraphAssignment
+            {
+                Revision = revision,
+                RevisionId = revision.Id,
+                TargetHost = CentralProcessingGraphTargetHost.Central,
+                Scope = CentralProcessingGraphAssignmentScope.Observatory,
+                ObservatoryId = registration.ObservatoryId,
+                EffectiveFromUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+                ActorUserId = registration.OwnerUserId,
+                ReasonCode = "stale-graph-test"
+            };
+            revision.Assignments.Add(assignment);
+            db.AddRange(camera, installation, revision, assignment);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            covered = new(Guid.Empty, registration.ObservatoryId, camera.Id, revision.Id, assignment.Id,
+                registration.OwnerUserId);
+        }
+        async Task<Guid> IngestAsync(long captureSequence, DateTimeOffset capturedAtUtc, HttpStatusCode expected,
+            string because)
+        {
+            var payload = new byte[] { 5, 3, 0, (byte)captureSequence };
+            var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence, capturedAtUtc: capturedAtUtc);
+            using var client = fixture.Factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+            using (var response = await PostAsync(client, manifest, payload).ConfigureAwait(false))
+            {
+                response.StatusCode.Should().Be(expected, because);
+            }
+            await using var scope = fixture.Factory.Services.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
+                .Where(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+                .Select(item => item.Id)
+                .SingleAsync().ConfigureAwait(false);
+        }
+        var uninstalled = new List<Guid>();
+        for (var index = 0; index < 3; index++)
+        {
+            uninstalled.Add(await IngestAsync(5291 + index, DateTimeOffset.UnixEpoch, HttpStatusCode.Accepted,
+                "no camera covers the capture, so no assignment is resolved").ConfigureAwait(false));
+        }
+        var coveredArtifactId = await IngestAsync(5294, installedFromUtc.AddDays(1), HttpStatusCode.InternalServerError,
+            "the camera resolves the observatory's revision, which this binary cannot expand").ConfigureAwait(false);
+        covered = covered with { CentralArtifactId = coveredArtifactId };
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
+                .Where(item => uninstalled.Contains(item.Id))
+                .Select(item => item.Frame!.LogicalCameraInstallationId)
+                .ToListAsync().ConfigureAwait(false)).Should().HaveCount(3).And.AllSatisfy(id => id.Should().BeNull());
+        }
+        var ordered = uninstalled.Prepend(coveredArtifactId).ToArray();
+        var restoreReceivedAt = await MakeOldestRetrospectiveCandidatesAsync(ordered).ConfigureAwait(false);
+        try
+        {
+            var pass = await RunRetrospectivePassAsync(ordered).ConfigureAwait(false);
+
+            // The covered source names the camera and is deferred. The sources without a camera are candidates the
+            // exclusion always readmits, yet each one schedules: none is deferred, and the re-query after the camera's
+            // exclusion is a batch of them that ends the pass.
+            pass.Attempted.Should().Equal(coveredArtifactId, uninstalled[0], uninstalled[1]);
+            pass.Completed.Should().Equal(uninstalled[0], uninstalled[1]);
+            pass.Logger.Entries.Where(entry => entry.Level == LogLevel.Error).Should().ContainSingle()
+                .Which.Message.Should().Contain("deferred 1 source artifacts").And.Contain(covered.AssignmentId.ToString());
+            await using var scope = fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == coveredArtifactId)
+                .ConfigureAwait(false)).Should().Be(0);
+            foreach (var artifactId in uninstalled)
+            {
+                (await db.CentralDerivativeJobs.CountAsync(job => job.SourceCentralArtifactId == artifactId)
+                    .ConfigureAwait(false)).Should().BePositive("a source without a camera takes legacy scheduling");
+            }
+        }
+        finally
+        {
+            await RestoreRetrospectiveCandidatesAsync(restoreReceivedAt).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(covered).ConfigureAwait(false);
+        }
+    }
+
+    private sealed record RetrospectivePass(
+        IReadOnlyList<Guid> Attempted,
+        IReadOnlyList<Guid> Completed,
+        RecordingLogger<CentralTransientRetrospectiveScheduler> Logger);
+
+    /// <summary>One retrospective pass in its own scope, two candidates per query, forwarding only <paramref name="forwarded"/>.</summary>
+    private static async Task<RetrospectivePass> RunRetrospectivePassAsync(IReadOnlyCollection<Guid> forwarded)
+    {
+        var options = new CentralTransientOptions { Mode = TransientDetectorExecutionMode.Central };
+        var logger = new RecordingLogger<CentralTransientRetrospectiveScheduler>();
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var scheduler = new BatchRecordingScheduler(
+            scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>(), forwarded);
+        var retrospective = new CentralTransientRetrospectiveScheduler(
+            scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            scheduler,
+            new CentralDerivativeRecipeCatalog(options),
+            Options.Create(options),
+            scope.ServiceProvider.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
+            logger)
+        {
+            CandidateBatchSize = 2
+        };
+        await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+        return new(scheduler.Attempted, scheduler.Completed, logger);
+    }
+
+    /// <summary>
+    /// Clears any stranded reservation and makes <paramref name="ordered"/> the oldest retrospective candidates, in
+    /// that order; returns the arrival instants to restore.
+    /// </summary>
+    private static async Task<Dictionary<Guid, DateTimeOffset>> MakeOldestRetrospectiveCandidatesAsync(
+        Guid[] ordered)
+    {
+        var restore = new Dictionary<Guid, DateTimeOffset>();
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            await ClearStaleReconciliationStateAsync(ordered[index]).ConfigureAwait(false);
+            var artifactId = ordered[index];
+            var artifact = await db.CentralArtifacts.SingleAsync(item => item.Id == artifactId).ConfigureAwait(false);
+            artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            restore[artifactId] = artifact.ReceivedAtUtc;
+            artifact.ReceivedAtUtc = RetrospectiveCandidateEpoch.AddMinutes(index + 1);
+        }
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        return restore;
+    }
+
+    private static async Task RestoreRetrospectiveCandidatesAsync(Dictionary<Guid, DateTimeOffset> restore)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        foreach (var (artifactId, receivedAt) in restore)
+        {
+            await db.CentralArtifacts.Where(item => item.Id == artifactId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ReceivedAtUtc, receivedAt))
+                .ConfigureAwait(false);
+            await ClearStaleReconciliationStateAsync(artifactId).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>A context on the fixture database that counts the retrospective candidate queries it runs.</summary>
+    private static ApplicationDbContext CreateCountingDbContext(CandidateQueryCounter counter)
+        => new(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString)
+            .AddInterceptors(counter)
+            .Options);
+
+    /// <summary>Counts candidate queries: the only retrospective query ordered by arrival.</summary>
+    private sealed class CandidateQueryCounter : DbCommandInterceptor
+    {
+        private int count;
+
+        public int Count => Volatile.Read(ref count);
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("ORDER BY", StringComparison.Ordinal) &&
+                command.CommandText.Contains("[ReceivedAtUtc]", StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref count);
+            }
+            return ValueTask.FromResult(result);
         }
     }
 
@@ -481,7 +875,6 @@ public sealed partial class ArtifactIngestTests
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var registry = scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>();
             var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
                 .ConfigureAwait(false);
             var camera = new LogicalCamera
@@ -504,32 +897,10 @@ public sealed partial class ArtifactIngestTests
                 AssignmentReasonCode = "stale-graph-test"
             };
             camera.Installations.Add(installation);
-            var definitionJson = WithStaleAnnotationImplementationVersion(Encoding.UTF8.GetString(
-                ProcessingGraphJson.SerializeCanonical(DatabaseSeeder.CreateBasicCentralProcessingGraph() with
-                {
-                    Name = $"{name}-{Guid.NewGuid():N}"
-                })));
-            var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(definitionJson));
-            parsed.IsValid.Should().BeTrue();
-            var portable = ProcessingGraphCompiler.Compile(parsed.Definition!);
-            portable.IsValid.Should().BeTrue(string.Join(Environment.NewLine, portable.Diagnostics));
-            var central = LogicHostProcessingGraphAdapter.Compile(parsed.Definition!, registry.Capabilities);
-            central.IsValid.Should().BeTrue(string.Join(Environment.NewLine, central.Diagnostics));
-            registry.FindUnsupported(central.Plan!).Should().Be(BuiltInProcessingRecipes.Annotation,
-                "only the node registry can reject this revision, exactly as after an ImplementationVersion bump");
-            var revision = new CentralProcessingGraphRevision
-            {
-                Name = parsed.Definition!.Name,
-                Revision = parsed.Definition.Revision,
-                DefinitionJson = definitionJson,
-                DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
-                PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
-                CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
-                CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
-                CreatedByUserId = registration.OwnerUserId,
-                PublishedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
-                PublishedByUserId = registration.OwnerUserId
-            };
+            var revision = CreateStaleRevision(
+                scope.ServiceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>(),
+                name,
+                registration.OwnerUserId);
             var assignment = new CentralProcessingGraphAssignment
             {
                 Revision = revision,
@@ -583,6 +954,41 @@ public sealed partial class ArtifactIngestTests
             results.Add(seeded with { CentralArtifactId = artifact.Id });
         }
         return results;
+    }
+
+    /// <summary>
+    /// A published revision of the canonical graph whose Annotation node embeds an earlier recipe
+    /// <c>ImplementationVersion</c>, with identities computed as publication would have computed them then.
+    /// </summary>
+    private static CentralProcessingGraphRevision CreateStaleRevision(
+        ICentralProcessingGraphNodeRegistry registry, string name, string ownerUserId)
+    {
+        var definitionJson = WithStaleAnnotationImplementationVersion(Encoding.UTF8.GetString(
+            ProcessingGraphJson.SerializeCanonical(DatabaseSeeder.CreateBasicCentralProcessingGraph() with
+            {
+                Name = $"{name}-{Guid.NewGuid():N}"
+            })));
+        var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(definitionJson));
+        parsed.IsValid.Should().BeTrue();
+        var portable = ProcessingGraphCompiler.Compile(parsed.Definition!);
+        portable.IsValid.Should().BeTrue(string.Join(Environment.NewLine, portable.Diagnostics));
+        var central = LogicHostProcessingGraphAdapter.Compile(parsed.Definition!, registry.Capabilities);
+        central.IsValid.Should().BeTrue(string.Join(Environment.NewLine, central.Diagnostics));
+        registry.FindUnsupported(central.Plan!).Should().Be(BuiltInProcessingRecipes.Annotation,
+            "only the node registry can reject this revision, exactly as after an ImplementationVersion bump");
+        return new CentralProcessingGraphRevision
+        {
+            Name = parsed.Definition!.Name,
+            Revision = parsed.Definition.Revision,
+            DefinitionJson = definitionJson,
+            DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
+            CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
+            CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
+            CreatedByUserId = ownerUserId,
+            PublishedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1),
+            PublishedByUserId = ownerUserId
+        };
     }
 
     /// <summary>A raw from a device without a camera installation (no graph applies), left as a stranded verification.</summary>

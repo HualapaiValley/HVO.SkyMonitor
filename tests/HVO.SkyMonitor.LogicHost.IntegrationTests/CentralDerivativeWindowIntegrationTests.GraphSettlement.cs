@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using System.Data.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -172,6 +173,73 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
         var job = await ReadJobAsync(host.Services, jobId).ConfigureAwait(false);
         job.Status.Should().Be(CentralDerivativeJobStatus.Skipped);
         job.StateReasonCode.Should().Be("window.settled-input-unusable");
+    }
+
+    /// <summary>
+    /// A settled input whose row changes only in bookkeeping (here <c>ReconciledAtUtc</c>, which bumps its row
+    /// version) between the resolver's hold-target snapshot and its usability fence is still usable. That is a stale
+    /// snapshot, not an unusable input: the resolver re-resolves from a fresh snapshot and keeps the settled
+    /// selection, where it used to terminalize the window as settled-input-unusable.
+    /// </summary>
+    [TestMethod]
+    public async Task GraphOwnedWindow_SettledInputTouchedAfterItsSnapshotIsReResolvedNotTerminalized()
+    {
+        var touch = new SettledInputTouch();
+        await using var host = await IsolatedWindowHost.CreateAsync(touch).ConfigureAwait(false);
+        var (jobId, neighbour, before) = await SeedSettledWindowAsync(host, "graph-window-touched")
+            .ConfigureAwait(false);
+
+        touch.Arm(host.ConnectionString, jobId, neighbour, maximumTouches: 1);
+        await ResolveJobAsync(host.Services, jobId).ConfigureAwait(false);
+        touch.Disarm();
+
+        touch.Touches.Should().Be(1, "the bookkeeping write must land inside the resolution it is racing");
+        (await ReadRequirementsAsync(host.Services, jobId).ConfigureAwait(false)).Should().BeEquivalentTo(before,
+            "the settled selection survives the re-resolution");
+        var job = await ReadJobAsync(host.Services, jobId).ConfigureAwait(false);
+        job.Status.Should().Be(CentralDerivativeJobStatus.Waiting, "the window still waits for its other positions");
+        job.StateReasonCode.Should().NotBe("window.settled-input-unusable");
+    }
+
+    /// <summary>
+    /// When every bounded re-resolution finds the settled input's row changed again, resolution gives up without
+    /// writing anything: the job stays Waiting with its settled selection, a direct caller sees the fault, and the
+    /// periodic batch contains it and rotates the job behind the others.
+    /// </summary>
+    [TestMethod]
+    public async Task GraphOwnedWindow_ExhaustedReResolutionLeavesTheJobWaitingAndUntouched()
+    {
+        var touch = new SettledInputTouch();
+        await using var host = await IsolatedWindowHost.CreateAsync(touch).ConfigureAwait(false);
+        var (jobId, neighbour, before) = await SeedSettledWindowAsync(host, "graph-window-exhausted")
+            .ConfigureAwait(false);
+
+        touch.Arm(host.ConnectionString, jobId, neighbour, maximumTouches: int.MaxValue);
+        var direct = async () => await ResolveJobAsync(host.Services, jobId).ConfigureAwait(false);
+        await direct.Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
+        touch.Touches.Should().Be(5, "every bounded attempt saw a changed settled input");
+        await AssertUntouchedAsync().ConfigureAwait(false);
+
+        var rotatedAt = DateTimeOffset.UtcNow.AddMinutes(1);
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<ICentralDerivativeWindowResolver>()
+                .ResolveWaitingAsync(rotatedAt, CancellationToken.None).ConfigureAwait(false);
+        }
+        touch.Disarm();
+
+        touch.Touches.Should().Be(10, "the batch ran the same five bounded attempts");
+        var job = await AssertUntouchedAsync().ConfigureAwait(false);
+        job.UpdatedAtUtc.Should().Be(rotatedAt, "a contained fault rotates the job behind the rest of the batch");
+
+        async Task<CentralDerivativeJob> AssertUntouchedAsync()
+        {
+            (await ReadRequirementsAsync(host.Services, jobId).ConfigureAwait(false)).Should().BeEquivalentTo(before);
+            var current = await ReadJobAsync(host.Services, jobId).ConfigureAwait(false);
+            current.Status.Should().Be(CentralDerivativeJobStatus.Waiting, "nothing is terminalized on exhaustion");
+            current.StateReasonCode.Should().NotBe("window.settled-input-unusable");
+            return current;
+        }
     }
 
     /// <summary>
@@ -644,6 +712,80 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
     }
 
     /// <summary>
+    /// A RollingMean window anchored at sequence 100 whose position +2 has settled on its neighbour's raw artifact,
+    /// with the other positions still waiting.
+    /// </summary>
+    private static async Task<(Guid JobId, Guid Neighbour, Dictionary<Guid, SettledRequirement> Before)>
+        SeedSettledWindowAsync(IsolatedWindowHost host, string prefix)
+    {
+        var scenario = $"{prefix}-{Guid.NewGuid():N}";
+        var devicePublicId = Guid.NewGuid();
+        var capturedBase = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var anchor = await SeedAndScheduleSourceAsync(
+            scenario, devicePublicId, 100, capturedBase, CreatePayload(30), "compatible",
+            graphNodeIds: [RollingMeanGraphNode], services: host.Services).ConfigureAwait(false);
+        var neighbour = await SeedAndScheduleSourceAsync(
+            scenario, devicePublicId, 102, capturedBase, CreatePayload(50), "compatible",
+            graphNodeIds: [RollingMeanGraphNode], services: host.Services).ConfigureAwait(false);
+        var jobId = await ReadJobIdAsync(host.Services, anchor, BuiltInProcessingRecipes.RollingMean)
+            .ConfigureAwait(false);
+        var before = await ReadRequirementsAsync(host.Services, jobId).ConfigureAwait(false);
+        before.Values.Should().Contain(item => item.State == CentralDerivativeInputResolutionState.Resolved
+            && item.ExpectedCentralArtifactId == neighbour);
+        (await ReadJobAsync(host.Services, jobId).ConfigureAwait(false)).Status
+            .Should().Be(CentralDerivativeJobStatus.Waiting);
+        return (jobId, neighbour, before);
+    }
+
+    /// <summary>
+    /// Commits a bookkeeping-only write to a settled input from another connection just before the resolver takes
+    /// one job's row lock: after its hold-target snapshot and object locks, before its usability fence.
+    /// </summary>
+    private sealed class SettledInputTouch : DbCommandInterceptor
+    {
+        private string? _connection;
+        private Guid _jobId;
+        private Guid _artifactId;
+        private int _maximumTouches;
+        private int _touches;
+
+        public int Touches => Volatile.Read(ref _touches);
+
+        public void Arm(string connection, Guid jobId, Guid artifactId, int maximumTouches)
+        {
+            _jobId = jobId;
+            _artifactId = artifactId;
+            _maximumTouches = maximumTouches;
+            Volatile.Write(ref _connection, connection);
+        }
+
+        public void Disarm() => Volatile.Write(ref _connection, null);
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            var connection = Volatile.Read(ref _connection);
+            if (connection is not null
+                && command.CommandText.Contains("[CentralDerivativeJobs] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal)
+                && command.Parameters.Cast<DbParameter>().Any(parameter => parameter.Value is Guid id && id == _jobId)
+                && Touches < _maximumTouches)
+            {
+                Interlocked.Increment(ref _touches);
+                await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                    .UseSqlServer(connection).Options);
+                _ = await db.CentralArtifacts.Where(item => item.Id == _artifactId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        item => item.ReconciledAtUtc, DateTimeOffset.UtcNow), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
     /// The full LogicHost service graph on a scratch database that startup initializes, with every hosted service
     /// removed so no worker, convergence pass or periodic resolver runs behind the test.
     /// </summary>
@@ -662,7 +804,7 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
 
         public string ConnectionString => _connection;
 
-        public static async Task<IsolatedWindowHost> CreateAsync()
+        public static async Task<IsolatedWindowHost> CreateAsync(IInterceptor? interceptor = null)
         {
             var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
             {
@@ -681,7 +823,14 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
                 {
                     services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
                     services.RemoveAll<ApplicationDbContext>();
-                    services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connection));
+                    services.AddDbContext<ApplicationDbContext>(options =>
+                    {
+                        options.UseSqlServer(connection);
+                        if (interceptor is not null)
+                        {
+                            options.AddInterceptors(interceptor);
+                        }
+                    });
                     services.RemoveAll<IHostedService>();
                 }));
             var host = new IsolatedWindowHost(factory, connection);

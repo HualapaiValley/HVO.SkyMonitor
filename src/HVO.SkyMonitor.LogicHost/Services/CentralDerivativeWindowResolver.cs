@@ -30,6 +30,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
     CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeWindowResolver
 {
     private const int ResolutionBatchSize = 100;
+    private const string HoldTargetChangedReasonCode = "transient-retention.hold-target-changed";
+    private const string HoldTargetMissingReasonCode = "transient-retention.hold-target-missing";
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public async Task ResolveAffectedAsync(
@@ -92,17 +94,33 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 // behind the jobs that did not fault so it cannot head the next pass either.
                 dbContext.ChangeTracker.Clear();
                 var reason = exception.GetType().Name;
-                telemetry.RecordWindowResolutionFault(exception switch
-                {
-                    DbUpdateConcurrencyException => "concurrency",
-                    DbUpdateException or SqlException => "database",
-                    TimeoutException => "timeout",
-                    _ => "other"
-                });
+                telemetry.RecordWindowResolutionFault(ClassifyResolutionFault(exception));
                 Log.ResolutionFaulted(logger, jobId, reason);
                 await RotateFaultedJobAsync(jobId, now, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// The bounded fault cause for the resolution-fault metric. Resolution wraps a lost optimistic-concurrency save in
+    /// <see cref="CentralDerivativeJobStateException"/>, so the cause is the first recognized exception in the chain.
+    /// </summary>
+    internal static string ClassifyResolutionFault(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case DbUpdateConcurrencyException:
+                    return "concurrency";
+                case DbUpdateException or SqlException:
+                    return "database";
+                case TimeoutException:
+                    return "timeout";
+            }
+        }
+        return "other";
     }
 
     private async Task RotateFaultedJobAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken)
@@ -149,8 +167,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     .ConfigureAwait(false);
             }
         }
+        // Every attempt rolled back, so the job is left Waiting with its settled selections intact; a batch caller
+        // contains this as one job's fault and rotates it, and the next pass re-resolves it from a fresh snapshot.
         throw new CentralDerivativeJobStateException(
-            "Window resolution could not acquire its durable locks after bounded deadlock retry.");
+            "Window resolution could not acquire a stable set of durable locks after bounded retry.");
     }
 
     private async Task ResolveJobCoreAsync(
@@ -638,7 +658,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
         var settledTargets = holdTargets.Where(target => settledIds.Contains(target.RecordId)).ToArray();
         if (settledTargets.Length != settledIds.Count)
         {
-            return InputPersistence.SettledInputUnusable;
+            // The settled artifact was usable when loaded above; the lock set was discovered before that and missed
+            // it, so the snapshot is stale rather than the input unusable.
+            throw new ResolutionObjectLockChangedException(
+                "A settled derivative input was absent from the object locks acquired for it.");
         }
         var selectedTargets = holdTargets.Where(target => selectedIds.Contains(target.RecordId)
             && !settledIds.Contains(target.RecordId)).ToArray();
@@ -654,9 +677,20 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 await CentralTransientPayloadHoldFence.ValidateAsync(
                     dbContext, settledTargets, cancellationToken).ConfigureAwait(false);
             }
+            catch (CentralTransientPayloadHoldRejectedException exception) when (
+                exception.ReasonCode is HoldTargetChangedReasonCode or HoldTargetMissingReasonCode)
+            {
+                // The row moved since its target was snapshotted, a metadata-only update as much as a lost payload.
+                // Re-resolve against a fresh snapshot and lock set; a settled input that really became unusable is
+                // then read as unusable by its settled load or the fence below, both under the current locks.
+                throw new ResolutionObjectLockChangedException(
+                    "A settled derivative input changed while its object locks were acquired.", exception);
+            }
             catch (CentralTransientPayloadHoldRejectedException)
             {
-                return InputPersistence.SettledInputUnusable;
+                // A pending or ambiguous payload release holds the settled input. It is not yet unusable, and once
+                // the release settles its object state says so; until then the window waits as a conflict.
+                return InputPersistence.Conflict;
             }
         }
         try
@@ -778,6 +812,14 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 .Select(input => input.CentralArtifactId)
                 .ToListAsync(cancellationToken).ConfigureAwait(false))
             .ToHashSet();
+        // A settled selection is locked by identity even before it has an input row.
+        artifactIds.UnionWith(await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
+            .Where(requirement => requirement.CentralDerivativeJobId == jobId
+                && requirement.ExpectedCentralArtifactId != null
+                && requirement.ResolutionState != CentralDerivativeInputResolutionState.Waiting
+                && (requirement.Job!.GraphExecutionId != null || requirement.GraphDependencyId != null))
+            .Select(requirement => requirement.ExpectedCentralArtifactId!.Value)
+            .ToListAsync(cancellationToken).ConfigureAwait(false));
         var requirements = await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
             .Where(requirement => requirement.CentralDerivativeJobId == jobId
                 && requirement.Job!.Status == CentralDerivativeJobStatus.Waiting
