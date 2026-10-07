@@ -170,6 +170,10 @@ internal static class VirtualAstrometryFixture
     internal static CaptureRequest Request(DateTimeOffset utc, TimeSpan exposure) => new(utc, TimeSpan.FromSeconds(60), CaptureMode.Still,
         new(exposure, 150, null, null));
 
+    /// <summary>The frozen rendered PSF; with a sigma of one pixel it does not tighten the renderer's 0.15 px temporal step.</summary>
+    internal const double PsfSigmaPixels = 1;
+    internal const double PsfRadiusPixels = 4;
+
     internal static readonly ObserverLocation Observer = new(35.347, -113.878, 1000);
     internal static readonly AstrometricSolverOptions SolverOptions = new(MaximumCatalogMagnitude: 5);
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -243,8 +247,8 @@ internal static class VirtualAstrometryFixture
             MaximumResults = variant.Depth.MaximumResults,
             MagnitudeZeroElectronsPerSecond = 60000,
             BackgroundElectronsPerSecond = variant.BackgroundElectronsPerSecond,
-            PsfSigmaPixels = 1,
-            PsfRadiusPixels = 4,
+            PsfSigmaPixels = PsfSigmaPixels,
+            PsfRadiusPixels = PsfRadiusPixels,
             VignettingStrength = .25,
             ShotNoiseEnabled = true,
             Asi174Sensor = new() { Enabled = rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 },

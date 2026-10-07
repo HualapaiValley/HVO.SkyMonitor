@@ -106,6 +106,25 @@ public sealed class VirtualLongExposureFixtureTests
     }
 
     [TestMethod]
+    public void BoundarySlots_DerivesTheSlotCountOnlyWhenTheLongerExposureMustBeRefused()
+    {
+        static double Motion(int seconds, double speed)
+        {
+            var exposure = TimeSpan.FromSeconds(seconds);
+            var slots = (int)Math.Ceiling(exposure.TotalSeconds * speed / .15);
+            return speed * ((exposure.Ticks + slots - 1) / slots) / TimeSpan.TicksPerSecond;
+        }
+        var derived = VirtualLongExposureCapacityTests.BoundarySlots(TimeSpan.FromSeconds(56), Motion(56, .168825), TimeSpan.FromSeconds(57), .15, 64);
+        Assert.IsNotNull(derived);
+        Assert.AreEqual(64, derived.Value.Slots);
+        Assert.AreEqual(.168825, derived.Value.SpeedBoundPixelsPerSecond, 1e-12);
+        // At 0.0405 px/s (16 slots of 0.142 px) even 64 slots would cover 57 s, so no slot count explains its refusal.
+        Assert.IsNull(VirtualLongExposureCapacityTests.BoundarySlots(TimeSpan.FromSeconds(56), Motion(56, .0405), TimeSpan.FromSeconds(57), .15, 64));
+        // The motion bound alone admits every slot count below 1 / (1 - motion / step); only the refusal selects one.
+        Assert.IsNull(VirtualLongExposureCapacityTests.BoundarySlots(TimeSpan.FromSeconds(56), Motion(56, .168825), TimeSpan.FromSeconds(56), .15, 64));
+    }
+
+    [TestMethod]
     public void TruthTrail_MeasuresOnlyVisibleSegmentsAndFoldsTheAngleToTheMeasurerRange()
     {
         var whole = Trail(Line(new(10, 10), new(18, 10)));
