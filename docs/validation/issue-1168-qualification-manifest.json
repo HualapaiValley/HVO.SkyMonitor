@@ -1,0 +1,353 @@
+{
+  "schema": "virtual-astrometry-long-exposure-qualification-manifest-v1",
+  "issue": 1168,
+  "epic": 520,
+  "declaredBeforeMeasurement": true,
+  "productCodeChanged": false,
+  "base": {
+    "ref": "origin/development/v1",
+    "revision": "0639e27d8c3fdf6ea895389f9ce1443d20198a72",
+    "inputs": [
+      { "path": "docs/validation/issue-1126-qualification-manifest.json", "blob": "4babc9a331ba5583b45d514ee27c3177b7162af6", "sha256": "8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee" },
+      { "path": "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json", "blob": "b86e33ee731c4cf2d5c983aff277734cf37d4ebb", "sha256": "c66e90b663338c4baec0a1f0a54ac01f0193a995fe7336ce4b390cce17afe4b2" },
+      { "path": "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json", "blob": "7b7bec3c334b63b6330ddea31d3b8f17afb743a5", "sha256": "e437d6d27801998586f5138298bd70bb17d605aa146a4e5b9312dc3f86da813b" }
+    ]
+  },
+  "catalog": {
+    "package": "hyg-v4.2-p3-s2-r1",
+    "rows": 119625,
+    "databaseSha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
+    "solverMaximumMagnitude": 5,
+    "solverEntries": 1637,
+    "claim": "Solver catalog depth and selection are unchanged and owned by #1167. The product-depth variant deepens only the render; no deeper-catalog claim is made."
+  },
+  "rules": [
+    "Everything in this manifest is committed before any continuity, tuning or held-out measurement. Seeds, sky times, readouts, partitions and numerical tolerances not named here are those compiled into each #1102/#1103/#1104/#1105 harness and the #1126 family matrix, unchanged by this issue; each run records its harness source blob ids in the evidence index.",
+    "Each process selects exactly one cell. The runner unsets HVO_PROJECTION_FAMILY, HVO_EXPOSURE_SECONDS, HVO_ASTROMETRY_MEASURER and HVO_LONG_EXPOSURE_VARIANT and then sets only the variables the cell names; an unset selector takes its declared default and an unknown value fails the process.",
+    "Every run executes at one committed, clean revision built in Release. HVO_EVIDENCE_REVISION equals that revision, and each harness that checks the assembly InformationalVersion must accept it.",
+    "Every process must execute exactly expectedPassed tests, with zero not-executed tests, in a fresh results directory, and must attach exactly one file named like each listed report. A process that matches no test, or whose report is missing, makes the pack incomplete. A failed test with its report attached is a recorded outcome.",
+    "Tuning precedes held-out and is never final evidence. A tuning failure is recorded and does not remove, replace or re-seed a cell. The only tuning-derived change permitted before held-out is the uncertainty floors declared under floors, committed in one commit made before any held-out run. Held-out runs execute once on that head; a held-out failure is a recorded outcome and is never retried, retuned against or excluded.",
+    "Truth enters only the scorers, after solving. The solver, measurer and mapping never receive truth, the rendered scene time or the trail geometry.",
+    "Each declared refusal must occur exactly where declaredRefusals names it, by exact exception type and message, at the named stage. Any other exception, or a refusal in an undeclared cell, fails the process; a declared refusal that does not occur fails the process.",
+    "A pixel cell (family x view x exposure x measurer x variant) is all-or-nothing over its blind and warm cases: accepted when every case accepts and passes, fail-closed when no case fails and at least one rejects, failed when any case fails. Rejections are reported by reason: rejected-underconstrained for insufficient-detections, otherwise rejected-<reasonCode>. An accepted assessment with association precision below one, a pose error above 0.06 degrees or a focal relative error above 0.001 is a failure in every variant.",
+    "Runs are sequential on an otherwise idle host under the fleet heavy lock. Docker is not required.",
+    "Revision rerun: if a later development/v1 change reaching this branch's merge head modifies any path in revisionRerunPaths after the measured revision, this same manifest is rerun at the synced head and both packs are recorded; that is a revision rerun, not a re-roll. Otherwise the sync records an unchanged-path proof (an empty git diff of revisionRerunPaths between the measured revision and the synced head)."
+  ],
+  "revisionRerunPaths": [
+    "src/HVO.SkyMonitor.AgentCore",
+    "src/HVO.SkyMonitor.Astronomy",
+    "src/HVO.SkyMonitor.Imaging",
+    "src/HVO.SkyMonitor.Catalog.Sqlite",
+    "src/HVO.SkyMonitor.CameraAgent.Common/Modules/VirtualSky",
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json",
+    "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryPixels.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryQualificationTests.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryResourceTests.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualMeasuredStarQualificationTests.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualOpticalCalibrationQualificationTests.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometricUncertaintyQualificationTests.cs",
+    "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualLongExposureCapacityTests.cs"
+  ],
+  "environment": {
+    "configuration": "Release",
+    "DOTNET_TieredCompilation": "0",
+    "HVO_ASTROMETRY_CATALOG_ROOT": "Installed, verified hyg-v4.2-p3-s2-r1 snapshot root (database SHA-256 above)",
+    "host": "hvo-dev-02, idle, under the fleet heavy lock; builds use -nodeReuse:false -p:UseSharedCompilation=false -p:UseRazorBuildServer=false"
+  },
+  "selectors": {
+    "family": { "variable": "HVO_PROJECTION_FAMILY", "default": "equidistant", "values": ["equidistant", "rectilinear"] },
+    "exposureSeconds": { "variable": "HVO_EXPOSURE_SECONDS", "default": "1", "values": ["1", "20", "60"] },
+    "measurer": { "variable": "HVO_ASTROMETRY_MEASURER", "default": "v1", "values": ["v1", "v2"], "readBy": ["pixels", "resources"] },
+    "variant": { "variable": "HVO_LONG_EXPOSURE_VARIANT", "default": "none", "values": ["none", "product-depth", "bright-background", "clouds-partial", "overcast"], "readBy": ["pixels"] },
+    "unset": "All four unset reproduce the #1126 one-second v1 equidistant matrix; the continuity section proves it."
+  },
+  "render": {
+    "gain": 150,
+    "psfSigmaPixels": 1,
+    "psfRadiusPixels": 4,
+    "temporalStepPixels": 0.15,
+    "maximumTemporalSlots": 64,
+    "slotRule": "slots = max(minimum, ceil(exposureSeconds * speedBound / step)); more than 64 refuses the capture",
+    "referenceUtc": "Frames are scored and mapped at the exposure midpoint. AstrometricFrameContext.MidpointUtc must equal the rendered scene time exactly (midpointDeltaTicks 0). CameraFrame timestamps are the exposure start; binding the midpoint is the consumer's obligation, and the negative control reports the start-bound error.",
+    "partitionSeeds": "The none variant keeps each harness's #1102-#1105 seeds; every other variant renders under 116800 + (partition seed mod 100)."
+  },
+  "variants": [
+    { "name": "none", "renderMaximumMagnitude": 5, "renderMaximumResults": 2000, "backgroundElectronsPerSecond": 2, "expectedOutcome": "accepted" },
+    { "name": "product-depth", "renderMaximumMagnitude": 6.5, "renderMaximumResults": 32768, "backgroundElectronsPerSecond": 2, "expectedOutcome": "accepted-or-fail-closed" },
+    { "name": "bright-background", "renderMaximumMagnitude": 5, "renderMaximumResults": 2000, "backgroundElectronsPerSecond": 20, "expectedOutcome": "accepted-or-fail-closed" },
+    { "name": "clouds-partial", "renderMaximumMagnitude": 5, "renderMaximumResults": 2000, "backgroundElectronsPerSecond": 2, "expectedOutcome": "accepted-or-fail-closed",
+      "clouds": { "scenarioId": "virtual-astrometry-clouds-partial", "seed": 116800, "epochUtc": "2026-01-01T00:00:00Z", "coverage": 0.4, "maximumOpacity": 0.9, "scatterFraction": 0.2, "driftEastCellsPerSecond": 0.002, "driftNorthCellsPerSecond": 0.001, "evolutionCellsPerSecond": 0.0005 } },
+    { "name": "overcast", "renderMaximumMagnitude": 5, "renderMaximumResults": 2000, "backgroundElectronsPerSecond": 2, "expectedOutcome": "rejected",
+      "clouds": { "scenarioId": "virtual-astrometry-overcast", "seed": 116800, "epochUtc": "2026-01-01T00:00:00Z", "coverage": 1, "maximumOpacity": 1, "scatterFraction": 0.2, "driftEastCellsPerSecond": 0.002, "driftNorthCellsPerSecond": 0.001, "evolutionCellsPerSecond": 0.0005 } }
+  ],
+  "variantViews": "Every variant other than none renders only mono-native and cfa-native (equidistant).",
+  "declaredRefusals": [
+    {
+      "cells": "every mono view of a cloud variant",
+      "disposition": "unsupported-render-refused",
+      "stage": "initialize",
+      "exceptionType": "System.NotSupportedException",
+      "message": "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without clouds, sensor-plane transient tracks, or synthetic calibration."
+    },
+    {
+      "cells": "rectilinear (6 mm) full-frame views (mono-native, mono-bin2, mono-mirror, mono-roll) at 60 s",
+      "disposition": "unsupported-render-refused",
+      "stage": "capture",
+      "exceptionType": "System.InvalidOperationException",
+      "message": "stellar-exposure-temporal-budget-exceeded",
+      "boundary": "At the 0.15 px step the rectilinear mono-native view renders at 56 s (64 slots) and refuses at 57 s (65 slots); 60 s needs 68. The renderer-capacity run measures this boundary."
+    }
+  ],
+  "withheldCells": [
+    {
+      "cells": "measured-stars, optical-calibration and astrometric-uncertainty for rectilinear at 60 s",
+      "status": "withheld-render-refused",
+      "reason": "These harnesses render the full-frame views, which refuse at 60 s; they do not run, and no uncertainty, calibration or measured-star claim is made for that cell."
+    }
+  ],
+  "addedTolerances": {
+    "midpointDeltaTicks": 0,
+    "roundTripTolerancePixels": 1e-6,
+    "unmodeledSourceRadiusPixels": 1.5,
+    "trailAwareTruth": "Truth is the midpoint of each star's rendered trail; a trail truncated by the horizon, aperture or frame is excluded from scoring and counted. Saturated detections are scored unless excluded as saturated-excessive; every exclusion reason is counted per cell.",
+    "measuredStarV1Comparison": "The v1 recall, centroid-regression and time-ratio comparisons gate only 1 s; at 20 s and 60 s v1 is reported, not compared.",
+    "measuredStarTrailMetadata": { "minimumScoredTrailPixels": 3, "maximumLengthErrorPixels": 0.5, "maximumLengthRelativeError": 0.15, "maximumAngleErrorDegrees": 10, "gates": "the trail-metadata envelope row only, never solving" },
+    "missedEligibleReasons": "no-candidate is a reported missed-star category, not a failure.",
+    "resourceCaptureBudgetMilliseconds": { "1": { "mono": 10000, "cfa": 20000 }, "20": { "mono": 10000, "cfa": 40000 }, "60": { "mono": 10000, "cfa": 40000 } },
+    "resourceWarmSolveMilliseconds": 500,
+    "negativeControl": "Diagnostic only: the start-UTC-bound solve and start-time sky mapped through the midpoint mapping are reported against the truth half-exposure motion; they are not pass conditions."
+  },
+  "floors": {
+    "exposures": [20, 60],
+    "source": "astrometric-uncertainty-tuning frames[].requiredFloorPixels, at provisional 1 s floors",
+    "rule": "The #1105 rule per exposure: the median of the per-frame required floor (the floor bisected so that chi-square per degree of freedom is one) within each format group, pooled across every tuned family at that exposure, rounded half-up to 0.001 px. A null required floor is excluded and counted. Mean of the two central values for an even count.",
+    "formatGroups": {
+      "mono": ["mono-native", "mono-roi", "mono-mirror", "mono-roll"],
+      "mono-2x2": ["mono-bin2", "mono-roi-bin2"],
+      "cfa": ["cfa-native"]
+    },
+    "derivation": "docs/validation/issue-1168-metrics.sh floors <tuning pack>",
+    "provisionalRunOutcome": "An uncertainty tuning process at an exposure without declared floors estimates at the 1 s floors only to report each frame's required floor; its coverage pass or failure is not an outcome.",
+    "heldOutRule": "Held-out uncertainty requires the declared floors for its exposure. A held-out coverage miss is recorded, and covariance for that exposure is withheld in the envelope; it is never retuned."
+  },
+  "continuity": {
+    "baseRevision": "0639e27d8c3fdf6ea895389f9ce1443d20198a72",
+    "manifest": "docs/validation/issue-1126-qualification-manifest.json",
+    "sections": ["tuning", "runs"],
+    "cell": {},
+    "order": "Both revisions are built in Release first; then, for each #1126 manifest run in order, the base process runs and then the head process, in one heavy-lock session, each with HVO_EVIDENCE_REVISION set to its own revision.",
+    "pass": "Every pair passes on both revisions, every listed report is present on both sides, and every differing report leaf is classified below. Any unclassified leaf, any failures difference and any solver, measurement, mapping, uncertainty or identity-hash difference fails continuity.",
+    "identityLeaves": ["revision", "binaryRevision"],
+    "runVaryingKeys": [
+      "acquisitionMilliseconds", "allocatedBytes", "allocatedBytesPerPixel", "captureMedianMs", "captureMs", "captureP95Ms", "cpuMs",
+      "detectionMedianMs", "detectionMs", "detectionP95Ms", "elapsedMilliseconds", "estimatorMaximumAllocatedBytes", "estimatorMaximumMs",
+      "estimatorMedianAllocatedBytes", "estimatorMedianMs", "fitMilliseconds", "frameMedianMs", "initialProcessPeakBytes", "measurementMs",
+      "medianAllocatedBytes", "operationsPerSecond", "peakWorkingSetBytes", "processPeakWorkingSetBytes", "processWorkingSetBytes", "readBytes",
+      "validationMilliseconds", "wallMs", "writeBytes"
+    ],
+    "reports": {
+      "virtual-astrometry-pixels.json": {
+        "changed": {
+          "schema": ["virtual-astrometry-pixels-v2", "virtual-astrometry-pixels-v3"],
+          "finalExposureQualification": ["pending-522-1106", "virtual-astrometry-long-exposure-v1"]
+        },
+        "added": ["exposureSeconds", "measurer", "variant", "renderedTruthStars", "roundTrips", "cases", "cells", "unsupported", "negativeControl"],
+        "scorer": ["reports.N.score"]
+      },
+      "virtual-measured-stars.json": {
+        "changed": { "schema": ["virtual-measured-stars-v1", "virtual-measured-stars-v2"] },
+        "added": ["exposureSeconds", "v1ComparisonGated", "tolerances.trailMetadata", "reports.N.truncatedTruthTrails", "reports.N.trailMetadata"],
+        "scorer": ["reports.N.eligibleTruthStars", "reports.N.v1.baseline", "reports.N.v2.candidate", "reports.N.v2.missedEligibleReasonCounts"]
+      },
+      "virtual-optical-calibration.json": {
+        "changed": {},
+        "added": ["exposureSeconds"],
+        "scorer": ["reports.N.withheldScores.N.score"]
+      },
+      "virtual-astrometric-uncertainty.json": {
+        "changed": {},
+        "added": ["exposureSeconds", "floorSource"],
+        "scorer": []
+      },
+      "virtual-astrometry-resources.json": {
+        "changed": {},
+        "added": ["exposureSeconds", "measurer", "reports.N.captureBudgetMs", "reports.N.solveMedianMs", "reports.N.solveP95Ms",
+          "reports.N.samples.N.solveMs", "reports.N.samples.N.mode", "reports.N.samples.N.status", "reports.N.samples.N.metrics",
+          "rawSamples.N.solveMs", "rawSamples.N.mode", "rawSamples.N.status", "rawSamples.N.metrics"],
+        "scorer": []
+      }
+    },
+    "classification": "Array indices collapse to N. A leaf present on both sides with a different value is identity, run-varying (its final key is listed), declared-changed (exact base and head values) or scorer-by-design (under a scorer prefix). A leaf present on one side only must be head-only under an added prefix, or under a scorer prefix. Scorer-by-design leaves are reported, not failed: the scorers became trail-aware by design."
+  },
+  "tuning": [
+    {
+      "id": "pixels-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryQualificationTests.TuningStationaryPixels",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-pixels.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "product-depth" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "product-depth" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "bright-background" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "bright-background" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "clouds-partial" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "clouds-partial" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "overcast" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "overcast" }
+      ]
+    },
+    {
+      "id": "measured-stars-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualMeasuredStarQualificationTests.TuningMeasuredStars",
+      "expectedPassed": 1,
+      "reports": ["virtual-measured-stars.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    },
+    {
+      "id": "optical-calibration-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualOpticalCalibrationQualificationTests.TuningOpticalCalibration",
+      "expectedPassed": 1,
+      "reports": ["virtual-optical-calibration.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    },
+    {
+      "id": "astrometric-uncertainty-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometricUncertaintyQualificationTests.TuningAstrometricUncertainty",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometric-uncertainty.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": "actual-pixels-blind-warm-readouts",
+      "criteria": [1, 2, 3],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryQualificationTests.ActualPixelsBlindWarmReadouts",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-pixels.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "none" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "product-depth" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "product-depth" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "bright-background" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "bright-background" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "clouds-partial" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "clouds-partial" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "overcast" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2", "HVO_LONG_EXPOSURE_VARIANT": "overcast" }
+      ]
+    },
+    {
+      "id": "measured-stars-held-out",
+      "criteria": [1, 2, 3],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualMeasuredStarQualificationTests.HeldOutMeasuredStars",
+      "expectedPassed": 1,
+      "reports": ["virtual-measured-stars.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    },
+    {
+      "id": "optical-calibration-held-out",
+      "criteria": [4],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualOpticalCalibrationQualificationTests.HeldOutOpticalCalibration",
+      "expectedPassed": 1,
+      "reports": ["virtual-optical-calibration.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    },
+    {
+      "id": "astrometric-uncertainty-held-out",
+      "criteria": [4],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometricUncertaintyQualificationTests.HeldOutAstrometricUncertainty",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometric-uncertainty.json"],
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20" }
+      ]
+    },
+    {
+      "id": "actual-configured-resolution-resources",
+      "criteria": [5],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryResourceTests.ActualConfiguredResolutionResources",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-resources.json"],
+      "session": "One interleaved session in this order: the 1 s arm is the baseline, and the 20 s and 60 s arms run A-B-C then C-B-A, so each arm has an adjacent pair. Each process records 5 warmups and 30 measured frames per native view.",
+      "cells": [
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "60", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "equidistant", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "20", "HVO_ASTROMETRY_MEASURER": "v2" },
+        { "HVO_PROJECTION_FAMILY": "rectilinear", "HVO_EXPOSURE_SECONDS": "1", "HVO_ASTROMETRY_MEASURER": "v2" }
+      ]
+    },
+    {
+      "id": "renderer-capacity",
+      "criteria": [3, 6],
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualLongExposureCapacityTests.RendererCapacityBoundaries",
+      "expectedPassed": 1,
+      "reports": ["virtual-long-exposure-capacity.json"],
+      "cells": [{}]
+    }
+  ]
+}
