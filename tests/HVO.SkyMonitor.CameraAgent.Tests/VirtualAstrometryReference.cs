@@ -181,40 +181,174 @@ internal static class VirtualAstrometryReference
     internal static double SeparationDegrees(Vector a, Vector b) =>
         Math.Atan2(Vector.Cross(a, b).Length, Vector.Dot(a, b)) * 180 / Math.PI;
     internal static double Distance(PixelPoint a, PixelPoint b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
-    internal static double PoseError(CameraRigConfig rig, DateTimeOffset sceneUtc, AstrometricFrameAssessment assessment)
+    internal static double PoseError(CameraRigConfig rig, DateTimeOffset sceneUtc, AstrometricFrameAssessment assessment) =>
+        PoseError(rig, sceneUtc, assessment.Frame.MidpointUtc, assessment);
+
+    /// <summary>
+    /// Fitted-pose error against the truth axes carried through the sky from <paramref name="sceneUtc"/> to
+    /// <paramref name="boundUtc"/>; the issue #1168 negative control binds a start-bound fit to the exposure start.
+    /// </summary>
+    internal static double PoseError(CameraRigConfig rig, DateTimeOffset sceneUtc, DateTimeOffset boundUtc, AstrometricFrameAssessment assessment)
     {
         var truth = Pose(rig); var p = assessment.Parameters!;
         var fitted = Pose(p.BoresightAltitudeDegrees, p.BoresightAzimuthDegrees, p.RollDegrees, rig.Optics.HorizontalFlip);
-        Vector Transport(Vector value) => ToEnu(FromEnu(value, sceneUtc, assessment.Frame.Observer), assessment.Frame.MidpointUtc, assessment.Frame.Observer);
+        Vector Transport(Vector value) => ToEnu(FromEnu(value, sceneUtc, assessment.Frame.Observer), boundUtc, assessment.Frame.Observer);
         return new[] { SeparationDegrees(Transport(truth.Right), fitted.Right), SeparationDegrees(Transport(truth.Up), fitted.Up),
             SeparationDegrees(Transport(truth.Forward), fitted.Forward) }.Max();
     }
 
-    internal static object Score(CameraRigConfig truth, DateTimeOffset sceneUtc, AstrometricCalibration nominal,
+    /// <summary>Fitted-pose error against the fixed ground pose, without any sky transport.</summary>
+    internal static double GroundPoseError(CameraRigConfig rig, AstrometricFrameAssessment assessment)
+    {
+        var truth = Pose(rig); var p = assessment.Parameters!;
+        var fitted = Pose(p.BoresightAltitudeDegrees, p.BoresightAzimuthDegrees, p.RollDegrees, rig.Optics.HorizontalFlip);
+        return new[] { SeparationDegrees(truth.Right, fitted.Right), SeparationDegrees(truth.Up, fitted.Up),
+            SeparationDegrees(truth.Forward, fitted.Forward) }.Max();
+    }
+
+    /// <summary>The largest sky rotation of the ground truth axes between two instants, the expected start-bound pose bias.</summary>
+    internal static double SkyRotationDegrees(CameraRigConfig rig, DateTimeOffset fromUtc, DateTimeOffset toUtc)
+    {
+        var truth = Pose(rig);
+        Vector Transport(Vector value) => ToEnu(FromEnu(value, fromUtc, VirtualAstrometryFixture.Observer), toUtc, VirtualAstrometryFixture.Observer);
+        return new[] { SeparationDegrees(truth.Right, Transport(truth.Right)), SeparationDegrees(truth.Up, Transport(truth.Up)),
+            SeparationDegrees(truth.Forward, Transport(truth.Forward)) }.Max();
+    }
+
+    /// <summary>Evenly spaced truth positions per rendered star; the middle one is the scene (mid-exposure) time.</summary>
+    internal const int TrailSamples = 9;
+
+    /// <summary>
+    /// One star's truth trail over the exposure: <see cref="TrailSamples"/> readout positions from the exposure start to its
+    /// end. A null sample is below the horizon or outside the readout or aperture, which makes the trail truncated.
+    /// </summary>
+    internal sealed record TruthTrail(CelestialCatalogObject Star, PixelPoint?[] Samples)
+    {
+        internal PixelPoint? Mid => Samples[Samples.Length / 2];
+        internal PixelPoint? Start => Samples[0];
+        internal bool Truncated => Samples.Any(sample => sample is null);
+        internal bool Visible => Samples.Any(sample => sample is not null);
+
+        /// <summary>
+        /// Visible-sample bounding box, used to prune nearest-trail searches without changing their result; an invisible
+        /// trail's box is empty (infinitely far).
+        /// </summary>
+        internal (double MinX, double MinY, double MaxX, double MaxY) Bounds { get; } = BoundsOf(Samples);
+
+        private static (double, double, double, double) BoundsOf(PixelPoint?[] samples)
+        {
+            var (minX, minY, maxX, maxY) = (double.PositiveInfinity, double.PositiveInfinity, double.NegativeInfinity, double.NegativeInfinity);
+            foreach (var sample in samples)
+                if (sample is { } point) (minX, minY, maxX, maxY) = (Math.Min(minX, point.X), Math.Min(minY, point.Y), Math.Max(maxX, point.X), Math.Max(maxY, point.Y));
+            return (minX, minY, maxX, maxY);
+        }
+
+        /// <summary>Lower bound on the distance between two trails, from their bounding boxes.</summary>
+        internal double BoundsGapTo(TruthTrail other)
+        {
+            var dx = Math.Max(0, Math.Max(other.Bounds.MinX - Bounds.MaxX, Bounds.MinX - other.Bounds.MaxX));
+            var dy = Math.Max(0, Math.Max(other.Bounds.MinY - Bounds.MaxY, Bounds.MinY - other.Bounds.MaxY));
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        /// <summary>
+        /// Diagnostic for a whole trail: distance from the mid-exposure position to the mean of the evenly spaced samples,
+        /// the bias an integrated centroid carries relative to the midpoint the solver binds.
+        /// </summary>
+        internal double? MidpointBiasPixels => Truncated ? null
+            : Distance(new(Samples.Average(sample => sample!.Value.X), Samples.Average(sample => sample!.Value.Y)), Mid!.Value);
+
+        /// <summary>Length of the visible trail, summed over segments whose both ends are visible.</summary>
+        internal double LengthPixels => Segments().Sum(segment => Distance(segment.A, segment.B));
+
+        /// <summary>First-to-last visible direction, from +X toward +Y within [-90, 90) as the measurer reports it.</summary>
+        internal double? AngleDegrees
+        {
+            get
+            {
+                var visible = Samples.Where(sample => sample is not null).Select(sample => sample!.Value).ToArray();
+                if (visible.Length < 2 || Distance(visible[0], visible[^1]) == 0) return null;
+                var angle = Math.Atan2(visible[^1].Y - visible[0].Y, visible[^1].X - visible[0].X) * 180 / Math.PI;
+                return ((angle + 90) % 180 + 180) % 180 - 90;
+            }
+        }
+
+        /// <summary>Distance from <paramref name="pixel"/> to the visible trail polyline; isolated visible samples count as points.</summary>
+        internal double DistanceTo(PixelPoint pixel)
+        {
+            var nearest = Samples.Where(sample => sample is not null).Select(sample => Distance(pixel, sample!.Value)).DefaultIfEmpty(double.PositiveInfinity).Min();
+            foreach (var (a, b) in Segments())
+            {
+                var dx = b.X - a.X; var dy = b.Y - a.Y; var squared = dx * dx + dy * dy;
+                if (squared == 0) continue;
+                var t = Math.Clamp(((pixel.X - a.X) * dx + (pixel.Y - a.Y) * dy) / squared, 0, 1);
+                nearest = Math.Min(nearest, Distance(pixel, new(a.X + t * dx, a.Y + t * dy)));
+            }
+            return nearest;
+        }
+
+        private IEnumerable<(PixelPoint A, PixelPoint B)> Segments()
+        {
+            for (var k = 1; k < Samples.Length; k++)
+                if (Samples[k - 1] is { } a && Samples[k] is { } b) yield return (a, b);
+        }
+    }
+
+    /// <summary>
+    /// The first trail at minimal polyline distance from <paramref name="pixel"/>, as <c>MinBy</c> would return it; trails whose
+    /// bounding box is strictly farther than the best distance so far cannot win and are skipped.
+    /// </summary>
+    internal static TruthTrail? Nearest(IEnumerable<TruthTrail> trails, PixelPoint pixel)
+    {
+        TruthTrail? best = null; var bestDistance = double.PositiveInfinity;
+        foreach (var trail in trails)
+        {
+            var (minX, minY, maxX, maxY) = trail.Bounds;
+            var dx = Math.Max(0, Math.Max(minX - pixel.X, pixel.X - maxX)); var dy = Math.Max(0, Math.Max(minY - pixel.Y, pixel.Y - maxY));
+            if (Math.Sqrt(dx * dx + dy * dy) > bestDistance) continue;
+            var distance = trail.DistanceTo(pixel);
+            if (distance < bestDistance) { best = trail; bestDistance = distance; }
+        }
+        return best;
+    }
+
+    /// <summary>Truth trails of every star visible anywhere in the readout during the exposure.</summary>
+    internal static TruthTrail[] Trails(CameraRigConfig rig, DateTimeOffset sceneUtc, TimeSpan exposure, IEnumerable<CelestialCatalogObject> stars) =>
+        [.. stars.Select(star => new TruthTrail(star, [.. Enumerable.Range(0, TrailSamples).Select(k =>
+        {
+            var utc = k == TrailSamples / 2 ? sceneUtc : sceneUtc + exposure * ((k - TrailSamples / 2) / (double)(TrailSamples - 1));
+            var ray = ToEnu(J2000(star), utc, VirtualAstrometryFixture.Observer);
+            return ray.Z > 0 ? Project(rig, ray) : null;
+        })])).Where(trail => trail.Visible)];
+
+    /// <summary>
+    /// Scores one accepted mapping against truth trails. Each association's nearest source is its nearest solver-catalog
+    /// trail; withheld stars must have a whole, interior trail and are scored at the mid-exposure position.
+    /// </summary>
+    internal static object Score(CameraRigConfig truth, DateTimeOffset sceneUtc, TimeSpan exposure, AstrometricCalibration nominal,
         AstrometricCatalogData catalog, IReadOnlyList<AstrometricDetection> measurements,
         AstrometricSolveResult solved, List<string> failures, string caseId)
     {
         var mapping = new AstrometricMapping(nominal, solved.Assessment);
-        var expected = catalog.Stars.Select(star => (Star: star, Ray: ToEnu(J2000(star), sceneUtc, VirtualAstrometryFixture.Observer)))
-            .Where(item => item.Ray.Z > 0).Select(item => (item.Star, Pixel: Project(truth, item.Ray)))
-            .Where(item => item.Pixel is not null).Select(item => (item.Star, Pixel: item.Pixel!.Value)).ToArray();
+        var trails = Trails(truth, sceneUtc, exposure, catalog.Stars);
+        var expected = trails.Where(trail => trail.Mid is not null).Select(trail => (trail.Star, Pixel: trail.Mid!.Value, Trail: trail)).ToArray();
         var associationRows = solved.Associations.Select(association =>
         {
             var measured = measurements.Single(d => d.Index == association.DetectionIndex);
-            var nearest = expected.MinBy(item => Distance(measured.Pixel, item.Pixel));
-            var actual = expected.Single(item => item.Star.Id == association.CatalogId);
+            var nearest = Nearest(trails, measured.Pixel)!;
+            var actual = expected.SingleOrDefault(item => item.Star.Id == association.CatalogId);
             return new
             {
                 association.CatalogId,
                 association.DetectionIndex,
                 association.Verification,
                 expectedNearestId = nearest.Star.Id,
-                residualPixels = Distance(measured.Pixel, actual.Pixel)
+                residualPixels = actual.Star is null ? (double?)null : Distance(measured.Pixel, actual.Pixel)
             };
         }).ToArray();
         var precision = associationRows.Count(row => row.CatalogId == row.expectedNearestId) / (double)associationRows.Length;
         var associatedIds = solved.Associations.Select(a => a.CatalogId).ToHashSet(StringComparer.Ordinal);
-        var withheld = expected.Where(item => !associatedIds.Contains(item.Star.Id) &&
+        var withheld = expected.Where(item => !associatedIds.Contains(item.Star.Id) && !item.Trail.Truncated &&
             item.Pixel.X > 12 && item.Pixel.Y > 12 && item.Pixel.X < nominal.Projection.WidthPixels - 12 &&
             item.Pixel.Y < nominal.Projection.HeightPixels - 12 &&
             IsApertureInterior(truth, item.Pixel, 12)).Select(item =>

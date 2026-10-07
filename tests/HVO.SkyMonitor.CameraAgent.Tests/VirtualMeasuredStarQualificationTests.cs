@@ -23,6 +23,12 @@ public sealed class VirtualMeasuredStarQualificationTests
     private const double MaximumMeasurementMilliseconds = 2500;
     private const double MaximumMeasurementTimeRatio = 4;
 
+    // Declared on #1168 before evidence. Trail metadata gates only its own envelope row, never solving or recall.
+    private const double MinimumScoredTrailPixels = 3;
+    private const double MaximumTrailLengthErrorPixels = .5;
+    private const double MaximumTrailLengthRelativeError = .15;
+    private const double MaximumTrailAngleErrorDegrees = 10;
+
     // Declared on #1103 from the tuning partition after review R4, before the corrected held-out run.
     private const double MaximumMeasurementAllocatedBytesPerPixel = 64;
     private const long MaximumPeakWorkingSetBytes = 2L << 30;
@@ -51,6 +57,10 @@ public sealed class VirtualMeasuredStarQualificationTests
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         Assert.HasCount(1637, catalog.Stars); Assert.IsTrue(catalog.IsCompleteForRequestedMagnitude);
         if (!tuning) VirtualAstrometryQualificationTests.RequireRevision();
+        Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Measured-star evidence renders only the unvaried scene.");
+        var exposureSeconds = VirtualAstrometryFixture.ExposureSeconds; var exposure = VirtualAstrometryFixture.Exposure;
+        // The v1 detector is the comparison baseline only where it is a supported measurer: untrailed 1 s frames.
+        var comparesV1 = exposureSeconds == 1;
         var partitions = tuning ? new[] { (Month: 2, Day: 10, Seed: 110220) }
             : [(Month: 1, Day: 15, Seed: 110201), (Month: 5, Day: 15, Seed: 110205), (Month: 9, Day: 15, Seed: 110209)];
         var partition = tuning ? "measured-stars-tuning-not-final" : "measured-stars-held-out";
@@ -68,7 +78,7 @@ public sealed class VirtualMeasuredStarQualificationTests
                 var sceneUtc = captured.Frame!.Metadata.Scene!.SceneUtc!.Value;
                 var nominal = VirtualAstrometryFixture.NominalCalibration(profile);
                 var caseId = $"{month:D2}-{profile.Name}";
-                var truth = Truth(profile.Config.Rig, sceneUtc, catalog, nominal);
+                var truth = Truth(profile.Config.Rig, sceneUtc, exposure, catalog, nominal);
 
                 var (v1, v1Resources) = Sample(() => VirtualAstrometryFixture.Measure(input, nominal));
                 var v1Ms = v1Resources.WallMs;
@@ -81,14 +91,15 @@ public sealed class VirtualMeasuredStarQualificationTests
                 var baseline = Score(truth, v1.Detections, v1Solved);
                 var candidate = Score(truth, v2.Detections, v2Solved);
                 var missed = MissedReasons(truth, v2);
+                var trails = TrailMetadata(truth, v2);
                 if (!v2Solved.Assessment.HasMeasuredMapping) failures.Add($"{caseId}: v2 {v2Solved.Assessment.Reason}");
                 if (candidate.FalseAssociations > 0) failures.Add($"{caseId}: v2 {candidate.FalseAssociations} false associations");
                 if (candidate.CentroidRmsPixels > MaximumCentroidRmsPixels ||
-                    candidate.CentroidRmsPixels > baseline.CentroidRmsPixels + MaximumCentroidRmsRegressionPixels)
+                    comparesV1 && candidate.CentroidRmsPixels > baseline.CentroidRmsPixels + MaximumCentroidRmsRegressionPixels)
                     failures.Add($"{caseId}: v2 centroid RMS {candidate.CentroidRmsPixels:F3} vs v1 {baseline.CentroidRmsPixels:F3}");
-                if (candidate.Recall < baseline.Recall - MaximumRecallRegression)
+                if (comparesV1 && candidate.Recall < baseline.Recall - MaximumRecallRegression)
                     failures.Add($"{caseId}: v2 recall {candidate.Recall:F3} vs v1 {baseline.Recall:F3}");
-                if (v2Ms > MaximumMeasurementMilliseconds || v2Ms > v1Ms * MaximumMeasurementTimeRatio)
+                if (v2Ms > MaximumMeasurementMilliseconds || comparesV1 && v2Ms > v1Ms * MaximumMeasurementTimeRatio)
                     failures.Add($"{caseId}: v2 measurement {v2Ms:F0} ms vs v1 {v1Ms:F0} ms");
                 var bytesPerPixel = v2Resources.AllocatedBytes / (double)(input.Layout.Width * input.Layout.Height);
                 if (bytesPerPixel > MaximumMeasurementAllocatedBytesPerPixel)
@@ -111,6 +122,8 @@ public sealed class VirtualMeasuredStarQualificationTests
                     sceneUtc,
                     input.ParentPayloadSha256,
                     eligibleTruthStars = truth.Count(t => t.Eligible),
+                    truncatedTruthTrails = truth.Count(t => t.Trail.Truncated),
+                    trailMetadata = trails,
                     v1 = new
                     {
                         algorithm = StellarDetector.AlgorithmVersion,
@@ -173,9 +186,11 @@ public sealed class VirtualMeasuredStarQualificationTests
         var path = Path.Combine(root, "virtual-measured-stars.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            schema = "virtual-measured-stars-v1",
+            schema = "virtual-measured-stars-v2",
             partition,
             projectionFamily = VirtualAstrometryFixture.Family.Name,
+            exposureSeconds,
+            v1ComparisonGated = comparesV1,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
             runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
@@ -192,7 +207,8 @@ public sealed class VirtualMeasuredStarQualificationTests
                 MaximumMeasurementTimeRatio,
                 MaximumMeasurementAllocatedBytesPerPixel,
                 MaximumPeakWorkingSetBytes,
-                falseAssociations = 0
+                falseAssociations = 0,
+                trailMetadata = new { MinimumScoredTrailPixels, MaximumTrailLengthErrorPixels, MaximumTrailLengthRelativeError, MaximumTrailAngleErrorDegrees }
             },
             reports,
             windowPressure = pressure,
@@ -204,7 +220,7 @@ public sealed class VirtualMeasuredStarQualificationTests
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 
-    private sealed record TruthStar(string Id, PixelPoint Pixel, bool Eligible);
+    private sealed record TruthStar(string Id, PixelPoint Pixel, bool Eligible, VirtualAstrometryReference.TruthTrail Trail);
 
     // Wall and process CPU time, exact single-thread allocation, and the process's lifetime peak working set.
     // Process CPU time is only attributable when the harness runs alone, as the evidence commands require.
@@ -254,45 +270,85 @@ public sealed class VirtualMeasuredStarQualificationTests
     internal sealed record MeasuredStarScore(int EligibleStars, int Recovered, double Recall, int Associations,
         int FalseAssociations, double CentroidRmsPixels, double CentroidP95Pixels);
 
-    // Eligible truth stars use the solver's final geometry: interior, 6 px from the readout border, isolated by 12 px.
-    private static TruthStar[] Truth(CameraRigConfig rig, DateTimeOffset utc, AstrometricCatalogData catalog, AstrometricCalibration nominal)
+    // Eligible truth stars use the solver's final geometry: a whole trail, every sample interior and 6 px from the readout
+    // border, isolated by 12 px from every other visible trail. The scored position is the mid-exposure sample.
+    private static TruthStar[] Truth(CameraRigConfig rig, DateTimeOffset utc, TimeSpan exposure, AstrometricCatalogData catalog, AstrometricCalibration nominal)
     {
-        var visible = catalog.Stars.Select(star => (star.Id, Ray: VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.J2000(star), utc, VirtualAstrometryFixture.Observer)))
-            .Where(item => item.Ray.Z > 0).Select(item => (item.Id, Pixel: VirtualAstrometryReference.Project(rig, item.Ray)))
-            .Where(item => item.Pixel is not null).Select(item => (item.Id, Pixel: item.Pixel!.Value)).ToArray();
+        var visible = VirtualAstrometryReference.Trails(rig, utc, exposure, catalog.Stars).Where(trail => trail.Mid is not null).ToArray();
         var width = nominal.Projection.WidthPixels; var height = nominal.Projection.HeightPixels;
-        return [.. visible.Select(v => new TruthStar(v.Id, v.Pixel,
-            v.Pixel.X > 6 && v.Pixel.Y > 6 && v.Pixel.X < width - 6 && v.Pixel.Y < height - 6 &&
-            VirtualAstrometryReference.IsApertureInterior(rig, v.Pixel, 12) &&
-            visible.All(o => o.Id == v.Id || VirtualAstrometryReference.Distance(o.Pixel, v.Pixel) > 12)))];
+        bool Interior(PixelPoint pixel) => pixel.X > 6 && pixel.Y > 6 && pixel.X < width - 6 && pixel.Y < height - 6 &&
+            VirtualAstrometryReference.IsApertureInterior(rig, pixel, 12);
+        return [.. visible.Select(v => new TruthStar(v.Star.Id, v.Mid!.Value,
+            !v.Truncated && v.Samples.All(sample => Interior(sample!.Value)) &&
+            visible.All(o => ReferenceEquals(o, v) || o.BoundsGapTo(v) > 12 || v.Samples.All(sample => o.DistanceTo(sample!.Value) > 12)), v))];
     }
 
-    // Why each unrecovered eligible star was lost: the nearest reason-coded exclusion within 2 px, else no candidate.
+    // Why each unrecovered eligible star was lost: the nearest reason-coded exclusion within 2 px of its trail, else no candidate.
     private static SortedDictionary<string, int> MissedReasons(TruthStar[] truth, StellarMeasurementResult measured)
     {
         var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        foreach (var star in truth.Where(t => t.Eligible && !measured.Detections.Any(d => VirtualAstrometryReference.Distance(d.Pixel, t.Pixel) < 1.5)))
+        foreach (var star in truth.Where(t => t.Eligible && !measured.Detections.Any(d => t.Trail.DistanceTo(d.Pixel) < 1.5)))
         {
-            var reason = measured.Exclusions.Where(e => VirtualAstrometryReference.Distance(e.Peak, star.Pixel) < 2)
-                .MinBy(e => VirtualAstrometryReference.Distance(e.Peak, star.Pixel))?.ReasonCode ?? "no-candidate";
+            var reason = measured.Exclusions.Where(e => star.Trail.DistanceTo(e.Peak) < 2)
+                .MinBy(e => star.Trail.DistanceTo(e.Peak))?.ReasonCode ?? "no-candidate";
             counts[reason] = counts.GetValueOrDefault(reason) + 1;
         }
         return counts;
     }
 
+    /// <summary>
+    /// Trail metadata for eligible truth trails of at least <see cref="MinimumScoredTrailPixels"/>: the nearest recovered
+    /// detection's reported length and angle. A recovered long trail reported without trail metadata is counted, not scored.
+    /// </summary>
+    private static object TrailMetadata(TruthStar[] truth, StellarMeasurementResult measured)
+    {
+        var lengthErrors = new List<double>(); var angleErrors = new List<double>(); var unreported = 0; var unrecovered = 0;
+        var scored = truth.Where(t => t.Eligible && t.Trail.LengthPixels >= MinimumScoredTrailPixels).ToArray();
+        foreach (var star in scored)
+        {
+            var detection = measured.Detections.Where(d => star.Trail.DistanceTo(d.Pixel) < 1.5).MinBy(d => star.Trail.DistanceTo(d.Pixel));
+            if (detection is null) { unrecovered++; continue; }
+            if (detection.TrailLengthPixels is not { } length || detection.TrailAngleDegrees is not { } angle) { unreported++; continue; }
+            var truthLength = star.Trail.LengthPixels;
+            lengthErrors.Add(Math.Abs(length - truthLength) / Math.Max(MaximumTrailLengthErrorPixels, MaximumTrailLengthRelativeError * truthLength));
+            var difference = Math.Abs(angle - star.Trail.AngleDegrees!.Value) % 180;
+            angleErrors.Add(Math.Min(difference, 180 - difference));
+        }
+        var length95 = P95(lengthErrors); var angle95 = P95(angleErrors);
+        return new
+        {
+            scoredTrails = scored.Length,
+            reported = lengthErrors.Count,
+            unreported,
+            unrecovered,
+            normalizedLengthErrorP95 = length95,
+            angleErrorP95Degrees = angle95,
+            status = scored.Length == 0 ? "not-applicable"
+                : unreported == 0 && length95 <= 1 && angle95 <= MaximumTrailAngleErrorDegrees ? "met" : "not-met"
+        };
+    }
+
+    private static double? P95(List<double> values)
+    {
+        if (values.Count == 0) return null;
+        var sorted = values.Order().ToArray();
+        return sorted[(int)Math.Ceiling(.95 * sorted.Length) - 1];
+    }
+
     private static MeasuredStarScore Score(TruthStar[] truth, IReadOnlyList<StellarDetection> detections, AstrometricSolveResult solved)
     {
         var eligible = truth.Where(t => t.Eligible).ToArray();
-        var recovered = eligible.Count(t => detections.Any(d => VirtualAstrometryReference.Distance(d.Pixel, t.Pixel) < 1.5));
+        var recovered = eligible.Count(t => detections.Any(d => t.Trail.DistanceTo(d.Pixel) < 1.5));
         var byIndex = detections.ToDictionary(d => d.Index);
-        var byId = truth.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        var byTrail = truth.ToDictionary(t => t.Trail);
         var errors = new List<double>(); var falseAssociations = 0;
         foreach (var association in solved.Associations)
         {
             var pixel = byIndex[association.DetectionIndex].Pixel;
-            var nearest = truth.MinBy(t => VirtualAstrometryReference.Distance(t.Pixel, pixel))!;
-            if (nearest.Id != association.CatalogId || !byId.ContainsKey(association.CatalogId)) { falseAssociations++; continue; }
-            errors.Add(VirtualAstrometryReference.Distance(pixel, nearest.Pixel));
+            var nearest = byTrail[VirtualAstrometryReference.Nearest(byTrail.Keys, pixel)!];
+            if (nearest.Id != association.CatalogId) { falseAssociations++; continue; }
+            // A truncated trail has no whole-exposure centroid to score against; its association still counts for identity.
+            if (!nearest.Trail.Truncated) errors.Add(VirtualAstrometryReference.Distance(pixel, nearest.Pixel));
         }
         var sorted = errors.Order().ToArray();
         return new(eligible.Length, recovered, eligible.Length == 0 ? 0 : recovered / (double)eligible.Length, solved.Associations.Count,

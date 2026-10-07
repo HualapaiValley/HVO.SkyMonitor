@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,16 +22,91 @@ internal sealed record VirtualAstrometryPixels(ReadOnlyMemory<byte> Payload, Fra
 internal sealed record VirtualAstrometryProfile(string Name, CameraModuleConfig Config);
 
 /// <summary>
+/// One selected measurer's sources, bound to the frame context that names its algorithm and settings. The v1 shape is the
+/// issue #1126 report shape; <see cref="Candidate"/> carries the v2 reason-coded exclusions and trail metadata.
+/// </summary>
+internal sealed record VirtualAstrometryMeasurement(string Measurer, IReadOnlyList<StellarDetection> Detections,
+    int CandidateCount, double? Background, double? NoiseSigma, AstrometricFrameContext Frame, StellarMeasurementResult? Candidate);
+
+/// <summary>
 /// One frozen issue #1126 projection family. Every non-equidistant family is a labelled synthetic substitution on the
 /// ASI174 mono sensor; <see cref="NominalFocalFactor"/> offsets the declared nominal focal from the truth focal.
 /// </summary>
 internal sealed record VirtualProjectionFamily(string Name, ProjectionModel Model, double FieldOfViewDegrees,
     double FocalLengthMillimeters, double NominalFocalFactor, string CalibrationVersion);
 
+/// <summary>
+/// Rendered VirtualSky star depth. Issue #1168 owns this render depth; the solver catalog depth stays
+/// <see cref="VirtualAstrometryFixture.SolverOptions"/>, whose deeper selections belong to issue #1167.
+/// </summary>
+internal sealed record VirtualRenderDepth(double MaximumMagnitude, int MaximumResults);
+
+/// <summary>
+/// One frozen issue #1168 render variant. Every variant other than <c>none</c> renders the native views only, under the
+/// 1168xx seed family; a cloud scenario is refused on any readout that takes VirtualSky's native-readout path.
+/// </summary>
+/// <param name="ExpectedOutcome">
+/// <see cref="Accepted"/> fails on any rejection; <see cref="AcceptedOrFailClosed"/> records a rejection as the case
+/// disposition; <see cref="Rejected"/> fails on any measured mapping. Every accepted mapping is scored in full.
+/// </param>
+internal sealed record VirtualLongExposureVariant(string Name, VirtualRenderDepth Depth,
+    double BackgroundElectronsPerSecond, string ExpectedOutcome, VirtualCloudScenarioDefinition? CloudScenario = null)
+{
+    internal const string Accepted = "accepted";
+    internal const string AcceptedOrFailClosed = "accepted-or-fail-closed";
+    internal const string Rejected = "rejected";
+}
+
+/// <summary>A predeclared renderer refusal. Any other exception, or this one in an undeclared cell, fails the run.</summary>
+internal sealed record VirtualRenderRefusal(string Stage, string ExceptionType, string Message)
+{
+    internal const string NativeReadoutClouds =
+        "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without clouds, sensor-plane transient tracks, or synthetic calibration.";
+
+    /// <summary>Returns whether <paramref name="exception"/> is exactly this refusal, by exact type and message.</summary>
+    internal bool Matches(Exception exception) =>
+        exception.GetType().FullName == ExceptionType && string.Equals(exception.Message, Message, StringComparison.Ordinal);
+}
+
 internal static class VirtualAstrometryFixture
 {
     /// <summary>Per-process family selector; unset selects the unchanged equidistant regression matrix.</summary>
     internal const string FamilyVariable = "HVO_PROJECTION_FAMILY";
+    /// <summary>Issue #1168 per-process selectors; unset reproduces the issue #1126 one-second v1 matrix.</summary>
+    internal const string ExposureVariable = "HVO_EXPOSURE_SECONDS";
+    internal const string MeasurerVariable = "HVO_ASTROMETRY_MEASURER";
+    internal const string VariantVariable = "HVO_LONG_EXPOSURE_VARIANT";
+    internal static readonly IReadOnlyList<int> ExposureSecondsValues = [1, 20, 60];
+    internal static readonly IReadOnlyList<string> Measurers = ["v1", "v2"];
+    internal static readonly VirtualRenderDepth QualificationDepth = new(5, 2000);
+    /// <summary>The #522 product night render depth, rendered against the unchanged magnitude-5 solver catalog.</summary>
+    internal static readonly VirtualRenderDepth ProductDepth = new(6.5, 32768);
+
+    /// <summary>Frozen variants. Bright background is ten times the qualification sky, a moonlit or light-polluted proxy.</summary>
+    internal static readonly IReadOnlyList<VirtualLongExposureVariant> Variants =
+    [
+        new("none", QualificationDepth, 2, VirtualLongExposureVariant.Accepted),
+        new("product-depth", ProductDepth, 2, VirtualLongExposureVariant.AcceptedOrFailClosed),
+        new("bright-background", QualificationDepth, 20, VirtualLongExposureVariant.AcceptedOrFailClosed),
+        new("clouds-partial", QualificationDepth, 2, VirtualLongExposureVariant.AcceptedOrFailClosed, Clouds("clouds-partial", .4, .9)),
+        new("overcast", QualificationDepth, 2, VirtualLongExposureVariant.Rejected, Clouds("overcast", 1, 1))
+    ];
+
+    /// <summary>Variants other than <c>none</c> render under the 1168xx seed family, paired by the partition seed's last two digits.</summary>
+    internal static int Seed(int partitionSeed, VirtualLongExposureVariant variant) =>
+        variant.Name == Variants[0].Name ? partitionSeed : 116800 + partitionSeed % 100;
+
+    /// <summary>Drifting, evolving cloud fields from one fixed epoch, so each sky time sees a different deterministic field.</summary>
+    private static VirtualCloudScenarioDefinition Clouds(string id, double coverage, double opacity) => new()
+    {
+        ScenarioId = $"virtual-astrometry-{id}",
+        Seed = 116800,
+        EpochUtc = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+        DriftEastCellsPerSecond = .002,
+        DriftNorthCellsPerSecond = .001,
+        EvolutionCellsPerSecond = .0005,
+        Keyframes = [new() { Coverage = coverage, MaximumOpacity = opacity, ScatterFraction = .2 }]
+    };
     private const double Asi174PixelMillimeters = .00586;
     private static double RectilinearFieldDegrees(double focalMillimeters) =>
         2 * Math.Atan(1936 * Asi174PixelMillimeters / 2 / focalMillimeters) * 180 / Math.PI;
@@ -56,6 +132,43 @@ internal static class VirtualAstrometryFixture
         }
     }
 
+    internal static int ExposureSeconds => Select(ExposureVariable, ExposureSecondsValues.Select(v => v.ToString(CultureInfo.InvariantCulture)).ToArray()) is { } value
+        ? int.Parse(value, CultureInfo.InvariantCulture) : ExposureSecondsValues[0];
+
+    internal static TimeSpan Exposure => TimeSpan.FromSeconds(ExposureSeconds);
+
+    internal static string Measurer => Select(MeasurerVariable, Measurers) ?? Measurers[0];
+
+    internal static VirtualLongExposureVariant Variant =>
+        Select(VariantVariable, [.. Variants.Select(v => v.Name)]) is { } name ? Variants.Single(v => v.Name == name) : Variants[0];
+
+    /// <summary>Unset selects the default; an unknown value fails the run rather than silently selecting another matrix.</summary>
+    private static string? Select(string variable, IReadOnlyList<string> values)
+    {
+        var value = Environment.GetEnvironmentVariable(variable);
+        return string.IsNullOrWhiteSpace(value) ? null
+            : values.Contains(value, StringComparer.Ordinal) ? value : throw new InvalidOperationException($"Unknown {variable} '{value}'.");
+    }
+
+    /// <summary>
+    /// The frozen issue #1168 renderer refusals. The rectilinear 6 mm full-frame views need more than the renderer's 64
+    /// temporal slots at the PSF-limited 0.15 px step for 60 s; the native-readout path refuses every cloud scenario.
+    /// </summary>
+    internal static VirtualRenderRefusal? DeclaredRefusal(VirtualProjectionFamily family, VirtualAstrometryProfile profile,
+        int exposureSeconds, VirtualLongExposureVariant variant)
+    {
+        var rig = profile.Config.Rig;
+        if (variant.CloudScenario is not null && rig.Sensor.PixelFormat == CameraPixelFormat.Mono16)
+            return new("initialize", typeof(NotSupportedException).FullName!, VirtualRenderRefusal.NativeReadoutClouds);
+        var fullFrame = rig.Readout is null || rig.Readout.Roi.Width == rig.Sensor.WidthPixels && rig.Readout.Roi.Height == rig.Sensor.HeightPixels;
+        return family.Name == "rectilinear" && exposureSeconds == 60 && fullFrame
+            ? new("capture", typeof(InvalidOperationException).FullName!, "stellar-exposure-temporal-budget-exceeded")
+            : null;
+    }
+
+    /// <summary>The fixed night gain; only exposure varies across the long-exposure matrix.</summary>
+    internal static CaptureRequest Request(DateTimeOffset utc, TimeSpan exposure) => new(utc, TimeSpan.FromSeconds(60), CaptureMode.Still,
+        new(exposure, 150, null, null));
 
     internal static readonly ObserverLocation Observer = new(35.347, -113.878, 1000);
     internal static readonly AstrometricSolverOptions SolverOptions = new(MaximumCatalogMagnitude: 5);
@@ -65,9 +178,11 @@ internal static class VirtualAstrometryFixture
         Converters = { new JsonStringEnumConverter() }
     };
 
-    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed) => Profiles(seed, Family);
+    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed) => Profiles(seed, Family, Variant);
 
-    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed, VirtualProjectionFamily family)
+    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed, VirtualProjectionFamily family) => Profiles(seed, family, Variants[0]);
+
+    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed, VirtualProjectionFamily family, VirtualLongExposureVariant variant)
     {
         var mono = LoadRig("virtual-asi174.full.json") with
         {
@@ -82,17 +197,17 @@ internal static class VirtualAstrometryFixture
         var bin = mono.Readout! with { BinX = 2, BinY = 2, BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 };
         List<VirtualAstrometryProfile> profiles =
         [
-            Profile("mono-native", mono, seed),
-            Profile("mono-roi", mono with { Readout = roi }, seed),
-            Profile("mono-bin2", mono with { Readout = bin }, seed),
-            Profile("mono-roi-bin2", mono with { Readout = roi with { BinX = 2, BinY = 2, BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 } }, seed),
-            Profile("mono-mirror", mono with { Optics = mono.Optics with { HorizontalFlip = !mono.Optics.HorizontalFlip } }, seed),
-            Profile("mono-roll", mono with { Orientation = new(82, 137, -57) }, seed)
+            Profile("mono-native", mono, seed, variant),
+            Profile("mono-roi", mono with { Readout = roi }, seed, variant),
+            Profile("mono-bin2", mono with { Readout = bin }, seed, variant),
+            Profile("mono-roi-bin2", mono with { Readout = roi with { BinX = 2, BinY = 2, BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 } }, seed, variant),
+            Profile("mono-mirror", mono with { Optics = mono.Optics with { HorizontalFlip = !mono.Optics.HorizontalFlip } }, seed, variant),
+            Profile("mono-roll", mono with { Orientation = new(82, 137, -57) }, seed, variant)
         ];
         // CFA is qualified for equidistant only; CFA with every other family is outside the published envelope.
         if (family.Model == ProjectionModel.EquidistantFisheye)
-            profiles.Add(Profile("cfa-native", LoadRig("virtual-asi178mc.full.json") with { Orientation = new(84, 73, 25) }, seed));
-        return profiles;
+            profiles.Add(Profile("cfa-native", LoadRig("virtual-asi178mc.full.json") with { Orientation = new(84, 73, 25) }, seed, variant));
+        return variant.Name == Variants[0].Name ? profiles : [.. profiles.Where(p => p.Name is "mono-native" or "cfa-native")];
     }
 
     private static OpticsProfile FamilyOptics(OpticsProfile optics, VirtualProjectionFamily family) =>
@@ -119,20 +234,21 @@ internal static class VirtualAstrometryFixture
         return document.RootElement.GetProperty("rig").Deserialize<CameraRigConfig>(JsonOptions)!;
     }
 
-    private static VirtualAstrometryProfile Profile(string name, CameraRigConfig rig, int seed)
+    private static VirtualAstrometryProfile Profile(string name, CameraRigConfig rig, int seed, VirtualLongExposureVariant variant)
     {
         var options = new VirtualSkyCameraModuleOptions
         {
             Seed = seed,
-            MaximumMagnitude = 5,
-            MaximumResults = 2000,
+            MaximumMagnitude = variant.Depth.MaximumMagnitude,
+            MaximumResults = variant.Depth.MaximumResults,
             MagnitudeZeroElectronsPerSecond = 60000,
-            BackgroundElectronsPerSecond = 2,
+            BackgroundElectronsPerSecond = variant.BackgroundElectronsPerSecond,
             PsfSigmaPixels = 1,
             PsfRadiusPixels = 4,
             VignettingStrength = .25,
             ShotNoiseEnabled = true,
-            Asi174Sensor = new() { Enabled = rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 }
+            Asi174Sensor = new() { Enabled = rig.Sensor.PixelFormat == CameraPixelFormat.Mono16 },
+            CloudScenario = variant.CloudScenario
         };
         return new(name, new(new(Observer.LatitudeDegrees, Observer.LongitudeDegrees, Observer.ElevationMeters, "America/Phoenix"),
             new("VirtualSky", JsonSerializer.SerializeToElement(options, JsonOptions)), rig,
@@ -284,6 +400,26 @@ internal static class VirtualAstrometryFixture
 
     internal static AstrometricDetection[] Detections(StellarMeasurementResult measured) =>
         [.. measured.Detections.Select(d => new AstrometricDetection(d.Index, d.Pixel, d.Flux))];
+
+    internal static VirtualAstrometryMeasurement Measure(VirtualAstrometryPixels input, AstrometricCalibration nominal, string measurer)
+    {
+        if (measurer == "v1")
+        {
+            var baseline = Measure(input, nominal);
+            return new(measurer, baseline.Detections, baseline.CandidateCount, baseline.Background, baseline.NoiseSigma, FrameContext(input), null);
+        }
+        var candidate = MeasureV2(input, nominal);
+        return new(measurer, candidate.Detections, candidate.CandidateCount, candidate.MedianBackground, candidate.MedianNoiseSigma,
+            FrameContextV2(input), candidate);
+    }
+
+    internal static AstrometricSolveResult Solve(VirtualAstrometryMeasurement measured, AstrometricCalibration nominal,
+        AstrometricCatalogData catalog, AstrometricFrameAssessment? prior = null, AstrometricFrameContext? frame = null)
+    {
+        var detections = measured.Detections.Select(d => new AstrometricDetection(d.Index, d.Pixel, d.Flux)).ToArray();
+        return prior is null ? AstrometricSolver.Solve(frame ?? measured.Frame, nominal, catalog, detections, SolverOptions)
+            : AstrometricSolver.Refine(frame ?? measured.Frame, nominal, catalog, detections, prior, SolverOptions);
+    }
 
     internal static AstrometricResidualDiagnostics Diagnose(AstrometricCalibration nominal, AstrometricCatalogData catalog,
         StellarMeasurementResult measured, AstrometricSolveResult solved) => AstrometricResidualAnalyzer.Analyze(nominal, catalog, SolverOptions, solved,
