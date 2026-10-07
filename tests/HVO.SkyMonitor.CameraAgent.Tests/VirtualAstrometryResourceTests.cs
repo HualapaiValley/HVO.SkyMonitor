@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Catalog.Sqlite;
 
@@ -28,6 +29,9 @@ public sealed class VirtualAstrometryResourceTests
         var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v42-production"));
         Assert.AreEqual(119625L, snapshot.RowCount);
         Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
+        Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Resource evidence renders only the unvaried scene.");
+        var exposureSeconds = VirtualAstrometryFixture.ExposureSeconds; var measurer = VirtualAstrometryFixture.Measurer;
+        var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         using var process = Process.GetCurrentProcess();
         var initialProcessPeakBytes = process.PeakWorkingSet64;
         var reports = new List<object>();
@@ -48,11 +52,11 @@ public sealed class VirtualAstrometryResourceTests
                 var nominal = VirtualAstrometryFixture.NominalCalibration(profile);
                 var utc = new DateTimeOffset(2026, 2, 10, 8, 0, 0, TimeSpan.Zero);
                 var captureTimes = new List<double>(); var detectionTimes = new List<double>();
-                var samples = new List<object>(); var allocationSamples = new List<long>();
+                var samples = new List<object>(); var allocationSamples = new List<long>(); var solveTimes = new List<double>();
+                AstrometricFrameAssessment? prior = null;
                 for (var index = -5; index < 30; index++)
                 {
-                    var request = new CaptureRequest(utc.AddSeconds(60 * (index + 5)), TimeSpan.FromSeconds(60), CaptureMode.Still,
-                        new(TimeSpan.FromSeconds(1), 150, null, null));
+                    var request = VirtualAstrometryFixture.Request(utc.AddSeconds(60 * (index + 5)), VirtualAstrometryFixture.Exposure);
                     var allocated = GC.GetTotalAllocatedBytes(precise: true);
                     var cpu = process.TotalProcessorTime; var io = LinuxIo();
                     var clock = Stopwatch.StartNew();
@@ -60,14 +64,22 @@ public sealed class VirtualAstrometryResourceTests
                     var captureMs = clock.Elapsed.TotalMilliseconds;
                     clock.Restart();
                     var input = VirtualAstrometryPixels.FromCapture(result.Frame!);
-                    var measured = VirtualAstrometryFixture.Measure(input, nominal);
+                    var measured = VirtualAstrometryFixture.Measure(input, nominal, measurer);
                     var detectionMs = clock.Elapsed.TotalMilliseconds;
                     var cpuMs = (process.TotalProcessorTime - cpu).TotalMilliseconds;
                     allocated = GC.GetTotalAllocatedBytes(precise: true) - allocated;
                     var afterIo = LinuxIo();
+                    // The solve is timed after the capture and measurement counters, which keep their #1126 scope.
+                    clock.Restart();
+                    var solved = VirtualAstrometryFixture.Solve(measured, nominal, catalog, prior);
+                    var solveMs = clock.Elapsed.TotalMilliseconds;
+                    if (!solved.Assessment.HasMeasuredMapping) failures.Add($"{profile.Name}/{index}: {solved.Assessment.Mode} solve {solved.Assessment.Reason}");
+                    prior = solved.Assessment.HasMeasuredMapping ? solved.Assessment : null;
                     process.Refresh();
                     if (index < 0) continue;
-                    captureTimes.Add(captureMs); detectionTimes.Add(detectionMs); allocationSamples.Add(allocated);
+                    captureTimes.Add(captureMs); detectionTimes.Add(detectionMs); allocationSamples.Add(allocated); solveTimes.Add(solveMs);
+                    if (solved.Assessment.Mode == AstrometricSolveMode.Warm && solved.Metrics.ElapsedMilliseconds > 500)
+                        failures.Add($"{profile.Name}/{index}: warm solve {solved.Metrics.ElapsedMilliseconds}ms exceeds 500ms");
                     var sample = new
                     {
                         profile.Name,
@@ -90,9 +102,13 @@ public sealed class VirtualAstrometryResourceTests
                         readBytes = io is null || afterIo is null ? (long?)null : afterIo.Value.Read - io.Value.Read,
                         writeBytes = io is null || afterIo is null ? (long?)null : afterIo.Value.Write - io.Value.Write,
                         sourceHash = Convert.ToHexString(SHA256.HashData(input.Payload.Span)),
-                        sourceDescriptorHash = VirtualAstrometryFixture.FrameContext(input).SourceDescriptorSha256,
+                        sourceDescriptorHash = measured.Frame.SourceDescriptorSha256,
                         detected = measured.Detections.Count,
-                        measured.CandidateCount
+                        measured.CandidateCount,
+                        solveMs,
+                        solved.Assessment.Mode,
+                        solved.Assessment.Status,
+                        solved.Metrics
                     };
                     samples.Add(sample);
                     rawSamples.Add(sample);
@@ -100,6 +116,8 @@ public sealed class VirtualAstrometryResourceTests
                 }
                 var captureP95 = Percentile95(captureTimes); var detectionP95 = Percentile95(detectionTimes);
                 var isCfa = profile.Name == "cfa-native";
+                // Long exposures carry the #522-qualified long-exposure renderer budget; it bounds rendering, not astrometry.
+                var captureBudgetMs = exposureSeconds == 1 ? isCfa ? 20000d : 10000 : isCfa ? 40000d : 10000;
                 reports.Add(new
                 {
                     profile.Name,
@@ -109,11 +127,14 @@ public sealed class VirtualAstrometryResourceTests
                     captureP95Ms = captureP95,
                     detectionMedianMs = Median(detectionTimes),
                     detectionP95Ms = detectionP95,
+                    captureBudgetMs,
+                    solveMedianMs = Median(solveTimes),
+                    solveP95Ms = Percentile95(solveTimes),
                     medianAllocatedBytes = allocationSamples.Order().ElementAt(15),
                     operationsPerSecond = 30000 / (captureTimes.Sum() + detectionTimes.Sum()),
                     samples
                 });
-                if (captureP95 > (isCfa ? 20000d : 10000)) failures.Add($"{profile.Name}: capture p95 {captureP95}ms exceeds budget");
+                if (captureP95 > captureBudgetMs) failures.Add($"{profile.Name}: capture p95 {captureP95}ms exceeds budget");
                 if (detectionP95 > (isCfa ? 5000d : 2000)) failures.Add($"{profile.Name}: detection p95 {detectionP95}ms exceeds budget");
                 if (process.PeakWorkingSet64 > 2L * 1024 * 1024 * 1024)
                     failures.Add($"{profile.Name}: cumulative process peak {process.PeakWorkingSet64} exceeds 2 GiB; run this resource workload in its own test process");
@@ -126,6 +147,8 @@ public sealed class VirtualAstrometryResourceTests
                 schema = "virtual-astrometry-resources-v2",
                 revision,
                 projectionFamily = VirtualAstrometryFixture.Family.Name,
+                exposureSeconds,
+                measurer,
                 binaryRevision,
                 route = "existing-production-through-qualified-pixel-harness",
                 snapshot.DatabaseSha256,
