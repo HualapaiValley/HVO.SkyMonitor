@@ -127,6 +127,32 @@ public interface ICelestialCatalogMetadataSource
 
     /// <summary>Gets the deterministic preprocessing recipe version, or <c>unspecified</c>.</summary>
     string PreprocessingVersion => "unspecified";
+
+    /// <summary>Gets the validated installed catalog identity, or <see langword="null"/> when none was installed.</summary>
+    string? CatalogId => null;
+
+    /// <summary>Gets the validated installed package version, or <see langword="null"/> when none was installed.</summary>
+    string? CatalogPackageVersion => null;
+}
+
+/// <summary>
+/// Selects the installed package identity a scene provenance records. Schema-2 snapshots (HYG 4.2) predate
+/// recorded package identity and are already identified by name, version and checksum, so they record none:
+/// a retained capture regenerated after an upgrade then produces byte-identical provenance.
+/// </summary>
+public static class CatalogSceneProvenanceIdentity
+{
+    /// <summary>The first catalog schema version whose scenes record catalog ID and package version.</summary>
+    public const int FirstRecordedSchemaVersion = 3;
+
+    /// <summary>Returns the catalog ID and package version to record, or <see langword="null"/> values for a legacy schema.</summary>
+    public static (string? CatalogId, string? PackageVersion) For(ICelestialCatalogMetadataSource? source)
+        => source is not null &&
+           int.TryParse(source.Metadata.SchemaVersion, System.Globalization.NumberStyles.None,
+               System.Globalization.CultureInfo.InvariantCulture, out var schema) &&
+           schema >= FirstRecordedSchemaVersion
+            ? (source.CatalogId, source.CatalogPackageVersion)
+            : (null, null);
 }
 
 /// <summary>Process-safe in-memory catalog with deterministic brightest-first selection.</summary>

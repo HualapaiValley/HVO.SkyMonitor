@@ -34,9 +34,13 @@ public sealed class VirtualAstrometryResourceTests
         var rawSamples = new List<object>();
         var failures = new List<string>();
         var path = Path.Combine(TestContext.TestRunDirectory!, "virtual-astrometry-resources.json");
+        var expectedReports = 0;
         try
         {
-            foreach (var profile in VirtualAstrometryFixture.Profiles(110220).Where(profile => profile.Name is "mono-native" or "cfa-native"))
+            // Every family measures its native mono workload; only the equidistant baseline also carries the CFA rig.
+            var natives = VirtualAstrometryFixture.Profiles(110220).Where(profile => profile.Name is "mono-native" or "cfa-native").ToArray();
+            expectedReports = natives.Length;
+            foreach (var profile in natives)
             {
                 var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
                 await using var lifetime = module.ConfigureAwait(false);
@@ -121,6 +125,7 @@ public sealed class VirtualAstrometryResourceTests
             {
                 schema = "virtual-astrometry-resources-v2",
                 revision,
+                projectionFamily = VirtualAstrometryFixture.Family.Name,
                 binaryRevision,
                 route = "existing-production-through-qualified-pixel-harness",
                 snapshot.DatabaseSha256,
@@ -141,8 +146,8 @@ public sealed class VirtualAstrometryResourceTests
             }, VirtualAstrometryFixture.JsonOptions)).ConfigureAwait(false);
             TestContext.AddResultFile(path);
         }
-        Assert.HasCount(2, reports, "Both native camera workloads must complete.");
-        Assert.HasCount(60, rawSamples, "Each native workload requires 30 measured samples.");
+        Assert.HasCount(expectedReports, reports, "Every native camera workload must complete.");
+        Assert.HasCount(expectedReports * 30, rawSamples, "Each native workload requires 30 measured samples.");
         Assert.IsEmpty(failures, string.Join(Environment.NewLine, failures));
     }
 

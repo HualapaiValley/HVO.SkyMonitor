@@ -34,7 +34,7 @@ and cropped or binned readouts are views derived from it. It builds on the
   `r_d = r (1 + k1 r²)`.
   - For fisheye families, `r` is the family's ideal radial function of the off-axis angle.
   - For perspective, `r` is `tan θ`.
-- **Every family supports it**: equidistant, equisolid, orthographic and perspective. The VirtualSky renderer
+- **Every family supports it**: equidistant, equisolid, orthographic, stereographic and perspective. The VirtualSky renderer
   projects through the same `ProjectionContext`, so emulator support follows from the rig declaration.
 - **Invertibility is a validation rule, not a hope.**
   - `|k1| ≤ 0.5`.
@@ -178,7 +178,8 @@ Both keep the previously active revision and its optics unchanged.
 - **Withheld frames.** native and ROI at 07:15, ROI+bin2 at 09:30.
 - **Independent scoring.** Each withheld frame is re-measured and solved through the calibrated readout view,
   then scored by `VirtualAstrometryReference`. That reference implements the equidistant projection with k1
-  independently of production projectors and must give:
+  independently of production projectors (#1126 extends it to every family; see
+  [v2](virtual-astrometry-qualification-v2.md)) and must give:
   - association precision of 1
   - withheld mapping RMS ≤ 0.5 px and p95 ≤ 0.75 px
   - pose error ≤ 0.06°

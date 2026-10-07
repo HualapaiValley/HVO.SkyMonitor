@@ -939,9 +939,32 @@ hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
 hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version>
 hvo-skymonitor catalog rollback --instance-id <uuid>
 hvo-skymonitor catalog gc --catalog-version <version>
+hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
-Mutating garbage collection requires one explicit version. It fails closed on
+Each approved catalog ID has its own root,
+`<productRoot>/catalogs/<catalogId>/versions/<package-version>`, so HYG 4.2
+(`hyg-v42-production`) and HYG 4.4 (`hyg-v44-production`) install side by side.
+`install` takes the catalog ID from the bundle manifest and refuses an ID,
+package version, lineage or hash that the embedded approved-catalog registry
+does not name. It never changes a selection. Package versions are unique across
+lineages, so `--catalog-version` names exactly one root. A `select` that changes
+the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
+mount and reauthenticates the Compose model. It requires an image whose catalog
+contract label is `hvo-approved-catalogs-v1`, retires the retained image
+rollback, and pins the previous identity as a historical reference. `rollback`
+returns to the previous selection across lineages. The exact identities and
+selection behavior are documented in
+[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
+
+`catalog check` is read-only. It verifies the signed manifest or index, or the
+previously verified cached copy when offline, and reports `available` or
+`installed`. It takes no lock, downloads no bundle, and changes no catalog,
+selection, cache or rollback state. It refuses an installed version whose
+identity differs from the signed release.
+
+Mutating garbage collection requires one explicit version. A dry run without a
+version plans collection across every installed approved catalog ID. It fails closed on
 unknown instance roots, malformed selection pointers, active Docker mounts,
 manifests, backups, operations, rollback slots, or historical reconstruction
 references. Interrupted deletion continues from an authenticated tombstone and

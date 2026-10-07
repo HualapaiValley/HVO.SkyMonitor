@@ -457,6 +457,7 @@ public sealed class VirtualSkyCameraModule(
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
             _options.TransientScenario, timelineUtc, setpoint.Exposure);
+        var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -494,7 +495,9 @@ public sealed class VirtualSkyCameraModule(
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
-            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion);
+            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion,
+            CatalogId: catalogIdentity.CatalogId,
+            CatalogPackageVersion: catalogIdentity.PackageVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
