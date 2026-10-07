@@ -57,6 +57,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         Assert.HasCount(1637, catalog.Stars); Assert.IsTrue(catalog.IsCompleteForRequestedMagnitude);
         if (!tuning) VirtualAstrometryQualificationTests.RequireRevision();
+        Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Optical calibration renders only the unvaried scene.");
         var partitions = tuning
             ? new[] { (Month: 2, Day: 10, Seed: 110420, Truth: new Truth(1.010, 5, -4, -.007, new(82, 137, 13))) }
             : [(Month: 1, Day: 15, Seed: 110401, Truth: new Truth(1.008, 4.5, -3.5, -.008, new(78, 205, -21))),
@@ -180,7 +181,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
                     {
                         readout,
                         frame.Frame.CaptureId,
-                        score = VirtualAstrometryReference.Score(WithReadout(truthRig, readout), sceneUtc, calibration, catalog,
+                        score = VirtualAstrometryReference.Score(WithReadout(truthRig, readout), sceneUtc, VirtualAstrometryFixture.Exposure, calibration, catalog,
                             VirtualAstrometryFixture.Detections(measured), solved, failures, scoreId)
                     });
                 }
@@ -230,6 +231,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
             schema = "virtual-optical-calibration-v1",
             partition,
             projectionFamily = VirtualAstrometryFixture.Family.Name,
+            VirtualAstrometryFixture.ExposureSeconds,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
             runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,

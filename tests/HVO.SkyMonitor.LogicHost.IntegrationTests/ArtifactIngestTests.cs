@@ -4450,6 +4450,8 @@ public sealed partial class ArtifactIngestTests
             interrupted.ObjectVerificationToken.Should().NotBeNull();
             interrupted.ObjectVerificationRequestedAtUtc.Should().NotBeNull();
             interrupted.ObjectVerifiedAtUtc.Should().NotBeNull();
+            interrupted.ObjectVerificationRetryCount.Should().Be(0, "an interrupted scheduling pass is due immediately");
+            interrupted.ObjectVerificationRetryAtUtc.Should().BeNull();
         }
 
         using (var restartTelemetry = new CentralIngestTelemetry())
