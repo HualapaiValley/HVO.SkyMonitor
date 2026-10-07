@@ -1,3 +1,4 @@
+using System.Globalization;
 using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.Astronomy.Tests;
@@ -151,6 +152,173 @@ public sealed class DeepSkyCatalogTests
         Assert.IsTrue(((ICollection<DeepSkyAlias>)catalog.FindByAlias("M103")).IsReadOnly);
         CollectionAssert.AreEqual(ExpectedObjectOrder, catalog.Objects.Select(static item => item.Id).ToArray());
     }
+
+    [TestMethod]
+    public void QueryRegionMatchesEveryObjectWhoseReachOverlapsIt()
+    {
+        var catalog = QueryCatalog(
+            [
+                Placed(1, 6, 20), Placed(2, 6, 25), Placed(3, 6, 25.001), Placed(4, 6, 27, major: 241),
+                Placed(5, 6, 27, major: 239), Placed(6, 6, 28), Placed(7, 6, 28), Placed(9, 0.05, 0), Placed(10, 23.75, 0),
+                Placed(11, 0.3, 0), Placed(12, 12, 89.5), Placed(13, 12, 87.5), Placed(14, 0, 87.2)
+            ],
+            [
+                // The first reaches 3.4 degrees towards the region, the second only 1.5.
+                new DeepSkyOutline("NGC0006", 2, [Diamond(90, 28, 3.4, 0.5)]),
+                new DeepSkyOutline("NGC0007", 1, [Diamond(90, 28, 1.5, 0.3)]),
+            ]);
+
+        string[] centred = ["NGC0001", "NGC0002", "NGC0004", "NGC0006"];
+        string[] acrossZeroHours = ["NGC0009", "NGC0010"];
+        string[] acrossThePole = ["NGC0012", "NGC0014"];
+        string[] atTheCentre = ["NGC0001"];
+        CollectionAssert.AreEqual(centred, Ids(catalog.Query(new DeepSkyQuery(100, new J2000SphericalCap(6, 20, 5)))));
+        CollectionAssert.AreEqual(acrossZeroHours, Ids(catalog.Query(new DeepSkyQuery(100, new J2000SphericalCap(23.9, 0, 3)))));
+        CollectionAssert.AreEqual(acrossThePole, Ids(catalog.Query(new DeepSkyQuery(100, new J2000SphericalCap(0, 89, 2)))));
+        CollectionAssert.AreEqual(atTheCentre, Ids(catalog.Query(new DeepSkyQuery(100, new J2000SphericalCap(6, 20, 0)))));
+        CollectionAssert.AreEqual(catalog.Objects.Select(static item => item.Id).ToArray(),
+            Ids(catalog.Query(new DeepSkyQuery(100, new J2000SphericalCap(18, -20, 180)))));
+        CollectionAssert.AreEqual(catalog.Objects.Select(static item => item.Id).ToArray(), Ids(catalog.Query(new DeepSkyQuery(100))));
+    }
+
+    [TestMethod]
+    public void QueryRegionMatchesExactlyTheObjectsAnIndependentAngleSelects()
+    {
+        var objects = new List<DeepSkyObject>();
+        var outlines = new List<DeepSkyOutline>();
+        for (var row = 0; row < 16; row++)
+        {
+            for (var column = 0; column < 14; column++)
+            {
+                var number = objects.Count + 1;
+                var item = Placed(number, (0.37 + 1.71 * column) % 24, -88.3 + 11.3 * row,
+                    major: number % 3 == 0 ? null : 37.3 * (column + 1));
+                objects.Add(item);
+                if (number % 5 == 0)
+                {
+                    outlines.Add(new DeepSkyOutline(item.Id, 1,
+                        [Diamond(item.RightAscensionHours * 15, item.DeclinationDegrees, 0.7 + 0.3 * (number % 4), 0.4)]));
+                }
+            }
+        }
+        var catalog = QueryCatalog(objects, outlines);
+        var reach = catalog.Objects.ToDictionary(static item => item.Id, item => Math.Max(
+            (item.MajorAxisArcminutes ?? 0) / 120,
+            catalog.GetOutlines(item.Id).SelectMany(static outline => outline.Rings).SelectMany(static ring => ring.Points)
+                .Select(point => Haversine(item.RightAscensionHours, item.DeclinationDegrees, point.RightAscensionDegrees / 15,
+                    point.DeclinationDegrees))
+                .DefaultIfEmpty(0).Max()));
+
+        double[] rightAscensions = [0, 5.5, 11.93, 18.25, 23.99];
+        double[] declinations = [-90, -61.7, -0.4, 0, 33.3, 89.6, 90];
+        double[] radii = [0, 0.25, 4.1, 47, 121, 180];
+        var reachOnly = 0;
+        foreach (var rightAscension in rightAscensions)
+        {
+            foreach (var declination in declinations)
+            {
+                foreach (var radius in radii)
+                {
+                    var expected = catalog.Objects
+                        .Where(item => Haversine(rightAscension, declination, item.RightAscensionHours, item.DeclinationDegrees) <=
+                            radius + reach[item.Id] + DeepSkyCatalog.RegionToleranceDegrees)
+                        .Select(static item => item.Id)
+                        .ToArray();
+                    reachOnly += catalog.Objects.Count(item => expected.Contains(item.Id) &&
+                        Haversine(rightAscension, declination, item.RightAscensionHours, item.DeclinationDegrees) > radius);
+                    CollectionAssert.AreEqual(expected,
+                        Ids(catalog.Query(new DeepSkyQuery(1_000, new J2000SphericalCap(rightAscension, declination, radius)))),
+                        $"{rightAscension} h, {declination} deg, radius {radius}");
+                }
+            }
+        }
+        Assert.IsGreaterThan(0, reachOnly);
+    }
+
+    [TestMethod]
+    public void QueryFiltersByTypeAndByBrightnessInTheNamedBandOnly()
+    {
+        var catalog = QueryCatalog(
+        [
+            Placed(1, 1, 0, v: 8, b: 9), Placed(2, 2, 0, v: null, b: 8.5), Placed(3, 3, 0, type: "OCl", v: 9.5, b: null),
+            Placed(4, 4, 0, type: "GCl", v: null, b: null), Placed(5, 5, 0, type: "PN", v: 7, b: 12)
+        ]);
+        DeepSkyQueryResult Run(DeepSkyBrightnessLimit? brightness, params string[] types) =>
+            catalog.Query(new DeepSkyQuery(100, null, types.Length == 0 ? null : types.ToHashSet(StringComparer.Ordinal), brightness));
+        string[] galaxies = ["NGC0001", "NGC0002"];
+        string[] clusters = ["NGC0003", "NGC0004"];
+        string[] visual = ["NGC0001", "NGC0005"];
+        string[] visualOrUnknown = ["NGC0001", "NGC0002", "NGC0004", "NGC0005"];
+        string[] blue = ["NGC0001", "NGC0002"];
+        string[] blueOrUnknown = ["NGC0001", "NGC0002", "NGC0003", "NGC0004"];
+        string[] brightGalaxy = ["NGC0001"];
+
+        CollectionAssert.AreEqual(galaxies, Ids(Run(null, "G")));
+        CollectionAssert.AreEqual(clusters, Ids(Run(null, "OCl", "GCl")));
+        CollectionAssert.AreEqual(visual, Ids(Run(new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Visual, 9, false))));
+        CollectionAssert.AreEqual(visualOrUnknown, Ids(Run(new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Visual, 9, true))));
+        // A V magnitude never stands in for a missing or fainter B magnitude.
+        CollectionAssert.AreEqual(blue, Ids(Run(new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Blue, 9, false))));
+        CollectionAssert.AreEqual(blueOrUnknown, Ids(Run(new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Blue, 9, true))));
+        CollectionAssert.AreEqual(brightGalaxy, Ids(Run(new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Visual, 9, false), "G")));
+    }
+
+    [TestMethod]
+    public void QueryCutsAtItsResultBoundInIdOrderAndCountsEveryMatch()
+    {
+        var catalog = QueryCatalog(
+            [Placed(5, 5, 0), Placed(3, 3, 0, type: "OCl"), Placed(1, 1, 0), Placed(4, 4, 0), Placed(2, 2, 0, type: "OCl")]);
+        string[] firstTwo = ["NGC0001", "NGC0002"];
+        string[] all = ["NGC0001", "NGC0002", "NGC0003", "NGC0004", "NGC0005"];
+        string[] firstCluster = ["NGC0002"];
+
+        var cut = catalog.Query(new DeepSkyQuery(2));
+        CollectionAssert.AreEqual(firstTwo, Ids(cut));
+        Assert.AreEqual(5, cut.MatchCount);
+        Assert.IsTrue(cut.Truncated);
+        AssertReadOnly(cut.Objects, Pinwheel);
+        var exact = catalog.Query(new DeepSkyQuery(5));
+        CollectionAssert.AreEqual(all, Ids(exact));
+        Assert.IsFalse(exact.Truncated);
+        Assert.IsFalse(catalog.Query(new DeepSkyQuery(int.MaxValue)).Truncated);
+        var clusters = catalog.Query(new DeepSkyQuery(1, ObjectTypes: new HashSet<string>(StringComparer.Ordinal) { "OCl" }));
+        CollectionAssert.AreEqual(firstCluster, Ids(clusters));
+        Assert.AreEqual(2, clusters.MatchCount);
+    }
+
+    [TestMethod]
+    [DataRow("zero-results")]
+    [DataRow("negative-results")]
+    [DataRow("no-types")]
+    [DataRow("unsupported-type")]
+    [DataRow("null-type")]
+    [DataRow("nan-magnitude")]
+    [DataRow("infinite-magnitude")]
+    [DataRow("undefined-band")]
+    [DataRow("region-radius")]
+    [DataRow("region-centre")]
+    public void QueryRejectsAnInvalidCriterion(string defect)
+    {
+        var query = defect switch
+        {
+            "zero-results" => new DeepSkyQuery(0),
+            "negative-results" => new DeepSkyQuery(-1),
+            "no-types" => new DeepSkyQuery(10, ObjectTypes: new HashSet<string>()),
+            "unsupported-type" => new DeepSkyQuery(10, ObjectTypes: new HashSet<string> { "Galaxy" }),
+            "null-type" => new DeepSkyQuery(10, ObjectTypes: new HashSet<string> { "G", null! }),
+            "nan-magnitude" => new DeepSkyQuery(10, Brightness: new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Visual, double.NaN, true)),
+            "infinite-magnitude" => new DeepSkyQuery(10, Brightness: new DeepSkyBrightnessLimit(DeepSkyMagnitudeBand.Blue, double.PositiveInfinity, true)),
+            "undefined-band" => new DeepSkyQuery(10, Brightness: new DeepSkyBrightnessLimit((DeepSkyMagnitudeBand)2, 9, true)),
+            "region-radius" => new DeepSkyQuery(10, new J2000SphericalCap(6, 20, 180.5)),
+            "region-centre" => new DeepSkyQuery(10, new J2000SphericalCap(24, 20, 5)),
+            _ => throw new ArgumentOutOfRangeException(nameof(defect))
+        };
+
+        Assert.Throws<ArgumentException>(() => Create().Query(query));
+    }
+
+    [TestMethod]
+    public void QueryRejectsANullQuery() => Assert.ThrowsExactly<ArgumentNullException>(() => Create().Query(null!));
 
     [TestMethod]
     public void ObjectPropertiesClassifyExtentsAndStellarRows()
@@ -501,6 +669,61 @@ public sealed class DeepSkyCatalogTests
         new("HIP 26311", "NGC1990", DeepSkyAliasKinds.Hipparcos),
         new("Eps Ori", "NGC1990", DeepSkyAliasKinds.Identifier),
     ];
+
+    private static DeepSkyCatalog QueryCatalog(IEnumerable<DeepSkyObject> objects, IEnumerable<DeepSkyOutline>? outlines = null)
+    {
+        var items = objects.ToArray();
+        return new DeepSkyCatalog(Semantics, items,
+            items.Select(static item => new DeepSkyAlias(item.Designation, item.Id, DeepSkyAliasKinds.Designation)), [],
+            outlines ?? []);
+    }
+
+    private static DeepSkyObject Placed(
+        int number,
+        double rightAscensionHours,
+        double declinationDegrees,
+        double? major = null,
+        string type = "G",
+        double? v = 10,
+        double? b = null)
+    {
+        var designation = "NGC " + number.ToString(CultureInfo.InvariantCulture);
+        return new DeepSkyObject("NGC" + number.ToString("D4", CultureInfo.InvariantCulture), designation,
+            designation, type, rightAscensionHours, declinationDegrees, "Ori", major, null, null, b, v, null, null, null, null,
+            null, null);
+    }
+
+    private static string[] Ids(DeepSkyQueryResult result) => result.Objects.Select(static item => item.Id).ToArray();
+
+    /// <summary>The haversine angle, in degrees, between two J2000 directions.</summary>
+    private static double Haversine(double fromHours, double fromDegrees, double toHours, double toDegrees)
+    {
+        var fromDeclination = fromDegrees * Math.PI / 180;
+        var toDeclination = toDegrees * Math.PI / 180;
+        var declination = Math.Sin((toDeclination - fromDeclination) / 2);
+        var rightAscension = Math.Sin((toHours - fromHours) * Math.PI / 24);
+        var value = declination * declination +
+            Math.Cos(fromDeclination) * Math.Cos(toDeclination) * rightAscension * rightAscension;
+        return 2 * Math.Asin(Math.Min(1, Math.Sqrt(value))) * 180 / Math.PI;
+    }
+
+    /// <summary>
+    /// A closed ring with its south vertex <paramref name="south"/> degrees below its centre and its other vertices about
+    /// <paramref name="other"/> degrees away, so the south vertex is its farthest point when that is larger.
+    /// </summary>
+    private static DeepSkyOutlineRing Diamond(double rightAscensionDegrees, double declinationDegrees, double south, double other)
+    {
+        var across = other / Math.Cos(declinationDegrees * Math.PI / 180);
+        static double Wrap(double degrees) => (degrees % 360 + 360) % 360;
+        DeepSkyOutlinePoint[] vertices =
+        [
+            new(rightAscensionDegrees, declinationDegrees - south),
+            new(Wrap(rightAscensionDegrees + across), declinationDegrees),
+            new(rightAscensionDegrees, declinationDegrees + other),
+            new(Wrap(rightAscensionDegrees - across), declinationDegrees),
+        ];
+        return new DeepSkyOutlineRing([.. vertices, vertices[0]]);
+    }
 
     // An array returned as IReadOnlyList<T> still accepts element replacement through IList<T>; a frozen list does not.
     private static void AssertReadOnly<T>(IReadOnlyList<T> values, T replacement)

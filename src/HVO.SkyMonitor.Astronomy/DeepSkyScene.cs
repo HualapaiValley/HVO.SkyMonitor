@@ -197,10 +197,25 @@ internal static class DeepSkySceneProjector
     private const double PlateScaleProbeRadians = 1e-5;
     private const double CandidateMarginDegrees = 1;
 
+    // Bennett's argument, h + 10.3 / (h + 5.11), rises with altitude from 1.31 degrees at -1.9 to just past 90 at the
+    // zenith, so the correction falls from 0.744 degrees there to a negligible negative value. Below about -1.9 it
+    // rises again and diverges near -5.11, so a lower refraction floor bounds nothing.
+    private const double BoundedRefractionFloorDegrees = -1.9;
+    private const double MaximumRefractionDegrees = 0.75;
+
+    // Rotating J2000 directions into the horizontal frame preserves the angles between them up to rounding. Each
+    // arcsine or arccosine near its pole can lose about 1.2e-6 degrees, and a direction passes through several.
+    private const double RoundingSlackDegrees = 1e-4;
+
+    /// <summary>
+    /// Places the collection. With <paramref name="queryRegion"/> the candidates come from a region query that keeps
+    /// every object the full scan would keep; without it every object is scanned.
+    /// </summary>
     public static (ProjectedDeepSky Section, IReadOnlyList<ProjectedResolvedFootprint> Footprints) Project(
         VisibleScene scene,
         IDeepSkyCatalog catalog,
-        ProjectedSceneDeepSkySelection selection)
+        ProjectedSceneDeepSkySelection selection,
+        bool queryRegion)
     {
         var request = scene.Request;
         var projector = ProjectorFactory.Create(request.Projection);
@@ -211,8 +226,12 @@ internal static class DeepSkySceneProjector
             request.Projection.BoresightAltitudeDegrees, request.Projection.BoresightAzimuthDegrees));
         var reachDegrees = VisibleSceneBuilder.OpticalRadiusDegrees(request.Projection) + CandidateMarginDegrees;
 
+        // Both sources are in ordinal ID order, so the region query changes which objects are visited, never the order.
+        var visited = queryRegion && CandidateRegion(request) is { } region
+            ? catalog.Query(new DeepSkyQuery(Math.Max(1, catalog.Objects.Count), region)).Objects
+            : catalog.Objects;
         var candidates = new List<Candidate>();
-        foreach (var item in catalog.Objects)
+        foreach (var item in visited)
         {
             if (item.IsStellar && item.MessierNumber is null) continue;
             var ofDate = EquatorialPrecession.PrecessJ2000(
@@ -456,6 +475,25 @@ internal static class DeepSkySceneProjector
             (2 * PlateScaleProbeRadians);
         var size = scale * majorAxisArcminutes / 60d * Math.PI / 180d;
         return double.IsFinite(size) && size > 0 ? size : null;
+    }
+
+    /// <summary>
+    /// Returns the J2000 region around the boresight that every candidate's reach overlaps, or <see langword="null"/>
+    /// when no bound is safe. A candidate either projects, so its apparent direction lies within the optical radius of
+    /// the boresight and its geometric direction within the refraction bound of that, or its own reach brings it within
+    /// the candidate margin of the optical radius. The region query adds each object's reach, and the rotation into
+    /// J2000 preserves both angles up to a rounding slack. A perspective view without sensor bounds has no optical
+    /// radius, and a refraction floor below the bounded range has no refraction bound, so either scans every object.
+    /// </summary>
+    internal static J2000SphericalCap? CandidateRegion(VisibleSceneRequest request)
+    {
+        var projection = request.Projection;
+        if (projection.Model == ProjectionModel.Perspective && !projection.EnforceSensorBounds) return null;
+        if (request.Refraction.Enabled && request.Refraction.MinimumAltitudeDegrees < BoundedRefractionFloorDegrees) return null;
+        var radius = VisibleSceneBuilder.OpticalRadiusDegrees(projection) + CandidateMarginDegrees +
+            (request.Refraction.Enabled ? MaximumRefractionDegrees : 0) + RoundingSlackDegrees;
+        return VisibleSceneBuilder.CreateJ2000Cap(
+            request, new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees), radius);
     }
 
     private static double OutlineReachDegrees(VisibleSceneRequest request, EnuVector center, IReadOnlyList<DeepSkyOutline> outlines)

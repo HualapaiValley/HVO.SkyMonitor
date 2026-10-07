@@ -363,6 +363,124 @@ public sealed class DeepSkySceneTests
         Assert.IsTrue(ProjectedSceneJson.Parse(ProjectedSceneJson.Serialize(Create(scene))).IsValid);
     }
 
+    [TestMethod]
+    [DataRow("fisheye-zenith")]
+    [DataRow("fisheye-narrow")]
+    [DataRow("fisheye-distorted")]
+    [DataRow("perspective")]
+    [DataRow("perspective-distorted")]
+    [DataRow("perspective-unbounded")]
+    public async Task RegionQuery_PlacesTheSameBytesAsScanningEveryObject(string name)
+    {
+        var projection = name switch
+        {
+            "fisheye-zenith" => Fisheye(),
+            "fisheye-narrow" => Fisheye() with
+            {
+                ImageCircleRadiusPixels = 1200, BoresightAltitudeDegrees = 35, BoresightAzimuthDegrees = 250, RollDegrees = 10
+            },
+            "fisheye-distorted" => new ProjectionContext(ProjectionModel.EquidistantFisheye, 259.5, 253, 150, 150, 512, 512,
+                ProjectionAperture.Circular, 232, BoresightAltitudeDegrees: 25, BoresightAzimuthDegrees: 250, RollDegrees: 10,
+                HorizontalFlip: true, RadialDistortionK1: -.006),
+            "perspective" => Perspective(),
+            "perspective-distorted" => new ProjectionContext(ProjectionModel.Perspective, 322, 236, 500, 505, 640, 480,
+                ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 40, BoresightAzimuthDegrees: 120,
+                RollDegrees: 7, RadialDistortionK1: .05),
+            "perspective-unbounded" => Perspective() with { EnforceSensorBounds = false },
+            _ => throw new ArgumentOutOfRangeException(nameof(name))
+        };
+        RefractionOptions[] refractions = [default, new(true), new(true, -1.9), new(true, -3)];
+        HorizonPolicy[] horizons = [HorizonPolicy.GeometricHorizon, HorizonPolicy.ProjectionOnly];
+        DateTimeOffset[] instants = [EffectiveUtc, new(2041, 7, 3, 4, 30, 0, TimeSpan.Zero)];
+        var placedFromOutside = 0;
+        foreach (var utc in instants)
+        {
+            var catalog = EdgeCatalog(projection, utc);
+            foreach (var refraction in refractions)
+            {
+                foreach (var horizon in horizons)
+                {
+                    var label = $"{name} at {utc:O}, {refraction}, {horizon}";
+                    var scene = await BuildAsync(utc, projection, refraction: refraction, horizon: horizon).ConfigureAwait(false);
+                    var bounded = scene.WithDeepSky(catalog, ProjectedSceneDeepSkySelection.Default, queryRegion: true);
+                    var scanned = scene.WithDeepSky(catalog, ProjectedSceneDeepSkySelection.Default, queryRegion: false);
+
+                    Assert.IsNotNull(scanned.DeepSky, label);
+                    CollectionAssert.AreEqual(ProjectedSceneJson.Serialize(Create(scanned)),
+                        ProjectedSceneJson.Serialize(Create(bounded)), label);
+                    var region = DeepSkySceneProjector.CandidateRegion(scene.Request);
+                    if (name == "perspective-unbounded" || refraction.Enabled && refraction.MinimumAltitudeDegrees < -1.9)
+                    {
+                        Assert.IsNull(region, label);
+                        continue;
+                    }
+                    Assert.IsTrue(region.HasValue, label);
+                    var cap = region.GetValueOrDefault();
+                    var visited = catalog.Query(new DeepSkyQuery(catalog.Objects.Count, cap)).Objects.Count;
+                    Assert.IsLessThan(catalog.Objects.Count, visited, $"{label}: the region query left nothing out.");
+                    placedFromOutside += bounded.DeepSky!.Objects.Count(item => !cap.Contains(
+                        item.J2000Equatorial.RightAscensionHours, item.J2000Equatorial.DeclinationDegrees));
+                }
+            }
+        }
+        // An object placed with its centre outside the region shows that the query's extent reach is what kept it.
+        if (name != "perspective-unbounded")
+            Assert.IsGreaterThan(0, placedFromOutside, $"{name}: no placed object reached the field from outside the region.");
+    }
+
+    /// <summary>
+    /// Surrounds the boresight with every kind of object the projector distinguishes, at distances inside the field
+    /// and on both sides of the candidate region's edge, so extents and outlines straddle it.
+    /// </summary>
+    private static DeepSkyCatalog EdgeCatalog(ProjectionContext projection, DateTimeOffset utc)
+    {
+        var boresight = At(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees, utc);
+        var start = new EquatorialPoint(boresight.Ra, boresight.Dec);
+        var radius = VisibleSceneBuilder.OpticalRadiusDegrees(projection);
+        var edge = radius + 1;
+        double[] distances = [0.35 * radius, 0.8 * radius, edge - 1.5, edge - 0.4, edge + 0.3, edge + 0.9, edge + 1.6,
+            edge + 2.4, edge + 3.9];
+        var objects = new List<DeepSkyObject>();
+        var outlines = new List<DeepSkyOutline>();
+        var messier = 0;
+        foreach (var distance in distances)
+        {
+            for (var direction = 0; direction < 6; direction++)
+            {
+                for (var kind = 0; kind < 7; kind++)
+                {
+                    var id = "NGC" + (objects.Count + 1).ToString("D4", CultureInfo.InvariantCulture);
+                    var center = Destination(start, direction * 60 + kind * 7, distance);
+                    var at = (center.RightAscensionHours, center.DeclinationDegrees);
+                    objects.Add(kind switch
+                    {
+                        0 => Galaxy(id, at, null, null, null),
+                        1 => Galaxy(id, at, 60, 30, 40),
+                        2 => Galaxy(id, at, 90, null, null),
+                        3 => Galaxy(id, at, 100, 80, 10),
+                        4 or 5 => Galaxy(id, at, null, null, null),
+                        _ => objects.Count % 2 == 0
+                            ? Galaxy(id, at, null, null, null, messier: ++messier, type: DeepSkyObjectTypes.DoubleStar)
+                            : Galaxy(id, at, null, null, null, type: DeepSkyObjectTypes.Star)
+                    });
+                    if (kind is >= 3 and <= 5)
+                        outlines.Add(Polygon(id, center, kind switch { 3 => 1.4, 4 => 3.5, _ => 11 }));
+                }
+            }
+        }
+        return Catalog(objects, outlines);
+    }
+
+    /// <summary>A closed four-vertex widest-level outline whose vertices lie the given angle from a J2000 centre.</summary>
+    private static DeepSkyOutline Polygon(string id, EquatorialPoint center, double radius)
+    {
+        var vertices = Enumerable.Range(0, 4)
+            .Select(index => Destination(center, 45 + index * 90, radius))
+            .Select(static point => new DeepSkyOutlinePoint(point.RightAscensionHours * 15 % 360, point.DeclinationDegrees))
+            .ToArray();
+        return new DeepSkyOutline(id, DeepSkyOutline.WidestLevel, [new DeepSkyOutlineRing([.. vertices, vertices[0]])]);
+    }
+
     /// <summary>
     /// Independently samples each outline edge as a great-circle arc between its J2000 vertices, keeping only the
     /// directions above the geometric horizon whose projection lands inside the sensor and aperture.
@@ -586,10 +704,12 @@ public sealed class DeepSkySceneTests
     private static async Task<VisibleScene> BuildAsync(
         DateTimeOffset utc,
         ProjectionContext projection,
-        IReadOnlyList<SolarSystemBody>? bodies = null) =>
+        IReadOnlyList<SolarSystemBody>? bodies = null,
+        RefractionOptions refraction = default,
+        HorizonPolicy horizon = HorizonPolicy.GeometricHorizon) =>
         await new VisibleSceneBuilder(new InMemoryCelestialCatalog([]), null, new AstronomyEnginePlanetEphemeris())
             .BuildAsync(new VisibleSceneRequest(
-                utc, Site, projection, new CatalogQuery(6, 10), Metadata, default,
+                utc, Site, projection, new CatalogQuery(6, 10), Metadata, refraction, horizon,
                 projectionVersion: "fisheye-v1", solarSystemBodies: bodies ?? [])).ConfigureAwait(false);
 
     private static ProjectedSceneSource Source() => new(

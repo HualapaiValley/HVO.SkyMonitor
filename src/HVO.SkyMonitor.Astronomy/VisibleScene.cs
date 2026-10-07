@@ -287,7 +287,11 @@ public sealed class VisibleScene
     /// geometry and the remaining budgets allow; a stellar row is placed only for its Messier identity. A collection
     /// that places no object leaves the scene unchanged, so its snapshot stays v1 or v2.
     /// </summary>
-    public VisibleScene WithDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection)
+    public VisibleScene WithDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection) =>
+        WithDeepSky(catalog, selection, queryRegion: true);
+
+    /// <summary>Places a deep-sky collection from a region query, or, without one, by scanning every object.</summary>
+    internal VisibleScene WithDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection, bool queryRegion)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(selection);
@@ -296,7 +300,7 @@ public sealed class VisibleScene
             throw new InvalidOperationException("A deep-sky collection is applied once.");
         if (ResolvedFootprints.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject))
             throw new InvalidOperationException("Deep-sky footprints come only from the deep-sky collection.");
-        var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection);
+        var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection, queryRegion);
         if (section.Objects.Count == 0) return this;
         return new(Request, Objects, Segments, ComputationProvenance, ResolvedFootprints.Concat(footprints), selection, section);
     }
@@ -562,7 +566,7 @@ public sealed class VisibleSceneBuilder
         return optical.Value.RadiusDegrees <= horizon.Value.RadiusDegrees ? optical : horizon;
     }
 
-    private static J2000SphericalCap CreateJ2000Cap(
+    internal static J2000SphericalCap CreateJ2000Cap(
         VisibleSceneRequest request,
         AltAzPoint center,
         double radiusDegrees)

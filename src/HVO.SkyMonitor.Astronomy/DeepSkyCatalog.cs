@@ -189,6 +189,82 @@ public sealed record DeepSkySemantics(
     string OutlineLevelConvention,
     string SurfaceBrightnessUnit);
 
+/// <summary>The magnitude band a deep-sky brightness criterion compares.</summary>
+public enum DeepSkyMagnitudeBand
+{
+    /// <summary>The V magnitude.</summary>
+    Visual,
+
+    /// <summary>The B magnitude.</summary>
+    Blue
+}
+
+/// <summary>A brightness criterion in one named band; the other band's magnitude never stands in for it.</summary>
+/// <param name="Band">The band compared.</param>
+/// <param name="MaximumMagnitude">The faintest matching magnitude, inclusive.</param>
+/// <param name="IncludeUnknown">Whether an object without a magnitude in <paramref name="Band"/> matches.</param>
+public readonly record struct DeepSkyBrightnessLimit(DeepSkyMagnitudeBand Band, double MaximumMagnitude, bool IncludeUnknown)
+{
+    /// <summary>Validates the band and the finite magnitude limit.</summary>
+    public void Validate()
+    {
+        if (!Enum.IsDefined(Band) || !double.IsFinite(MaximumMagnitude))
+        {
+            throw new ArgumentOutOfRangeException(nameof(DeepSkyBrightnessLimit));
+        }
+    }
+
+    /// <summary>Returns whether an object's magnitude in the band satisfies the limit.</summary>
+    public bool Matches(DeepSkyObject item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var magnitude = Band == DeepSkyMagnitudeBand.Visual ? item.VMagnitude : item.BMagnitude;
+        return magnitude is { } value ? value <= MaximumMagnitude : IncludeUnknown;
+    }
+}
+
+/// <summary>
+/// A bounded selection from a deep-sky collection; every criterion supplied must hold. An object meets a region when
+/// its reach overlaps it: when the angle from the region's centre to the object's is at most the region's radius plus
+/// the object's reach, which is half its major axis or the angle to its farthest outline point, whichever is larger.
+/// So an object whose catalog extent crosses into the region matches even when its centre lies outside.
+/// </summary>
+/// <param name="MaximumResults">The most objects returned; the result still counts every match.</param>
+/// <param name="Region">The J2000 region the object's reach must overlap, or <see langword="null"/> for the whole sky.</param>
+/// <param name="ObjectTypes">The object types that match, or <see langword="null"/> for every type.</param>
+/// <param name="Brightness">The brightness criterion, or <see langword="null"/> for every magnitude.</param>
+public sealed record DeepSkyQuery(
+    int MaximumResults,
+    J2000SphericalCap? Region = null,
+    IReadOnlySet<string>? ObjectTypes = null,
+    DeepSkyBrightnessLimit? Brightness = null)
+{
+    /// <summary>Validates the result bound and each supplied criterion.</summary>
+    public void Validate()
+    {
+        if (MaximumResults < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumResults));
+        }
+        Region?.Validate();
+        Brightness?.Validate();
+        if (ObjectTypes is not null &&
+            (ObjectTypes.Count == 0 || ObjectTypes.Any(static type => type is null || !DeepSkyObjectTypes.IsSupported(type))))
+        {
+            throw new ArgumentException("A type criterion names at least one supported object type.", nameof(ObjectTypes));
+        }
+    }
+}
+
+/// <summary>The objects a <see cref="DeepSkyQuery"/> returned, ordered by ordinal ID, and how many matched in all.</summary>
+/// <param name="Objects">The first matches by ordinal ID, at most the query's result bound.</param>
+/// <param name="MatchCount">The number of objects that met every criterion.</param>
+public sealed record DeepSkyQueryResult(IReadOnlyList<DeepSkyObject> Objects, int MatchCount)
+{
+    /// <summary>Gets whether the result bound left matches out.</summary>
+    public bool Truncated => MatchCount > Objects.Count;
+}
+
 /// <summary>A validated, immutable deep-sky collection: objects, aliases, tombstones and outlines.</summary>
 public interface IDeepSkyCatalog
 {
@@ -215,6 +291,9 @@ public interface IDeepSkyCatalog
 
     /// <summary>Returns a tombstone by ID, or <see langword="false"/> when the ID is live or unknown.</summary>
     bool TryGetTombstone(string id, out DeepSkyTombstone tombstone);
+
+    /// <summary>Returns the live objects that meet a query, ordered by ordinal ID and cut at its result bound.</summary>
+    DeepSkyQueryResult Query(DeepSkyQuery query);
 }
 
 /// <summary>
@@ -231,12 +310,17 @@ public interface IDeepSkyCatalogSource
 /// The storage-neutral validated deep-sky collection. Construction proves the invariants every consumer relies on,
 /// so a loader only proves that its rows are the ones it was asked to load. Construction copies every collection it
 /// is given, down to outline points and tombstone candidates, and validates the copies, so a caller that changes its
-/// inputs afterwards cannot change the catalog, and every collection the catalog returns is read-only.
+/// inputs afterwards cannot change the catalog, and every collection the catalog returns is read-only. Construction
+/// also indexes each object's direction and reach by declination, so a region query visits only the declination band
+/// that can meet the region.
 /// </summary>
 public sealed class DeepSkyCatalog : IDeepSkyCatalog
 {
     /// <summary>The smallest number of points in a closed outline ring.</summary>
     public const int MinimumRingPointCount = 4;
+
+    /// <summary>The angle, in degrees, by which a region query's inclusive boundary absorbs rounding.</summary>
+    public const double RegionToleranceDegrees = 1e-9;
 
     private readonly ReadOnlyCollection<DeepSkyObject> _objects;
     private readonly Dictionary<string, DeepSkyObject> _objectsById;
@@ -244,6 +328,8 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     private readonly ReadOnlyCollection<DeepSkyTombstone> _tombstones;
     private readonly Dictionary<string, DeepSkyTombstone> _tombstonesById;
     private readonly Dictionary<string, ReadOnlyCollection<DeepSkyAlias>> _aliases;
+    private readonly SpatialEntry[] _byDeclination;
+    private readonly double _maximumReachDegrees;
 
     /// <summary>Validates and freezes a deep-sky collection.</summary>
     /// <exception cref="InvalidDataException">The collection breaks an invariant.</exception>
@@ -298,6 +384,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         _aliases = BuildAliasIndex(aliases, _objectsById, out var aliasCount);
         AliasCount = aliasCount;
         _outlinesById = BuildOutlineIndex(outlines, _objectsById);
+        (_byDeclination, _maximumReachDegrees) = BuildSpatialIndex(_objects, _outlinesById);
     }
 
     /// <inheritdoc />
@@ -351,6 +438,89 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     {
         ArgumentNullException.ThrowIfNull(id);
         return _tombstonesById.TryGetValue(id, out tombstone!);
+    }
+
+    /// <inheritdoc />
+    public DeepSkyQueryResult Query(DeepSkyQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        query.Validate();
+        var selected = new List<DeepSkyObject>();
+        var matches = 0;
+        foreach (var index in query.Region is { } region ? RegionMatches(region) : Enumerable.Range(0, _objects.Count))
+        {
+            var item = _objects[index];
+            if (query.ObjectTypes is { } types && !types.Contains(item.ObjectType) ||
+                query.Brightness is { } brightness && !brightness.Matches(item))
+            {
+                continue;
+            }
+            if (++matches <= query.MaximumResults)
+            {
+                selected.Add(item);
+            }
+        }
+        return new DeepSkyQueryResult(selected.AsReadOnly(), matches);
+    }
+
+    // Two directions never differ in declination by more than the angle between them, so only the declination band
+    // within the region's radius plus the largest reach can hold a match. The matches come back in ID order.
+    private List<int> RegionMatches(J2000SphericalCap region)
+    {
+        var center = Direction.FromEquatorial(region.CenterRightAscensionHours, region.CenterDeclinationDegrees);
+        var band = region.RadiusDegrees + _maximumReachDegrees + RegionToleranceDegrees;
+        var lowest = region.CenterDeclinationDegrees - band;
+        var highest = region.CenterDeclinationDegrees + band;
+        var low = 0;
+        var high = _byDeclination.Length;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (_byDeclination[middle].DeclinationDegrees < lowest) low = middle + 1;
+            else high = middle;
+        }
+        var matches = new List<int>();
+        for (var position = low; position < _byDeclination.Length; position++)
+        {
+            var entry = _byDeclination[position];
+            if (entry.DeclinationDegrees > highest) break;
+            if (Direction.AngleDegrees(center, entry.Direction) <= region.RadiusDegrees + entry.ReachDegrees + RegionToleranceDegrees)
+            {
+                matches.Add(entry.Index);
+            }
+        }
+        matches.Sort();
+        return matches;
+    }
+
+    private static (SpatialEntry[] Entries, double MaximumReachDegrees) BuildSpatialIndex(
+        ReadOnlyCollection<DeepSkyObject> objects,
+        Dictionary<string, ReadOnlyCollection<DeepSkyOutline>> outlines)
+    {
+        var entries = new SpatialEntry[objects.Count];
+        var maximumReach = 0d;
+        for (var index = 0; index < objects.Count; index++)
+        {
+            var item = objects[index];
+            var direction = Direction.FromEquatorial(item.RightAscensionHours, item.DeclinationDegrees);
+            var reach = (item.MajorAxisArcminutes ?? 0) / 120d;
+            if (outlines.TryGetValue(item.Id, out var levels))
+            {
+                foreach (var point in levels.SelectMany(static level => level.Rings).SelectMany(static ring => ring.Points))
+                {
+                    reach = Math.Max(reach, Direction.AngleDegrees(
+                        direction, Direction.FromEquatorial(point.RightAscensionDegrees / 15d, point.DeclinationDegrees)));
+                }
+            }
+            entries[index] = new SpatialEntry(index, item.DeclinationDegrees, direction, reach);
+            maximumReach = Math.Max(maximumReach, reach);
+        }
+        Array.Sort(entries, static (left, right) =>
+        {
+            var byDeclination = left.DeclinationDegrees.CompareTo(right.DeclinationDegrees);
+            return byDeclination != 0 ? byDeclination : left.Index.CompareTo(right.Index);
+        });
+        return (entries, maximumReach);
     }
 
     private static DeepSkySemantics ValidateSemantics(DeepSkySemantics value)
@@ -539,4 +709,30 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
 
     private static bool IsText(string? value)
         => !string.IsNullOrWhiteSpace(value) && string.Equals(value, value.Trim(), StringComparison.Ordinal);
+
+    /// <summary>An object's place in the declination index: its J2000 direction and the reach of its extent.</summary>
+    private readonly record struct SpatialEntry(int Index, double DeclinationDegrees, Direction Direction, double ReachDegrees);
+
+    private readonly record struct Direction(double X, double Y, double Z)
+    {
+        public static Direction FromEquatorial(double rightAscensionHours, double declinationDegrees)
+        {
+            var rightAscension = rightAscensionHours * Math.PI / 12d;
+            var declination = declinationDegrees * Math.PI / 180d;
+            return new Direction(
+                Math.Cos(declination) * Math.Cos(rightAscension),
+                Math.Cos(declination) * Math.Sin(rightAscension),
+                Math.Sin(declination));
+        }
+
+        // The arctangent form keeps its precision at small and large angles, where an arccosine loses it.
+        public static double AngleDegrees(Direction left, Direction right)
+        {
+            var x = left.Y * right.Z - left.Z * right.Y;
+            var y = left.Z * right.X - left.X * right.Z;
+            var z = left.X * right.Y - left.Y * right.X;
+            var dot = left.X * right.X + left.Y * right.Y + left.Z * right.Z;
+            return Math.Atan2(Math.Sqrt(x * x + y * y + z * z), dot) * 180d / Math.PI;
+        }
+    }
 }
