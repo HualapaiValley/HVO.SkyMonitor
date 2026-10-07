@@ -150,6 +150,27 @@ The tuning runs at 20 s and 60 s estimate at the provisional 1 s floors only to 
 floor. Their coverage outcome is not a result. A held-out coverage miss is recorded, and covariance for that
 exposure is withheld; it is never retuned.
 
+The declared floors come from tuning pack `tuning-f7e69d99` alone: revision `f7e69d99`, `SHA256SUMS` sha
+`c8d9c647ff486f45e34df29b52e8268ad8c511b4034cc2f0d57b9554ac6b697d`. Running `issue-1168-metrics.sh floors` on that
+pack reproduces them. Its output is committed as
+[`issue-1168-floors.json`](../validation/issue-1168-floors.json). The C# initializer it prints is committed unchanged
+in `VirtualAstrometricUncertaintyQualificationTests`.
+
+| Exposure | Group | Families | Frames | Excluded | Median (px) | Declared (px) |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 20 s | mono | equidistant, rectilinear | 64 | 0 | 0.014950 | 0.015 |
+| 20 s | mono 2×2 | equidistant, rectilinear | 32 | 0 | 0.018835 | 0.019 |
+| 20 s | CFA | equidistant | 8 | 0 | 0.044229 | 0.044 |
+| 60 s | mono | equidistant | 32 | 0 | 0.022492 | 0.022 |
+| 60 s | mono 2×2 | equidistant | 16 | 0 | 0.015683 | 0.016 |
+| 60 s | CFA | equidistant | 8 | 0 | 0.038144 | 0.038 |
+
+Rectilinear at 60 s is refused, so the 60 s floors are equidistant only. The three provisional processes failed
+pooled coverage checks: 3 for equidistant 20 s (56 frames), 4 for equidistant 60 s (56) and 4 for rectilinear
+20 s (48). Every one is over-coverage, between 0.929 and 1.000 against 0.6827. That is the expected result when
+the 1 s floors are larger than these exposures require. The processes recorded no other failure. As declared,
+these are not outcomes. The 1 s floors are unchanged.
+
 ## Continuity with #1126
 
 With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds

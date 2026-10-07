@@ -50,6 +50,26 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             ["mono-bin2"] = .028,
             ["mono-roi-bin2"] = .028,
             ["cfa-native"] = .063
+        },
+        [20] = new(StringComparer.Ordinal)
+        {
+            ["mono-native"] = .015,
+            ["mono-roi"] = .015,
+            ["mono-mirror"] = .015,
+            ["mono-roll"] = .015,
+            ["mono-bin2"] = .019,
+            ["mono-roi-bin2"] = .019,
+            ["cfa-native"] = .044
+        },
+        [60] = new(StringComparer.Ordinal)
+        {
+            ["mono-native"] = .022,
+            ["mono-roi"] = .022,
+            ["mono-mirror"] = .022,
+            ["mono-roll"] = .022,
+            ["mono-bin2"] = .016,
+            ["mono-roi-bin2"] = .016,
+            ["cfa-native"] = .038
         }
     };
 
