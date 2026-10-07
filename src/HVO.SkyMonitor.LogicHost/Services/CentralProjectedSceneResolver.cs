@@ -208,12 +208,17 @@ internal sealed class CentralProjectedSceneResolver(
             throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
         if (provenance is null) return;
         // Edges stamp the rig calibration version as the scene's projection version while provenance names the rig
-        // projection algorithm, so either is a legitimate scene projection version for that provenance.
+        // projection algorithm, so either is a legitimate scene projection version for that provenance. The
+        // calibration convention is accepted only from the rig projection algorithm that stamps it: every edge that
+        // emits source-bound scenes (2026-10-05 onward) already reports rig-projection-v2.
         var projectionVersionMatches = scene.Projection.AlgorithmVersion == provenance.ProjectionAlgorithmVersion ||
+            provenance.ProjectionAlgorithmVersion == RigProjectionContextFactory.AlgorithmVersion &&
             provenance.ProjectionCalibrationVersion is not null &&
             scene.Projection.AlgorithmVersion == scene.Projection.CalibrationVersion &&
             scene.Projection.CalibrationVersion == provenance.ProjectionCalibrationVersion;
-        if (scene.EffectiveUtc != provenance.SceneUtc ||
+        if (provenance.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal) ||
+            scene.EffectiveUtc != provenance.SceneUtc ||
             scene.Catalog.Name != provenance.CatalogName || scene.Catalog.Version != provenance.CatalogVersion ||
             !string.Equals(scene.Catalog.ChecksumSha256, provenance.CatalogChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
             provenance.CatalogSourceUrl is not null && scene.Catalog.SourceUrl != provenance.CatalogSourceUrl ||
