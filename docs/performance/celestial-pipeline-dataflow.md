@@ -122,6 +122,12 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
   - Each arm is one unchanged runner invocation restricted to the cell with `HVO_1170_CELLS='^<cell>$'`.
   - Order is counterbalanced. Odd manifest cells run A then B, and even cells run B then A.
   - `docs/validation/issue-1170-interleaved.py` compares each cell only against its adjacent pair.
+  - The comparison counts only when coverage is complete:
+    - every slot holds exactly one A pack and one B pack;
+    - both arms are measure packs on the recorded manifest, with trials 1 to 5 and the same single cell;
+    - no cell appears in two slots;
+    - the measured cells equal the expected cell list, a required argument, so a missing slot is a gap.
+    Any gap makes the comparison incomplete and fails it.
 - **Timing verdict** (per cell, on trial medians):
 
   | Verdict | When |
@@ -133,9 +139,12 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
 - **Output identity.**
   - S1 at the after head is compared leaf by leaf against the `d942bd86` S1 pack, ignoring only a narrow,
     recorded set of timing, resource and provenance keys.
-  - Every interleaved pair compares the per-sample raw hashes, plus each output's payload hash, size, recipe
-    identity and output identity. Fields that vary between A's own trials are excluded; B must equal A on all
-    others.
+  - Every interleaved pair compares each sample's raw hash, size and measured flag, plus each pipeline node's
+    status, outcome and output count. It also compares each output's payload hash, size, recipe identity and
+    output identity. A node with no outputs is still compared.
+  - A value that varies between A's own trials is excluded only for that record. Only recipe and output
+    identities may vary; a payload, size, status or outcome that varies is a difference. B must equal A on every
+    other value.
   - Any output difference stops the run.
 - **Resource rule.** This is the manifest rule, applied within each pair:
 
@@ -164,6 +173,10 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
 
 The host also served other sessions during measurement. They were recorded before and after each pack, and
 the load gate held every trial until the one-minute load average was below 0.5.
+- The longest wait across all retained packs was 170 s, well inside the 1,800 s limit. No trial started at a
+  load of 0.5 or above.
+- The runner now fails closed: an expired or unreadable gate stops the run before the next trial and writes no
+  index. Before review r0 an expired gate let the trial start, but that never happened in the retained evidence.
 
 ## Composed path and ownership
 
@@ -248,22 +261,25 @@ number is `b13f0d0e`, before #1126; see [Composition checkpoints](#composition-c
 
 | Pair | Cell | Allocated bytes per operation, A → B | Change | Peak RSS change | Output values compared | Outputs |
 |---|---|---|---|---|---|---|
-| 01 | s2-sample-night | 202.3 MiB → 200.7 MiB | -0.84% | +0.8% | 1,155 | identical |
-| 02 | s2-w1-night-long | 323.6 MiB → 305.0 MiB | -5.73% | -9.0% | 1,155 | identical |
-| 03 | s2-w1-night-short | 129.6 MiB → 111.2 MiB | -14.24% | +1.2% | 1,155 | identical |
-| 04 | s2-w1-day | 275.7 MiB → 257.2 MiB | -6.71% | +0.6% | 1,155 | identical |
-| 05 | s2-w1-dense | 323.5 MiB → 305.0 MiB | -5.73% | -8.3% | 1,155 | identical |
-| 06 | s2-w2-night | 1,839.9 MiB → 1,790.2 MiB | -2.70% | +0.4% | 1,155 | identical |
-| 07 | s2-w6-night | 1,173.2 MiB → 1,076.4 MiB | -8.25% | -1.1% | 1,155 | identical |
-| 08 | s2-w1-night-long-tc0 | 326.6 MiB → 308.1 MiB | -5.67% | -8.9% | 1,155 | identical |
-| 09 | s3-sample-cold | 214.1 MiB → 213.0 MiB | -0.52% | +0.8% | 33 | identical |
-| 10 | s3-w1-cold | 320.1 MiB → 302.0 MiB | -5.64% | -4.2% | 33 | identical |
-| 11 | s4-w1-saturation | 295.0 MiB → 304.8 MiB | +3.31% (rule trip, see below) | -8.1% | 1,155 | identical |
+| 01 | s2-sample-night | 202.3 MiB → 200.7 MiB | -0.84% | +0.8% | 1,750 | identical |
+| 02 | s2-w1-night-long | 323.6 MiB → 305.0 MiB | -5.73% | -9.0% | 1,750 | identical |
+| 03 | s2-w1-night-short | 129.6 MiB → 111.2 MiB | -14.24% | +1.2% | 1,750 | identical |
+| 04 | s2-w1-day | 275.7 MiB → 257.2 MiB | -6.71% | +0.6% | 1,750 | identical |
+| 05 | s2-w1-dense | 323.5 MiB → 305.0 MiB | -5.73% | -8.3% | 1,750 | identical |
+| 06 | s2-w2-night | 1,839.9 MiB → 1,790.2 MiB | -2.70% | +0.4% | 1,750 | identical |
+| 07 | s2-w6-night | 1,173.2 MiB → 1,076.4 MiB | -8.25% | -1.1% | 1,750 | identical |
+| 08 | s2-w1-night-long-tc0 | 326.6 MiB → 308.1 MiB | -5.67% | -8.9% | 1,750 | identical |
+| 09 | s3-sample-cold | 214.1 MiB → 213.0 MiB | -0.52% | +0.8% | 50 | identical |
+| 10 | s3-w1-cold | 320.1 MiB → 302.0 MiB | -5.64% | -4.2% | 50 | identical |
+| 11 | s4-w1-saturation | 295.0 MiB → 304.8 MiB | +3.31% (rule trip, see below) | -8.1% | 1,750 | identical |
 
 **Output identity.**
-- Every pair is identical on every stable output value: 1,155 per steady or saturation pair, 33 per cold pair.
-  The run-variant fields excluded by A's own trials are the ProjectedScene and Annotation recipe and output
-  identities.
+- Every pair is identical on every stable output value: 1,750 per steady or saturation pair and 50 per cold
+  pair, under the comparator as corrected in review r0 (see [Comparator corrections](#comparator-corrections-review-r0)).
+  - Per capture that is 3 sample values, 27 node values (9 nodes) and 20 output values. A steady pair has
+    35 captures and a cold pair has 1.
+  - The values excluded as varying between A's own trials are the recipe and output identities of the
+    ProjectedScene and Annotation outputs. That is 4 per capture, 140 per steady pair and 4 per cold pair.
 - S1 at `d1c3ffb1` is identical to the `d942bd86` S1 pack across all 16 runs and 17 reports, with 0 differences. The 118
   ignored leaf keys were audited, and each is a timing, allocation, working-set, throughput or revision field.
 
@@ -361,10 +377,10 @@ re-run there with the same runner, method and verdict rule.
 
 | Pair | Cell | Allocated bytes per operation, A′ → B′ | Change | Peak RSS change | Output values compared | Outputs |
 |---|---|---|---|---|---|---|
-| 01 | s2-w1-night-short | 129.6 MiB → 111.2 MiB | -14.21% | +0.8% | 1,155 | identical |
-| 02 | s4-w1-saturation | 289.2 MiB → 303.9 MiB | +5.10% (rule trip, explained below) | -10.2% | 1,155 | identical |
-| 03 | s3-sample-cold | 214.2 MiB → 212.9 MiB | -0.62% | -0.3% | 33 | identical |
-| 04 | s3-w1-cold | 320.4 MiB → 302.1 MiB | -5.70% | -4.2% | 33 | identical |
+| 01 | s2-w1-night-short | 129.6 MiB → 111.2 MiB | -14.21% | +0.8% | 1,750 | identical |
+| 02 | s4-w1-saturation | 289.2 MiB → 303.9 MiB | +5.10% (rule trip, explained below) | -10.2% | 1,750 | identical |
+| 03 | s3-sample-cold | 214.2 MiB → 212.9 MiB | -0.62% | -0.3% | 50 | identical |
+| 04 | s3-w1-cold | 320.4 MiB → 302.1 MiB | -5.70% | -4.2% | 50 | identical |
 
 - **Result.** No pair regressed and every output is identical.
   - Both W1 night-short improvements and the S4 drain improvement from the primary matrix are confirmed at the
@@ -403,6 +419,39 @@ re-run there with the same runner, method and verdict rule.
   - The solver v2 identity change was expected when #1126 merged; see
     [Composition checkpoints](#composition-checkpoints).
 
+
+### Comparator corrections (review r0)
+
+Review r0 found that the comparator, the S4 decomposition and the runner's load gate could pass on evidence
+they should reject. All three are corrected. Each correction rejects every constructed failure case, and the
+71592ad4 tools accepted every one of those cases:
+
+| Case | 71592ad4 | Corrected |
+|---|---|---|
+| Empty root | complete, rc=0 | incomplete, rc=1 |
+| Expected cell not measured | complete, rc=0 | incomplete, rc=1 |
+| No expected cell list, or an empty one | complete, rc=0 | usage error rc=2, or incomplete rc=1 |
+| Two A packs in a slot | complete, rc=0 | incomplete, rc=1 |
+| B arm missing its last trial | complete, rc=0 | incomplete, rc=1 |
+| Same cell in two slots | complete, rc=0 | incomplete, rc=1 |
+| A node with no outputs changes Completed to Skipped | identical, rc=0 | difference, rc=1 |
+| A stable Annotation record changes | identical, rc=0 | difference, rc=1 |
+| A payload varies between A trials | identical, rc=0 | difference, rc=1 |
+| Load gate times out, or reads an empty, unreadable or non-numeric load | trial runs | run stops, no index |
+| S4 decomposition: two A packs and no B pack, a stray `B-*` directory, or a B pack indexed as steady | rc=0, or a crash | rc=2 with a reason |
+
+The recorded verdicts do not change when the corrected tools re-run the retained evidence:
+- **Timing and resources.** Every timing, resource and regression verdict, every order and every arm is
+  identical to the recorded primary (`interleaved-comparison.json`) and post-sync (`postsync-comparison.json`)
+  comparisons.
+- **Coverage.** Coverage is complete in both, with no gaps.
+- **Outputs.** Every output is identical. The 140 excluded values per steady pair are the same records as
+  before, so the narrower exclusion hid no stable value.
+- **rc=1.** The comparator's rc=1 still has one cause in each, the S4 allocation rule.
+- **S4 decomposition.** The corrected post-sync decomposition is byte-identical to the recorded one.
+
+The odd-stride equivalence rows added in review r0 fail when either kernel is mutated to start rows on even
+byte offsets, while the other 13 cases still pass.
 
 ## Attribution
 
@@ -533,7 +582,7 @@ classifier. Frames owned by an open sibling are measured and reported here, not 
      pooled `ulong` row.
    - **Exactness.** The divide and truncation are unchanged, so output is byte-identical.
      `tests/HVO.SkyMonitor.Imaging.Tests/Linear16KernelEquivalenceTests.cs` pins it against a frozen copy of the
-     previous per-pixel code, including padded strides and the saturated 65,537-frame limit.
+     previous per-pixel code, including padded and odd strides and the saturated 65,537-frame limit.
 2. **Mono16 display stretch** (`src/HVO.SkyMonitor.Imaging/Mono16DisplayStretch.cs`).
    - **Tables.** The histogram is pooled and the per-pixel `Math.Asinh` is replaced by a transfer lookup table
      computed with the same expression for every sample value in the black/white range.
@@ -556,8 +605,11 @@ classifier. Frames owned by an open sibling are measured and reported here, not 
    - It classifies asynchronous file writes, which end in `RandomAccess.WriteAtOffset` without an interop
      frame, as I/O.
    - Commit `d710f5c1` adds the VSTest `SocketPal.Poll` wait and deterministic tie ranking (see Method).
-   - `docs/validation/issue-1170-interleaved.py` compares interleaved pairs and S1 packs.
-   - `docs/validation/issue-1170-s4-allocation.py` decomposes S4 allocation.
+   - `docs/validation/issue-1170-interleaved.py` compares interleaved pairs and S1 packs. It fails a pair
+     comparison whose coverage is incomplete (see Method).
+   - `docs/validation/issue-1170-s4-allocation.py` decomposes S4 allocation. It requires exactly one A pack and
+     one B pack, both passed saturation measure packs of the same cell.
+   - `docs/validation/issue-1170-pipeline.sh`: the load gate fails closed.
 
    Baseline and after are analysed with the same scripts.
 
@@ -634,7 +686,8 @@ docs/validation/issue-1170-metrics.sh <baseline>/measure <after>/measure     # s
 
 # Interleaved pairs: <root>/<NN>-<cell>/A-<revision> and B-<revision>, each made by
 #   HVO_1170_CELLS='^<cell>$' docs/validation/issue-1170-pipeline.sh measure <dir>
-python3 -I docs/validation/issue-1170-interleaved.py pairs <root> <comparison.json>
+# The third argument is the comma-separated manifest cell ids the root must cover exactly.
+python3 -I docs/validation/issue-1170-interleaved.py pairs <root> <comparison.json> <expected cell ids>
 python3 -I docs/validation/issue-1170-interleaved.py s1 <baseline>/s1/s1 <after>/s1/s1 <s1-identity.json>
 
 # S4 allocation decomposition for one interleaved slot.
@@ -713,6 +766,23 @@ pack `SHA256SUMS` checks out:
   It holds all 3,062 differences, grouped by `s1-diff-groups.py`
   (`5e176cb4a032c8309405f2736c50bf3d03a9a442f4033a34b0bdd6ff8ffdca07`), which reuses the committed comparator's
   leaf walk and ignore pattern.
+
+The review r0 re-runs are in `postsync-analysis/r0-correction/` on `home-dev-02`:
+- `primary-comparison-v2.json`: `0315fb4bcf9cdc0bcdcf70f3410316e3ddff612136c404a270a4be46366ef8ed`
+- `postsync-comparison-v2.json`: `b40ef3ba6342182d656f9311ce93e12c6dc4672ac259657c208eb41083bf811f`
+- `primary-s4-allocation-v2.json`: `6ef18ed1811d11eb2a57446e09c850d406bff36d47c30097f63b2158802766c1`
+- `postsync-s4-allocation-v2.json`: `8c35218c2ffef010fa0feec9689d4f95dd07176106314010e24e21115fd70d0d`,
+  identical to `postsync-s4-allocation.json`.
+- `negative-cases.py` (`c82a43537ade9fde537931ce4806727d088288b9a8126547aee3208a3bd897fa`) and its output
+  `negative-cases.txt` (`753102185daa119e1fb039eeef347ff34008385ac5ffca33d8f7e21d89285b33`).
+- `gate-cases.sh` (`14a7e21ad8d5fcc619206ce31e4fdaa095e12e1e481a0a9f8be581a4091d5d6b`). Its corrected output is
+  `gate-cases.txt` (`ecaa9f4d52b258f8c902f1f1a7c1827be9fd5b5fb1637475c6c9483e4a8f878c`) and its 71592ad4
+  output is `gate-cases-old.txt` (`4e1fae08f324ed4aa4bcdfa1d2889c010966f702c57360df383e583c06b15311`).
+- `f6-mutation.txt`: `b8be95b2b9e68bf15ce658e58e3ba5ad56cdcc82789dc607cc41248be7cc5d27`
+- The primary interleaved mirror on `home-dev-02` is a partial copy (each pack's `index.json` and
+  `evidence.json` files) without `SHA256SUMS`. All 242 of those files match the `home-dev-01` packs'
+  `SHA256SUMS`. The checksum list is `primary-mirror-sha256-from-home-dev-01.txt`
+  (`b22e11cb0e78913c3cf9be8fcaa0ecc1d04e274bc33585a2533ce5eb5a1c6be9`).
 
 - `d942bd86/baseline/attribute-aborted-addendum004` is the baseline attribution run stopped when addendum 004
   arrived, with 4 of 10 trials complete. It is retained and not used; `7b6b3bc9/baseline/attribute` replaces it.

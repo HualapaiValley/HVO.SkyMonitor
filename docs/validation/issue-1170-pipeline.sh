@@ -18,7 +18,9 @@
 # every session's servers on the host (#520 addendum 004, withdrawing addendum 003's per-trial shutdown).
 # Every process must pass exactly one test and write its evidence; a filter that selects nothing is a
 # failure, never a skip. Failures are kept in the pack and the script exits nonzero once all processes
-# have finished. The pack gets an index, SHA256SUMS and a .tar.zst with its own hash beside it.
+# have finished. The pack gets an index, SHA256SUMS and a .tar.zst with its own hash beside it. A load gate that
+# expires or cannot read the load stops the run before the next trial and writes no index, so no comparison accepts
+# a pack measured outside the manifest's load envelope.
 set -uo pipefail
 
 fatal() { echo "$*" >&2; exit 1; }
@@ -59,11 +61,15 @@ utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 load1() { cut -d' ' -f1 /proc/loadavg; }
 tenants() { { utc; cat /proc/loadavg; ps -eo pid,user,pcpu,rss,etimes,comm --sort=-pcpu | head -25; } >"$1"; }
 threshold=$(jq -r .loadGate.oneMinuteBelow "$manifest"); max_wait=$(jq -r .loadGate.maxWaitSeconds "$manifest")
-# Waits for the one-minute load to fall below the manifest threshold; prints the seconds waited.
+[[ "$threshold" =~ ^[0-9]+(\.[0-9]+)?$ && "$max_wait" =~ ^[0-9]+$ ]] || fatal "manifest loadGate is not numeric"
+# Waits for the one-minute load to fall below the manifest threshold and prints the seconds waited. Fails when the
+# load cannot be read or stays at or above the threshold for maxWaitSeconds: no trial runs outside the load gate.
 gate() {
-    local waited=0
-    while awk -v l="$(load1)" -v t="$threshold" 'BEGIN { exit !(l >= t) }'; do
-        ((waited >= max_wait)) && break
+    local waited=0 load
+    while :; do
+        load=$(load1) && [[ "$load" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+        awk -v l="$load" -v t="$threshold" 'BEGIN { exit !(l < t) }' && break
+        ((waited >= max_wait)) && return 1
         sleep 10; waited=$((waited + 10))
     done
     echo "$waited"
@@ -101,7 +107,8 @@ results='[]'; failed=0
 record() { results=$(jq --argjson run "$1" '. + [$run]' <<<"$results") || fatal "could not record run"; }
 
 if [[ "$mode" == s1 ]]; then
-    waited=$(gate); before=$(load1); started=$(utc); seconds=$SECONDS
+    waited=$(gate) || fatal "one-minute load stayed at or above $threshold for ${max_wait}s or was unreadable; S1 not measured"
+    before=$(load1); started=$(utc); seconds=$SECONDS
     "$repo/docs/validation/issue-1106-qualification.sh" "$out/s1" >"$out/runs/s1.log" 2>&1
     rc=$?; [[ $rc -eq 0 ]] || failed=1
     index_sha=
@@ -139,7 +146,9 @@ else
                 name=$cell-t$trial${collector:+-$collector}; dir="$out/runs/$name"; mkdir -p "$dir"
                 extra=(); [[ "$profile" == tc0-side-cell ]] && extra+=(DOTNET_TieredCompilation=0)
                 [[ -n "$collector" ]] && { mkdir "$dir/attach"; extra+=(HVO_PIPELINE_ATTACH_DIR="$dir/attach"); }
-                waited=$(gate); before=$(load1); tenants "$dir/tenants-before.txt"
+                waited=$(gate) ||
+                    fatal "one-minute load stayed at or above $threshold for ${max_wait}s or was unreadable; $name and later trials not measured"
+                before=$(load1); tenants "$dir/tenants-before.txt"
                 started=$(utc); seconds=$SECONDS
                 echo "=== $name $started load=$before waited=${waited}s"
                 env HVO_PIPELINE_EVIDENCE=1 HVO_EVIDENCE_REVISION="$revision" HVO_PIPELINE_SCENARIO="$scenario" \

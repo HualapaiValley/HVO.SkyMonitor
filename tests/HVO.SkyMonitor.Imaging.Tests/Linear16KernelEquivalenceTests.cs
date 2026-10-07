@@ -27,6 +27,7 @@ public sealed class Linear16KernelEquivalenceTests
     [DataRow(33, 9, 6, 4_096)]
     [DataRow(64, 32, 0, 300)]
     [DataRow(131, 47, 2, 65_535)]
+    [DataRow(37, 5, 3, 900)]
     [DataRow(484, 304, 0, 1_200)]
     public void DisplayStretchMatchesThePerPixelTransferForEveryPolicy(int width, int height, int padding, int maximum)
     {
@@ -76,10 +77,12 @@ public sealed class Linear16KernelEquivalenceTests
     [DataRow(15, 2, 0, 2)]
     [DataRow(16, 2, 2, 5)]
     [DataRow(67, 5, 4, 7)]
+    [DataRow(37, 4, 3, 9)]
     [DataRow(484, 13, 0, 30)]
     public void ArithmeticMeanMatchesTheWideAccumulator(int width, int height, int padding, int count)
     {
         var random = new Random(width * 104_729 + count);
+        // Odd frames carry the padding, so an odd padding gives rows that start at odd byte offsets.
         var frames = Enumerable.Range(0, count).Select(index =>
         {
             var stride = width * 2 + padding * (index % 2);

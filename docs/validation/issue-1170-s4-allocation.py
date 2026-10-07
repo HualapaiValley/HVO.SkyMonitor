@@ -3,7 +3,10 @@
 
 Usage: python3 -I docs/validation/issue-1170-s4-allocation.py <slot dir> <output.json>
 
-<slot dir> holds the two measure packs of one interleaved S4 pair, A-<revision> and B-<revision>. In saturation a
+<slot dir> holds the two measure packs of one interleaved S4 pair, exactly one A-<revision> and one B-<revision>
+directory, each indexed as a passed saturation measure pack; trials are read through each index's runs, never by
+globbing. Archive sidecars and any other entry are ignored, and a slot that does not hold exactly that pair is
+rejected. In saturation a
 sample's allocatedBytes is the process-wide GC.GetTotalAllocatedBytes delta over that frame's foreground window
 while a concurrent drain processes earlier frames, so drain allocation counts only when it falls inside a window.
 Each trial's whole-run total is split as
@@ -38,6 +41,21 @@ def trial(path):
             "drainAfterLastAcceptMilliseconds": document["saturation"]["drainAfterLastAcceptMilliseconds"]}
 
 
+def pack_problem(pack):
+    path = os.path.join(pack, "index.json")
+    if not os.path.isfile(path):
+        return "no index.json"
+    index = json.load(open(path, encoding="utf-8"))
+    runs = index.get("runs") or []
+    if index.get("mode") != "measure" or index.get("status") != "passed" or not runs:
+        return f"not a passed measure pack (mode {index.get('mode')}, status {index.get('status')}, {len(runs)} runs)"
+    if any(run.get("status") != "passed" or run.get("scenario") != "saturation" for run in runs):
+        return "every indexed run must be a passed saturation run"
+    if len({run.get("cell") for run in runs}) != 1:
+        return "the pack measures more than one cell"
+    return None
+
+
 def spread(rows, key):
     values = [row[key] for row in rows]
     return {"minimum": min(values), "maximum": max(values)}
@@ -49,16 +67,26 @@ def main(argv):
         return 2
     arms = {}
     # Each pack's archive sidecars (A-<revision>.tar.zst.sha256) sit beside it in the slot.
-    for pack in sorted(path for path in glob.glob(os.path.join(argv[1], "[AB]-*")) if os.path.isdir(path)):
-        rows = [trial(path) for path in sorted(glob.glob(os.path.join(pack, "runs", "*", "evidence.json")))]
+    packs = sorted(path for path in glob.glob(os.path.join(argv[1], "[AB]-*")) if os.path.isdir(path))
+    if sorted(os.path.basename(pack)[0] for pack in packs) != ["A", "B"]:
+        print(f"expected exactly one A-* and one B-* pack, found {[os.path.basename(pack) for pack in packs]}", file=sys.stderr)
+        return 2
+    for pack in packs:
+        problem = pack_problem(pack)
+        if problem:
+            print(f"{os.path.basename(pack)}: {problem}", file=sys.stderr)
+            return 2
+        index = json.load(open(os.path.join(pack, "index.json"), encoding="utf-8"))
+        rows = [trial(os.path.join(pack, "runs", run["name"], "evidence.json")) for run in index["runs"]]
         arms[os.path.basename(pack)] = {
             "trials": rows,
             **{key: spread(rows, key) for key in ("residualShare", "wholeRunBytesPerOperation",
                                                   "saturationPhaseBytesPerOperation", "inWindowBytes")}}
-    if len(arms) != 2:
-        print("expected exactly one A-* and one B-* pack", file=sys.stderr)
+    cells = {json.load(open(os.path.join(pack, "index.json"), encoding="utf-8"))["runs"][0]["cell"] for pack in packs}
+    if len(cells) != 1:
+        print(f"the A and B packs measure different cells {sorted(cells)}", file=sys.stderr)
         return 2
-    a, b = (arms[name] for name in sorted(arms))
+    a, b = (arms[os.path.basename(pack)] for pack in packs)
     report = {"schema": "issue1170-s4-allocation-v1", "slot": argv[1], "arms": arms,
               "residualShareSeparated": a["residualShare"]["minimum"] > b["residualShare"]["maximum"],
               "wholeRunPerOperationDisjoint": b["wholeRunBytesPerOperation"]["maximum"] < a["wholeRunBytesPerOperation"]["minimum"],
