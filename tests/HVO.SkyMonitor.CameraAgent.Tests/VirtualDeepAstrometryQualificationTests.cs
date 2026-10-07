@@ -161,9 +161,6 @@ public sealed class VirtualDeepAstrometryQualificationTests
                         if (!tuning && index == 0 && view.Name is "mono-native" or "cfa-native" &&
                             await Reproduce(profile, snapshot.Catalog, input, nominal, catalog, options, solved, utc).ConfigureAwait(false) is { } reproduction)
                             caseFailures.Add($"{caseId}: {reproduction}");
-                        var isolation = prior is null && variant.SolveMagnitude == 6
-                            ? IsolationTiming(view.Config.Rig, sceneUtc, catalog, nominal.Projection.WidthPixels, nominal.Projection.HeightPixels, solved, caseFailures, caseId)
-                            : null;
                         var indexPrefix = family.Model == ProjectionModel.Perspective && prior is null
                             ? IndexPrefixBound(catalog, frame.MidpointUtc, solved.Metrics.IndexStars) : null;
                         if (indexPrefix is { BoundBytes: > 16L * 1024 * 1024 }) caseFailures.Add($"{caseId}: IndexPrefix bound {indexPrefix.BoundBytes} bytes exceeds 16 MiB");
@@ -191,7 +188,6 @@ public sealed class VirtualDeepAstrometryQualificationTests
                             associationCount = solved.Associations.Count,
                             falseAssociations,
                             score,
-                            isolation,
                             configHash = CaptureContractJson.ComputeCanonicalJsonSha256(profile.Config),
                             nominal = new { nominal.IdentitySha256, nominal.CalibrationVersion, nominal.ReadoutIdentitySha256 },
                             failures = caseFailures
@@ -455,51 +451,6 @@ public sealed class VirtualDeepAstrometryQualificationTests
     private static bool TruthMatches(CameraRigConfig truth, DateTimeOffset sceneUtc, CelestialCatalogObject star, PixelPoint detection) =>
         VirtualAstrometryReference.Project(truth, VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.J2000(star), sceneUtc,
             VirtualAstrometryFixture.Observer)) is { } pixel && VirtualAstrometryReference.Distance(pixel, detection) <= 1.5;
-
-    /// <summary>
-    /// Evaluate-grid evidence for the coordinator's conditional decision: the shipped grid and solver v2's pairwise rule on
-    /// this frame's truth-projected selection, each the median of five runs, scaled by the number of evaluated candidates.
-    /// </summary>
-    private static object IsolationTiming(CameraRigConfig truth, DateTimeOffset sceneUtc, AstrometricCatalogData catalog, int width, int height,
-        AstrometricSolveResult solved, List<string> failures, string caseId)
-    {
-        // Evaluate isolates the above-horizon selection, so the timing input is that set at its truth pixels.
-        (string Id, PixelPoint? Pixel)[] projected = [.. catalog.Stars
-            .Select(s => (s.Id, Ray: VirtualAstrometryReference.ToEnu(VirtualAstrometryReference.J2000(s), sceneUtc, VirtualAstrometryFixture.Observer)))
-            .Where(s => s.Ray.Z > 0).Select(s => (s.Id, VirtualAstrometryReference.Project(truth, s.Ray)))];
-        static double Median(Func<HashSet<string>> run, out HashSet<string> result)
-        {
-            var samples = new double[5]; result = [];
-            for (var i = 0; i < samples.Length; i++)
-            {
-                var clock = Stopwatch.StartNew(); result = run(); samples[i] = clock.Elapsed.TotalMilliseconds;
-            }
-            return samples.Order().ElementAt(2);
-        }
-        var gridMs = Median(() => AstrometricSolverCore.IsolatedIds(projected, width, height), out var grid);
-        var pairwiseMs = Median(() => PairwiseIsolatedIds(projected, width, height), out var pairwise);
-        if (!grid.SetEquals(pairwise)) failures.Add($"{caseId}: isolation grid disagrees with the pairwise rule");
-        var candidates = solved.Metrics.DistinctCandidates; var coldMs = solved.Metrics.ElapsedMilliseconds;
-        return new
-        {
-            projectedStars = projected.Count(p => p.Pixel is not null),
-            isolated = grid.Count,
-            gridMs,
-            pairwiseMs,
-            distinctCandidates = candidates,
-            coldMs,
-            estimatedGridShare = coldMs > 0 ? gridMs * candidates / coldMs : (double?)null,
-            estimatedPairwiseShare = coldMs > 0 ? pairwiseMs * candidates / coldMs : (double?)null
-        };
-    }
-
-    /// <summary>Evaluate's isolation exactly as solver v2 shipped it, the oracle the Astronomy tests also keep.</summary>
-    private static HashSet<string> PairwiseIsolatedIds((string Id, PixelPoint? Pixel)[] stars, int width, int height)
-    {
-        var projected = stars.Where(s => s.Pixel is { } p && p.X > 6 && p.Y > 6 && p.X < width - 6 && p.Y < height - 6).ToArray();
-        return projected.Where(s => projected.All(t => t.Id == s.Id || VirtualAstrometryReference.Distance(t.Pixel!.Value, s.Pixel!.Value) > 12))
-            .Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
-    }
 
     private sealed record IndexPrefixEvidence(int TrainingStars, int AdmittedIndexStars, long BoundBytes);
 

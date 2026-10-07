@@ -284,46 +284,13 @@ internal static class AstrometricSolverCore
         var camera = new AstrometricRayCamera(configuration, c.Scale);
         // Candidate-projected isolation approximates the detector's12px close-source exclusion.
         // Catalog magnitude eligibility is an explicit input, not knowledge of rendered footprints.
-        var eligible = IsolatedIds(stars.Select(s => (s.Catalog.Id, camera.Pixel(s.Ray, c.Rotation))), configuration.Width, configuration.Height);
+        var projected = stars.Select(s => (Star: s, Pixel: camera.Pixel(s.Ray, c.Rotation))).Where(s => s.Pixel is { } p && p.X > 6 && p.Y > 6 && p.X < configuration.Width - 6 && p.Y < configuration.Height - 6).ToArray();
+        var eligible = projected.Where(s => projected.All(t => t.Star.Catalog.Id == s.Star.Catalog.Id || AstrometricMath.Distance(t.Pixel!.Value, s.Pixel!.Value) > 12)).Select(s => s.Star.Catalog.Id).ToHashSet();
         var finalFit = c.Matches.Where(m => eligible.Contains(m.Star.Catalog.Id)).ToList();
         var used = finalFit.Select(m => m.CoreDetection.Index).ToHashSet();
         var held = Match(verification.Where(s => eligible.Contains(s.Catalog.Id)).ToList(), new CoreDetectionGrid(detections.Where(d => !used.Contains(d.Index))), camera, c.Rotation, 1.5);
         var expected = training.Count(s => eligible.Contains(s.Catalog.Id));
         return (c with { Matches = finalFit }, held, Quality(finalFit, held, expected, configuration));
-    }
-    /// <summary>
-    /// Identities projected strictly inside the 6 px margin and more than 12 px from every other projected identity. Only
-    /// finite in-image pixels pass the margin test, since NaN and infinities fail its comparisons. An 8 px cell divides
-    /// exactly, holds pixels under 11.4 px apart, and puts any pixel within 12 px of another at most two cells away, so the
-    /// grid visits every neighbour the pairwise rule would and applies the same distance test to it, in linear time.
-    /// </summary>
-    internal static HashSet<string> IsolatedIds(IEnumerable<(string Id, PixelPoint? Pixel)> stars, int width, int height)
-    {
-        var projected = stars.Where(s => s.Pixel is { } p && p.X > 6 && p.Y > 6 && p.X < width - 6 && p.Y < height - 6)
-            .Select(s => (s.Id, Pixel: s.Pixel!.Value)).ToArray();
-        var cells = new Dictionary<(int X, int Y), List<int>>();
-        for (var i = 0; i < projected.Length; i++)
-        {
-            var key = Cell(projected[i].Pixel);
-            if (!cells.TryGetValue(key, out var cell)) cells[key] = cell = [];
-            cell.Add(i);
-        }
-        var isolated = new HashSet<string>();
-        foreach (var (id, pixel) in projected)
-        {
-            var (x, y) = Cell(pixel);
-            // The own cell first: another identity there is always within 12 px, so a crowded star stops at once.
-            var crowded = Crowds(x, y, id, pixel);
-            for (var dy = -2; dy <= 2 && !crowded; dy++)
-                for (var dx = -2; dx <= 2 && !crowded; dx++)
-                    crowded = (dx != 0 || dy != 0) && Crowds(x + dx, y + dy, id, pixel);
-            if (!crowded) isolated.Add(id);
-        }
-        return isolated;
-
-        static (int X, int Y) Cell(PixelPoint p) => ((int)Math.Floor(p.X / 8), (int)Math.Floor(p.Y / 8));
-        bool Crowds(int x, int y, string id, PixelPoint pixel) => cells.TryGetValue((x, y), out var cell) &&
-            cell.Exists(j => projected[j].Id != id && !(AstrometricMath.Distance(projected[j].Pixel, pixel) > 12));
     }
     public static bool IsVerification(string id)
     {

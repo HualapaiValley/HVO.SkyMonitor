@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Astronomy.Tests;
 /// Issue #1167: catalog selections deeper than the legacy 2,500-entry bound. No deep profile qualified, so none is
 /// declared and public settings cannot select one; the measured profile stays internal so its harness remains runnable.
 /// Settings without a profile keep their identity and bound; every consumer handles a selection up to the
-/// materialization ceiling; and the two solver rewrites are pinned against the solver v2 code they replace.
+/// materialization ceiling; and the solver rewrite is pinned against the solver v2 code it replaces.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -329,81 +329,6 @@ public sealed class DeepCatalogSelectionTests
         Assert.IsGreaterThan(0, guardFired);
         Assert.AreEqual(1500, oracles["exactly-1500"], "the boundary case must land on the cap");
         Assert.AreEqual(1501, oracles["exactly-1501"], "the boundary case must land one past the cap");
-    }
-
-    [TestMethod]
-    public void IsolationGridMatchesThePairwiseRuleOnSeededSkies()
-    {
-        var random = new Random(116704);
-        foreach (var (count, width, height, quantum) in new[] { (0, 512, 512, 0d), (1, 512, 512, 0d), (40, 64, 64, 0d), (300, 512, 512, 0d), (2500, 512, 512, 0d),
-            (2500, 512, 512, 1d), (2500, 256, 256, .5), (2500, 1936, 1216, 0d), (2500, 4096, 4096, 0d), (8192, 1936, 1216, 0d), (8192, 1936, 1216, 4d) })
-        {
-            // Quantized coordinates make exact 12 px separations and coincident points common; some identities repeat
-            // and some projections are missing or fall outside the image.
-            double Coordinate(int size)
-            {
-                var value = random.NextDouble() * (size + 40) - 20;
-                return quantum > 0 ? Math.Round(value / quantum) * quantum : value;
-            }
-            var stars = Enumerable.Range(0, count).Select(i => (Id: i % 97 == 5 ? $"S{i / 2}" : $"S{i}",
-                Pixel: i % 61 == 7 ? (PixelPoint?)null : new PixelPoint(Coordinate(width), Coordinate(height)))).ToArray();
-            AssertSameIsolation(stars, width, height, $"{count}@{width}x{height}/{quantum}");
-        }
-    }
-
-    [TestMethod]
-    public void IsolationGridMatchesThePairwiseRuleAtItsEdges()
-    {
-        var root = 12 / Math.Sqrt(2);
-        (string, PixelPoint?)[][] cases =
-        [
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(112, 100))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(100, 112))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(Math.BitIncrement(112d), 100))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(Math.BitDecrement(112d), 100))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(100, Math.BitIncrement(112d)))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(100 + root, 100 + root))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(100 + Math.BitIncrement(root), 100 + root))],
-            [("a", new PixelPoint(100, 100)), ("b", new PixelPoint(100 + Math.BitDecrement(root), 100 + Math.BitDecrement(root)))],
-            // 12 px spanning two cell boundaries, from just below one boundary and from exactly on one.
-            [("a", new PixelPoint(Math.BitDecrement(16d), 50)), ("b", new PixelPoint(Math.BitDecrement(28d), 50))],
-            [("a", new PixelPoint(16, 50)), ("b", new PixelPoint(28, 50))],
-            [("a", new PixelPoint(Math.BitDecrement(16d), Math.BitDecrement(16d))), ("b", new PixelPoint(Math.BitDecrement(16d) + root, Math.BitDecrement(16d) + root))],
-            // Coincident points: distinct identities crowd each other; a repeated identity never crowds itself.
-            [("a", new PixelPoint(200, 200)), ("b", new PixelPoint(200, 200))],
-            [("a", new PixelPoint(200, 200)), ("a", new PixelPoint(200, 200)), ("c", new PixelPoint(300, 300))],
-            [("a", new PixelPoint(200, 200)), ("a", new PixelPoint(205, 200)), ("b", new PixelPoint(230, 200))],
-            [("a", new PixelPoint(200, 200)), ("a", new PixelPoint(220, 200)), ("b", new PixelPoint(210, 200))],
-            // The margin, negative and off-image coordinates; an excluded point never crowds an included one.
-            [("m1", new PixelPoint(6, 100)), ("m2", new PixelPoint(Math.BitIncrement(6d), 100)), ("m3", new PixelPoint(506, 100)),
-                ("m4", new PixelPoint(Math.BitDecrement(506d), 300)), ("n", new PixelPoint(-50, -50)), ("o", new PixelPoint(1e9, 100))],
-            [("in", new PixelPoint(10, 100)), ("out", new PixelPoint(4, 100)), ("neg", new PixelPoint(-2, 100))],
-            // Non-finite, extreme and missing projections.
-            [("nan", new PixelPoint(double.NaN, 100)), ("nan2", new PixelPoint(100, double.NaN)), ("inf", new PixelPoint(double.PositiveInfinity, 100)),
-                ("ninf", new PixelPoint(double.NegativeInfinity, 100)), ("max", new PixelPoint(double.MaxValue, double.MaxValue)),
-                ("min", new PixelPoint(double.MinValue, 100)), ("eps", new PixelPoint(double.Epsilon, 100)), ("null", null), ("k", new PixelPoint(100, 100)),
-                ("k2", new PixelPoint(105, 100))],
-            // The largest coordinates an int-sized sensor admits.
-            [("big1", new PixelPoint(2147483640, 2147483640)), ("big2", new PixelPoint(2147483630, 2147483640)), ("big3", new PixelPoint(2147483600, 2147483600)),
-                ("big4", new PixelPoint(Math.BitDecrement(2147483641d), 100))],
-        ];
-        foreach (var stars in cases)
-            foreach (var (width, height) in new[] { (512, 512), (13, 13), (5, 5), (int.MaxValue, int.MaxValue) })
-                AssertSameIsolation(stars, width, height, $"{string.Join(",", stars.Select(s => s.Item1))}@{width}");
-    }
-
-    private static void AssertSameIsolation((string Id, PixelPoint? Pixel)[] stars, int width, int height, string name)
-    {
-        var expected = PairwiseIsolatedIds(stars, width, height).Order(StringComparer.Ordinal).ToArray();
-        var actual = AstrometricSolverCore.IsolatedIds(stars, width, height).Order(StringComparer.Ordinal).ToArray();
-        CollectionAssert.AreEqual(expected, actual, name);
-    }
-
-    /// <summary>Evaluate's isolation exactly as solver v2 shipped it at 94883101, kept as the oracle for the grid.</summary>
-    private static HashSet<string> PairwiseIsolatedIds((string Id, PixelPoint? Pixel)[] stars, int width, int height)
-    {
-        var projected = stars.Where(s => s.Pixel is { } p && p.X > 6 && p.Y > 6 && p.X < width - 6 && p.Y < height - 6).ToArray();
-        return projected.Where(s => projected.All(t => t.Id == s.Id || AstrometricMath.Distance(t.Pixel!.Value, s.Pixel!.Value) > 12)).Select(s => s.Id).ToHashSet();
     }
 
     /// <summary>IndexPrefix exactly as solver v2 shipped it at 94883101, with its full angle matrix, kept as the oracle.</summary>
