@@ -542,7 +542,7 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   | B | 2.2–3.3% | 375.8–376.3 | 320.9–321.4 | 903–917 | 2–3 | 0.28–0.53 |
 
   Every range overlaps between the arms, and all 30 operations complete in every trial.
-- **S1.** S1 is output identity only; its timings are not evidence. It ran three times:
+- **S1.** S1 is output identity only; its timings bear no cp-518 regression verdict. It ran three times:
   - A, 09:22:49–09:43:56Z, rc=1. This run is the record and is unchanged. It failed the #1106 4× wall-clock gate
     on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
     the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
