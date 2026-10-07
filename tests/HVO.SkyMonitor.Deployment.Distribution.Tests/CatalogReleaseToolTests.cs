@@ -138,6 +138,26 @@ public sealed class CatalogReleaseToolTests
         return bundle;
     }
 
+    [TestMethod]
+    [DataRow(1, DisplayName = "one byte past the limit")]
+    [DataRow(1 << 20, DisplayName = "one MiB past the limit")]
+    public void ReadCatalogManifest_StreamGrowsPastItsReportedLength_IsRefusedAtTheLimit(int growth)
+    {
+        // The stream reports a small length but yields more, as a manifest appended to after authentication would.
+        using var manifest = new GrowingStream(reportedLength: 2, actualLength: ReleaseTool.Program.MaximumCatalogManifestLength + growth);
+
+        Assert.ThrowsExactly<ReleaseTool.ReleaseToolException>(() => ReleaseTool.Program.ReadCatalogManifest(manifest));
+        Assert.IsLessThanOrEqualTo(ReleaseTool.Program.MaximumCatalogManifestLength + 1L, manifest.BytesRead);
+    }
+
+    [TestMethod]
+    public void ReadCatalogManifest_ExactlyTheLimit_ReturnsEveryByte()
+    {
+        using var manifest = new GrowingStream(ReleaseTool.Program.MaximumCatalogManifestLength, ReleaseTool.Program.MaximumCatalogManifestLength);
+
+        Assert.HasCount(ReleaseTool.Program.MaximumCatalogManifestLength, ReleaseTool.Program.ReadCatalogManifest(manifest));
+    }
+
     private sealed class CatalogReleaseFixture : IDisposable
     {
         private CatalogReleaseFixture(string root)
@@ -185,4 +205,28 @@ public sealed class CatalogReleaseToolTests
     [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int NativeLink(string existingPath, string newPath);
 #pragma warning restore SYSLIB1054
+
+    private sealed class GrowingStream(long reportedLength, long actualLength) : Stream
+    {
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => reportedLength;
+        public override long Position { get => BytesRead; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = (int)Math.Min(count, actualLength - BytesRead);
+            buffer.AsSpan(offset, read).Fill((byte)' ');
+            BytesRead += read;
+            return read;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }

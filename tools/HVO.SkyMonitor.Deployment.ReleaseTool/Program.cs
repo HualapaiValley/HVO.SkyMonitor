@@ -13,8 +13,8 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 internal static partial class Program
 {
     private const string Repository = "RoySalisbury/HVO.SkyMonitor";
-    // Matches the catalog snapshot resolver's manifest bound, so an oversized manifest is refused before it is buffered.
-    private const int MaximumCatalogManifestLength = 65_536;
+    // Matches the catalog snapshot resolver's manifest bound; the release tool reads at most one byte past it.
+    internal const int MaximumCatalogManifestLength = 65_536;
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];
     private static readonly string[] SpdxCreators = ["Tool: HVO.SkyMonitor.Deployment.ReleaseTool"];
 
@@ -194,13 +194,7 @@ internal static partial class Program
         byte[] manifestBytes;
         using (var manifestSource = AuthenticateCatalogBundleFile(source, "manifest.json"))
         {
-            if (manifestSource.Stream.Length > MaximumCatalogManifestLength)
-            {
-                throw new ReleaseToolException("The catalog manifest exceeds its maximum length.");
-            }
-            using var buffer = new MemoryStream();
-            manifestSource.Stream.CopyTo(buffer);
-            manifestBytes = buffer.ToArray();
+            manifestBytes = ReadCatalogManifest(manifestSource.Stream);
         }
         using var inner = JsonDocument.Parse(manifestBytes);
         var root = inner.RootElement;
@@ -244,6 +238,22 @@ internal static partial class Program
                 $"The catalog bundle does not match its approved specification: {exception.Message}", exception);
         }
         return staged;
+    }
+
+    /// <summary>
+    /// Reads the authenticated manifest handle once, never past one byte beyond the limit. Authentication fixes the
+    /// file's identity, not its length, so the bound is enforced on the bytes actually read rather than on a length
+    /// reported before the read.
+    /// </summary>
+    internal static byte[] ReadCatalogManifest(Stream manifest)
+    {
+        var buffer = new byte[MaximumCatalogManifestLength + 1];
+        var length = manifest.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        if (length > MaximumCatalogManifestLength)
+        {
+            throw new ReleaseToolException("The catalog manifest exceeds its maximum length.");
+        }
+        return buffer[..length];
     }
 
     /// <summary>
