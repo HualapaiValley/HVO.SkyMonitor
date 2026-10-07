@@ -126,8 +126,10 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
     - every slot holds exactly one A pack and one B pack;
     - both arms are measure packs on the recorded manifest, with trials 1 to 5 and the same single cell;
     - each indexed trial is its own evidence document: the runner's `<cell>-t<trial>` name, the indexed
-      `evidenceSha256`, and the document's own trial, scenario, workload and revision. An arm holds no unindexed
-      evidence, and both metrics and output identity read exactly the indexed documents;
+      `evidenceSha256`, and the document's own trial, scenario, workload, runtime profile and revision. An arm
+      holds no unindexed evidence, and both metrics and output identity read exactly the indexed documents;
+    - the cell is a manifest cell, and its scenario, workload and runtime profile are the ones the index rows,
+      the evidence documents and the metrics key all carry, so one cell's evidence cannot be credited to another;
     - no cell appears in two slots;
     - the measured cells equal the expected cell list, a required argument, so a missing slot is a gap.
     Any gap makes the comparison incomplete and fails it.
@@ -179,8 +181,8 @@ the load gate held every trial until the one-minute load average was below 0.5.
 - The longest wait across all retained packs was 170 s, well inside the 1,800 s limit. No trial started at a
   load of 0.5 or above. These figures cover all 235 runner-recorded trials in the 39 runner indexes on
   `home-dev-01`, read from each index's `load` (`postsync-analysis/r1-correction/gate-waits-home-dev-01.tsv`). The
-  170 s wait is `7b6b3bc9/control-w2`. The post-sync and interleaved mirrors on `home-dev-02` hold 153 of those
-  trials, and their longest wait is 150 s.
+  170 s wait is `7b6b3bc9/control-w2`. The post-sync and interleaved mirrors on `home-dev-02` hold 152 of those
+  trials (110 interleaved, 40 post-sync measure and 2 S1), and their longest wait is 150 s.
 - The runner now fails closed: an expired or unreadable gate stops the run before the next trial and writes no
   index. Before review r0 an expired gate let the trial start, but that never happened in the retained evidence.
 
@@ -281,7 +283,7 @@ number is `b13f0d0e`, before #1126; see [Composition checkpoints](#composition-c
 
 **Output identity.**
 - Every pair is identical on every stable output value: 1,750 per steady or saturation pair and 50 per cold
-  pair, under the comparator as corrected in review r0 (see [Comparator corrections](#comparator-corrections-review-r0)).
+  pair, under the comparator as corrected in review r0 (see [Comparator corrections](#comparator-corrections-reviews-r0-to-r2)).
   - Per capture that is 3 sample values, 27 node values (9 nodes) and 20 output values. A steady pair has
     35 captures and a cold pair has 1.
   - The values excluded as varying between A's own trials are the recipe and output identities of the
@@ -426,11 +428,12 @@ re-run there with the same runner, method and verdict rule.
     [Composition checkpoints](#composition-checkpoints).
 
 
-### Comparator corrections (reviews r0 and r1)
+### Comparator corrections (reviews r0 to r2)
 
 Review r0 found that the comparator, the S4 decomposition and the runner's load gate could pass on evidence
 they should reject. Review r1 found that the comparator still accepted an arm whose index named one trial's
-evidence twice. All are corrected, and each correction rejects every constructed failure case. The earlier
+evidence twice. Review r2 found that it still credited one cell's evidence to another cell relabelled in the
+index. All are corrected, and each correction rejects every constructed failure case. The earlier
 tools accepted each of those cases, except a stray `B-*` directory, on which the 71592ad4 S4 decomposition
 crashed:
 
@@ -448,6 +451,8 @@ crashed:
 | An index row names another trial's evidence, with or without that trial's own evidence present (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
 | A trial's evidence is replaced by another trial's, with or without its indexed hash updated (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
 | Unindexed evidence, or an attribution run in a measure arm (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
+| Both arms relabelled as another manifest cell, or as a cell the manifest does not list (review r2, at 615909f0) | complete, rc=0 | incomplete, rc=1 |
+| Index rows claim another runtime profile (review r2, at 615909f0) | complete, rc=0 | incomplete, rc=1 |
 | Load gate times out, or reads an empty, unreadable or non-numeric load | trial runs | run stops, no index |
 | S4 decomposition: two A packs and no B pack, a stray `B-*` directory, or a B pack indexed as steady | rc=0, or a crash | rc=2 with a reason |
 
@@ -621,8 +626,8 @@ classifier. Frames owned by an open sibling are measured and reported here, not 
      frame, as I/O.
    - Commit `d710f5c1` adds the VSTest `SocketPal.Poll` wait and deterministic tie ranking (see Method).
    - `docs/validation/issue-1170-interleaved.py` compares interleaved pairs and S1 packs. It fails a pair
-     comparison whose coverage is incomplete, or whose indexed trials are not each their own evidence document
-     (see Method).
+     comparison whose coverage is incomplete, whose indexed trials are not each their own evidence document, or
+     whose evidence is not the manifest cell it is credited to (see Method).
    - `docs/validation/issue-1170-s4-allocation.py` decomposes S4 allocation. It requires exactly one A pack and
      one B pack, both passed saturation measure packs of the same cell.
    - `docs/validation/issue-1170-pipeline.sh`: the load gate fails closed.
@@ -808,6 +813,15 @@ The review r1 re-runs are in `postsync-analysis/r1-correction/` on `home-dev-02`
   and at the correction.
 - `gate-waits-home-dev-01.tsv` (`2f505a1cc1dcaa7269eaa315eb95f92aa03ce2ec8e63efd766edaeb23b41b6b3`) lists every
   runner-recorded trial's gate wait and starting load.
+
+The review r2 re-runs are in `postsync-analysis/r2-correction/` on `home-dev-02`:
+- With the cell binding, the primary and post-sync comparisons are byte-identical to `primary-comparison-v2.json`
+  and `postsync-comparison-v2.json` above. The primary comparison includes the valid `tc0-side-cell` slot.
+- `p1-cases.py` (`31760c6293ef956e956571756740f998b3260fcf329affbdf1d1c92cba5e5abf`) and its output `p1-cases.txt`
+  (`b94efc41664a4ab45d6b88465f37c05434dd02eefe1745fa1b62a21a80a55a20`) hold the review r2 failure cases at
+  11d405b3, at 615909f0 and at the correction.
+- `mirror-loads.tsv` (`8024f1f2d305492a17b900a9f850298f5038388b8dfcdf1356005f48f12768d2`) lists the 152 mirror
+  trials' gate waits.
 
 - `d942bd86/baseline/attribute-aborted-addendum004` is the baseline attribution run stopped when addendum 004
   arrived, with 4 of 10 trials complete. It is retained and not used; `7b6b3bc9/baseline/attribute` replaces it.

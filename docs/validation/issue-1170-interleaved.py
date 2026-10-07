@@ -15,8 +15,9 @@ pairs, per cell, compares each arm against its own adjacent pair only:
 - Coverage: the root must hold at least one measure slot, every slot exactly one A-* and one B-* pack measuring
   the same single manifest cell, and each arm the manifest's trial count (1..trials) under the manifest it was
   measured with. Each indexed trial must be its own evidence document (runner name <cell>-t<trial>, indexed
-  evidenceSha256, and the document's trial, scenario, workload and revision), the pack may hold no unindexed
-  evidence, and metrics and output identity read exactly those documents. No cell may appear twice. The required comma-separated <expected cell ids> (manifest cell ids)
+  evidenceSha256, and the document's trial, scenario, workload, runtime profile and revision), the cell must be a
+  manifest cell whose scenario, workload and runtime profile the row, the document and the metrics key all carry,
+  the pack may hold no unindexed evidence, and metrics and output identity read exactly those documents. No cell may appear twice. The required comma-separated <expected cell ids> (manifest cell ids)
   must equal the set of measured cells exactly, so a missing slot is a gap rather than a smaller comparison. Any gap is incomplete. Slots whose packs are both mode s1 are
   listed and left to the s1 mode.
 - Timings (trial medians of foreground, processing and service; cold first-operation service; S4 drain): B
@@ -147,7 +148,7 @@ def manifest_cells(pack):
     return sorted({run.get("cell") for run in load(os.path.join(pack, "index.json"))["runs"]}, key=str)
 
 
-def coverage_gap(pack, manifest_sha, trials):
+def coverage_gap(pack, manifest_sha, trials, specs):
     index = load(os.path.join(pack, "index.json"))
     if index.get("mode") != "measure":
         return f"{os.path.basename(pack)} is a {index.get('mode')} pack, not measure"
@@ -158,9 +159,17 @@ def coverage_gap(pack, manifest_sha, trials):
     if trial_numbers(pack) != list(range(1, trials + 1)):
         return f"{os.path.basename(pack)} has trials {trial_numbers(pack)}, not 1..{trials}"
     # Each indexed trial must be its own evidence document: the runner's <cell>-t<trial> name, the recorded hash
-    # and the document's own trial and scenario, so one trial's evidence cannot stand in for another's.
+    # and the document's own trial and scenario, so one trial's evidence cannot stand in for another's. The cell
+    # must be a manifest cell whose scenario, workload and runtime profile the row and the document both carry, so
+    # one cell's evidence cannot be credited to another.
     for run in index["runs"]:
         name, path = run.get("name"), evidence_path(pack, run)
+        spec = specs.get(run.get("cell"))
+        if spec is None:
+            return f"{os.path.basename(pack)} run {name} measures {run.get('cell')}, which is not a manifest cell"
+        identity = (spec["scenario"], spec["workload"], spec["runtimeProfile"])
+        if (run.get("scenario"), run.get("workload"), run.get("runtimeProfile")) != identity:
+            return f"{os.path.basename(pack)} run {name} is not the manifest's {run.get('cell')} {identity}"
         if run.get("collector") is not None or name != f"{run.get('cell')}-t{run.get('trial')}":
             return f"{os.path.basename(pack)} run {name} is not named {run.get('cell')}-t{run.get('trial')}"
         if not os.path.isfile(path):
@@ -169,8 +178,8 @@ def coverage_gap(pack, manifest_sha, trials):
             if hashlib.sha256(stream.read()).hexdigest() != run.get("evidenceSha256"):
                 return f"{os.path.basename(pack)} run {name} evidence does not match its indexed evidenceSha256"
         document = load(path)
-        if (document.get("trial"), document.get("scenario"), document.get("workload"), document.get("revision")) != \
-                (run.get("trial"), run.get("scenario"), run.get("workload"), index.get("revision")):
+        if (document.get("trial"), document.get("scenario"), document.get("workload"), document.get("runtimeProfile"),
+                document.get("revision")) != (run.get("trial"), *identity, index.get("revision")):
             return f"{os.path.basename(pack)} run {name} evidence is not trial {run.get('trial')} of this cell and revision"
     present = sorted(os.path.basename(os.path.dirname(path)) for path in glob.glob(os.path.join(pack, "runs", "*", "evidence.json")))
     if present != sorted(run["name"] for run in index["runs"]):
@@ -183,6 +192,7 @@ def pairs(root, output, expected):
     with open(MANIFEST, "rb") as stream:
         manifest_sha = hashlib.sha256(stream.read()).hexdigest()
     trials = load(MANIFEST)["trials"]
+    specs = {spec["id"]: spec for spec in load(MANIFEST)["cells"]}
     slots, s1_slots = [], []
     for slot in sorted(entry for entry in os.listdir(root) if os.path.isdir(os.path.join(root, entry))):
         packs = sorted(name for name in os.listdir(os.path.join(root, slot))
@@ -197,7 +207,7 @@ def pairs(root, output, expected):
             failed = True
             continue
         arms = {name[0]: os.path.join(root, slot, name) for name in packs}
-        gaps = [gap for gap in (coverage_gap(arms[arm], manifest_sha, trials) for arm in "AB") if gap]
+        gaps = [gap for gap in (coverage_gap(arms[arm], manifest_sha, trials, specs) for arm in "AB") if gap]
         if not gaps and manifest_cells(arms["A"]) != manifest_cells(arms["B"]):
             gaps.append(f"arms measure different cells {manifest_cells(arms['A'])} and {manifest_cells(arms['B'])}")
         if gaps:
@@ -211,6 +221,12 @@ def pairs(root, output, expected):
             failed = True
             continue
         (cell, ca), = a["cells"].items()
+        spec = specs[manifest_cells(arms["A"])[0]]
+        # The metrics key is the evidence's own identity; it must be the manifest cell that coverage credits.
+        if cell != f"{spec['runtimeProfile']}|{spec['scenario']}|{spec['workload']}":
+            cells.append({"slot": slot, "verdict": "incomplete", "reasons": [f"metrics cell {cell} is not {spec['id']}"]})
+            failed = True
+            continue
         cb = b["cells"][cell]
         timing = {name: timing_verdict(ca.get(key) if path is None else (ca.get(path) or {}).get(key),
                                        cb.get(key) if path is None else (cb.get(path) or {}).get(key))
