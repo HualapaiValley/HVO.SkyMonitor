@@ -2066,6 +2066,51 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.HasCount(0, staging.DeletedKeys);
     }
 
+    private static readonly string[] SunAndMoon = ["Sun", "Moon"];
+
+    [TestMethod]
+    [DataRow(true, DisplayName = "Sun and Moon requested")]
+    [DataRow(false, DisplayName = "no solar-system bodies")]
+    public async Task CaptureAsyncDeclaresProjectedSceneV2ExactlyWhenTheStagedSceneHasResolvedDisks(bool requestBodies)
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var staging = new RecordingProjectedSceneStagingStore();
+        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]),
+            new ProjectedSceneStore(), planetEphemeris: new AstronomyEnginePlanetEphemeris(), stagingStore: staging);
+        await using var moduleDisposal = module.ConfigureAwait(false);
+        await module.InitializeAsync(CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            {
+                renderSolarSystemDisks = true,
+                solarSystemBodies = requestBodies ? SunAndMoon : Array.Empty<string>(),
+                illuminationMode = "ControlledNight",
+                backgroundElectronsPerSecond = 0,
+                bias = 0,
+                readNoiseStandardDeviation = 0
+            })),
+            Pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])])
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        var frame = (await module.CaptureAsync(new(noon, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(1), 1, null, null)), CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var staged = staging.Scenes.Single();
+        var provenance = frame.Metadata.Scene!;
+        if (requestBodies)
+        {
+            // The noon Sun is above the horizon, so the staged scene outlines the same disk the sensor received.
+            var sun = staged.ResolvedFootprints.Single(static item => item.Id == "solar-system:Sun");
+            Assert.AreEqual(SolarDiskEphemeris.RadiusSource, sun.Extent.Source);
+            Assert.AreEqual(SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion, provenance.ProjectedSceneSchemaVersion);
+        }
+        else
+        {
+            Assert.IsEmpty(staged.ResolvedFootprints);
+            Assert.AreEqual(SceneProvenance.RetainedProjectedSceneSchemaVersion, provenance.ProjectedSceneSchemaVersion);
+        }
+    }
+
     [TestMethod]
     public async Task CaptureAsyncCancelledAfterStageDeletesOnlyThatCaptureStage()
     {
@@ -2220,6 +2265,7 @@ public sealed class VirtualSkyCameraModuleTests
         Exception? deleteFailure = null) : IProjectedSceneStagingStore
     {
         internal List<(string StageKey, string SceneId)> Stages { get; } = [];
+        internal List<VisibleScene> Scenes { get; } = [];
         internal List<string> DeletedKeys { get; } = [];
 
         public ValueTask StageAsync(
@@ -2229,6 +2275,7 @@ public sealed class VirtualSkyCameraModuleTests
             CancellationToken cancellationToken)
         {
             Stages.Add((stageKey, sceneId));
+            Scenes.Add(scene);
             staged?.Invoke();
             return stageFailure is null ? ValueTask.CompletedTask : ValueTask.FromException(stageFailure);
         }

@@ -298,7 +298,7 @@ internal static class BuiltInProcessingProductContracts
                 FixedPreviewRecipe.Algorithms(primary.Layout.PixelFormat), primary),
             EncodedPreview => CreateEncodedPreviewDetails(identity, primary),
             JpegEncoding => CreateJpegDetails(identity, primary),
-            Annotation => CreateAnnotationDetails(identity, primary),
+            Annotation => CreateAnnotationDetails(request, identity, primary),
             RollingMean => new(
                 "application/x-hvo-linear-frame",
                 true,
@@ -402,13 +402,16 @@ internal static class BuiltInProcessingProductContracts
     }
 
     private static ProductDetails CreateAnnotationDetails(
+        ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity,
         ProcessingArtifact primary)
     {
         var options = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(
             identity.Descriptor.Options.GetProperty("parameters"));
         var algorithms = CreateDisplayAlgorithms(primary, out var exactLayout);
-        algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersion));
+        algorithms.Add(new("annotation-renderer", request.Annotation is { } annotation
+            ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay)
+            : AnnotationRenderer.AlgorithmVersion));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);
         if (!packed)
         {

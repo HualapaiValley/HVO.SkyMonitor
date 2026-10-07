@@ -96,7 +96,13 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v9-prototype-labels";
+    public const string SceneProducerVersion = "projected-scene-presentation-v10-resolved-footprints";
+
+    /// <summary>
+    /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
+    /// clearance its label keeps. The outline therefore frames the rendered disc instead of covering its limb.
+    /// </summary>
+    public const double ResolvedFootprintPaddingPixels = AnnotationRenderer.ResolvedFootprintPaddingPixels;
     public const string MetadataProducerVersion = "metadata-corner-presentation-v5-heading-rules";
     public const string CloudProducerVersion = "cloud-presentation-v4-payload-v3";
 
@@ -115,7 +121,7 @@ public static class PresentationLayerProducers
         return PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
             scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
             groups.StarAnnotations.Markers,
-            groups.Constellations.Segments,
+            groups.StarAnnotations.Segments.Concat(groups.Constellations.Segments).ToArray(),
             groups.ImageCircle.Ellipses,
             groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray());
     }
@@ -135,7 +141,7 @@ public static class PresentationLayerProducers
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
                 scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
-                groups.StarAnnotations.Markers, ellipses: groups.ImageCircle.Ellipses,
+                groups.StarAnnotations.Markers, groups.StarAnnotations.Segments, groups.ImageCircle.Ellipses,
                 textBlocks: groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray()),
             groups.Constellations);
     }
@@ -176,7 +182,20 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var markers = includeMarkers ? annotatedObjects.Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true)) : [];
+        var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
+        // the same anchor the raster annotation uses.
+        var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var footprintOnly = footprints.Values.Where(item => !objectIds.Contains(item.Id) && IsNamed(item.Id, item.DisplayName))
+            .OrderBy(static item => item.Id, StringComparer.Ordinal)
+            .Select(item => (Footprint: item, Anchor: ProjectedSceneAnnotation.FootprintAnchor(item, scene.ImageTransform)))
+            .ToArray();
+        // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
+        var markers = includeMarkers ? annotatedObjects
+            .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
+            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
+            .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
         var segments = new List<PresentationSegmentV1>();
         PixelPoint? previousEnd = null;
         var dashOffset = 0d;
@@ -192,6 +211,17 @@ public static class PresentationLayerProducers
                 var dy = segment.ToPixel.Y - segment.FromPixel.Y;
                 dashOffset = (dashOffset + Math.Sqrt(dx * dx + dy * dy)) % 18;
                 previousEnd = segment.ToPixel;
+            }
+        var footprintSegments = new List<PresentationSegmentV1>();
+        if (includeMarkers)
+            foreach (var footprint in footprints.Values.OrderBy(static item => item.Id, StringComparer.Ordinal))
+            {
+                if (PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius && (annotatedObjects.Any(item => item.Id == footprint.Id) ||
+                    footprintOnly.Any(item => item.Footprint.Id == footprint.Id))) continue;
+                var outline = Outline(footprint, scene.ImageTransform, markerColor);
+                // Bounded deterministically: an outline that would exceed the payload budget is omitted whole.
+                if (segments.Count + footprintSegments.Count + outline.Count > PresentationLayerPayloadV1.MaximumSegments) continue;
+                footprintSegments.AddRange(outline);
             }
         var starTexts = new List<PresentationTextBlockV1>();
         var ellipses = new List<PresentationEllipseV1>();
@@ -268,14 +298,24 @@ public static class PresentationLayerProducers
                 labelSize, labelSize / 25, labelColor, new(3, 8, 14), 950_000, 5_000));
             using var font = PresentationFont.Create(appearance.Body);
             var occupied = new List<SKRect>();
-            foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)
+            // Every visible disc keeps other labels off itself; only its own label is placed beside it.
+            var discs = footprints.Values.Select(item => (item.Id, Bounds: new SKRect(
+                (float)(item.Bounds.MinX - ResolvedFootprintPaddingPixels), (float)(item.Bounds.MinY - ResolvedFootprintPaddingPixels),
+                (float)(item.Bounds.MaxX + ResolvedFootprintPaddingPixels), (float)(item.Bounds.MaxY + ResolvedFootprintPaddingPixels)))).ToArray();
+            var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
+                .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
+                    Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue)));
+            foreach (var item in labelled.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
                 if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
                 var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
-                var x = Math.Round(item.Pixel.X + style.MarkerRadius + 2 * scale, MidpointRounding.AwayFromZero);
+                var clearance = footprints.TryGetValue(item.Id, out var footprint)
+                    ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
+                    : style.MarkerRadius;
+                var x = Math.Round(item.Pixel.X + clearance + 2 * scale, MidpointRounding.AwayFromZero);
                 var y = Math.Round(item.Pixel.Y - 3 * scale, MidpointRounding.AwayFromZero);
                 var bounds = PresentationFont.LineBounds(font, name, (float)x, (float)y,
                     appearance.Body.LetterSpacingMilliPixels / 1000f);
@@ -283,6 +323,7 @@ public static class PresentationLayerProducers
                     appearance.Body.HaloWidthMilliPixels / 2000f + scale);
                 if (bounds.Left < 0 || bounds.Top < 0 || bounds.Right > width || bounds.Bottom > height ||
                     occupied.Any(box => Overlaps(box, bounds)) ||
+                    discs.Any(disc => disc.Id != item.Id && Overlaps(disc.Bounds, bounds)) ||
                     reserved.Any(box => Overlaps(box, bounds))) continue;
                 starTexts.Add(new(PresentationTextAnchor.Point, new PixelPoint(x, y),
                     new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor, Appearance: appearance));
@@ -291,7 +332,7 @@ public static class PresentationLayerProducers
         }
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, markers, textBlocks: starTexts),
+                scene.ImageTransform.OutputHeightPixels, markers, footprintSegments, textBlocks: starTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
@@ -339,6 +380,45 @@ public static class PresentationLayerProducers
             point.X <= scene.ImageTransform.CropX + scene.ImageTransform.CropWidth &&
             point.Y >= scene.ImageTransform.CropY &&
             point.Y <= scene.ImageTransform.CropY + scene.ImageTransform.CropHeight;
+
+        // Measured on the padded outline itself, as the raster annotation measures it, so a clipped disc padded from
+        // its visible bounds gets the same marker or outline in both.
+        static double PaddedHalfExtent(ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            var points = Pad(footprint, transform).SelectMany(static part => part.Points).ToArray();
+            return points.Length == 0 ? 0 : Math.Max(points.Max(static point => point.X) - points.Min(static point => point.X),
+                points.Max(static point => point.Y) - points.Min(static point => point.Y)) / 2;
+        }
+
+        static List<PresentationSegmentV1> Outline(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform, PresentationColor color)
+        {
+            var result = new List<PresentationSegmentV1>();
+            foreach (var (closed, points) in Pad(footprint, transform))
+            {
+                for (var index = 1; index < points.Length; index++)
+                    result.Add(new(points[index - 1], points[index], 2, color));
+                if (closed && points.Length > 2) result.Add(new(points[^1], points[0], 2, color));
+            }
+            return result;
+        }
+
+        // Pushes each limb point outward along its ray from the centre. Sun, Moon and catalogue ellipses are convex,
+        // so the ray is a valid outward direction; clipped parts stay open and keep their frame-edge endpoints.
+        static IEnumerable<(bool Closed, PixelPoint[] Points)> Pad(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            // Padded from the same anchor as the raster outline, so a cropped disc grows toward its visible centre.
+            var center = ProjectedSceneAnnotation.FootprintAnchor(footprint, transform);
+            return footprint.Parts.Select(part => (part.Closed, part.Points.Select(point =>
+            {
+                var dx = point.X - center.X;
+                var dy = point.Y - center.Y;
+                var length = Math.Sqrt(dx * dx + dy * dy);
+                var factor = length > 0 ? (length + ResolvedFootprintPaddingPixels) / length : 1;
+                return new PixelPoint(center.X + dx * factor, center.Y + dy * factor);
+            }).ToArray()));
+        }
 
         static bool IsNamed(string id, string displayName) =>
             !string.IsNullOrWhiteSpace(displayName) && !string.Equals(id, displayName, StringComparison.Ordinal);

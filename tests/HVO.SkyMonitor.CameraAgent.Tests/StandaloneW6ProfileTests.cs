@@ -68,7 +68,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "C1DCDBDC45D682D086A8873BDC84D425ABA510939079C24AC9F20DEF6C3F4052",
+            "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);

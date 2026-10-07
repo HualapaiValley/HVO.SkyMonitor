@@ -37,7 +37,7 @@ internal sealed class CentralProjectedSceneResolver(
     internal static bool IsProjectedScene(CentralArtifact artifact)
         => artifact.Role == FrameArtifactRole.Metadata &&
             artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
-            artifact.StructuredProduct?.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion;
+            ProjectedSceneV1.IsSupportedSchemaVersion(artifact.StructuredProduct?.ProductSchemaVersion);
 
     internal static Expression<Func<CentralArtifact, bool>> SourceEligibility(bool projectedScene)
     {
@@ -207,7 +207,18 @@ internal sealed class CentralProjectedSceneResolver(
             scene.ImageTransform.OutputHeightPixels != raw.Layout.Height)
             throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
         if (provenance is null) return;
-        if (scene.EffectiveUtc != provenance.SceneUtc ||
+        // Edges stamp the rig calibration version as the scene's projection version while provenance names the rig
+        // projection algorithm, so either is a legitimate scene projection version for that provenance. The
+        // calibration convention is accepted only from the rig projection algorithm that stamps it: every edge that
+        // emits source-bound scenes (2026-10-05 onward) already reports rig-projection-v2.
+        var projectionVersionMatches = scene.Projection.AlgorithmVersion == provenance.ProjectionAlgorithmVersion ||
+            provenance.ProjectionAlgorithmVersion == RigProjectionContextFactory.AlgorithmVersion &&
+            provenance.ProjectionCalibrationVersion is not null &&
+            scene.Projection.AlgorithmVersion == scene.Projection.CalibrationVersion &&
+            scene.Projection.CalibrationVersion == provenance.ProjectionCalibrationVersion;
+        if (provenance.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal) ||
+            scene.EffectiveUtc != provenance.SceneUtc ||
             scene.Catalog.Name != provenance.CatalogName || scene.Catalog.Version != provenance.CatalogVersion ||
             !string.Equals(scene.Catalog.ChecksumSha256, provenance.CatalogChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
             provenance.CatalogSourceUrl is not null && scene.Catalog.SourceUrl != provenance.CatalogSourceUrl ||
@@ -215,7 +226,7 @@ internal sealed class CentralProjectedSceneResolver(
             provenance.CatalogSchemaVersion is not null && scene.Catalog.SchemaVersion != provenance.CatalogSchemaVersion ||
             provenance.CatalogPreprocessingVersion is not null && scene.Catalog.PreprocessingVersion != provenance.CatalogPreprocessingVersion ||
             !string.Equals(scene.Projection.Model.ToString(), provenance.ProjectionModel, StringComparison.OrdinalIgnoreCase) ||
-            scene.Projection.AlgorithmVersion != provenance.ProjectionAlgorithmVersion ||
+            !projectionVersionMatches ||
             provenance.ProjectionCalibrationVersion is not null && scene.Projection.CalibrationVersion != provenance.ProjectionCalibrationVersion ||
             scene.AstronomyAlgorithmVersion != provenance.AstronomyAlgorithmVersion ||
             scene.EphemerisModelVersion != provenance.EphemerisModelVersion ||
@@ -224,18 +235,26 @@ internal sealed class CentralProjectedSceneResolver(
             !string.Equals(scene.ConstellationTopology?.SourceSha256, provenance.ConstellationTopologySha256, StringComparison.OrdinalIgnoreCase) ||
             scene.ConstellationTopology?.License != provenance.ConstellationTopologyLicense ||
             scene.ConstellationTopology?.PreprocessingVersion != provenance.ConstellationTopologyPreprocessingVersion ||
-            !scene.Selection.ConstellationIds.SequenceEqual(provenance.ConstellationIds ?? []) ||
+            // Edges declare the constellation selection in configuration order and case; the scene records it normalized.
+            provenance.ConstellationIds?.Any(string.IsNullOrWhiteSpace) == true ||
+            !scene.Selection.ConstellationIds.SequenceEqual(
+                ProjectedSceneJson.NormalizeConstellationIds(provenance.ConstellationIds ?? [])) ||
             scene.Selection.IncludeConstellationEndpointStars != provenance.IncludeConstellationEndpointStars)
             throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
     }
 
     internal static ProcessingAnnotationInput CreateAnnotation(ProjectedSceneV1 scene, string sceneId)
-        => CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
-                item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
-                item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray());
+    {
+        var segments = scene.Segments.Select(static item => new ProjectedSegmentProvenance(
+            item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
+            item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray();
+        // A projected-scene-v1 artifact keeps its released point-mark mapping, so its bytes and identity are unchanged.
+        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal)
+            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments)
+            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
+                scene.Objects.Select(static item => new ProjectedObjectProvenance(
+                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments);
+    }
 
     // The existing immutable requirement selector carries the compact reference. The artifact input keeps
     // retention, invalidation and frozen input-set identity authoritative without a second persistence schema.

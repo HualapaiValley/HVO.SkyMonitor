@@ -43,6 +43,51 @@ internal sealed class SqliteCaptureLaneStore(
             throw new InvalidDataException("Capture lane definitions were not initialized.");
         }
         _hasExecutionSchema = await HasExecutionSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await AbandonQuarantinedExpiredProcessingAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Earlier versions quarantined standard work whose live execution expired, which halted the ordered lane and
+    /// refused new captures until an operator intervened. Expired work is now abandoned, so existing rows are
+    /// converted once at startup. Evidence-invalid quarantines are genuine faults and are left alone.
+    /// </summary>
+    private async Task AbandonQuarantinedExpiredProcessingAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using var transaction = BeginImmediate(connection);
+        var rawRows = new List<long>();
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT raw_capture_row_id FROM capture_lane_work
+                WHERE lane_name = 'standard' AND state = 'quarantined' AND failure_reason = 'processing-expired';
+                """;
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) rawRows.Add(reader.GetInt64(0));
+        }
+        if (rawRows.Count == 0)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        using (var convert = connection.CreateCommand())
+        {
+            convert.Transaction = transaction;
+            convert.CommandText = """
+                UPDATE capture_lane_work
+                SET state = 'abandoned', updated_unix_ms = $now
+                WHERE lane_name = 'standard' AND state = 'quarantined' AND failure_reason = 'processing-expired';
+                """;
+            convert.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            await convert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var rawRow in rawRows)
+        {
+            await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask EnsureCanAcceptAsync(long payloadLength, CancellationToken cancellationToken)
@@ -421,9 +466,12 @@ internal sealed class SqliteCaptureLaneStore(
             }
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
             var deferred = result.Outcome == CaptureLaneHandlerOutcome.Deferred;
+            // Abandoned work is finished without output and never retried; unlike quarantine it leaves the lane and
+            // ingress moving, while required sibling lanes keep the raw held until they complete.
+            var abandoned = result.Outcome == CaptureLaneHandlerOutcome.Abandoned;
             var retry = deferred || result.Outcome == CaptureLaneHandlerOutcome.RetryableFailure && lease.Attempt < _options.MaximumAttempts;
             var now = _timeProvider.GetUtcNow();
-            var state = retry ? "retry_wait" : "quarantined";
+            var state = retry ? "retry_wait" : abandoned ? "abandoned" : "quarantined";
             var available = retry ? now + RetryDelay(lease.Attempt) : now;
             using (var command = connection.CreateCommand())
             {
@@ -455,8 +503,9 @@ internal sealed class SqliteCaptureLaneStore(
                     connection,
                     transaction,
                     execution.ExecutionId,
-                    retry ? ProcessingGraphExecutionStatus.Pending : ProcessingGraphExecutionStatus.Failed,
-                    result.Reason,
+                    retry ? ProcessingGraphExecutionStatus.Pending
+                        : abandoned ? ProcessingGraphExecutionStatus.Expired : ProcessingGraphExecutionStatus.Failed,
+                    abandoned ? "processing." + NormalizeReason(result.Reason) : result.Reason,
                     terminal: !retry,
                     observedUtc: null,
                     cancellationToken).ConfigureAwait(false);
@@ -466,7 +515,8 @@ internal sealed class SqliteCaptureLaneStore(
             _faultInjector.Inject(retry ? CaptureLaneFaultPoint.AfterRetryCommit : CaptureLaneFaultPoint.AfterQuarantineCommit);
             return deferred
                 ? CaptureLaneHandlerOutcome.Deferred
-                : retry ? CaptureLaneHandlerOutcome.RetryableFailure : CaptureLaneHandlerOutcome.TerminalFailure;
+                : retry ? CaptureLaneHandlerOutcome.RetryableFailure
+                : abandoned ? CaptureLaneHandlerOutcome.Abandoned : CaptureLaneHandlerOutcome.TerminalFailure;
         }
         finally
         {
@@ -965,7 +1015,7 @@ LIMIT 1;
                   AND ((started_unix_ms IS NULL AND maximum_age_unix_ms <= $now)
                        OR (started_unix_ms IS NOT NULL AND deadline_unix_ms <= $now));
                 UPDATE capture_lane_work
-                SET state = 'quarantined', failure_reason = 'processing-expired',
+                SET state = 'abandoned', failure_reason = 'processing-expired',
                     lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
                     updated_unix_ms = $now
                 WHERE lane_name = 'standard' AND state IN ('pending', 'retry_wait', 'leased')
@@ -1117,7 +1167,7 @@ LIMIT 1;
                 EXISTS (
                     SELECT 1 FROM capture_lane_work
                     WHERE raw_capture_row_id = $raw
-                      AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                      AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                 OR EXISTS (
                     SELECT 1
                     FROM transient_candidate_sources s

@@ -282,7 +282,10 @@ public sealed class VirtualSkyCameraModule(
                 !_options.BackgroundElectronsPerSecond.HasValue ? new SolarSkyIllumination(renderProjection, sunDirection) : null,
             SolarDisks = _options.RenderSolarSystemDisks ? new SolarDiskRenderPlan(renderProjection,
                 [SolarDiskEphemeris.Get(SolarSystemBody.Sun, sceneUtc, diskSite), SolarDiskEphemeris.Get(SolarSystemBody.Moon, sceneUtc, diskSite)],
-                _options.MagnitudeZeroElectronsPerSecond, cancellationToken) : null
+                _options.MagnitudeZeroElectronsPerSecond,
+                // The scene below uses the geometric horizon without refraction; the renderer validates the binding.
+                new SolarDiskRenderSettings(initialRenderOptions.PsfSigmaPixels, initialRenderOptions.PsfRadiusPixels,
+                    HorizonPolicy.GeometricHorizon), cancellationToken) : null
         };
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
@@ -332,6 +335,11 @@ public sealed class VirtualSkyCameraModule(
         var renderScene = (await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
             .BuildAsync(sceneRequest, cancellationToken).ConfigureAwait(false))
             .WithSelectedStars(stellarPlan.Sources.Select(static source => source.Source.Source.Id).ToHashSet(StringComparer.Ordinal));
+        if (initialRenderOptions.SolarDisks is { } resolvedDisks)
+        {
+            // Annotations outline the same topocentric disks the sensor receives.
+            renderScene = renderScene.WithResolvedBodies(resolvedDisks.Disks);
+        }
         var referenceMilliseconds = Stopwatch.GetElapsedTime(referenceStarted).TotalMilliseconds;
         var referenceProcessCpuMilliseconds = (ReadProcessCpu() - referenceCpuStarted).TotalMilliseconds;
         var scene = useNativeReadout
@@ -495,7 +503,9 @@ public sealed class VirtualSkyCameraModule(
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
-            ProjectedSceneSchemaVersion: stageKey is null ? null : SceneProvenance.RetainedProjectedSceneSchemaVersion,
+            ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ResolvedFootprints.Count > 0
+                ? SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion
+                : SceneProvenance.RetainedProjectedSceneSchemaVersion,
             CatalogId: catalogIdentity.CatalogId,
             CatalogPackageVersion: catalogIdentity.PackageVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)

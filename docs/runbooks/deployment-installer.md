@@ -214,6 +214,51 @@ can be evaluated against persisted state first without acquiring, loading, or st
 candidate's state migration and is required only when the candidate declares one.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
+### Edge work persisted across an upgrade
+
+Captures accepted by the previous version keep their raw evidence and their
+frozen processing plan. When the new version builds a different node plan for
+the same pipeline, standard processing of that earlier work cannot run:
+
+- Each such capture's standard work is **abandoned** with reason
+  `plan-superseded`, and its execution is expired with
+  `processing.plan-superseded`. The raw stays held until its upload completes,
+  and a scene-required upload completes with the raw alone. Ingress keeps
+  accepting captures. Abandoned work is not a terminal failure and does not
+  quarantine the lane.
+- Live work that exceeds its maximum queue age is abandoned with
+  `processing-expired` instead of quarantined. On startup, standard work that an
+  earlier version quarantined for `processing-expired` is converted to
+  abandoned, so it stops blocking ingress.
+- Genuinely corrupt or missing raw evidence still quarantines and refuses new
+  captures. That is unchanged and needs the evidence recovery path.
+
+A Named active revision compiled by the earlier version cannot run any live work.
+In that case:
+
+- `capture-processing` health is **Degraded**, with reason
+  `active-revision-superseded` and the revision in `SupersededActiveRevisionId`.
+- CameraAgent logs one Error (event 2097) naming the node and both plan hashes.
+- Captures are still accepted and uploaded, but their standard processing is
+  abandoned.
+
+To recover, use the **Named graphs** page (`/operations/pipeline/graphs`)
+to do one of the following:
+
+- Create, validate and activate a revision of the same pipeline, which this
+  version compiles.
+- Roll back to configured-basic, which is recompiled from configuration at every
+  startup.
+
+Health clears within one refresh, and an Information entry (event 2098) records
+it. No restart is needed. Configured-basic is never reported as superseded.
+
+Annotation work for captures without resolved footprints (`projected-scene-v1`)
+keeps its released identity and algorithm version. A retry after the upgrade
+therefore reproduces the same output under the same key and the same manifest
+bytes. A later change to the Annotation recipe definition, which issue #526
+owns, abandons earlier annotation work in the same way.
+
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 

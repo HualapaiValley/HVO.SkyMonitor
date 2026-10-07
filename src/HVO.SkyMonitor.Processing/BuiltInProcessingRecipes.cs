@@ -725,7 +725,8 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
-        algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersion));
+        algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
+            request.Annotation.Objects, request.Annotation.ProjectionOverlay)));
         ReadOnlyMemory<byte> output;
         string mediaType;
         FrameLayoutDescriptor? outputLayout;
