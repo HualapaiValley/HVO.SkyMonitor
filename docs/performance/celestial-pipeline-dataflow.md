@@ -453,7 +453,7 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - No real-camera path produces resolved Sun or Moon footprints. The only producer is `VirtualSkyCameraModule`
     calling `VisibleScene.WithResolvedBodies` when the option is on.
   - cp-518 therefore measures the production composition. Footprint-free scenes keep `projected-scene-v1` and the
-    released annotation identity (`AnnotationRenderer.AlgorithmVersionFor`, #518 commit `72c9fc45`).
+    released annotation identity (`AnnotationRenderer.AlgorithmVersionFor`, #518 commit `c72af9c1`).
   - A disks-on cell would measure synthetic-source cost that no production camera pays.
 - **Windows and quiet neighbour.** By the owner's account, each window held `home-dev-02`'s heavy lock for its whole length. By the owner's account, a 5 s
   sampler there recorded load and CPU busy and a 1 s sampler on `home-dev-01` recorded aggregate steal ticks
