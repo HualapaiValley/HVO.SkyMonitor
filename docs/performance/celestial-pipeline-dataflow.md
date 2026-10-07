@@ -25,6 +25,9 @@ Only summaries and hashes are committed.
 
 ## Scope and honesty boundaries
 
+- **Attribution of host and activity statements.** Any statement in this document about hosts, locks,
+  processes, sessions, sampling, kernel settings or other activity that does not cite a retained record (a log
+  line, a pack's `host.hostname`, a `run.trx` `computerName`, or another named file) is the owner's account.
 - **Measured:** the shipped CameraAgent composition, from VirtualSky capture through raw ingress, lane claim,
   the configured processing graph and completion, on development host `home-dev-01`. The harness is
   `tests/HVO.SkyMonitor.CameraAgent.Tests/Issue1170ComposedPipelineEvidenceTests.cs`, which drives the real
@@ -440,8 +443,9 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - Both arms are real branch heads with no scratch commits. The runner's manifest still names product base
     `b13f0d0e`, so `productSourceUnchangedFromBase` is false in both arms' indexes. That is expected: the field
     describes the primary matrix's base, not these arms.
-- **Protocol.** Every arm ran in one session on `home-dev-01`. Odd manifest cells run A then B, and even cells
-  run B then A. Each cell is compared only against its adjacent pair.
+- **Protocol.** Every arm ran on `home-dev-01` (each pack's `host.hostname`) between 09:22:49Z and 13:19:42Z, the
+  earliest start and latest finish in the packs' `runs[]` records. Odd manifest cells run A then B, and even
+  cells run B then A. Each cell is compared only against its adjacent pair.
 - **Named exclusion: `renderSolarSystemDisks`.** cp-518 has no disks-on cell.
   - The option is an opt-in on the VirtualSky source. It defaults to false and is absent from
     `cameraagent.sample.json`.
@@ -541,9 +545,10 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - A, 09:22:49–09:43:56Z, rc=1. This run is the record and is unchanged. It failed the #1106 4× wall-clock gate
     on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
     the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
-    - The run was outside a quiet window. `home-dev-02` was the probable co-resident host, and, by the owner's account, #526's Tier C
-      held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z; its decisions ledger
-      (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window.
+    - The run was outside a quiet window. By the owner's account, `home-dev-02` was the probable co-resident host
+      and #526's Tier C held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z; its
+      decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. The window's driver, `prof.sh`,
+      starts no sampler.
     - The gate has only about 1.2–1.4× headroom on this host (4× over the A r2 ratios below). The headroom belongs to the #520 software envelope,
       and neither the gate nor the test is changed here.
   - B, 09:43:56–10:04:02Z, rc=0, also outside a quiet window.
