@@ -125,6 +125,9 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
   - The comparison counts only when coverage is complete:
     - every slot holds exactly one A pack and one B pack;
     - both arms are measure packs on the recorded manifest, with trials 1 to 5 and the same single cell;
+    - each indexed trial is its own evidence document: the runner's `<cell>-t<trial>` name, the indexed
+      `evidenceSha256`, and the document's own trial, scenario, workload and revision. An arm holds no unindexed
+      evidence, and both metrics and output identity read exactly the indexed documents;
     - no cell appears in two slots;
     - the measured cells equal the expected cell list, a required argument, so a missing slot is a gap.
     Any gap makes the comparison incomplete and fails it.
@@ -174,7 +177,10 @@ samples into running, waiting, I/O, GC-suspension and unresolved-native time.
 The host also served other sessions during measurement. They were recorded before and after each pack, and
 the load gate held every trial until the one-minute load average was below 0.5.
 - The longest wait across all retained packs was 170 s, well inside the 1,800 s limit. No trial started at a
-  load of 0.5 or above.
+  load of 0.5 or above. These figures cover all 235 runner-recorded trials in the 39 runner indexes on
+  `home-dev-01`, read from each index's `load` (`postsync-analysis/r1-correction/gate-waits-home-dev-01.tsv`). The
+  170 s wait is `7b6b3bc9/control-w2`. The post-sync and interleaved mirrors on `home-dev-02` hold 153 of those
+  trials, and their longest wait is 150 s.
 - The runner now fails closed: an expired or unreadable gate stops the run before the next trial and writes no
   index. Before review r0 an expired gate let the trial start, but that never happened in the retained evidence.
 
@@ -420,11 +426,13 @@ re-run there with the same runner, method and verdict rule.
     [Composition checkpoints](#composition-checkpoints).
 
 
-### Comparator corrections (review r0)
+### Comparator corrections (reviews r0 and r1)
 
 Review r0 found that the comparator, the S4 decomposition and the runner's load gate could pass on evidence
-they should reject. All three are corrected. Each correction rejects every constructed failure case, and the
-71592ad4 tools accepted every one of those cases:
+they should reject. Review r1 found that the comparator still accepted an arm whose index named one trial's
+evidence twice. All are corrected, and each correction rejects every constructed failure case. The earlier
+tools accepted each of those cases, except a stray `B-*` directory, on which the 71592ad4 S4 decomposition
+crashed:
 
 | Case | 71592ad4 | Corrected |
 |---|---|---|
@@ -437,6 +445,9 @@ they should reject. All three are corrected. Each correction rejects every const
 | A node with no outputs changes Completed to Skipped | identical, rc=0 | difference, rc=1 |
 | A stable Annotation record changes | identical, rc=0 | difference, rc=1 |
 | A payload varies between A trials | identical, rc=0 | difference, rc=1 |
+| An index row names another trial's evidence, with or without that trial's own evidence present (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
+| A trial's evidence is replaced by another trial's, with or without its indexed hash updated (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
+| Unindexed evidence, or an attribution run in a measure arm (review r1, at 11d405b3) | complete, rc=0 | incomplete, rc=1 |
 | Load gate times out, or reads an empty, unreadable or non-numeric load | trial runs | run stops, no index |
 | S4 decomposition: two A packs and no B pack, a stray `B-*` directory, or a B pack indexed as steady | rc=0, or a crash | rc=2 with a reason |
 
@@ -449,6 +460,10 @@ The recorded verdicts do not change when the corrected tools re-run the retained
   before, so the narrower exclusion hid no stable value.
 - **rc=1.** The comparator's rc=1 still has one cause in each, the S4 allocation rule.
 - **S4 decomposition.** The corrected post-sync decomposition is byte-identical to the recorded one.
+
+The node and output-identity cases above edit evidence without its indexed hash, so the corrected comparator
+now rejects them as incomplete before comparing outputs. Copies with every indexed hash recomputed still report
+a difference, so the identity rules stay exercised behind the binding.
 
 The odd-stride equivalence rows added in review r0 fail when either kernel is mutated to start rows on even
 byte offsets, while the other 13 cases still pass.
@@ -606,7 +621,8 @@ classifier. Frames owned by an open sibling are measured and reported here, not 
      frame, as I/O.
    - Commit `d710f5c1` adds the VSTest `SocketPal.Poll` wait and deterministic tie ranking (see Method).
    - `docs/validation/issue-1170-interleaved.py` compares interleaved pairs and S1 packs. It fails a pair
-     comparison whose coverage is incomplete (see Method).
+     comparison whose coverage is incomplete, or whose indexed trials are not each their own evidence document
+     (see Method).
    - `docs/validation/issue-1170-s4-allocation.py` decomposes S4 allocation. It requires exactly one A pack and
      one B pack, both passed saturation measure packs of the same cell.
    - `docs/validation/issue-1170-pipeline.sh`: the load gate fails closed.
@@ -783,6 +799,15 @@ The review r0 re-runs are in `postsync-analysis/r0-correction/` on `home-dev-02`
   `evidence.json` files) without `SHA256SUMS`. All 242 of those files match the `home-dev-01` packs'
   `SHA256SUMS`. The checksum list is `primary-mirror-sha256-from-home-dev-01.txt`
   (`b22e11cb0e78913c3cf9be8fcaa0ecc1d04e274bc33585a2533ce5eb5a1c6be9`).
+
+The review r1 re-runs are in `postsync-analysis/r1-correction/` on `home-dev-02`:
+- With the trial-evidence binding, the primary and post-sync comparisons are byte-identical to
+  `primary-comparison-v2.json` and `postsync-comparison-v2.json` above.
+- `n1-cases.py` (`ad9b6fdf5cd2caccf723dc21ca1ba91329fda3a441653a88b125ed79e9d16b0c`) and its output `n1-cases.txt`
+  (`d0ef117bcb09f07745b8c5e6ae1e3794431f805abb1d90302683a3bd9d0c54c0`) hold the review r1 failure cases at 11d405b3
+  and at the correction.
+- `gate-waits-home-dev-01.tsv` (`2f505a1cc1dcaa7269eaa315eb95f92aa03ce2ec8e63efd766edaeb23b41b6b3`) lists every
+  runner-recorded trial's gate wait and starting load.
 
 - `d942bd86/baseline/attribute-aborted-addendum004` is the baseline attribution run stopped when addendum 004
   arrived, with 4 of 10 trials complete. It is retained and not used; `7b6b3bc9/baseline/attribute` replaces it.

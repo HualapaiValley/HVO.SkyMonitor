@@ -14,7 +14,9 @@ A then B, even cells B then A.
 pairs, per cell, compares each arm against its own adjacent pair only:
 - Coverage: the root must hold at least one measure slot, every slot exactly one A-* and one B-* pack measuring
   the same single manifest cell, and each arm the manifest's trial count (1..trials) under the manifest it was
-  measured with; no cell may appear twice. The required comma-separated <expected cell ids> (manifest cell ids)
+  measured with. Each indexed trial must be its own evidence document (runner name <cell>-t<trial>, indexed
+  evidenceSha256, and the document's trial, scenario, workload and revision), the pack may hold no unindexed
+  evidence, and metrics and output identity read exactly those documents. No cell may appear twice. The required comma-separated <expected cell ids> (manifest cell ids)
   must equal the set of measured cells exactly, so a missing slot is a gap rather than a smaller comparison. Any gap is incomplete. Slots whose packs are both mode s1 are
   listed and left to the s1 mode.
 - Timings (trial medians of foreground, processing and service; cold first-operation service; S4 drain): B
@@ -82,9 +84,14 @@ def timing_verdict(a, b):
     return {"armA": a, "armB": b, "medianChange": change, "verdict": verdict}
 
 
+def evidence_path(pack, run):
+    return os.path.join(pack, "runs", run["name"], "evidence.json")
+
+
 def output_records(pack):
     trials = []
-    for path in sorted(glob.glob(os.path.join(pack, "runs", "*", "evidence.json"))):
+    # The indexed runs, which coverage_gap has bound to distinct evidence documents, are what both arms compare.
+    for path in sorted(evidence_path(pack, run) for run in load(os.path.join(pack, "index.json"))["runs"]):
         document = load(path)
         # A sample's "status" is its /proc/self/status memory snapshot, a resource reading, so it is not compared.
         records = {("raw", index): {field: sample.get(field) for field in ("rawSha256", "rawBytes", "measured")}
@@ -150,6 +157,24 @@ def coverage_gap(pack, manifest_sha, trials):
         return f"{os.path.basename(pack)} measures cells {manifest_cells(pack)}, not exactly one"
     if trial_numbers(pack) != list(range(1, trials + 1)):
         return f"{os.path.basename(pack)} has trials {trial_numbers(pack)}, not 1..{trials}"
+    # Each indexed trial must be its own evidence document: the runner's <cell>-t<trial> name, the recorded hash
+    # and the document's own trial and scenario, so one trial's evidence cannot stand in for another's.
+    for run in index["runs"]:
+        name, path = run.get("name"), evidence_path(pack, run)
+        if run.get("collector") is not None or name != f"{run.get('cell')}-t{run.get('trial')}":
+            return f"{os.path.basename(pack)} run {name} is not named {run.get('cell')}-t{run.get('trial')}"
+        if not os.path.isfile(path):
+            return f"{os.path.basename(pack)} run {name} has no evidence.json"
+        with open(path, "rb") as stream:
+            if hashlib.sha256(stream.read()).hexdigest() != run.get("evidenceSha256"):
+                return f"{os.path.basename(pack)} run {name} evidence does not match its indexed evidenceSha256"
+        document = load(path)
+        if (document.get("trial"), document.get("scenario"), document.get("workload"), document.get("revision")) != \
+                (run.get("trial"), run.get("scenario"), run.get("workload"), index.get("revision")):
+            return f"{os.path.basename(pack)} run {name} evidence is not trial {run.get('trial')} of this cell and revision"
+    present = sorted(os.path.basename(os.path.dirname(path)) for path in glob.glob(os.path.join(pack, "runs", "*", "evidence.json")))
+    if present != sorted(run["name"] for run in index["runs"]):
+        return f"{os.path.basename(pack)} evidence {present} is not exactly its indexed runs"
     return None
 
 
