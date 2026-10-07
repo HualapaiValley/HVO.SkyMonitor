@@ -112,13 +112,15 @@ capacity='{rectilinearBoundary, probes: [.probes[] | {probe, outcome, maximumTem
 
 case "$command" in
 summary)
-    runs='[]'
+    # A pack's summaries outgrow the per-argument limit, so they accumulate as JSON lines in files, never in jq arguments.
+    work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+    : >"$work/runs"
     while read -r run; do
-        summaries='[]'
+        : >"$work/summaries"
         while read -r report; do
             name=$(jq -r .report <<<"$report"); file=$(jq -r '.file // empty' <<<"$report")
             if [[ -z "$file" ]]; then
-                summaries=$(jq --arg r "$name" '. + [{report: $r, missing: true}]' <<<"$summaries"); continue
+                jq -cn --arg r "$name" '{report: $r, missing: true}' >>"$work/summaries"; continue
             fi
             case "$name" in
                 virtual-astrometry-pixels.json) program=$pixels ;;
@@ -129,13 +131,13 @@ summary)
                 virtual-long-exposure-capacity.json) program=$capacity ;;
                 *) fatal "no summary for $name" ;;
             esac
-            summary=$(jq "$helpers $program" "$pack/$file") || fatal "could not summarize $pack/$file"
-            summaries=$(jq --arg r "$name" --argjson s "$summary" '. + [{report: $r} + $s]' <<<"$summaries")
+            jq -c --arg r "$name" "$helpers {report: \$r} + ($program)" "$pack/$file" >>"$work/summaries" ||
+                fatal "could not summarize $pack/$file"
         done < <(jq -c '.reports[]' <<<"$run")
-        runs=$(jq --argjson run "$run" --argjson s "$summaries" \
-            '. + [{name: $run.name, id: $run.id, revision: $run.revision, cell: $run.cell, status: $run.status, elapsedSeconds: $run.elapsedSeconds, reports: $s}]' <<<"$runs")
+        jq -c --slurpfile s "$work/summaries" \
+            '{name, id, revision, cell, status, elapsedSeconds, reports: $s}' <<<"$run" >>"$work/runs"
     done < <(jq -c '.runs[]' "$index")
-    jq -n --slurpfile i "$index" --arg sums "$sums" --argjson runs "$runs" \
+    jq -n --slurpfile i "$index" --arg sums "$sums" --slurpfile runs "$work/runs" \
         '$i[0] as $x | {pack: {mode: $x.mode, final: $x.final, revision: $x.revision, manifestSha256: $x.manifestSha256, status: $x.status,
             sha256sums: $sums, host: $x.host.name, startedUtc: $x.startedUtc, finishedUtc: $x.finishedUtc},
           continuity: ($x.continuity | if . == null then null else {verdict, pairs: [.pairs[] | {id, verdict, baseStatus, headStatus,
