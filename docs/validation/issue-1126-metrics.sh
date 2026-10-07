@@ -21,7 +21,9 @@ def med: sort | length as $n | if $n==0 then null elif $n%2==1 then .[($n-1)/2] 
 def p95: sort | length as $n | if $n==0 then null else .[((($n*0.95)|ceil)-1)] end;
 def mx: if length==0 then null else max end;
 def mn: if length==0 then null else min end;
-def r6: if . == null then null else (. * 1000000 | round) / 1000000 end;
+# Undefined values (NaN, serialized as a string when a case has no associations) pass through unrounded.
+def r6: if type != "number" then . else (. * 1000000 | round) / 1000000 end;
+def num: select(type == "number");
 def stats: {n:length, median:(med|r6), p95:(p95|r6), max:(mx|r6)};
 '
 
@@ -101,8 +103,9 @@ MEASURED='{
     v2False:.v2.candidate.falseAssociations, peak:([.v1.resources.peakWorkingSetBytes,.v2.resources.peakWorkingSetBytes]|mx),
     missed:.v2.missedEligibleReasonCounts}],
   summary:{
-    v2RmsMax:([.reports[].v2.candidate.centroidRmsPixels]|mx|r6),
-    rmsRegressionMax:([.reports[]|(.v2.candidate.centroidRmsPixels-(.v1.baseline.centroidRmsPixels // 0))]|mx|r6),
+    v2RmsMax:([.reports[].v2.candidate.centroidRmsPixels|num]|mx|r6),
+    rmsRegressionMax:([.reports[]|select((.v2.candidate.centroidRmsPixels|type == "number") and (.v1.baseline.centroidRmsPixels|type != "string"))|(.v2.candidate.centroidRmsPixels-(.v1.baseline.centroidRmsPixels // 0))]|mx|r6),
+    v2RmsUndefined:([.reports[]|select(.v2.candidate.centroidRmsPixels|type != "number")|.caseId]),
     recallRegressionMax:([.reports[]|((.v1.baseline.recall // 0)-.v2.candidate.recall)]|mx|r6),
     v2MsMax:([.reports[].v2.measurementMs]|mx|r6), v2MsMin:([.reports[].v2.measurementMs]|mn|r6),
     ratioMax:([.reports[]|.v2.measurementMs/.v1.measurementMs]|mx|r6),
