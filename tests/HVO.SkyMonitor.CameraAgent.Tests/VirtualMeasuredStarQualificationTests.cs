@@ -96,9 +96,12 @@ public sealed class VirtualMeasuredStarQualificationTests
                 var legacyBaseline = LegacyScore(legacy, v1.Detections, v1Solved);
                 var legacyCandidate = LegacyScore(legacy, v2.Detections, v2Solved);
                 var legacyMissed = LegacyMissedReasons(legacy, v2);
+                var eligibleTruthStars = truth.Count(t => t.Eligible); var legacyEligibleTruthStars = legacy.Count(t => t.Eligible);
                 var width = nominal.Projection.WidthPixels; var height = nominal.Projection.HeightPixels;
-                failures.AddRange(InvariantFailures(caseId, Reclassification(profile.Config.Rig, sceneUtc, exposure, truth, legacy,
-                    [("v1", v1.Detections), ("v2", v2.Detections)]), (pixel, widen) => PointInterior(profile.Config.Rig, width, height, pixel, widen)));
+                var stars = Reclassification(profile.Config.Rig, sceneUtc, exposure, truth, legacy, [("v1", v1.Detections), ("v2", v2.Detections)]);
+                failures.AddRange(InvariantFailures(caseId, stars, (pixel, widen) => PointInterior(profile.Config.Rig, width, height, pixel, widen)));
+                failures.AddRange(ScoreFailures(caseId, stars, (eligibleTruthStars, legacyEligibleTruthStars),
+                    [("v1", baseline, legacyBaseline), ("v2", candidate, legacyCandidate)], ("v2", missed, legacyMissed)));
                 if (!v2Solved.Assessment.HasMeasuredMapping) failures.Add($"{caseId}: v2 {v2Solved.Assessment.Reason}");
                 if (candidate.FalseAssociations > 0) failures.Add($"{caseId}: v2 {candidate.FalseAssociations} false associations");
                 if (candidate.CentroidRmsPixels > MaximumCentroidRmsPixels ||
@@ -128,13 +131,13 @@ public sealed class VirtualMeasuredStarQualificationTests
                     utc,
                     sceneUtc,
                     input.ParentPayloadSha256,
-                    eligibleTruthStars = truth.Count(t => t.Eligible),
+                    eligibleTruthStars,
                     truncatedTruthTrails = truth.Count(t => t.Trail.Truncated),
                     trailMetadata = trails,
                     // The #1126 point-rule scores, so continuity can require them to reproduce the base exactly.
                     legacy = new
                     {
-                        eligibleTruthStars = legacy.Count(t => t.Eligible),
+                        eligibleTruthStars = legacyEligibleTruthStars,
                         v1 = new { baseline = legacyBaseline },
                         v2 = new { candidate = legacyCandidate, missedEligibleReasonCounts = legacyMissed }
                     },
@@ -395,6 +398,45 @@ public sealed class VirtualMeasuredStarQualificationTests
                 stars.Any(o => !ReferenceEquals(o, star) && VirtualAstrometryReference.Distance(o.Mid, star.Mid) <= 12 + reach + o.ReachPixels)) continue;
             failures.Add($"{caseId}: invariant 3: {star.Id} lost eligibility with no geometric cause within its {star.ReachPixels:F3} px reach");
         }
+        return failures;
+    }
+
+    /// <summary>
+    /// The emitted scores against the population the invariants check: every eligible count, recovered count, recall and
+    /// missed-reason total, trail-aware and legacy, must be exactly what those stars and their recovery flags give. The
+    /// continuity runner sees only the report, so a self-consistent rewrite of every count is caught here, not there.
+    /// </summary>
+    internal static List<string> ScoreFailures(string caseId, IReadOnlyList<ReclassificationStar> stars, (int Trail, int Legacy) eligibleTruthStars,
+        IReadOnlyList<(string Measurer, MeasuredStarScore Trail, MeasuredStarScore Legacy)> scores,
+        (string Measurer, IReadOnlyDictionary<string, int> Trail, IReadOnlyDictionary<string, int> Legacy) missed)
+    {
+        var failures = new List<string>();
+        void Check<T>(string name, T emitted, T expected) where T : IEquatable<T>
+        {
+            if (!emitted.Equals(expected)) failures.Add($"{caseId}: score: {name} is {emitted}, not {expected}");
+        }
+        int Eligible(bool legacy) => stars.Count(s => legacy ? s.LegacyEligible : s.TrailEligible);
+        int Recovered(string measurer, bool legacy) => stars.Count(s =>
+        {
+            var (_, onPoint, onTrail) = s.Recovered.Single(r => r.Measurer == measurer);
+            return legacy ? s.LegacyEligible && onPoint : s.TrailEligible && onTrail;
+        });
+        void CheckScore(string name, MeasuredStarScore score, string measurer, bool legacy)
+        {
+            int eligible = Eligible(legacy), recovered = Recovered(measurer, legacy);
+            Check($"{name} eligibleStars", score.EligibleStars, eligible);
+            Check($"{name} recovered", score.Recovered, recovered);
+            Check($"{name} recall", score.Recall, eligible == 0 ? 0 : recovered / (double)eligible);
+        }
+        Check("eligibleTruthStars", eligibleTruthStars.Trail, Eligible(legacy: false));
+        Check("legacy eligibleTruthStars", eligibleTruthStars.Legacy, Eligible(legacy: true));
+        foreach (var (measurer, trailScore, legacyScore) in scores)
+        {
+            CheckScore(measurer, trailScore, measurer, legacy: false);
+            CheckScore($"legacy {measurer}", legacyScore, measurer, legacy: true);
+        }
+        Check($"{missed.Measurer} missed reasons total", missed.Trail.Values.Sum(), Eligible(legacy: false) - Recovered(missed.Measurer, legacy: false));
+        Check($"legacy {missed.Measurer} missed reasons total", missed.Legacy.Values.Sum(), Eligible(legacy: true) - Recovered(missed.Measurer, legacy: true));
         return failures;
     }
 

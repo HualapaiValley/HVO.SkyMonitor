@@ -253,6 +253,63 @@ public sealed class VirtualLongExposureFixtureTests
         CollectionAssert.AreEqual(expected, VirtualMeasuredStarQualificationTests.InvariantFailures("c", defects, Interior));
     }
 
+    [TestMethod]
+    public void ScoreFailures_RejectCountsThatDisagreeWithTheCheckedPopulation()
+    {
+        // Ten stars eligible under both rules, v1 and v2 recovering the first eight on both, plus two legacy-only stars of
+        // which both measurers recover one at its point: trail 10 / 8 / 0.8 with 2 missed, legacy 12 / 9 / 0.75 with 3 missed.
+        VirtualMeasuredStarQualificationTests.ReclassificationStar[] stars =
+        [
+            .. Enumerable.Range(0, 10).Select(i => new VirtualMeasuredStarQualificationTests.ReclassificationStar(
+                $"s{i}", new(20 + 6 * i, 50), 1, false, false, true, true, [("v1", i < 8, i < 8), ("v2", i < 8, i < 8)])),
+            .. Enumerable.Range(10, 2).Select(i => new VirtualMeasuredStarQualificationTests.ReclassificationStar(
+                $"s{i}", new(20 + 6 * i, 50), 1, false, false, true, false, [("v1", i == 10, false), ("v2", i == 10, false)]))
+        ];
+        static VirtualMeasuredStarQualificationTests.MeasuredStarScore Score(int eligible, int recovered, double? recall = null) =>
+            new(eligible, recovered, recall ?? recovered / (double)eligible, 8, 0, 0.1, 0.2);
+        static Dictionary<string, int> Missed(int count) => new(StringComparer.Ordinal) { ["no-candidate"] = count };
+        List<string> Failures(int eligibleTruthStars, VirtualMeasuredStarQualificationTests.MeasuredStarScore trail,
+            VirtualMeasuredStarQualificationTests.MeasuredStarScore legacy, int missed, int legacyEligibleTruthStars = 12, int legacyMissed = 3) =>
+            VirtualMeasuredStarQualificationTests.ScoreFailures("c", stars, (eligibleTruthStars, legacyEligibleTruthStars),
+                [("v1", trail, Score(12, 9)), ("v2", trail, legacy)], ("v2", Missed(missed), Missed(legacyMissed)));
+
+        Assert.IsEmpty(Failures(10, Score(10, 8), Score(12, 9), 2), "Counts that match the population pass.");
+
+        // r1 N1 (b): eligibleStars and recovered halved with recall kept.
+        string[] halved =
+        [
+            "c: score: v1 eligibleStars is 5, not 10",
+            "c: score: v1 recovered is 4, not 8",
+            "c: score: v2 eligibleStars is 5, not 10",
+            "c: score: v2 recovered is 4, not 8"
+        ];
+        CollectionAssert.AreEqual(halved, Failures(10, Score(5, 4), Score(12, 9), 2));
+
+        // (b'): every trail count rewritten self-consistently, which the continuity runner cannot see.
+        string[] rewritten =
+        [
+            "c: score: eligibleTruthStars is 5, not 10",
+            "c: score: v1 eligibleStars is 5, not 10",
+            "c: score: v1 recovered is 4, not 8",
+            "c: score: v2 eligibleStars is 5, not 10",
+            "c: score: v2 recovered is 4, not 8",
+            "c: score: v2 missed reasons total is 1, not 2"
+        ];
+        CollectionAssert.AreEqual(rewritten, Failures(5, Score(5, 4), Score(12, 9), 1));
+
+        // A recall that disagrees with its own counts, and a legacy score taken from the wrong rule.
+        string[] misstated =
+        [
+            "c: score: legacy eligibleTruthStars is 10, not 12",
+            "c: score: v1 recall is 0.75, not 0.8",
+            "c: score: v2 recall is 0.75, not 0.8",
+            "c: score: legacy v2 recovered is 6, not 9",
+            "c: score: legacy v2 recall is 0.5, not 0.75",
+            "c: score: legacy v2 missed reasons total is 2, not 3"
+        ];
+        CollectionAssert.AreEqual(misstated, Failures(10, Score(10, 8, 0.75), Score(12, 6, 0.5), 2, legacyEligibleTruthStars: 10, legacyMissed: 2));
+    }
+
     private static VirtualAstrometryReference.TruthTrail Trail(PixelPoint?[] samples) => new(Star, samples);
 
     private static PixelPoint?[] Line(PixelPoint start, PixelPoint end) =>
