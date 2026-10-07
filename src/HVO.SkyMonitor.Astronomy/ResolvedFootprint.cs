@@ -130,6 +130,36 @@ public readonly record struct ResolvedSourceFrame(
     }
 }
 
+/// <summary>
+/// Projects one geometric direction through the scene pipeline: horizon policy, refraction, projection
+/// and lens distortion. It does not clip to the sensor or aperture, so a renderer can spread light that
+/// lands just outside the frame before it clips.
+/// </summary>
+public sealed class ResolvedSourceProjector
+{
+    private readonly CameraBasis _basis;
+
+    public ResolvedSourceProjector(ProjectionContext projection, HorizonPolicy horizonPolicy, RefractionOptions refraction)
+    {
+        projection.Validate();
+        refraction.Validate();
+        if (!Enum.IsDefined(horizonPolicy)) throw new ArgumentOutOfRangeException(nameof(horizonPolicy));
+        Projection = projection;
+        HorizonPolicy = horizonPolicy;
+        Refraction = refraction;
+        _basis = CameraBasis.Create(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees,
+            projection.RollDegrees, projection.HorizontalFlip);
+    }
+
+    public ProjectionContext Projection { get; }
+    public HorizonPolicy HorizonPolicy { get; }
+    public RefractionOptions Refraction { get; }
+
+    /// <summary>Returns false when the horizon policy or projection model rejects the direction.</summary>
+    public bool TryProject(EnuVector geometricDirection, out PixelPoint pixel) =>
+        VisibleSceneBuilder.TryProjectGeometry(Projection, HorizonPolicy, Refraction, _basis, geometricDirection, out pixel);
+}
+
 /// <summary>Samples resolved-source outlines into clipped projected polylines.</summary>
 public static class ResolvedFootprintSampler
 {

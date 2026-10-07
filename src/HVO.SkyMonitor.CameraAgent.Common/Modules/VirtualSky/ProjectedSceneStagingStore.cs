@@ -33,17 +33,24 @@ internal sealed record StagedProjectedSceneDocument(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RigProfileSha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FrameLayoutDescriptor? Layout = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ProjectedSceneKind? IntendedKind = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StageSceneIdentitySha256 = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StageSceneIdentitySha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null)
 {
     internal const string CurrentSchemaVersion = "projected-scene-stage-v1";
 
     internal ProjectedSceneV1 Bind(ProjectedSceneSource source, ProjectedSceneKind kind)
     {
+        // The bound scene's schema follows its content: only a stage that carries resolved footprints is v2, and
+        // validation rejects a stage that records an empty footprint list.
         var scene = new ProjectedSceneV1(
-            ProjectedSceneV1.CurrentSchemaVersion, string.Empty, kind, EffectiveUtc, Observer, Catalog, Selection,
+            ResolvedFootprints is null
+                ? ProjectedSceneV1.CurrentSchemaVersion
+                : ProjectedSceneV1.ResolvedFootprintSchemaVersion,
+            string.Empty, kind, EffectiveUtc, Observer, Catalog, Selection,
             Projection, ImageTransform, ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge,
             HorizonPolicy, Refraction, AstronomyAlgorithmVersion, ConstellationTopology, EphemerisModelVersion,
-            source, Objects, Segments);
+            source, Objects, Segments, ResolvedFootprints);
         scene = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
         ProjectedSceneJson.Validate(scene);
         return scene;
@@ -176,7 +183,8 @@ internal sealed class ProjectedSceneStagingStore :
             projected.Observer, projected.Catalog, projected.Selection, projected.Projection, projected.ImageTransform,
             projected.HorizonPolicy, projected.Refraction, projected.AstronomyAlgorithmVersion,
             projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments,
-            facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256);
+            facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256,
+            projected.ResolvedFootprints);
         document = document with { StageIdentitySha256 = ComputeIdentity(document) };
         var bytes = Serialize(document);
 

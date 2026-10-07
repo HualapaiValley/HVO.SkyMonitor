@@ -15,26 +15,40 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class CentralProjectedSceneResolverTests
 {
     [TestMethod]
-    public async Task SelectionWaitsForRawThenFrozenSceneSurvivesRawExpiryAndRejectsChangedIdentity()
+    [DataRow(false, DisplayName = "projected-scene-v1")]
+    [DataRow(true, DisplayName = "projected-scene-v2")]
+    public async Task SelectionWaitsForRawThenFrozenSceneSurvivesRawExpiryAndRejectsChangedIdentity(bool resolvedSun)
     {
         await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
         var utc = raw.Descriptor.Timing.ExposureStartedUtc;
-        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+        var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
-        ])).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+        ]);
+        var visible = await (resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
             new ProjectionContext(ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
-                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1")).ConfigureAwait(false);
+                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        if (resolvedSun)
+        {
+            visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, utc,
+                new AltAzPoint(90, 0), 10, 0, 1, 0, 149600000)]);
+        }
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(2, 2),
             new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId,
                 raw.IdempotencyKey), "calibration-v1", visible.Request.ProjectionVersion);
+        Assert.AreEqual(resolvedSun ? ProjectedSceneV1.ResolvedFootprintSchemaVersion : ProjectedSceneV1.CurrentSchemaVersion,
+            scene.SchemaVersion);
         var provenance = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
             scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
-            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: utc).WithoutProjectedGeometry();
+            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: utc,
+            EphemerisModelVersion: scene.EphemerisModelVersion).WithoutProjectedGeometry();
         var payload = ProjectedSceneJson.Serialize(scene);
         var recipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene, "1.0.0", "fixture",
             JsonSerializer.SerializeToElement(new { }));

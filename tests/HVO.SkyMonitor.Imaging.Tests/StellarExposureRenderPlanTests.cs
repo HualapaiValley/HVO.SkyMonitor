@@ -361,7 +361,7 @@ public sealed class StellarExposureRenderPlanTests
         };
         options = options with { ExposureSeconds = .1, MagnitudeZeroElectronsPerSecond = 1000, BackgroundElectronsPerSecond = 20 };
         var disk = new SolarDiskAppearance(SolarSystemBody.Moon, Utc, new(90, 0), .25, -7.5, 1, 0, 384400);
-        var disks = new SolarDiskRenderPlan(Projection, [disk], 1000);
+        var disks = new SolarDiskRenderPlan(Projection, [disk], 1000, ProjectionOnlyDisks);
         StellarExposureRenderPlan Prepare(LinearSceneRenderOptions configured) =>
             StellarExposureRenderPlan.Prepare(geometry, configured, new(MinimumSignalToNoise: 1));
         var clear = Prepare(options);
@@ -371,7 +371,12 @@ public sealed class StellarExposureRenderPlanTests
         Assert.AreEqual(clear.Predictions[0].Signal.SourceElectrons, illuminated.Predictions[0].Signal.SourceElectrons, 1e-8);
         var diskVariance = illuminated.Predictions[0].Signal.NoiseVariance - clear.Predictions[0].Signal.NoiseVariance;
         Assert.IsTrue(diskVariance > 1000);
-        if (format == CameraPixelFormat.Mono16) Assert.AreEqual(100000, diskVariance, 1e-5);
+        // The sub-pixel disk is spread by the PSF, so a small tail leaves the star aperture; light is never created.
+        if (format == CameraPixelFormat.Mono16)
+        {
+            Assert.IsTrue(diskVariance <= 100000 + 1e-6);
+            Assert.AreEqual(100000, diskVariance, 100);
+        }
         foreach (var opacity in new[] { .5, 1 })
         {
             var cloud = new VirtualCloudRenderContext(new VirtualCloudField(new VirtualCloudScenarioDefinition
@@ -389,7 +394,7 @@ public sealed class StellarExposureRenderPlanTests
             Assert.AreEqual(diskVariance * (1 - opacity), actual, 1e-5,
                 "Resolved disk charge receives transmission only; background scatter cannot restore it.");
         }
-        var bright = options with { SolarDisks = new SolarDiskRenderPlan(Projection, [disk with { VisualMagnitude = -15 }], 1000) };
+        var bright = options with { SolarDisks = new SolarDiskRenderPlan(Projection, [disk with { VisualMagnitude = -15 }], 1000, ProjectionOnlyDisks) };
         var saturated = Prepare(bright);
         Assert.IsFalse(clear.Predictions[0].ExpectedSaturation);
         Assert.IsTrue(saturated.Predictions[0].ExpectedSaturation);
@@ -405,6 +410,29 @@ public sealed class StellarExposureRenderPlanTests
         };
         Assert.IsTrue(rendered.Statistics.ClippedHigh > 0, "Predicted disk saturation must also reach the real sensor path.");
     }
+
+    [TestMethod]
+    public async Task RendererRejectsDisksBoundToADifferentPsfHorizonOrRefraction()
+    {
+        var (_, scene) = await Scene(1).ConfigureAwait(false);
+        var disk = new SolarDiskAppearance(SolarSystemBody.Moon, Utc, new(90, 0), .25, -7.5, 1, 0, 384400);
+        var layout = new ImageLayout(32, 32, CameraPixelFormat.Mono16, 64);
+        var options = new Mono16SceneRenderOptions();
+        Mono16SceneRenderer.Render(scene, layout, options with { SolarDisks = new SolarDiskRenderPlan(Projection, [disk], 1000, ProjectionOnlyDisks) });
+        foreach (var settings in new[]
+        {
+            ProjectionOnlyDisks with { PsfSigmaPixels = 2 }, ProjectionOnlyDisks with { PsfRadiusPixels = 3 },
+            ProjectionOnlyDisks with { HorizonPolicy = HorizonPolicy.GeometricHorizon },
+            ProjectionOnlyDisks with { Refraction = new RefractionOptions(true) }
+        })
+        {
+            var error = Assert.ThrowsExactly<ArgumentException>(() => Mono16SceneRenderer.Render(scene, layout,
+                options with { SolarDisks = new SolarDiskRenderPlan(Projection, [disk], 1000, settings) }));
+            StringAssert.Contains(error.Message, "Solar disks must bind", StringComparison.Ordinal);
+        }
+    }
+
+    private static readonly SolarDiskRenderSettings ProjectionOnlyDisks = new(HorizonPolicy: HorizonPolicy.ProjectionOnly);
 
     private static Mono16SceneRenderOptions Options() => new()
     {

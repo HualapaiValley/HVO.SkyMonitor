@@ -124,14 +124,14 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(StringComparer.Ordinal) { ProjectedSceneV1.CurrentSchemaVersion })
+            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal))
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var dependencyProducts = context.GetDependencyProducts();
-        var sceneProduct = dependencyProducts.Single(product => product.SchemaVersion == ProjectedSceneV1.CurrentSchemaVersion);
+        var sceneProduct = dependencyProducts.Single(product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
         var scene = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene
             ?? throw new InvalidDataException("The projected-scene dependency is invalid.");
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
@@ -253,7 +253,7 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(StringComparer.Ordinal) { ProjectedSceneV1.CurrentSchemaVersion }),
+            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
             Variant: Options.StackPreviewVariant)
     ];
@@ -263,7 +263,7 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
         var descriptor = context.ReconstructionDescriptor
             ?? throw new InvalidOperationException("Environment presentation requires a reconstruction descriptor.");
         var dependencyProducts = context.GetDependencyProducts();
-        var sceneProduct = dependencyProducts.Single(product => product.SchemaVersion == ProjectedSceneV1.CurrentSchemaVersion);
+        var sceneProduct = dependencyProducts.Single(product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
         var scene = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene
             ?? throw new InvalidDataException("The projected-scene dependency is invalid.");
         var previewProduct = dependencyProducts.Single(product => product.Role == FrameArtifactRole.Preview);

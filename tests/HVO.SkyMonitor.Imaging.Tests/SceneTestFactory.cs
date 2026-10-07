@@ -29,6 +29,13 @@ internal static class SceneTestFactory
                 WidthPixels: width, HeightPixels: height),
             HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
 
+    /// <summary>An empty zenith scene whose focal length makes sub-degree disks span many pixels.</summary>
+    public static async Task<VisibleScene> CreateNarrowEmptyAsync(int width, int height, double focalLengthPixels)
+        => await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(Request(width, height,
+            new EquidistantProjectionContext(width / 2d, height / 2d, focalLengthPixels, Math.Max(width, height),
+                WidthPixels: width, HeightPixels: height),
+            HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
+
     private static VisibleSceneRequest Request(int width, int height, EquidistantProjectionContext projection, HorizonPolicy policy)
         => new(Utc, new ObserverLocation(0, 0, 0), projection, new CatalogQuery(20, 10), Metadata,
             new RefractionOptions(false), policy);

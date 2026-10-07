@@ -44,7 +44,7 @@ public sealed class SolarSkyIlluminationTests
         var sky = new SolarSkyIllumination(projection, new(60, 180));
         var disk = new SolarDiskAppearance(SolarSystemBody.Sun, scene.Request.Utc,
             new(90, 0), .25, 0, 1, 0, 149600000);
-        var disks = new SolarDiskRenderPlan(projection, [disk], 1000);
+        var disks = new SolarDiskRenderPlan(projection, [disk], 1000, SceneDisks(scene));
         SceneRenderResult Render(double exposure, SolarSkyIllumination? illumination, SolarDiskRenderPlan? bodies)
             => format switch
             {
@@ -66,7 +66,7 @@ public sealed class SolarSkyIlluminationTests
         Assert.Throws<ArgumentException>(() => Render(.1,
             new SolarSkyIllumination(projection with { HorizontalFlip = true }, new(60, 180)), disks));
         Assert.Throws<ArgumentException>(() => Render(.1, sky,
-            new SolarDiskRenderPlan(projection with { HorizontalFlip = true }, [disk], 1000)));
+            new SolarDiskRenderPlan(projection with { HorizontalFlip = true }, [disk], 1000, SceneDisks(scene))));
     }
 
     [TestMethod]
@@ -92,7 +92,7 @@ public sealed class SolarSkyIlluminationTests
         var layout = new ImageLayout(64, 64, format, 64 * ImageLayout.BytesPerPixel(format));
         var disk = new SolarDiskAppearance(SolarSystemBody.Sun, scene.Request.Utc,
             new(90, 0), .25, 0, 1, 0, 149600000);
-        var disks = new SolarDiskRenderPlan(scene.Request.Projection, [disk], 400);
+        var disks = new SolarDiskRenderPlan(scene.Request.Projection, [disk], 400, SceneDisks(scene));
         var cloud = new VirtualCloudRenderContext(new VirtualCloudField(new VirtualCloudScenarioDefinition
         {
             ScenarioId = "disk-cloud-conformance",
@@ -125,4 +125,7 @@ public sealed class SolarSkyIlluminationTests
             "Unit background scattering retains the existing scalar sky response.");
     }
 
+
+    private static SolarDiskRenderSettings SceneDisks(VisibleScene scene) =>
+        new(HorizonPolicy: scene.Request.HorizonPolicy, Refraction: scene.Request.Refraction);
 }

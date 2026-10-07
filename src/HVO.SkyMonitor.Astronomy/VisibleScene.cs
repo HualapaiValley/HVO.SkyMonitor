@@ -727,9 +727,18 @@ public sealed class VisibleSceneBuilder
         VisibleSceneRequest request,
         CameraBasis basis,
         EnuVector geometricDirection,
+        out PixelPoint pixel) => TryProjectGeometry(
+            request.Projection, request.HorizonPolicy, request.Refraction, basis, geometricDirection, out pixel);
+
+    internal static bool TryProjectGeometry(
+        ProjectionContext context,
+        HorizonPolicy horizonPolicy,
+        RefractionOptions refraction,
+        CameraBasis basis,
+        EnuVector geometricDirection,
         out PixelPoint pixel)
     {
-        if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
+        if (horizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
         {
             pixel = default;
             return false;
@@ -738,10 +747,9 @@ public sealed class VisibleSceneBuilder
         var geometric = CameraBasis.ToHorizontal(geometricDirection);
         var apparent = geometric with
         {
-            AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, request.Refraction)
+            AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, refraction)
         };
         var camera = basis.ToCamera(CameraBasis.FromHorizontal(apparent));
-        var context = request.Projection;
         if (context.Model == ProjectionModel.Perspective)
         {
             if (camera.Up <= 1e-12)

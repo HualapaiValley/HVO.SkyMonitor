@@ -483,7 +483,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
         if (unavailable.Count == 0) return UnavailableNodeResolution.None;
         var deterministic = unavailable.All(static output =>
-            string.Equals(output.Schema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            ProjectedSceneV1.IsSupportedSchemaVersion(output.Schema));
         foreach (var output in unavailable)
         {
             using var history = connection.CreateCommand();
@@ -823,7 +823,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             SELECT DISTINCT capture_id
             FROM processing_outputs INDEXED BY ix_processing_outputs_product
             WHERE capture_id IN ({placeholders})
-              AND product_schema_version = 'projected-scene-v1'
+              AND product_schema_version IN ('projected-scene-v1', 'projected-scene-v2')
               AND product_kind = 'Metadata'
               AND content_identity_sha256 IS NOT NULL
               AND availability_state = 'Available'
@@ -1175,7 +1175,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await diagnostic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        var deterministic = string.Equals(productSchema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal);
+        var deterministic = ProjectedSceneV1.IsSupportedSchemaVersion(productSchema);
         using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;

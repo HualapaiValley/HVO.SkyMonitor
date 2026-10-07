@@ -62,7 +62,8 @@ public sealed record ProjectedAnnotationObject(
     string DisplayName,
     PixelPoint Pixel,
     bool DrawMark = true,
-    bool DrawLabel = true);
+    bool DrawLabel = true,
+    IReadOnlyList<ResolvedFootprintPart>? FootprintParts = null);
 
 /// <summary>An immutable line segment whose endpoints were resolved from the same projected scene.</summary>
 public sealed record ProjectedAnnotationSegment(string ConstellationId, PixelPoint FromPixel, PixelPoint ToPixel);
@@ -74,7 +75,8 @@ public sealed record ProjectedAnnotationOverlay(
     PixelPoint North,
     PixelPoint East,
     PixelPoint South,
-    PixelPoint West);
+    PixelPoint West,
+    double? ImageCircleRadiusY = null);
 
 /// <summary>Exact bounded metadata lines placed at the four image corners.</summary>
 public sealed record MetadataCornerOverlay(
@@ -95,7 +97,13 @@ public sealed record AnnotationResult(
 /// <summary>Draws annotations using only coordinates already present in projected scene records.</summary>
 public static class AnnotationRenderer
 {
-    public const string AlgorithmVersion = "projected-annotation-raster-v3";
+    public const string AlgorithmVersion = "projected-annotation-raster-v4-resolved-footprints";
+
+    /// <summary>
+    /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
+    /// clearance its label keeps, shared by the raster and presentation-layer annotations.
+    /// </summary>
+    public const double ResolvedFootprintPaddingPixels = 4;
 
     /// <summary>Composes the existing monochrome annotation mask over packed RGB24 without altering source pixels.</summary>
     public static AnnotationResult AnnotateRgb24WithSegments(
@@ -302,14 +310,41 @@ public static class AnnotationRenderer
             anchors.Add(new AnnotationAnchor(item.Id, item.Pixel, anchor));
             var x = Round(anchor.X);
             var y = Round(anchor.Y);
+            var clearance = options.MarkRadius;
+            var outline = item.FootprintParts is { Count: > 0 } parts ? PadOutline(parts, transform, anchor) : null;
+            if (outline is { Bounds: var bounds })
+            {
+                // A resolved disc wider than the point mark is annotated by its padded outline instead.
+                var halfExtent = Math.Max(bounds.MaxX - bounds.MinX, bounds.MaxY - bounds.MinY) / 2;
+                if (halfExtent <= options.MarkRadius) outline = null;
+                else clearance = Math.Max(clearance, (int)Math.Ceiling(bounds.MaxX - x));
+            }
             if (item.DrawMark)
             {
-                DrawDottedCircle(pixels, width, height, x, y, options.MarkRadius, options.MarkerValue);
+                if (outline is null)
+                {
+                    DrawDottedCircle(pixels, width, height, x, y, options.MarkRadius, options.MarkerValue);
+                }
+                else
+                {
+                    foreach (var part in outline.Value.Parts)
+                    {
+                        for (var index = part.Closed ? 0 : 1; index < part.Points.Count; index++)
+                        {
+                            var segment = new ProjectedAnnotationSegment(item.Id,
+                                part.Points[index == 0 ? part.Points.Count - 1 : index - 1], part.Points[index]);
+                            if (TryTransformAndClip(segment, new PreviewTransform(1, 1), width, height, out var from, out var to))
+                            {
+                                DrawLine(from, to, 1, (px, py) => SetPixelMaximum(pixels, width, height, px, py, options.MarkerValue));
+                            }
+                        }
+                    }
+                }
             }
 
             if (options.DrawLabels && item.DrawLabel && options.MaximumLabelCharacters > 0)
             {
-                DrawLabel(pixels, width, height, x + options.MarkRadius + 2, y - 3 * options.LabelScale,
+                DrawLabel(pixels, width, height, x + clearance + 2, y - 3 * options.LabelScale,
                     item.DisplayName.AsSpan(0, Math.Min(item.DisplayName.Length, options.MaximumLabelCharacters)),
                     options.MarkValue, options.LabelScale);
             }
@@ -319,6 +354,39 @@ public static class AnnotationRenderer
     }
 
     private static int Round(double value) => (int)Math.Round(value, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// Maps footprint parts into preview pixels and pushes each limb point outward along its ray from the anchor.
+    /// Sun, Moon and catalogue ellipses are convex, so the ray is a valid outward direction.
+    /// </summary>
+    private static (IReadOnlyList<ResolvedFootprintPart> Parts, ResolvedFootprintBounds Bounds)? PadOutline(
+        IReadOnlyList<ResolvedFootprintPart> parts, PreviewTransform transform, PixelPoint anchor)
+    {
+        var padded = new List<ResolvedFootprintPart>(parts.Count);
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        foreach (var part in parts)
+        {
+            var points = new List<PixelPoint>(part.Points.Count);
+            foreach (var source in part.Points)
+            {
+                var point = transform.Apply(source);
+                var dx = point.X - anchor.X;
+                var dy = point.Y - anchor.Y;
+                var length = Math.Sqrt(dx * dx + dy * dy);
+                var factor = length > 0 ? (length + ResolvedFootprintPaddingPixels) / length : 1;
+                point = new PixelPoint(anchor.X + dx * factor, anchor.Y + dy * factor);
+                if (!double.IsFinite(point.X) || !double.IsFinite(point.Y)) return null;
+                points.Add(point);
+                minX = Math.Min(minX, point.X);
+                minY = Math.Min(minY, point.Y);
+                maxX = Math.Max(maxX, point.X);
+                maxY = Math.Max(maxY, point.Y);
+            }
+            padded.Add(new ResolvedFootprintPart(part.Closed && points.Count > 2, points));
+        }
+        return double.IsFinite(minX) ? (padded, new ResolvedFootprintBounds(minX, minY, maxX, maxY)) : null;
+    }
 
     private static void DrawMetadataOverlay(
         byte[] pixels,
@@ -413,7 +481,8 @@ public static class AnnotationRenderer
         {
             DrawEllipse(pixels, width, height, center,
                 Math.Abs(overlay.ImageCircleRadius * transform.ScaleX),
-                Math.Abs(overlay.ImageCircleRadius * transform.ScaleY), options.ImageCircleValue, cancellationToken);
+                Math.Abs((overlay.ImageCircleRadiusY ?? overlay.ImageCircleRadius) * transform.ScaleY),
+                options.ImageCircleValue, cancellationToken);
         }
 
         if (!options.DrawCardinalDirections)

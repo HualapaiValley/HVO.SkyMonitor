@@ -274,6 +274,68 @@ public sealed class ProcessingRecipeTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task ProjectedSceneV2ProducesAV2ProductOnlyUnderItsOwnSchemaLabel()
+    {
+        var sourceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var captureId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var descriptorIdentity = new string('A', 64);
+        var source = CreateArtifact(
+            FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 2, 2, []) with
+        {
+            ArtifactId = sourceId,
+            CaptureId = captureId,
+            DescriptorIdentitySha256 = descriptorIdentity
+        };
+        var scene = await CreateProjectedSceneAsync(
+            ProjectedSceneKind.Predicted, captureId, sourceId, descriptorIdentity, resolvedSun: true).ConfigureAwait(false);
+        Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, scene.SchemaVersion);
+
+        var produced = await ExecuteProjectedSceneAsync(source, scene).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, produced.Status, produced.ReasonCode);
+        var product = produced.Products.Single();
+        Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, product.SchemaVersion);
+        Assert.AreEqual(scene.SceneIdentitySha256, product.ContentIdentitySha256);
+        AssertProductMatchesContract(CreateProjectedSceneRequest(source, scene), product);
+
+        // The auxiliary label must name the payload's own schema in both directions.
+        var v2AsV1 = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
+            source, scene, schemaVersion: ProjectedSceneV1.CurrentSchemaVersion)).ConfigureAwait(false);
+        var plain = await CreateProjectedSceneAsync(
+            ProjectedSceneKind.Predicted, captureId, sourceId, descriptorIdentity).ConfigureAwait(false);
+        var v1AsV2 = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
+            source, plain, schemaVersion: ProjectedSceneV1.ResolvedFootprintSchemaVersion)).ConfigureAwait(false);
+        var unknown = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
+            source, scene, schemaVersion: "projected-scene-v3")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, v2AsV1.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, v1AsV2.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, unknown.ReasonCode);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ProjectedSceneFamilyRootDeclarationAcceptsV2AndNothingElseWidens()
+    {
+        Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(
+            StructuredProcessingProductContracts.ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion));
+        Assert.IsTrue(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion));
+        Assert.IsTrue(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion));
+        Assert.IsTrue(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.ResolvedFootprintSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion));
+        // A node that declares v2 never accepts a v1 product, and no other schema family gains a fallback.
+        Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.ResolvedFootprintSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion));
+        Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, null));
+        Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, "projected-scene-v3"));
+        Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void ProcessingProductPreservesOriginalPositionalConstructorAndDeconstructShape()
     {
         var source = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 1, 1, [1]);
@@ -1622,7 +1684,8 @@ public sealed class ProcessingRecipeTests
     private static ProcessingExecutionRequest CreateProjectedSceneRequest(
         ProcessingArtifact source,
         ProjectedSceneV1 scene,
-        bool lowercaseIdentity = false)
+        bool lowercaseIdentity = false,
+        string? schemaVersion = null)
     {
         var payload = ProjectedSceneJson.Serialize(scene);
         return new ProcessingExecutionRequest(
@@ -1636,7 +1699,7 @@ public sealed class ProcessingRecipeTests
                 new ProcessingAuxiliaryInput(
                     "scene",
                     ProcessingAuxiliaryInputKind.CanonicalJson,
-                    SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+                    SchemaVersion: schemaVersion ?? scene.SchemaVersion,
                     IdentitySha256: lowercaseIdentity
                         ? Convert.ToHexStringLower(Convert.FromHexString(scene.SceneIdentitySha256))
                         : scene.SceneIdentitySha256,
@@ -1651,13 +1714,17 @@ public sealed class ProcessingRecipeTests
         ProjectedSceneKind kind,
         Guid captureId,
         Guid artifactId,
-        string descriptorIdentity)
+        string descriptorIdentity,
+        bool resolvedSun = false)
     {
         var utc = DateTimeOffset.Parse("2025-01-15T08:00:00Z", CultureInfo.InvariantCulture);
         var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
-        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+        var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("zenith", "Zenith", siderealHours, 0, 1)
-        ])).BuildAsync(new VisibleSceneRequest(
+        ]);
+        var visible = await (resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(
             utc,
             new ObserverLocation(0, 0, 0),
             new ProjectionContext(
@@ -1666,7 +1733,13 @@ public sealed class ProcessingRecipeTests
             new CatalogQuery(6, 10),
             new CatalogMetadata(
                 "fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
-            projectionVersion: "perspective-v1")).ConfigureAwait(false);
+            projectionVersion: "perspective-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        if (resolvedSun)
+        {
+            visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, utc,
+                new AltAzPoint(90, 0), 10, 0, 1, 0, 149600000)]);
+        }
         return ProjectedSceneJson.Create(
             kind,
             visible,

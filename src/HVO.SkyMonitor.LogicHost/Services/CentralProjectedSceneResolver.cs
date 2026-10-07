@@ -37,7 +37,7 @@ internal sealed class CentralProjectedSceneResolver(
     internal static bool IsProjectedScene(CentralArtifact artifact)
         => artifact.Role == FrameArtifactRole.Metadata &&
             artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
-            artifact.StructuredProduct?.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion;
+            ProjectedSceneV1.IsSupportedSchemaVersion(artifact.StructuredProduct?.ProductSchemaVersion);
 
     internal static Expression<Func<CentralArtifact, bool>> SourceEligibility(bool projectedScene)
     {

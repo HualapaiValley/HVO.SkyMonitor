@@ -51,7 +51,7 @@ internal sealed class ProjectedSceneRetentionGuard(
     {
         if (candidate.Role != FrameArtifactRole.Metadata) return false;
         var product = DurableProcessingProductManifestJson.Parse(candidate.EvidenceJson);
-        if (product.ProductSchemaVersion != SceneProvenance.RetainedProjectedSceneSchemaVersion) return false;
+        if (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.ProductSchemaVersion)) return false;
         var inventory = await store.ReadSceneConsumersAsync(candidate.CaptureId, candidate.ArtifactId, AccountBytes, cancellationToken)
             .ConfigureAwait(false);
         if (inventory is null) return true; // Missing source identity cannot authorize deletion.
