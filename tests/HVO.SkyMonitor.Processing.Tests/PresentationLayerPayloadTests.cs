@@ -233,11 +233,20 @@ public sealed class PresentationLayerPayloadTests
             ProjectedSceneImageTransformV1.Identity(800, 600),
             new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('A', 64)),
             "calibration-v1", visible.Request.ProjectionVersion);
+        // #526: star labels are gated on policy-eligible measured associations, so collision and priority are
+        // exercised with every star measured; without a product the markers stay and every star label is suppressed.
+        var associations = MeasuredStellarAssociationFixtures.AllEligible(scene);
         var first = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
-            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false,
+            associations: associations);
         var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false,
+            associations: associations);
+        var unmeasured = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene,
             includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
 
+        Assert.HasCount(2, unmeasured.StarAnnotations.Markers);
+        Assert.IsEmpty(unmeasured.StarAnnotations.TextBlocks);
         Assert.HasCount(2, first.StarAnnotations.Markers);
         Assert.HasCount(1, first.StarAnnotations.TextBlocks);
         Assert.AreEqual("BRIGHT", first.StarAnnotations.TextBlocks[0].Lines[0]);
@@ -245,7 +254,8 @@ public sealed class PresentationLayerPayloadTests
         Assert.AreEqual(first.StarAnnotations.ContentIdentitySha256, repeat.StarAnnotations.ContentIdentitySha256);
         Assert.IsTrue(PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(first.StarAnnotations)).IsValid);
         var hostDefault = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, new(LabelScale: 2),
-            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false);
+            includeConstellations: false, includeImageCircle: false, includeCardinalDirections: false,
+            associations: associations);
         Assert.AreEqual(18_000, hostDefault.StarAnnotations.TextBlocks[0].Appearance!.Body.SizeMilliPixels);
         Assert.AreEqual(720, hostDefault.StarAnnotations.TextBlocks[0].Appearance!.Body.LetterSpacingMilliPixels);
     }
@@ -274,8 +284,12 @@ public sealed class PresentationLayerPayloadTests
             ProjectedSceneImageTransformV1.Identity(width, height),
             new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('A', 64)),
             "calibration-v1", visible.Request.ProjectionVersion);
-        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
-        var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+        // #526: every star is measured here so the placement rules, not the association gate, decide the labels.
+        var associations = MeasuredStellarAssociationFixtures.AllEligible(scene);
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false,
+            associations: associations);
+        var repeat = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false,
+            associations: associations);
 
         Assert.HasCount(5, groups.StarAnnotations.Markers);
         Assert.HasCount(1, groups.StarAnnotations.TextBlocks);

@@ -2585,7 +2585,7 @@ public sealed partial class ArtifactIngestTests
         outputs[executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value].Recipe!.ImplementationVersion
             .Should().Be("encoded-preview-v1");
         outputs[executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value].Recipe!.ImplementationVersion
-            .Should().Be("projected-annotation-v3");
+            .Should().Be("projected-annotation-v4");
     }
 
     /// <summary>

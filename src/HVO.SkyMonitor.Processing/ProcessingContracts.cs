@@ -248,6 +248,9 @@ public static class ProcessingReasonCodes
     public const string ProjectedSceneSourceMismatch = "processing.projected-scene-source-mismatch";
     public const string ProjectedSceneDescriptorMismatch = "processing.projected-scene-descriptor-mismatch";
     public const string ProjectedSceneDimensionMismatch = "processing.projected-scene-dimension-mismatch";
+    public const string UnsupportedMeasurementInput = "processing.unsupported-measurement-input";
+    public const string InvalidMeasuredStellarAssociations = "processing.invalid-measured-stellar-associations";
+    public const string MeasuredStellarAssociationsSourceMismatch = "processing.measured-stellar-associations-source-mismatch";
     public const string MissingKeogramGeometry = "processing.missing-keogram-geometry";
     public const string InvalidKeogramGeometry = "processing.invalid-keogram-geometry";
     public const string KeogramGeometryMismatch = "processing.keogram-geometry-mismatch";

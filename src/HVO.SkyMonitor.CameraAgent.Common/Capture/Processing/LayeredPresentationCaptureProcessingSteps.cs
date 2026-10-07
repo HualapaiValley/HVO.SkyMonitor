@@ -124,7 +124,11 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal))
+            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal)),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+            new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+            new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+            Required: false)
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -135,6 +139,15 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
         var scene = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene
             ?? throw new InvalidDataException("The projected-scene dependency is invalid.");
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
+        var measuredProduct = dependencyProducts.SingleOrDefault(static product =>
+            product.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+        var measured = measuredProduct is null
+            ? null
+            : MeasuredStellarAssociationJson.Parse(measuredProduct.Payload).Associations
+                ?? throw new InvalidDataException("The measured stellar-association dependency is invalid.");
+        ProcessingArtifact[] starSources = measuredProduct is null
+            ? [source]
+            : [source, CameraAgentRecipeExecutionAdapter.CreateArtifact(context, measuredProduct)];
         var style = new PresentationAnnotationStyleV1(
             Options.MarkerRadius, Options.LabelScale, Options.MaximumLabelCharacters, Options.MaximumLabelMagnitude,
             Options.ConstellationLineThickness, Options.ConstellationIds,
@@ -145,9 +158,9 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
             Options.CardinalValue is { } cardinal ? new(cardinal, cardinal, cardinal) : null, Options.CardinalScale);
         var payloads = PresentationLayerProducers.FromProjectedSceneGroupsV2(
             scene, style, Options.DrawMarkers, Options.DrawLabels, Options.DrawConstellationLines,
-            Options.DrawImageCircle, Options.DrawCardinalDirections);
+            Options.DrawImageCircle, Options.DrawCardinalDirections, measured, Options.ExpectedPositionDiagnostics);
         var annotation = PresentationProcessingProducts.CreateLayerProduct(
-            payloads.StarAnnotations, Options.AnnotationOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
+            payloads.StarAnnotations, Options.AnnotationOutputVariant, starSources, PresentationLayerProducers.SceneProducerVersion);
         var cardinals = PresentationProcessingProducts.CreateLayerProduct(
             payloads.CardinalDirections, Options.CardinalOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
         var imageCircle = PresentationProcessingProducts.CreateLayerProduct(
@@ -490,6 +503,8 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(0, 255)] public byte? ImageCircleValue { get; init; }
     [Range(0, 255)] public byte? CardinalValue { get; init; }
     [Range(1, 8)] public int CardinalScale { get; init; } = 2;
+    /// <summary>Opt-in diagnostic: keep unqualified star labels at expected positions, suffixed "(expected)".</summary>
+    public bool ExpectedPositionDiagnostics { get; init; }
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (ConstellationIds.Count > 256 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))

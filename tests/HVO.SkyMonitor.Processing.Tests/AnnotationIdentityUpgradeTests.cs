@@ -6,24 +6,31 @@ using HVO.SkyMonitor.Imaging;
 namespace HVO.SkyMonitor.Processing.Tests;
 
 /// <summary>
-/// Annotation work retained before resolved footprints must retry under the identity it was first planned with, or
-/// the retry would publish a second annotated preview for the same capture.
+/// Annotation output identities change exactly when the drawn bytes can change. Resolved footprints (#518) took a new
+/// identity only for footprint inputs; the measured-association label policy (#526) gates every star label, so the
+/// Annotation Definition moved to projected-annotation-v4 and every identity moved with it. Otherwise a retry of
+/// retained v3 work would write differently labelled bytes under the committed v3 output identity.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class AnnotationIdentityUpgradeTests
 {
-    // Computed by development/v1 b13f0d0e for the inputs below. A footprint-free annotation keeps this exact identity.
+    // Computed by development/v1 b13f0d0e (projected-annotation-v3) for the inputs below.
     private const string V3IdentitySha256 = "58B46537EBA195521B295A4FF032C10C9936E8CA3DB26EC9ABFE9E7DF71F10BA";
 
+    // Computed under projected-annotation-v4 (#526) for the same inputs.
+    private const string V4IdentitySha256 = "6D7AC733C270ACABF7162B38B2C1C24991135DEF9E0F98D3E9335220C2E9538F";
+
     [TestMethod]
-    public void FootprintFreeAnnotationKeepsTheReleasedIdentity()
+    public void FootprintFreeAnnotationTakesTheV4LabelPolicyIdentity()
     {
         var identity = BuiltInProcessingRecipes.CreateExecutionIdentity(
             BuiltInProcessingRecipes.Annotation, JsonSerializer.SerializeToElement(new { }), Selector, Annotation);
 
-        Assert.AreEqual(V3IdentitySha256, identity.IdentitySha256);
+        Assert.AreEqual("projected-annotation-v4", identity.Descriptor.ImplementationVersion);
+        Assert.AreEqual(V4IdentitySha256, identity.IdentitySha256);
+        Assert.AreNotEqual(V3IdentitySha256, identity.IdentitySha256);
     }
 
     [TestMethod]
@@ -42,7 +49,7 @@ public sealed class AnnotationIdentityUpgradeTests
         {
             Assert.AreEqual(AnnotationRenderer.AlgorithmVersion,
                 AnnotationRenderer.AlgorithmVersionFor(changed.Objects, changed.ProjectionOverlay));
-            Assert.AreNotEqual(V3IdentitySha256, BuiltInProcessingRecipes.CreateExecutionIdentity(
+            Assert.AreNotEqual(V4IdentitySha256, BuiltInProcessingRecipes.CreateExecutionIdentity(
                 BuiltInProcessingRecipes.Annotation, JsonSerializer.SerializeToElement(new { }), Selector, changed)
                 .IdentitySha256);
         }

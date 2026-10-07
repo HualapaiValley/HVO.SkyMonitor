@@ -19,9 +19,16 @@ public static class BuiltInProcessingRecipes
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
     public const string ReferenceCalibration = "reference-calibration";
     public const string ProjectedScene = "projected-scene";
+    public const string MeasuredStellarAssociations = "measured-stellar-associations";
     public const string Keogram = "keogram";
     public const string StarTrail = "star-trail";
     public const string KeogramAssembly = "keogram-assembly";
+
+    /// <summary>Auxiliary input through which Annotation receives the frame's measured stellar associations.</summary>
+    public const string MeasuredStellarAssociationsInputName = "measured-stellar-associations";
+
+    /// <summary>Canonical-JSON auxiliary input through which the association recipe receives the projected scene.</summary>
+    public const string MeasuredStellarAssociationsSceneInputName = "scene";
 
     private static readonly Dictionary<string, ProcessingRecipeDefinition> Definitions = CreateAll()
         .Select(static recipe => recipe.Definition)
@@ -110,6 +117,7 @@ public static class BuiltInProcessingRecipes
         new WeatherCloudOverlayRecipe(),
         new ReferenceCalibrationRecipe(),
         new ProjectedSceneRecipe(),
+        new MeasuredStellarAssociationRecipe(),
         new KeogramRecipe(),
         new StarTrailRecipe(),
         new KeogramAssemblyRecipe()
@@ -648,12 +656,16 @@ public sealed record AnnotationRecipeOptions(
     double BlackPercentile = 0.5,
     double WhitePercentile = 0.9999,
     double AsinhStrength = 4,
-    string OutputEncoding = "Jpeg");
+    string OutputEncoding = "Jpeg",
+    bool ExpectedPositionDiagnostics = false);
 
 internal sealed class AnnotationRecipe : IProcessingRecipe
 {
+    internal const string MeasuredAssociationsAuxiliaryInputName = BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName;
+    internal const string ProjectedSceneAuxiliaryInputName = "projected-scene";
+
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v3",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v4",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -705,6 +717,11 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 nameof(request.AuxiliaryInputs)));
         }
 
+        if (!TryResolveMeasuredAssociations(request, input, auxiliarySources!, out var associations, out var associationFailure))
+        {
+            return ValueTask.FromResult(associationFailure!);
+        }
+
         var options = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(
             identity.Descriptor.Options.GetProperty("parameters"));
         if (!TryCreateDisplay(input, options, cancellationToken, out var display, out var format, out var algorithms, out var displayFailure))
@@ -714,19 +731,21 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
 
         cancellationToken.ThrowIfCancellationRequested();
         var annotationOptions = CreateAnnotationOptions(options);
+        var objects = StellarLabelPolicy.Apply(request.Annotation.Objects, associations, options.ExpectedPositionDiagnostics);
         var annotation = format == CameraPixelFormat.Rgb24
             ? AnnotationRenderer.AnnotateRgb24WithSegments(
-                display.PixelData, display.Width, display.Height, request.Annotation.Objects,
+                display.PixelData, display.Width, display.Height, objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken)
             : AnnotationRenderer.AnnotateMono8WithSegments(
-                display.PixelData, display.Width, display.Height, request.Annotation.Objects,
+                display.PixelData, display.Width, display.Height, objects,
                 request.Annotation.Segments, request.Annotation.Transform, annotationOptions,
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
             request.Annotation.Objects, request.Annotation.ProjectionOverlay)));
+        algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         ReadOnlyMemory<byte> output;
         string mediaType;
         FrameLayoutDescriptor? outputLayout;
@@ -759,6 +778,64 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             input.Integration,
             input.Compatibility);
         return ValueTask.FromResult(ProcessingOutcome.Produced(product));
+    }
+
+    /// <summary>
+    /// Resolves the optional measured-association product bound as an artifact auxiliary. It must describe the capture
+    /// of the annotated input and, when the projected scene is also bound, that exact scene; at least one of the two
+    /// bindings must be present. Absence of the product is not a failure: the fail-closed label policy then suppresses
+    /// every star label.
+    /// </summary>
+    internal static bool TryResolveMeasuredAssociations(
+        ProcessingExecutionRequest request,
+        ProcessingArtifact input,
+        IReadOnlyList<ProcessingArtifact> auxiliarySources,
+        out MeasuredStellarAssociationsV1? associations,
+        out ProcessingOutcome? failure)
+    {
+        associations = null;
+        failure = null;
+        var auxiliaries = (request.AuxiliaryInputs ?? [])
+            .Where(static auxiliary => auxiliary.Kind == ProcessingAuxiliaryInputKind.Artifact)
+            .ToArray();
+        var matches = auxiliaries.Select((auxiliary, index) => (auxiliary, source: auxiliarySources[index]))
+            .Where(static pair => string.Equals(pair.auxiliary.Name, MeasuredAssociationsAuxiliaryInputName, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length == 0)
+            return true;
+        var source = matches[0].source;
+        if (matches.Length != 1 || source.ProductKind != ProcessingProductKind.Metadata ||
+            !string.Equals(source.MediaType, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, StringComparison.Ordinal) ||
+            !string.Equals(source.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations, nameof(request.AuxiliaryInputs));
+            return false;
+        }
+        var parsed = MeasuredStellarAssociationJson.Parse(source.Payload);
+        if (!parsed.Validation.IsValid || parsed.Associations is not { } product ||
+            (source.ContentIdentitySha256 is { } content &&
+             !string.Equals(content, product.AssociationIdentitySha256, StringComparison.OrdinalIgnoreCase)))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations,
+                parsed.Validation.FieldPath ?? nameof(request.AuxiliaryInputs));
+            return false;
+        }
+        var scene = auxiliaries.Select((auxiliary, index) => (auxiliary, source: auxiliarySources[index]))
+            .Where(static pair => string.Equals(pair.auxiliary.Name, ProjectedSceneAuxiliaryInputName, StringComparison.Ordinal))
+            .Select(static pair => pair.source)
+            .SingleOrDefault();
+        var sceneIdentity = scene?.ContentIdentitySha256;
+        if (input.CaptureId is null && sceneIdentity is null ||
+            input.CaptureId is { } captureId && product.Source.CaptureId != captureId ||
+            sceneIdentity is not null &&
+            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
+                nameof(product.Source));
+            return false;
+        }
+        associations = product;
+        return true;
     }
 
     private static bool TryCreateDisplay(

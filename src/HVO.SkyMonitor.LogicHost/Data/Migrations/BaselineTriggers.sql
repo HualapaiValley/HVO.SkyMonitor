@@ -504,7 +504,23 @@ BEGIN
                OR i.[RecipeOptionsJson] <> d.[RecipeOptionsJson]
                OR i.[InputSelectorJson] <> d.[InputSelectorJson]
                OR i.[RequestedRecipeIdentitySha256] <> d.[RequestedRecipeIdentitySha256]
-               OR i.[ExpectedRecipeIdentitySha256] <> d.[ExpectedRecipeIdentitySha256]
+               -- The sole exemption: an annotation whose optional measured-association auxiliary was omitted
+               -- re-derives its expectation once, while still Waiting, never attempted or leased, and only after the
+               -- Missing requirement that justifies it is durable. Every other column above and below stays frozen.
+               OR (i.[ExpectedRecipeIdentitySha256] <> d.[ExpectedRecipeIdentitySha256]
+                   AND NOT (d.[Status] = N'Waiting' AND i.[Status] = N'Waiting'
+                       AND d.[AttemptCount] = 0 AND i.[AttemptCount] = 0
+                       AND d.[LeaseOwner] IS NULL AND i.[LeaseOwner] IS NULL
+                       AND d.[LeaseToken] IS NULL AND i.[LeaseToken] IS NULL
+                       AND d.[LeaseAcquiredAtUtc] IS NULL AND i.[LeaseAcquiredAtUtc] IS NULL
+                       AND d.[LeaseExpiresAtUtc] IS NULL AND i.[LeaseExpiresAtUtc] IS NULL
+                       AND d.[RecipeName] = N'annotation' AND i.[RecipeName] = N'annotation'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM [CentralDerivativeJobInputRequirements] AS requirement
+                           WHERE requirement.[CentralDerivativeJobId] = i.[Id]
+                             AND requirement.[BindingName] = N'measured-stellar-associations'
+                             AND requirement.[ResolutionState] = N'Missing')))
                OR i.[RequestIdentitySha256] <> d.[RequestIdentitySha256]
                OR ISNULL(i.[TraceParent], '') <> ISNULL(d.[TraceParent], '')
                OR ISNULL(i.[TraceState], '') <> ISNULL(d.[TraceState], '')

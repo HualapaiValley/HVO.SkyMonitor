@@ -59,7 +59,7 @@ public sealed class AnnotationProjectionOverlayTests
     }
 
     [TestMethod]
-    public async Task ProjectedSceneV1OverlayKeepsTheReleasedSourcePixelLandmarks()
+    public async Task ProjectedSceneV1OverlayTakesTheCorrectedLandmarksUnderAnnotationV4()
     {
         var transform = new ProjectedSceneImageTransformV1(ProjectedSceneImageTransformV1.CurrentSchemaVersion,
             1000, 800, 0, 0, 1000, 800, 2, 4, false, false, ProjectedSceneQuarterRotation.Degrees90, 200, 500);
@@ -68,11 +68,25 @@ public sealed class AnnotationProjectionOverlayTests
 
         var (objects, _, overlay) = CreateStep().CreateProjectedSceneInputs(scene);
 
-        // A v1 scene's annotation identity is unchanged from projected-annotation-v3, so its landmarks, and with
-        // them its bytes, stay exactly as released even though they ignore the image transform.
+        // The #518 v2-only gate kept a v1 scene's released source-pixel landmarks, centre (500, 400) with one radius of
+        // 200, because its Annotation identity was unchanged. The Annotation Definition v4 bump changes that identity,
+        // so a v1 scene now takes the same emitted-pixel landmarks as v2.
+        Assert.IsNotNull(overlay);
+        Assert.AreEqual(100, overlay.Center.X, 1e-9);
+        Assert.AreEqual(250, overlay.Center.Y, 1e-9);
+        Assert.AreEqual(50, overlay.ImageCircleRadius, 1e-9);
+        Assert.AreEqual(100, overlay.ImageCircleRadiusY!.Value, 1e-9);
         var landmarks = RigProjectionContextFactory.CreateAnnotationLandmarks(Projection)!;
-        Assert.AreEqual(new ProjectedAnnotationOverlay(new PixelPoint(500, 400), 200,
-            landmarks.North, landmarks.East, landmarks.South, landmarks.West), overlay);
+        foreach (var (expected, actual) in new[]
+        {
+            (landmarks.North, overlay.North), (landmarks.East, overlay.East),
+            (landmarks.South, overlay.South), (landmarks.West, overlay.West)
+        })
+        {
+            var mapped = ProjectedSceneImageTransform.Apply(transform, expected);
+            Assert.AreEqual(mapped.X, actual.X, 1e-9);
+            Assert.AreEqual(mapped.Y, actual.Y, 1e-9);
+        }
         Assert.IsTrue(objects.All(static item => item.FootprintParts is null));
     }
 

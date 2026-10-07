@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
@@ -260,7 +261,15 @@ internal sealed class CentralDerivativeJobInputReader(
                     ProcessingArtifact.ResolveObservationEndedUtc(
                         artifact.Frame.Timing.ExposureStartedUtc,
                         artifact.Frame.Timing.ExposureEndedUtc,
-                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks))),
+                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks)))
+                {
+                    // The durable product facts, resolved as the output writer resolves them: the graph evidence
+                    // first, then an ingested structured product, then the role. None of these enters a recipe or
+                    // auxiliary identity; a recipe that consumes a structured product checks them.
+                    ProductKind = ResolveProductKind(artifact, evidence),
+                    SchemaVersion = evidence.ProductSchemaVersion ?? artifact.StructuredProduct?.ProductSchemaVersion,
+                    ContentIdentitySha256 = artifact.StructuredProduct?.ContentIdentitySha256
+                },
                 leaseInput.BindingKind);
         }
         return new LogicHostProcessingInput(
@@ -268,6 +277,26 @@ internal sealed class CentralDerivativeJobInputReader(
             payload,
             leaseInput.BindingName,
             BindingKind: leaseInput.BindingKind);
+    }
+
+    private static ProcessingProductKind ResolveProductKind(
+        CentralArtifact artifact,
+        CentralArtifactProcessingEvidence evidence)
+    {
+        if (evidence.ProductKind is { } recorded)
+        {
+            return recorded;
+        }
+        if (artifact.StructuredProduct is { } structured)
+        {
+            return Enum.TryParse<ProcessingProductKind>(structured.ProductKind, ignoreCase: false, out var parsed)
+                ? parsed
+                : throw new CentralDerivativeInputRejectedException(
+                    "The layoutless derivative structured product kind is invalid.");
+        }
+        return artifact.Role == FrameArtifactRole.Metadata
+            ? ProcessingProductKind.Metadata
+            : ProcessingProductKind.PixelData;
     }
 
     private async Task<CentralArtifact> LoadAuthorizedSourceAsync(
@@ -291,6 +320,7 @@ internal sealed class CentralDerivativeJobInputReader(
                 .Include(artifact => artifact.Layout)
                 .Include(artifact => artifact.Recipe)
                 .Include(artifact => artifact.Sources)
+                .Include(artifact => artifact.StructuredProduct)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
@@ -314,6 +344,7 @@ internal sealed class CentralDerivativeJobInputReader(
             .Include(artifact => artifact.Layout)
             .Include(artifact => artifact.Recipe)
             .Include(artifact => artifact.Sources)
+            .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)

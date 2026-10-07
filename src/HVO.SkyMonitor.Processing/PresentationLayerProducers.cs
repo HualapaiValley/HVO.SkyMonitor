@@ -96,7 +96,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v10-resolved-footprints";
+    public const string SceneProducerVersion = "projected-scene-presentation-v11-measured-associations";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
@@ -113,11 +113,14 @@ public static class PresentationLayerProducers
         bool includeMarkers = true,
         bool includeLabels = true,
         bool includeConstellations = true,
-        bool includeProjectionGeometry = true)
+        bool includeProjectionGeometry = true,
+        MeasuredStellarAssociationsV1? associations = null,
+        bool expectedPositionDiagnostics = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         var groups = FromProjectedSceneGroupsV2(scene, style, includeMarkers, includeLabels,
-            includeConstellations, includeProjectionGeometry, includeProjectionGeometry);
+            includeConstellations, includeProjectionGeometry, includeProjectionGeometry, associations,
+            expectedPositionDiagnostics);
         return PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
             scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
             groups.StarAnnotations.Markers,
@@ -133,11 +136,14 @@ public static class PresentationLayerProducers
         bool includeMarkers = true,
         bool includeLabels = true,
         bool includeConstellations = true,
-        bool includeProjectionGeometry = true)
+        bool includeProjectionGeometry = true,
+        MeasuredStellarAssociationsV1? associations = null,
+        bool expectedPositionDiagnostics = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         var groups = FromProjectedSceneGroupsV2(scene, style, includeMarkers, includeLabels,
-            includeConstellations, includeProjectionGeometry, includeProjectionGeometry);
+            includeConstellations, includeProjectionGeometry, includeProjectionGeometry, associations,
+            expectedPositionDiagnostics);
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
                 scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
@@ -154,10 +160,16 @@ public static class PresentationLayerProducers
         bool includeLabels = true,
         bool includeConstellations = true,
         bool includeImageCircle = true,
-        bool includeCardinalDirections = true)
+        bool includeCardinalDirections = true,
+        MeasuredStellarAssociationsV1? associations = null,
+        bool expectedPositionDiagnostics = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
+        if (associations is not null &&
+            (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
+             !string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException("The measured associations do not describe this projected scene.", nameof(associations));
         style = style is null
             ? new PresentationAnnotationStyleV1(ConstellationIds: [])
             : style with { ConstellationIds = style.ConstellationIds ?? [] };
@@ -304,14 +316,21 @@ public static class PresentationLayerProducers
                 (float)(item.Bounds.MaxX + ResolvedFootprintPaddingPixels), (float)(item.Bounds.MaxY + ResolvedFootprintPaddingPixels)))).ToArray();
             var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
                 .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
-                    Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue)));
+                    Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue))).ToArray();
+            // Footprint-only labels are solar-system bodies, which the policy leaves untouched.
+            var labeled = StellarLabelPolicy.Apply(labelled
+                .Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)).ToArray(),
+                associations, expectedPositionDiagnostics)
+                .Where(static item => item.DrawLabel)
+                .ToDictionary(static item => item.Id, static item => item.DisplayName, StringComparer.Ordinal);
             foreach (var item in labelled.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
                 if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
-                var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
+                if (!labeled.TryGetValue(item.Id, out var displayName)) continue;
+                var name = displayName[..Math.Min(displayName.Length, style.MaximumLabelCharacters)];
                 var clearance = footprints.TryGetValue(item.Id, out var footprint)
                     ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
                     : style.MarkerRadius;
