@@ -203,60 +203,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         await File.WriteAllTextAsync(_configurationPath, captureConfigurationJson.ToJsonString())
             .ConfigureAwait(false);
 
+        string storageRoot = _storageRoot;
+        string configurationPath = _configurationPath;
         _agentBaseFactory = new WebApplicationFactory<Program>();
-        _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
-            {
-                builder.UseEnvironment("Development");
-                // Registered before service resolution so CameraAgent startup and capture-loop
-                // recovery failures are retained for a readiness diagnostic.
-                builder.ConfigureLogging(logging => logging.AddProvider(_logRecorder));
-                var overrides = BuildConfigurationOverrides();
-                // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
-                foreach (var setting in overrides.Where(static setting =>
-                             setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
-                {
-                    builder.UseSetting(setting.Key, setting.Value);
-                }
-                builder.ConfigureAppConfiguration((_, config) =>
-                    config.AddInMemoryCollection(overrides!));
-                builder.ConfigureTestServices(services =>
-                {
-                    services.AddAuthentication(options =>
-                        {
-                            options.DefaultAuthenticateScheme = IntegrationUserAuthenticationHandler.SchemeName;
-                            options.DefaultChallengeScheme = IntegrationUserAuthenticationHandler.SchemeName;
-                            options.DefaultForbidScheme = IntegrationUserAuthenticationHandler.SchemeName;
-                        })
-                        .AddScheme<AuthenticationSchemeOptions, IntegrationUserAuthenticationHandler>(
-                            IntegrationUserAuthenticationHandler.SchemeName,
-                            _ => { });
-
-                    if (!_hybridTransientMode)
-                    {
-                        var drainService = services.Single(descriptor =>
-                            descriptor.ServiceType == typeof(IHostedService) &&
-                            descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
-                        services.Remove(drainService);
-                    }
-
-                    services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
-                    {
-                        options.BackchannelHttpHandler = _hostFixture.Factory.Server.CreateHandler();
-                        if (_jwksDocument is not null)
-                        {
-                            options.TokenValidationParameters.IssuerSigningKeys = _jwksDocument.GetSigningKeys();
-                        }
-                    });
-
-                    services.AddHttpClient(SkyMonitorClientOptions.HttpClientName)
-                        .ConfigurePrimaryHttpMessageHandler(_ => new EnvironmentalDeliveryTrackingHandler(
-                            _environmentalDelivery,
-                            _hostFixture.Factory.Server.CreateHandler()));
-
-                    services.AddHttpClient(CentralAuthenticationService.TokenClientName)
-                        .ConfigurePrimaryHttpMessageHandler(_ => _hostFixture.Factory.Server.CreateHandler());
-                });
-            });
+        _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder => ConfigureAgentHost(
+            builder,
+            BuildConfigurationOverrides(storageRoot, configurationPath),
+            removeOutboxDrain: !_hybridTransientMode));
 
         await Task.Delay(_startupDelay).ConfigureAwait(false);
         using var scope = _agentFactory.Services.CreateScope();
@@ -270,63 +223,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         {
             throw new InvalidOperationException("The CameraAgent integration owner could not be prepared.");
         }
-        var identity = await scopedProvider.GetRequiredService<IDeviceIdentityStore>()
-            .GetOrCreateAsync(CancellationToken.None).ConfigureAwait(false);
-        await _hostFixture.SeedActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
-        var activeDevice = await _hostFixture.GetActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
-        var centralIdentity = new CentralIdentityOptions
-        {
-            ServiceUrl = CentralIdentityBaseUri,
-            Mode = AuthenticationMode.ClientCredentials,
-            ClientCredentials = new ClientCredentialsOptions
-            {
-                ClientId = TestClients.SystemCameraAgent.ClientId,
-                ClientSecret = TestClients.SystemCameraAgent.ClientSecret
-            }
-        };
-        foreach (var requestedScope in TestClients.SystemCameraAgent.Scopes)
-        {
-            centralIdentity.ClientCredentials.Scopes.Add(requestedScope);
-        }
-        var cameraConfiguration = await scopedProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
-            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
-        await _hostFixture.SeedRigProfileAsync("cameraagent-integration-test", cameraConfiguration.Rig).ConfigureAwait(false);
-        var deploymentLocationStore = scopedProvider.GetRequiredService<IDeploymentLocationStore>();
-        var deployment = deploymentLocationStore.Active
-            ?? throw new InvalidOperationException("The CameraAgent integration deployment location was not initialized.");
-        var sourceKind = deploymentLocationStore.ResolveSourceKind(deployment);
-        var acknowledgedAtUtc = DateTimeOffset.UtcNow;
-        var locationAcknowledgment = new DeploymentLocationAcknowledgment(
-            ObservatoryLocationSnapshot.Create(
-                activeDevice.ObservatoryId,
-                1,
-                DateTimeOffset.UnixEpoch,
-                deployment.LatitudeDegrees,
-                deployment.LongitudeDegrees,
-                deployment.ElevationMeters,
-                deployment.TimeZoneId,
-                null),
-            deployment,
-            sourceKind,
-            DeploymentLocationResolutionStatus.Pending,
-            "integration-fixture",
-            acknowledgedAtUtc,
-            null);
-        await scopedProvider.GetRequiredService<IDeviceSecretStore>().SaveAsync(new DeviceSecrets(
-            activeDevice.DevicePublicId,
-            activeDevice.ObservatoryId,
-            "CameraAgent Integration Device",
-            "integration-registration-token",
-            "/api/device/heartbeat",
-            60,
-            activeDevice.IssuedAtUtc,
-            activeDevice.ExpiresAtUtc,
-            "cameraagent-integration-key",
-            centralIdentity,
-            DeploymentLocationAcknowledgment: locationAcknowledgment), CancellationToken.None).ConfigureAwait(false);
-        DeviceId = identity.DeviceId;
-        DevicePublicId = activeDevice.DevicePublicId;
-        ObservatoryId = activeDevice.ObservatoryId;
+        var provisioned = await ProvisionAgentAsync(scopedProvider).ConfigureAwait(false);
+        DeviceId = provisioned.DeviceId;
+        DevicePublicId = provisioned.DevicePublicId;
+        ObservatoryId = provisioned.ObservatoryId;
         var configuration = scopedProvider.GetRequiredService<IConfiguration>();
         var configuredServiceUrl = configuration["CentralIdentity:ServiceUrl"];
         var jwtOptions = scopedProvider
@@ -452,6 +352,61 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 }
                 configureServices(services);
             }));
+    }
+
+    /// <summary>
+    /// Starts a CameraAgent host of its own against the shared central host, with its own device registration, rig
+    /// profile, storage root, outbox and capture loop, and no outbox drain. A test that drives edge delivery uses it
+    /// instead of the shared device, whose outbox backlog and central frames the other tests rely on, so it neither
+    /// uploads the shared outbox head nor adds work to it.
+    /// </summary>
+    public async Task<IsolatedCameraAgent> StartIsolatedCameraAgentAsync([CallerMemberName] string? consumer = null)
+    {
+        EnsureInitialized();
+        RecordConsumer(consumer);
+        var suffix = Guid.NewGuid().ToString("N");
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-isolated-{suffix}");
+        var provisioningRoot = Path.Combine(storageRoot, "provisioning");
+        Directory.CreateDirectory(provisioningRoot);
+        // The configured agent id must match the host's persistent device identity.
+        var deviceId = $"cameraagent-isolated-{suffix[..8]}";
+        await File.WriteAllTextAsync(
+            Path.Combine(provisioningRoot, "device-identity.json"),
+            JsonSerializer.Serialize(new
+            {
+                deviceId,
+                verificationCode = "INTEG2TEST",
+                createdUtc = DateTimeOffset.UtcNow
+            })).ConfigureAwait(false);
+        var configurationPath = Path.Combine(storageRoot, "cameraagent.integration.json");
+        var template = await File.ReadAllTextAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
+        const string sharedAgentId = "\"agentId\": \"cameraagent-integration-test\"";
+        if (!template.Contains(sharedAgentId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The CameraAgent integration template no longer names the shared agent id.");
+        }
+        await File.WriteAllTextAsync(configurationPath, template
+            .Replace(sharedAgentId, $"\"agentId\": \"{deviceId}\"", StringComparison.Ordinal)
+            .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(storageRoot), StringComparison.Ordinal)
+            .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
+            .ConfigureAwait(false);
+        var agent = new IsolatedCameraAgent(new WebApplicationFactory<Program>(), storageRoot);
+        try
+        {
+            agent.Start(builder => ConfigureAgentHost(
+                builder,
+                BuildConfigurationOverrides(storageRoot, configurationPath),
+                removeOutboxDrain: true));
+            using var scope = agent.Services.CreateScope();
+            agent.Provisioned = await ProvisionAgentAsync(scope.ServiceProvider).ConfigureAwait(false);
+            return agent;
+        }
+        catch
+        {
+            await agent.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -680,6 +635,41 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         }
     }
 
+    /// <summary>A CameraAgent host started by <see cref="StartIsolatedCameraAgentAsync"/>, and its storage root.</summary>
+    internal sealed class IsolatedCameraAgent(WebApplicationFactory<Program> baseFactory, string storageRoot)
+        : IAsyncDisposable
+    {
+        private WebApplicationFactory<Program>? _factory;
+
+        public IServiceProvider Services =>
+            (_factory ?? throw new InvalidOperationException("The isolated CameraAgent has not been started.")).Services;
+
+        public string StorageRoot => storageRoot;
+
+        public string DeviceId => Provisioned.DeviceId;
+
+        public Guid DevicePublicId => Provisioned.DevicePublicId;
+
+        public Guid ObservatoryId => Provisioned.ObservatoryId;
+
+        internal ProvisionedAgent Provisioned { get; set; } = new(string.Empty, Guid.Empty, Guid.Empty);
+
+        internal void Start(Action<IWebHostBuilder> configure) => _factory = baseFactory.WithWebHostBuilder(configure);
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_factory is not null)
+            {
+                await _factory.DisposeAsync().ConfigureAwait(false);
+            }
+            await baseFactory.DisposeAsync().ConfigureAwait(false);
+            if (Directory.Exists(storageRoot))
+            {
+                Directory.Delete(storageRoot, recursive: true);
+            }
+        }
+    }
+
     /// <summary>Ordered identities of the tests that have taken state from the shared fixture.</summary>
     internal sealed record FixtureConsumers(string? Current, string? Previous, IReadOnlyList<string> History);
 
@@ -807,7 +797,129 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         }
     }
 
-    private Dictionary<string, string?> BuildConfigurationOverrides()
+    /// <summary>
+    /// Configures a CameraAgent host against the shared central host: test authentication, the central token, API and
+    /// identity backchannels, and the given configuration overrides.
+    /// </summary>
+    private void ConfigureAgentHost(IWebHostBuilder builder, Dictionary<string, string?> overrides, bool removeOutboxDrain)
+    {
+        builder.UseEnvironment("Development");
+        // Registered before service resolution so CameraAgent startup and capture-loop
+        // recovery failures are retained for a readiness diagnostic.
+        builder.ConfigureLogging(logging => logging.AddProvider(_logRecorder));
+        // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
+        foreach (var setting in overrides.Where(static setting =>
+                     setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
+        {
+            builder.UseSetting(setting.Key, setting.Value);
+        }
+        builder.ConfigureAppConfiguration((_, config) =>
+            config.AddInMemoryCollection(overrides!));
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                    options.DefaultChallengeScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                    options.DefaultForbidScheme = IntegrationUserAuthenticationHandler.SchemeName;
+                })
+                .AddScheme<AuthenticationSchemeOptions, IntegrationUserAuthenticationHandler>(
+                    IntegrationUserAuthenticationHandler.SchemeName,
+                    _ => { });
+
+            if (removeOutboxDrain)
+            {
+                var drainService = services.Single(descriptor =>
+                    descriptor.ServiceType == typeof(IHostedService) &&
+                    descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
+                services.Remove(drainService);
+            }
+
+            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+            {
+                options.BackchannelHttpHandler = _hostFixture.Factory.Server.CreateHandler();
+                if (_jwksDocument is not null)
+                {
+                    options.TokenValidationParameters.IssuerSigningKeys = _jwksDocument.GetSigningKeys();
+                }
+            });
+
+            services.AddHttpClient(SkyMonitorClientOptions.HttpClientName)
+                .ConfigurePrimaryHttpMessageHandler(_ => new EnvironmentalDeliveryTrackingHandler(
+                    _environmentalDelivery,
+                    _hostFixture.Factory.Server.CreateHandler()));
+
+            services.AddHttpClient(CentralAuthenticationService.TokenClientName)
+                .ConfigurePrimaryHttpMessageHandler(_ => _hostFixture.Factory.Server.CreateHandler());
+        });
+    }
+
+    internal sealed record ProvisionedAgent(string DeviceId, Guid DevicePublicId, Guid ObservatoryId);
+
+    /// <summary>
+    /// Activates a CameraAgent host's device centrally with the host's rig profile, and stores the device secrets and
+    /// acknowledged deployment location it uploads with.
+    /// </summary>
+    private async Task<ProvisionedAgent> ProvisionAgentAsync(IServiceProvider services)
+    {
+        var identity = await services.GetRequiredService<IDeviceIdentityStore>()
+            .GetOrCreateAsync(CancellationToken.None).ConfigureAwait(false);
+        await _hostFixture.SeedActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
+        var activeDevice = await _hostFixture.GetActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);
+        var centralIdentity = new CentralIdentityOptions
+        {
+            ServiceUrl = CentralIdentityBaseUri,
+            Mode = AuthenticationMode.ClientCredentials,
+            ClientCredentials = new ClientCredentialsOptions
+            {
+                ClientId = TestClients.SystemCameraAgent.ClientId,
+                ClientSecret = TestClients.SystemCameraAgent.ClientSecret
+            }
+        };
+        foreach (var requestedScope in TestClients.SystemCameraAgent.Scopes)
+        {
+            centralIdentity.ClientCredentials.Scopes.Add(requestedScope);
+        }
+        var cameraConfiguration = await services.GetRequiredService<ICameraAgentConfigurationLoader>()
+            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        await _hostFixture.SeedRigProfileAsync(identity.DeviceId, cameraConfiguration.Rig).ConfigureAwait(false);
+        var deploymentLocationStore = services.GetRequiredService<IDeploymentLocationStore>();
+        var deployment = deploymentLocationStore.Active
+            ?? throw new InvalidOperationException("The CameraAgent integration deployment location was not initialized.");
+        var sourceKind = deploymentLocationStore.ResolveSourceKind(deployment);
+        var acknowledgedAtUtc = DateTimeOffset.UtcNow;
+        var locationAcknowledgment = new DeploymentLocationAcknowledgment(
+            ObservatoryLocationSnapshot.Create(
+                activeDevice.ObservatoryId,
+                1,
+                DateTimeOffset.UnixEpoch,
+                deployment.LatitudeDegrees,
+                deployment.LongitudeDegrees,
+                deployment.ElevationMeters,
+                deployment.TimeZoneId,
+                null),
+            deployment,
+            sourceKind,
+            DeploymentLocationResolutionStatus.Pending,
+            "integration-fixture",
+            acknowledgedAtUtc,
+            null);
+        await services.GetRequiredService<IDeviceSecretStore>().SaveAsync(new DeviceSecrets(
+            activeDevice.DevicePublicId,
+            activeDevice.ObservatoryId,
+            "CameraAgent Integration Device",
+            "integration-registration-token",
+            "/api/device/heartbeat",
+            60,
+            activeDevice.IssuedAtUtc,
+            activeDevice.ExpiresAtUtc,
+            "cameraagent-integration-key",
+            centralIdentity,
+            DeploymentLocationAcknowledgment: locationAcknowledgment), CancellationToken.None).ConfigureAwait(false);
+        return new ProvisionedAgent(identity.DeviceId, activeDevice.DevicePublicId, activeDevice.ObservatoryId);
+    }
+
+    private Dictionary<string, string?> BuildConfigurationOverrides(string storageRoot, string configurationPath)
     {
         var identityBase = CentralIdentityBaseUri.ToString().TrimEnd('/') + "/";
         var apiBase = (_centralHostBaseUri ?? CentralIdentityBaseUri).ToString().TrimEnd('/');
@@ -821,17 +933,17 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["LocalIdentity:AdminPassword"] = "IntegrationOwner!123",
             ["LocalIdentity:AdminPasswordFile"] = string.Empty,
             ["LocalIdentity:AllowMissingAdminPassword"] = "false",
-            ["LocalIdentity:DatabasePath"] = Path.Combine(_storageRoot!, "cameraagent_identity.db"),
+            ["LocalIdentity:DatabasePath"] = Path.Combine(storageRoot, "cameraagent_identity.db"),
             ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth",
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Root"] = _catalogFixture?.Root,
             ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
-            ["CameraAgent:ConfigFilePath"] = _configurationPath,
-            ["CameraAgent:RawIngressRoot"] = _storageRoot,
+            ["CameraAgent:ConfigFilePath"] = configurationPath,
+            ["CameraAgent:RawIngressRoot"] = storageRoot,
             ["CameraAgent:DiskPressureThresholdPercent"] = "1",
             ["CameraAgent:DiskPressureRecoveryPercent"] = "2",
-            ["DeviceProvisioning:StateDirectory"] = Path.Combine(_storageRoot!, "provisioning")
+            ["DeviceProvisioning:StateDirectory"] = Path.Combine(storageRoot, "provisioning")
         };
         if (_hybridTransientMode)
         {

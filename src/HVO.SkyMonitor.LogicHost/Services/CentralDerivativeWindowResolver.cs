@@ -30,6 +30,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
     CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeWindowResolver
 {
     private const int ResolutionBatchSize = 100;
+    private const string HoldTargetChangedReasonCode = "transient-retention.hold-target-changed";
+    private const string HoldTargetMissingReasonCode = "transient-retention.hold-target-missing";
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public async Task ResolveAffectedAsync(
@@ -66,8 +68,13 @@ internal sealed partial class CentralDerivativeWindowResolver(
 
     public async Task ResolveWaitingAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
+        // Only jobs this resolver owns: graph convergence owns non-window graph jobs and the scene binding. A job the
+        // core would decline never rotates, so selecting one would let it pin the head of every batch.
         var jobIds = await dbContext.CentralDerivativeJobs.AsNoTracking()
-            .Where(job => job.Status == CentralDerivativeJobStatus.Waiting)
+            .Where(job => job.Status == CentralDerivativeJobStatus.Waiting
+                && (job.GraphExecutionId == null || job.WaitKind == CentralDerivativeWaitKind.Window)
+                && !job.InputRequirements.Any(requirement =>
+                    requirement.BindingName == CentralProjectedSceneResolver.BindingName))
             .OrderBy(job => job.UpdatedAtUtc)
             .ThenBy(job => job.ResolutionDeadlineUtc)
             .ThenBy(job => job.CreatedAtUtc)
@@ -76,7 +83,58 @@ internal sealed partial class CentralDerivativeWindowResolver(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var jobId in jobIds)
         {
-            await ResolveJobAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ResolveJobAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException
+                && dbContext.Database.CurrentTransaction is null)
+            {
+                // One job's fault must not strand the rest of the batch. Its resolution already rolled back; rotate it
+                // behind the jobs that did not fault so it cannot head the next pass either.
+                dbContext.ChangeTracker.Clear();
+                var reason = exception.GetType().Name;
+                telemetry.RecordWindowResolutionFault(ClassifyResolutionFault(exception));
+                Log.ResolutionFaulted(logger, jobId, reason);
+                await RotateFaultedJobAsync(jobId, now, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The bounded fault cause for the resolution-fault metric. Resolution wraps a lost optimistic-concurrency save in
+    /// <see cref="CentralDerivativeJobStateException"/>, so the cause is the first recognized exception in the chain.
+    /// </summary>
+    internal static string ClassifyResolutionFault(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case DbUpdateConcurrencyException:
+                    return "concurrency";
+                case DbUpdateException or SqlException:
+                    return "database";
+                case TimeoutException:
+                    return "timeout";
+            }
+        }
+        return "other";
+    }
+
+    private async Task RotateFaultedJobAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await dbContext.CentralDerivativeJobs
+                .Where(job => job.Id == jobId && job.Status == CentralDerivativeJobStatus.Waiting)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.UpdatedAtUtc, now), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Log.ResolutionFaultRotationFailed(logger, jobId, exception.GetType().Name);
         }
     }
 
@@ -109,8 +167,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     .ConfigureAwait(false);
             }
         }
+        // Every attempt rolled back, so the job is left Waiting with its settled selections intact; a batch caller
+        // contains this as one job's fault and rotates it, and the next pass re-resolves it from a fresh snapshot.
         throw new CentralDerivativeJobStateException(
-            "Window resolution could not acquire its durable locks after bounded deadlock retry.");
+            "Window resolution could not acquire a stable set of durable locks after bounded retry.");
     }
 
     private async Task ResolveJobCoreAsync(
@@ -140,10 +200,12 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 .AsSplitQuery()
                 .SingleOrDefaultAsync(item => item.Id == jobId, cancellationToken).ConfigureAwait(false);
             if (job is null || job.Status != CentralDerivativeJobStatus.Waiting ||
+                (job.GraphExecutionId is not null && job.WaitKind != CentralDerivativeWaitKind.Window) ||
                 job.InputRequirements.Any(static requirement => requirement.BindingName == CentralProjectedSceneResolver.BindingName))
             {
-                // The graph scheduler owns the already selected scene reference and its primary dependencies.
-                // A sequence-window resolver must not reinterpret the compact reference as a pixel selector.
+                // The graph scheduler owns the already selected scene reference and its primary dependencies, and
+                // graph convergence owns every non-window graph job. A sequence-window resolver must not reinterpret
+                // the compact reference as a pixel selector or rewrite a dependency wait.
                 if (ownedTransaction is not null)
                 {
                     await ownedTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
@@ -155,8 +217,33 @@ internal sealed partial class CentralDerivativeWindowResolver(
             var initialReason = job.StateReasonCode;
 
             var candidates = new Dictionary<Guid, ResolvedCandidate>();
+            // A settled graph-owned requirement is immutable. Its recorded selection is that position's input and is
+            // never re-selected, so a competing or ambiguous candidate for its frame is ignored; only the settled
+            // artifact's own usability can end the window.
+            var settled = job.InputRequirements.Where(item => IsSettledGraphRequirement(job, item))
+                .Select(item => item.Id)
+                .ToHashSet();
+            var settledUnusable = false;
             foreach (var requirement in job.InputRequirements.OrderBy(item => item.Ordinal))
             {
+                if (settled.Contains(requirement.Id))
+                {
+                    if (requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact
+                        && requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved)
+                    {
+                        var settledCandidate = await LoadSettledCandidateAsync(requirement, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (settledCandidate is null)
+                        {
+                            settledUnusable = true;
+                        }
+                        else
+                        {
+                            candidates[requirement.Id] = settledCandidate;
+                        }
+                    }
+                    continue;
+                }
                 if (requirement.SourceKind != CentralDerivativeInputSourceKind.Artifact)
                 {
                     if (requirement.SourceKind == CentralDerivativeInputSourceKind.Canonical &&
@@ -206,6 +293,12 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 {
                     continue;
                 }
+                if (settled.Contains(requirement.Id))
+                {
+                    incompatibleRequired |= requirement.IsRequired
+                        && requirement.ResolutionState == CentralDerivativeInputResolutionState.Incompatible;
+                    continue;
+                }
                 if (!candidates.TryGetValue(requirement.Id, out var candidate))
                 {
                     if (requirement.ResolutionState == CentralDerivativeInputResolutionState.Incompatible)
@@ -246,10 +339,20 @@ internal sealed partial class CentralDerivativeWindowResolver(
             // whose required-position set is empty must still not execute below its declared minimum under the Run
             // timeout policy, and no policy may freeze a window that can no longer reach the minimum.
             var belowMinimum = IsBelowMinimumInputCount(job);
-            var inputsPersisted = await PersistResolvedInputsAsync(
-                job, candidates, holdTargets, now, cancellationToken)
-                .ConfigureAwait(false);
-            if (!inputsPersisted)
+            var persistence = settledUnusable
+                ? InputPersistence.SettledInputUnusable
+                : await PersistResolvedInputsAsync(
+                    job, candidates, settled, holdTargets, now, cancellationToken)
+                    .ConfigureAwait(false);
+            if (persistence == InputPersistence.SettledInputUnusable)
+            {
+                CompleteWithoutExecution(job, now, CentralDerivativeWindowReasonCodes.SettledInputUnusable);
+                await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+                await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                    dbContext, job, CentralDerivativeWindowReasonCodes.SettledInputUnusable, now, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (persistence == InputPersistence.Conflict)
             {
                 job.StateReasonCode = CentralDerivativeWindowReasonCodes.ResolutionConflict;
             }
@@ -278,7 +381,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                         !belowMinimum)
                     {
                         await FreezeInputsAsync(
-                            job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
+                            job, candidates, settled, holdTargets, now, cancellationToken).ConfigureAwait(false);
                         job.StateReasonCode = missingRequired
                             ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
                             : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
@@ -329,7 +432,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
             else
             {
                 await FreezeInputsAsync(
-                    job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
+                    job, candidates, settled, holdTargets, now, cancellationToken).ConfigureAwait(false);
             }
 
             try
@@ -462,15 +565,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 evidence.CentralArtifactId == artifact.Id
                 && evidence.RecipeIdentitySha256 == selector.RecipeIdentitySha256));
         }
-        var artifacts = await query
-            .Include(artifact => artifact.Layout)
-            .Include(artifact => artifact.Recipe)
-            .Include(artifact => artifact.Sources)
-            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
-            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
-            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
-            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
-            .AsSplitQuery()
+        var artifacts = await IncludeCandidateGraph(query)
             .OrderBy(artifact => artifact.Id)
             .Take(2)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -484,12 +579,23 @@ internal sealed partial class CentralDerivativeWindowResolver(
     private async Task FreezeInputsAsync(
         CentralDerivativeJob job,
         IReadOnlyDictionary<Guid, ResolvedCandidate> candidates,
+        IReadOnlySet<Guid> settled,
         IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        if (!await PersistResolvedInputsAsync(
-                job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false))
+        var persistence = await PersistResolvedInputsAsync(
+            job, candidates, settled, holdTargets, now, cancellationToken).ConfigureAwait(false);
+        if (persistence == InputPersistence.SettledInputUnusable)
+        {
+            CompleteWithoutExecution(job, now, CentralDerivativeWindowReasonCodes.SettledInputUnusable);
+            await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+            await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                dbContext, job, CentralDerivativeWindowReasonCodes.SettledInputUnusable, now, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+        if (persistence == InputPersistence.Conflict)
         {
             job.StateReasonCode = CentralDerivativeWindowReasonCodes.ResolutionConflict;
             return;
@@ -513,9 +619,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
         job.UpdatedAtUtc = now;
     }
 
-    private async Task<bool> PersistResolvedInputsAsync(
+    private async Task<InputPersistence> PersistResolvedInputsAsync(
         CentralDerivativeJob job,
         IReadOnlyDictionary<Guid, ResolvedCandidate> candidates,
+        IReadOnlySet<Guid> settled,
         IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -543,11 +650,48 @@ internal sealed partial class CentralDerivativeWindowResolver(
             .Select(item => (Requirement: item, Candidate: candidates[item.Id]))
             .ToArray();
         var selectedIds = selected.Select(item => item.Candidate.Artifact.Id).ToHashSet();
-        var selectedTargets = holdTargets.Where(target => selectedIds.Contains(target.RecordId)).ToArray();
-        if (selectedTargets.Length != selectedIds.Count)
+        // Settled selections are fenced on their own first, so a settled input that fails ends the window through
+        // its policy instead of reading as a resolution conflict that would retry the same immutable selection.
+        var settledIds = selected.Where(item => settled.Contains(item.Requirement.Id))
+            .Select(item => item.Candidate.Artifact.Id)
+            .ToHashSet();
+        var settledTargets = holdTargets.Where(target => settledIds.Contains(target.RecordId)).ToArray();
+        if (settledTargets.Length != settledIds.Count)
+        {
+            // The settled artifact was usable when loaded above; the lock set was discovered before that and missed
+            // it, so the snapshot is stale rather than the input unusable.
+            throw new ResolutionObjectLockChangedException(
+                "A settled derivative input was absent from the object locks acquired for it.");
+        }
+        var selectedTargets = holdTargets.Where(target => selectedIds.Contains(target.RecordId)
+            && !settledIds.Contains(target.RecordId)).ToArray();
+        if (selectedTargets.Length + settledTargets.Length != selectedIds.Count)
         {
             throw new ResolutionObjectLockChangedException(
                 "The resolved derivative input set changed while its object locks were acquired.");
+        }
+        if (settledTargets.Length > 0)
+        {
+            try
+            {
+                await CentralTransientPayloadHoldFence.ValidateAsync(
+                    dbContext, settledTargets, cancellationToken).ConfigureAwait(false);
+            }
+            catch (CentralTransientPayloadHoldRejectedException exception) when (
+                exception.ReasonCode is HoldTargetChangedReasonCode or HoldTargetMissingReasonCode)
+            {
+                // The row moved since its target was snapshotted, a metadata-only update as much as a lost payload.
+                // Re-resolve against a fresh snapshot and lock set; a settled input that really became unusable is
+                // then read as unusable by its settled load or the fence below, both under the current locks.
+                throw new ResolutionObjectLockChangedException(
+                    "A settled derivative input changed while its object locks were acquired.", exception);
+            }
+            catch (CentralTransientPayloadHoldRejectedException)
+            {
+                // A pending or ambiguous payload release holds the settled input. It is not yet unusable, and once
+                // the release settles its object state says so; until then the window waits as a conflict.
+                return InputPersistence.Conflict;
+            }
         }
         try
         {
@@ -556,25 +700,32 @@ internal sealed partial class CentralDerivativeWindowResolver(
         }
         catch (CentralTransientPayloadHoldRejectedException)
         {
-            return false;
+            return InputPersistence.Conflict;
         }
         // The hold-fence validation above already holds these rows' update locks in this transaction; the shared
         // fence re-reads their durable state under those locks so every fence site applies one usability test.
         var fenced = await CentralArtifactRetentionLock.FenceAsync(dbContext, selectedIds, cancellationToken)
             .ConfigureAwait(false);
+        bool Unusable(Guid id) => !fenced.TryGetValue(id, out var artifact)
+            || artifact.ObjectState != CentralArtifactObjectState.Available
+            || artifact.ReconstructionState != CentralReconstructionState.Complete;
+        if (settledIds.Any(Unusable))
+        {
+            return InputPersistence.SettledInputUnusable;
+        }
         // One artifact per requirement: two requirements selecting the same artifact would violate the unique
         // (job, artifact) input index at persistence, so the set is rejected here as it was by the old count check.
-        if (selectedIds.Count != selected.Length ||
-            selectedIds.Any(id => !fenced.TryGetValue(id, out var artifact)
-                || artifact.ObjectState != CentralArtifactObjectState.Available
-                || artifact.ReconstructionState != CentralReconstructionState.Complete))
+        if (selectedIds.Count != selected.Length || selectedIds.Any(Unusable))
         {
-            return false;
+            return InputPersistence.Conflict;
         }
         foreach (var item in selected)
         {
-            item.Requirement.ExpectedCentralArtifactId = item.Candidate.Artifact.Id;
-            item.Requirement.ResolvedAtUtc = now;
+            if (!settled.Contains(item.Requirement.Id))
+            {
+                item.Requirement.ExpectedCentralArtifactId = item.Candidate.Artifact.Id;
+                item.Requirement.ResolvedAtUtc = now;
+            }
             if (job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == item.Requirement.Id))
             {
                 continue;
@@ -596,8 +747,61 @@ internal sealed partial class CentralDerivativeWindowResolver(
             job.Inputs.Add(input);
             dbContext.Entry(input).State = EntityState.Added;
         }
-        return true;
+        return InputPersistence.Persisted;
     }
+
+    private enum InputPersistence
+    {
+        Persisted,
+        Conflict,
+        SettledInputUnusable
+    }
+
+    /// <summary>
+    /// The guard in <c>BaselineTriggers.sql</c> treats a requirement as graph-owned when its job belongs to a graph
+    /// execution or it is bound to a graph dependency, and freezes its selection once it leaves Waiting. Legacy
+    /// windows have no such requirement and keep re-entering resolution.
+    /// </summary>
+    internal static bool IsSettledGraphRequirement(
+        CentralDerivativeJob job,
+        CentralDerivativeJobInputRequirement requirement)
+        => (job.GraphExecutionId is not null || requirement.GraphDependencyId is not null)
+            && requirement.ResolutionState != CentralDerivativeInputResolutionState.Waiting;
+
+    /// <summary>
+    /// The settled selection of a resolved graph requirement, or null when it is no longer usable. It is read by
+    /// identity, never re-selected, so a competing artifact for the same frame cannot displace it.
+    /// </summary>
+    private async Task<ResolvedCandidate?> LoadSettledCandidateAsync(
+        CentralDerivativeJobInputRequirement requirement,
+        CancellationToken cancellationToken)
+    {
+        if (requirement.ExpectedCentralArtifactId is not { } artifactId)
+        {
+            return null;
+        }
+        var artifact = await IncludeCandidateGraph(dbContext.CentralArtifacts.AsNoTracking()
+                .Where(item => item.Id == artifactId))
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        return artifact is
+        {
+            ObjectState: CentralArtifactObjectState.Available,
+            ReconstructionState: CentralReconstructionState.Complete
+        }
+            ? ResolvedCandidate.Create(artifact)
+            : null;
+    }
+
+    private static IQueryable<CentralArtifact> IncludeCandidateGraph(IQueryable<CentralArtifact> query)
+        => query
+            .Include(artifact => artifact.Layout)
+            .Include(artifact => artifact.Recipe)
+            .Include(artifact => artifact.Sources)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Location)
+            .AsSplitQuery();
 
     private async Task<IReadOnlyList<CentralTransientPayloadHoldTarget>> LoadResolutionHoldTargetsAsync(
         Guid jobId,
@@ -608,6 +812,14 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 .Select(input => input.CentralArtifactId)
                 .ToListAsync(cancellationToken).ConfigureAwait(false))
             .ToHashSet();
+        // A settled selection is locked by identity even before it has an input row.
+        artifactIds.UnionWith(await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
+            .Where(requirement => requirement.CentralDerivativeJobId == jobId
+                && requirement.ExpectedCentralArtifactId != null
+                && requirement.ResolutionState != CentralDerivativeInputResolutionState.Waiting
+                && (requirement.Job!.GraphExecutionId != null || requirement.GraphDependencyId != null))
+            .Select(requirement => requirement.ExpectedCentralArtifactId!.Value)
+            .ToListAsync(cancellationToken).ConfigureAwait(false));
         var requirements = await dbContext.CentralDerivativeJobInputRequirements.AsNoTracking()
             .Where(requirement => requirement.CentralDerivativeJobId == jobId
                 && requirement.Job!.Status == CentralDerivativeJobStatus.Waiting
@@ -735,6 +947,14 @@ internal sealed partial class CentralDerivativeWindowResolver(
             "Central derivative window resolution: JobId={JobId}, Recipe={Recipe}, From={FromStatus}, To={ToStatus}, Selected={SelectedCount}, Reason={Reason}")]
         public static partial void Resolution(
             ILogger logger, Guid jobId, string recipe, string fromStatus, string toStatus, int selectedCount, string reason);
+
+        [LoggerMessage(2144, LogLevel.Warning,
+            "Central derivative window resolution faulted and was rotated behind the batch: JobId={JobId}, Reason={Reason}")]
+        public static partial void ResolutionFaulted(ILogger logger, Guid jobId, string reason);
+
+        [LoggerMessage(2145, LogLevel.Warning,
+            "Central derivative window fault rotation failed; the job keeps its batch position: JobId={JobId}, Reason={Reason}")]
+        public static partial void ResolutionFaultRotationFailed(ILogger logger, Guid jobId, string reason);
     }
 }
 
@@ -802,6 +1022,7 @@ internal static class CentralDerivativeWindowReasonCodes
     public const string EnvironmentUnavailable = "window.environment-unavailable";
     public const string AmbiguousInput = "window.ambiguous-input";
     public const string MinimumInputCountUnmet = "window.minimum-input-count-unmet";
+    public const string SettledInputUnusable = "window.settled-input-unusable";
 }
 
 internal sealed class CentralDerivativeWindowAmbiguousInputException : Exception
