@@ -12,5 +12,9 @@
     <Content Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\catalog\hyg-v44-subset.sqlite" Link="Fixtures\hyg-v44-subset.sqlite" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\catalog\hyg-v44-openngc-subset.sqlite" Link="Fixtures\hyg-v44-openngc-subset.sqlite" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\catalog\hyg-v44-openngc-subset-deep-sky-objects.csv" Link="Fixtures\hyg-v44-openngc-subset-deep-sky-objects.csv" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\catalog\hyg-v44-openngc-subset-deep-sky-outline-points.csv" Link="Fixtures\hyg-v44-openngc-subset-deep-sky-outline-points.csv" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\catalog\SHA256SUMS-v44-openngc" Link="Fixtures\SHA256SUMS-v44-openngc" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\catalog\deep-sky-reference-v1.json" Link="Fixtures\deep-sky-reference-v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
