@@ -457,6 +457,13 @@ is `projected-scene-v2`. Every other scene stays byte-identical
 uncertainty fields are defined in
 [`docs/astronomy/resolved-footprint.md`](astronomy/resolved-footprint.md).
 
+With `"DeepSky": { "Enabled": true }` in the module options and a catalog that
+has a deep-sky collection, the module also places OpenNGC deep-sky objects in
+the scene, and the staged scene is `projected-scene-v3`. Deep-sky content is
+annotation geometry only and never reaches the renderer. The placement rules,
+bounds and the opt-in presentation layer are in
+[`docs/astronomy/deep-sky-openngc-v1.md`](astronomy/deep-sky-openngc-v1.md).
+
 Annotations draw the footprint, not a fixed marker:
 
 - The Annotation raster (`projected-annotation-raster-v4-resolved-footprints`)

@@ -115,7 +115,10 @@ example `catalog-hyg-v4.4-p4-s3-r1`. The catalog train in
 operator approval and a reviewed workflow change. Until then, distribute the
 4.4 bundle built by `scripts/catalog/build-hyg-v44.sh` and
 `scripts/catalog/bundle-hyg-v44.sh` offline, and install it with `catalog install`
-([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
+([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)). The same holds for the
+composed HYG 4.4 + OpenNGC bundle from `scripts/catalog/build-hyg-v44-openngc.sh`
+and `scripts/catalog/bundle-hyg-v44-openngc.sh`
+([HYG 4.4 + OpenNGC](../catalog/hyg-v44-openngc.md)).
 
 ## Mirrors And Cache
 

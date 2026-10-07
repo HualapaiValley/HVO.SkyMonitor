@@ -996,11 +996,14 @@ does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
 mount and reauthenticates the Compose model. It requires an image whose catalog
-contract label is `hvo-approved-catalogs-v1`, retires the retained image
-rollback, and pins the previous identity as a historical reference. `rollback`
-returns to the previous selection across lineages. The exact identities and
-selection behavior are documented in
-[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
+contract label approves the selected catalog, retires the retained image
+rollback, and pins the previous identity as a historical reference. HYG 4.4
+needs `hvo-approved-catalogs-v1` or its superset `hvo-approved-catalogs-v2`;
+the composed HYG 4.4 + OpenNGC catalog (`hyg-v44-openngc-production`) needs
+`hvo-approved-catalogs-v2`. `rollback` returns to the previous selection across
+lineages. The exact identities and selection behavior are documented in
+[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md) and
+[HYG 4.4 + OpenNGC](../catalog/hyg-v44-openngc.md).
 
 `catalog check` is read-only. It verifies the signed manifest or index, or the
 previously verified cached copy when offline, and reports `available` or

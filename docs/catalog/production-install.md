@@ -10,7 +10,8 @@ installer. HYG 4.4 (`hyg-v44-production`, package `hyg-v4.4-p4-s3-r1`) is a
 separate approved lineage installed beside it with the deployment CLI. Its
 identities, build, selection, rollback and health behavior are in
 [HYG 4.4 catalog snapshot](hyg-v44.md). Installing 4.4 never changes a 4.2 root
-or selection.
+or selection. The composed HYG 4.4 + OpenNGC lineage (`hyg-v44-openngc-production`)
+installs the same way beside both ([HYG 4.4 + OpenNGC](hyg-v44-openngc.md)).
 
 ## Prerequisites
 

@@ -157,8 +157,9 @@ one root. A selection that crosses lineages does all of the following:
 - pins the previously selected identity as a historical reference, so garbage
   collection cannot delete it while a frame still names it.
 
-The running image must declare the `hvo-approved-catalogs-v1` catalog contract,
-so an older image that only knows HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
+The running image must declare the `hvo-approved-catalogs-v1` catalog contract
+or its superset `hvo-approved-catalogs-v2`, so an older image that only knows
+HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
 selection retires the retained image rollback because that rollback environment
 mounts the old lineage's root. Catalog `rollback` returns to the previous catalog
 selection, including across lineages.
@@ -216,4 +217,5 @@ snapshot that recorded frames still name.
 
 The scope is the HYG 4.4 star catalog only. It excludes Gaia data, a catalog
 marketplace, in-place migration of an installed 4.2 root, and deep-sky object
-data.
+data. Deep-sky objects are a separate composed lineage,
+[HYG 4.4 + OpenNGC](hyg-v44-openngc.md), which leaves this one unchanged.

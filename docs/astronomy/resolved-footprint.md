@@ -3,10 +3,10 @@
 Issue #518 gives the Sun and Moon a resolved angular footprint. The renderer, the projected scene and the
 annotations all draw that footprint instead of a point marker. The same contract is the seam that #525 uses for
 extended deep-sky objects. #525 adds catalogue extents and a `DeepSkyObject` producer. It does not add a second
-footprint shape.
+footprint shape ([Deep-sky objects — OpenNGC v1](deep-sky-openngc-v1.md)).
 
 **Not included:**
-- deep-sky catalogue extents and their producer, which belong to #525
+- deep-sky catalogue extents and their producer, which #525 adds
 - lunar or solar surface texture, libration, limb darkening and the terminator as projected geometry. The phase
   shading stays inside the renderer, and the footprint carries only its outline.
 - refraction away from the Bennett standard atmosphere, and pressure/temperature inputs
@@ -42,8 +42,7 @@ footprint shape.
 | `source` | text | The provenance of the size, for example `asin(nasa-volumetric-mean-radius/topocentric-distance)-v1`. |
 
 The Sun and Moon use `Circle` with the topocentric angular radius from `SolarDiskEphemeris`. Their uncertainties are
-`null`. #525 sets the uncertainties from its catalogue when the catalogue publishes them, and leaves them `null`
-when it does not.
+`null`. #525 deep-sky extents also leave them `null`, because OpenNGC publishes no extent uncertainty.
 
 ## Frame and sampling
 
@@ -112,11 +111,14 @@ the object and the footprint. The object's of-date and J2000 equatorial coordina
 topocentric too. The Moon's diurnal parallax, up to about 1°, is therefore present in every pixel product.
 Planets other than the Sun and Moon keep the geocentric `astronomy-engine-2.1.19-eqj-v1` objects.
 
-## Consumer guidance for #525
+## Deep-sky consumers (#525)
 
-- Produce `ResolvedFootprintExtent` values from the catalogue and call `ResolvedFootprintSampler.Sample` with
-  `ResolvedFootprintSourceKind.DeepSkyObject` and a `null` appearance.
-- Use a stable, ordinal-sortable id with a non-`solar-system:` prefix.
+- Deep-sky extents are `ResolvedFootprintExtent` values from the catalogue, sampled by `ResolvedFootprintSampler.Sample`
+  with `ResolvedFootprintSourceKind.DeepSkyObject` and a `null` appearance.
+- Deep-sky ids take the stable, ordinal-sortable `deep-sky:` prefix.
+- The existing star, Sun and Moon annotation and the presentation footprint layer draw only the solar-system
+  footprints (`ProjectedSceneAnnotation.SolarSystemFootprints`). Deep-sky footprints are drawn only by the opt-in
+  deep-sky layer, so a scene's existing annotation is the same with or without its deep-sky collection.
 - Annotation layers draw `parts` as they are given. They must not re-project the extent.
 - Annotation layers map a scene through `ProjectedSceneAnnotation.CreateObjects`, so the edge, the central host and
   presentation draw the same outlines and labels from the same artifact. A footprint whose centre object the scene
