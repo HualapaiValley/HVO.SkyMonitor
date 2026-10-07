@@ -145,6 +145,14 @@ The measured sequence ran on hvo-dev-03 on 7 October 2026: tuning 03:58:50Z–04
 04:29:45Z–06:54:56Z, held-out 06:54:56Z–08:10:15Z, magnitude 7 08:10:15Z–08:17:58Z and the evaluator until
 08:18:01Z.
 
+The record for each of these claims:
+
+- **Host.** `freeze.json` records `host.name` `hvo-dev-03`. So do the `host` fields of the 85 reports that carry one:
+  34 held-out, 36 tuning, 5 magnitude-7 and 10 A/B resource reports.
+- **Times.** They come from `steps.json`.
+- **Lock.** `freeze.json` declared before the run that `/tmp/hvo-520-heavy.lock` was held by `flock -o` for the whole
+  measured run. No `/proc/locks` line from the run is retained. That the lock was held is the #1167 owner's account.
+
 ### Decision
 
 The evaluator's `decision.json` (SHA-256 `ea02077b…1582247`) for revision `d3b78737` and manifest `ed3b4d03…3c77`
@@ -282,6 +290,14 @@ inflated by neighbour load. That includes:
 The first fit-05 diagnostic's second B run (08:24:10Z–08:26:45Z) overlapped #1168's gate tests. The attribution
 session below held both hosts' heavy locks.
 
+**Records.** Some of this section rests on no retained record:
+
+- The `rsync` overlap and its times are the #1167 owner's account.
+- So is the shared physical host, which is an inference. The A/B arms' `index.json` host blocks record the CPU model
+  and 8 logical processors but no host name, and nothing records the hypervisor.
+- #1168's times are as its owner's ledger records them.
+- The attribution session's locks are recorded as described under [Attribution](#optical-calibration-fit-05).
+
 ### Finding: detector candidate budget at a 6.5 render
 
 `StellarDetector` v1 stops at 4,096 candidate peaks (`StellarDetector.MaximumSupportedCandidates`) and throws
@@ -407,6 +423,9 @@ Row-05 B/A in the adjacent pairs is 1.166, 1.030 and 0.991. Run 2's 19,690 ms ex
 reproduced. Run 2 (08:24:10Z–08:26:45Z) overlapped #1168's gate tests on hvo-dev-02, and that session held only
 hvo-dev-03's lock.
 
+The six runs' TRX directory names (`_hvo-dev-03_…`) record the host. The session's lock, and that it held no
+hvo-dev-02 lock, are the #1167 owner's account; no `/proc/locks` line from it is retained.
+
 **Attribution: B did not recur.** The coordinator registered the rule at 08:42:10Z, again before any data.
 
 - Arms:
@@ -415,6 +434,12 @@ hvo-dev-03's lock.
   - G = `bfae8d7a`, which is `d3b78737` with only `Evaluate`'s isolation lines restored to the `0639e27d` text.
 - Design: three Latin-square rounds, A B G | B G A | G A B, on hvo-dev-03 under its heavy lock. A holder process held
   hvo-dev-02's heavy lock from 08:57:43Z to 09:17:09Z.
+- Records:
+  - The nine runs' TRX directory names (`_hvo-dev-03_…`) record the host.
+  - hvo-dev-03's own lock is the #1167 owner's account.
+  - The holder's times are its `acquired.utc` and `released.utc` in `attr-fit05/hvo-dev-02-holder/`.
+  - `attr-fit05/session/attribution.json` records the holder's `/proc/locks` line (`procLocksLine`) at each run's
+    start and end: 18 lines.
 - R(X) is true when any X row-05 trial exceeds L = 19,541 ms, or X/A in the same round exceeds 1.10 in at least 2 of the
   3 rounds.
 - If R(G) is false, the grid is reverted.
@@ -431,7 +456,8 @@ hvo-dev-03's lock.
 | 8 | 3 | A | 09:12:51–09:14:57 | 20,518/20,594 | 15,928/15,980 | 15,784/15,851 | 16,841 |
 | 9 | 3 | B | 09:14:58–09:17:05 | 20,502/20,583 | 15,944/16,007 | 15,784/15,878 | 16,849 |
 
-Every run exited 0 with no failures, the same settings identity and the holder's lock held at its start and end.
+Every run exited 0 with no failures and the same settings identity. The holder's lock was held at each run's start and
+end, according to its `procLocksLine` records.
 
 - No row-05 trial exceeds L.
 - Row-05 B/A by round: 1.036, 0.989, 1.001.
@@ -526,9 +552,13 @@ Review PR-1181-R0 found three ways the frozen evaluator can pass incomplete evid
 - G4 accepts a bare p95, and G8 skips a missing `indexPrefix`.
 
 The frozen manifest and evaluator stay unchanged, and they still decide. A separate script,
-`docs/validation/issue-1167-evidence-check.py` (SHA-256
-`aa1524c202059829fd17605906d45860091f68cbe9ef8805fc07e9b45c812040`), checks that the evidence they decided on is
-complete.
+`docs/validation/issue-1167-evidence-check.py`, checks that the evidence they decided on is complete. It has two
+versions:
+
+- `3cb05cf9` (SHA-256 `aa1524c202059829fd17605906d45860091f68cbe9ef8805fc07e9b45c812040`), described from here to
+  [Correction after PR-1181-R1](#correction-after-pr-1181-r1);
+- `a8f09a0a` (SHA-256 `4da7f452d4a05fe4ec0efc351444bf7b23e15274f411ebc3b18b941eee471a8d`), which also checks each A/B
+  report's revision and content and is described in that subsection.
 
 Its expected inventory comes only from committed sources, and the script quotes each source line at `d3b78737`:
 
@@ -650,3 +680,264 @@ The posted pack again verified 428 of 428 entries, with no file newer than the s
 **Disclosure.** Before the check was written, while verifying the r0 findings, the #1167 owner inspected the `d3b78737`
 final reports: their view names, a recomputed p95, and whether `indexPrefix` was present and matched the bound formula.
 The check's constants do not come from that inspection. They come only from the committed sources it quotes.
+
+#### Correction after PR-1181-R1
+
+Review PR-1181-R1 covered `d812c139`. It verified F1, F3 and F4 and found F2 only partly fixed, through three new
+findings:
+
+- **R1-F1 (High).** An A/B arm report whose `revision` was absent or null was exempt from the revision comparison.
+- **R1-F2 (High).** A report that was present and matched its index entry passed whatever it held. The frozen evaluator
+  compares only identity leaves and association lists. So nulls, `{}` or empty lists written alike in both arms
+  compare identical and pass both the evaluator and the check.
+- **R1-F3 (Low).** `indexPrefix.admittedIndexStars` was not checked.
+
+The corrected check is `a8f09a0a` (SHA-256 `4da7f452d4a05fe4ec0efc351444bf7b23e15274f411ebc3b18b941eee471a8d`). Like
+the first version, it takes every rule from committed source and quotes each source line. A declaration that differs
+between A and B is either one of the declared B-only producers below or a finding.
+
+**Revision (R1-F1).** Every A/B report must serialize `revision`, and the value must equal the revision its arm
+declares: A for `a1-*` and `a2`, B for `b1-*` and `b2`. An absent or null revision is a finding. The report's
+top-level keys must be exactly its writer's. Its `schema`, `projectionFamily`, `partition` and, for uncertainty
+reports, `realizationsPerProfile` must be the declared values. Three new A/B declarations quote the A/B runner's
+revision capture, environment and test filter (`issue-1167-ab.sh` :47, :50, :52 at B). They bind the B2 and A2 pixel
+reports to their revision. The check now quotes 20 A/B declarations, up from 17.
+
+**Content (R1-F2).** Every arm report and every B2/A2 pixel report is checked against its declared writer:
+
+- **Declarations.** The check quotes 218 content declarations, each with its line at A and at B, and must find every
+  one at both revisions. They cover:
+  - serialization conventions;
+  - the profile and view inventory;
+  - the pixels, reference-scorer, optical, uncertainty, measured-stars and resources writers;
+  - the optical session, its contracts and the uncertainty estimator;
+  - the fixture's identity producers;
+  - the solver and solver core;
+  - the echo sites and early-return forms. These include `OpticalCalibrationSession`'s `Diagnostics` class, which is
+    identical at A :440 and B :442.
+- **Inventory.** Case ids, views, captures, UTCs, readouts and realizations appear in writer order.
+- **Keys.** Every object the writer serializes has exactly the writer's keys.
+- **Echoes.** Every unaccepted or missing item has its writer's failure line (PIX :68, :74; OPT :145, :178; UNC :203,
+  :282, :295, :298; MEAS :84).
+
+**Identities.** Every key ending in `identitySha256` must sit at a path whose producer is quoted. An identity at any
+other path is a finding. Every declared identity must be serialized wherever its writer writes it; the writer
+serializes nulls (FIX :62). Each identity has one of two forms:
+
+- **L**, `[0-9a-f]{64}`. `AstrometricIdentity` and `SettingsIdentity` produce it through `Convert.ToHexStringLower`
+  (AC B:239, B:241; SSM :242). Every identity not listed under U is L.
+- **U**, `[0-9A-F]{64}`. `CaptureContractJson.ComputeCanonicalJsonSha256` produces it through `Convert.ToHexString`
+  (CCJ :56), and it is serialized as produced:
+  - U1: pixels `assessment.frame.observerIdentitySha256` (FIX :319);
+  - U2: pixels `assessment.frame.detectionSettingsIdentitySha256` (FIX :320);
+  - U3: optical `fit.frames[].readoutIdentitySha256` (OPT :104; SESS :87, B:619).
+
+The uncertainty session's `sharedCalibrationIdentity` does not end in `identitySha256`. It is checked as L by name
+(UNCS :93).
+
+An identity may be null only under its rule:
+
+| Rule | Identity | Null if and only if |
+| --- | --- | --- |
+| N1 | pixels `assessment.previousAssessmentIdentitySha256` | `mode` is `Blind` (SOL :44, :47, B:118) |
+| N2 | pixels `assessment.associationIdentitySha256` | `status` is not `Accepted` (SOL B:118; every non-accepted core result carries `[]`) |
+| N3 | uncertainty `rows[].sharedCalibration.calibrationCovarianceIdentitySha256` | `reasonCode` is `shared-calibration-covariance-not-supplied` (UNCS :303, :306, :309) |
+| N4 | uncertainty `frames[].identitySha256` | never (UNC :224; UNCS :244) |
+| N5 | the uncertainty estimate's nullable `ReadoutIdentitySha256` (UNCS :150) | no rule: the writer does not serialize it, so it needs no allowance |
+
+**N3 disclosure.** UNCS :251 also yields a null covariance identity under another reason code, but only when
+`sharedCalibration` is null. The session path never passes null, because UNC :280 returns before it. N3 therefore
+holds vacuously for that branch.
+
+**Case of the U identities.** U1–U3 are upper case, and every other identity is lower case. Normalizing them would be
+a product change outside #1167. The #520 coordinator ruled that it goes to the #520 backlog. The check accepts each
+identity only in its producer's form.
+
+**Associations.** Every serialized association list or count must sit at a path with a quoted writer:
+
+- **Lists.** A pixels `score.associationRows` list or an optical `withheldScores[].score.associationRows` list must be
+  non-empty. An empty list is a finding. Every row has the REF :208 shape. A list has at least 12 fitting and 4
+  withheld rows, the solver's acceptance minimum (CORE B:419, `if (fit.Count < 12)` and `if (held.Count < 4)`).
+- **Measured counts.** `v1.associations` must equal `v1.baseline.associations`, and `v2.associations` must equal
+  `v2.candidate.associations`. A count is 0 if and only if its solve is not `Accepted`. An accepted count is at least
+  16, the same minimum, 12 plus 4.
+
+**B-only producers.** `d3b78737` adds three producers that `0639e27d` cannot write, and one value declaration. Each
+must be found at B and absent at A:
+
+| Declaration | Status, reason code | Text |
+| --- | --- | --- |
+| SOL B:50 | `Unavailable`, `catalog-selection-unsupported` | "Catalog selection exceeds the {bound}-entry bound of the requested selection profile; no fit was attempted." |
+| SOL B:84–87 | `BudgetExceeded`, `resource-limit`, budget exhausted | "Accepted evidence exceeds the {MaximumEvidenceStars}-star assessment bound; no proposed mapping replaces last-good evidence." |
+| SESS B:95–96 | optical session `Unavailable`, `catalog-selection-unsupported`, rejections `["catalog-selection-unsupported"]` | SOL B:50's text |
+| MAP B:77 | — | `internal const int MaximumEvidenceStars = 2500;`, a value declaration, not a producer |
+
+The check derives the code, both texts, the 2,500 bound and the 12/4 minimum from these quoted literals and CORE
+B:419 only.
+
+Any other A/B difference would be a finding. The over-bound narrow index needs no allowance either. `IndexPrefix`
+returns `maximumStars + 1` entries, so a B-arm over-bound narrow index holds 1,501. The core `Reject` serializes
+`training.Count`, and `triangleCount` is 0 there, so no serialized value differs.
+
+**Marker rule.** A marker is any string that contains `catalog-selection-unsupported`, `Catalog selection exceeds the `
+or `Accepted evidence exceeds the `:
+
+- **A arm.** Any marker is a finding.
+- **B arm.** A marker is allowed only in its producer's exact shape, echoed only at its writer sites. Any other marker
+  is a finding.
+
+The shapes are:
+
+- **Pixels, SOL B:50.** `status` `Unavailable`. `reason` is the B:50 text with an integer bound. `score`,
+  `parameters`, `quality` and `associationIdentitySha256` are null. The metrics have `budgetExhausted` false and every
+  count 0. The row has its PIX :74 echo.
+- **Pixels, SOL B:84–87.** `status` `BudgetExceeded` and `reasonCode` `resource-limit`. `reason` is exactly the B:85
+  text with 2,500. The same members are null, and the metrics have `budgetExhausted` true. The row has its PIX :74
+  echo.
+- **Measured stars, SOL B:50.** A v1 or v2 solve with this code is `Unavailable` with 0 associations. A v2 solve also
+  needs its MEAS :84 echo.
+- **Measured stars, SOL B:84–87.** This solve is recognized only through v2's MEAS :84 echo. With that echo, it must
+  be `BudgetExceeded` and `resource-limit` with 0 associations. The measured-stars report serializes a solve's status,
+  reason code and association count, but not its reason (MEAS :121, :129–140). Without the echo, a SOL B:84–87 solve is
+  indistinguishable from the solver's ordinary resource-limit path (SOL A:91), which A also writes.
+- **Optical, SESS B:95–96 fit.** The fit is `Result` (SESS :82–88) returned before any work, with every OC :82, :86
+  and :99 member at its early value. The members are:
+  - `status` `Unavailable` and `rejections` `["catalog-selection-unsupported"]`;
+  - `calibratedNative` null and `validations` `[]`;
+  - four `frames`, each `not-attempted`, with `acquisitionCandidates`, `fittingStars` and `verificationStars` 0, and
+    with `boresightAltitudeDegrees`, `boresightAzimuthDegrees`, `rollDegrees`, `fittingRmsPixels` and
+    `verificationRmsPixels` null;
+  - four `parameters`, each with `standardError` null and `atBound` false;
+  - `diagnostics` with a numeric `skyRotationDegrees`, with `fittedFrames`, `fittingStars`, `verificationStars`,
+    `occupiedRadialBins`, `occupiedAzimuthBins` and `iterations` 0, with `fittingRmsPixels`, `verificationRmsPixels`
+    and `conditionNumber` null, with `converged` false and with `residualBins` `[]`;
+  - in the report, `withheldScores` `[]`, `errors` null and the OPT :145 echo.
+
+  The optical report does not serialize covariance, so no covariance member is checked.
+- **Optical, `omittedDistortion`.** A marker here is allowed only beside a SESS B:95–96 fit. It is `Unavailable`,
+  with the same rejections and early diagnostics, and it has its OPT :139 echo when the truth `k1` is 0.
+- **Uncertainty.** A SESS B:95–96 session is the short form (UNC :280) with status `Unavailable` and its UNC :282
+  echo. The solver echoes at UNC :203 and :295 and OPT :178 are allowed when the echoed remainder is a SOL B:50 or
+  B:85 text.
+
+**Writer sites.** The writer sites are the lines that echo a solver or session reason, reason code or rejection into
+`failures`. This command finds them:
+
+```
+git grep -n -E 'failures\.Add\(\$"[^"]*\{[^}]*(Reason|ReasonCode|Rejections)\b' <rev> -- \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryQualificationTests.cs \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualOpticalCalibrationQualificationTests.cs \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometricUncertaintyQualificationTests.cs \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualMeasuredStarQualificationTests.cs
+```
+
+It returns 11 lines at both A and B:
+
+- **The 8 writer sites:** PIX :74, OPT :139, :145 and :178, UNC :203, :282 and :295, and MEAS :84.
+- **3 lines that cannot carry a marker, so a marker there is a finding:**
+  - UNC :99 writes an accepted frame's withheld and estimator reason codes.
+  - OPT :162 writes validation lines. Only an attempted fit has validations, and a SESS B:95–96 fit has `[]`.
+  - UNC :300 writes the uncertainty total's reason codes.
+
+**Index bound (R1-F3).** The `deep` declarations rise from 19 to 22. The check now quotes the full `indexPrefix`
+assignment, which passes `solved.Metrics.IndexStars` (harness :167–168), and the solved row's
+`solved.Assessment, solved.Metrics,` (:189–190). It also quotes the `IndexPrefixEvidence` record (:504),
+`IndexPrefixBound(…, int admitted)` (:510) and its whole `return` (:516). An `indexPrefix` must hold exactly
+`trainingStars`, `admittedIndexStars` and `boundBytes` as nonnegative integers. `admittedIndexStars` must equal the
+row's own `metrics.indexStars`. The check fails closed: a missing or non-integer `indexStars` is a finding.
+
+**Declaration order.**
+
+1. `a8f09a0a` was committed at 2026-10-07T20:35:03Z and pushed at 20:35:04Z, according to the branch's
+   remote-tracking reflog.
+2. Before that, it ran only on the hand-made synthetic pack and its probes.
+3. Its first run on a measured pack was the condition-5 run at 20:41:17Z. An earlier attempt at 20:40:42Z evaluated
+   no pack (see the disclosures below).
+
+**Self-test (synthetic).** Run at `a8f09a0a` from 20:43:03Z:
+
+- The hand-made good pack passes in `deep` and `ab` with 0 findings.
+- 105 probes each apply one defect to a copy of it, and all 105 exit 1.
+- In the source probes, the A/B baseline gives 0 findings. Each of the four declaration defects gives findings:
+  - B-only text present at A: 4;
+  - B-only text absent at B: 4;
+  - a declaration missing at both revisions: 2;
+  - a declaration missing at A only: 1.
+
+**Rewrap equivalence.** The long lines were wrapped mechanically before the commit. The wrap tool rebuilt the
+committed file byte for byte from the pre-wrap check. Lines over the limit fell from 73 to 4. All 68 module constants
+were loaded from both files and compared:
+
+- `NULL_RULES` is the only one unequal by value. It holds lambdas, which never compare equal across two loads, and
+  its source text is identical.
+- The 218 `CONTENT_DECLARATIONS` rows are equal.
+
+**Posted packs.** The packs are read only, and Python ran under `nice` and `ionice` with no lock.
+
+| Pack | `a8f09a0a` check | `d812c139` check |
+| --- | --- | --- |
+| `final/` (`deep`) | Exit 0, complete, 0 findings. 34 runs hold 1,944 case rows and 288 bounded perspective cold rows. All 22 quoted declarations were found. `final-equidistant-d55` and `-d60` are listed as `error` runs. | Exit 0, complete, 0 findings |
+| `ab/` | Exit 1, 10 findings, exactly the 10 pair-2 "pixel report missing" findings, none unexpected. Arms of 25, 20, 25 and 20 runs. All 20 A/B declarations were found. All 218 content declarations were found at A and at B. All four B-only declarations were found at B and absent at A. 90 reports were content-checked, 45 per revision: 20 pixels, 20 optical, 20 uncertainty, 20 measured-stars and 10 resources. None drew a finding, and no B-only producer appears in them. | Exit 1, the same 10 findings |
+
+The archived pair-1 reports draw no content finding, so the `ab` disposition above stands unchanged: pair 2 is
+unarchived and `ab` stays incomplete for pair 2.
+
+**Triggers (synthetic).** **SYNTHETIC: discrimination only, not performance evidence.** Each case applies one change
+to a scratch symlink-tree copy of a posted pack. `trigger2.py` rewrites each edited file as a new file and re-indexes
+its hash and size. The `ab` copies give pair 2 the pair-1 reports, as in the F2 synthetic run above. Each case runs
+the frozen evaluator, the `a8f09a0a` check and the `d812c139` check.
+
+| Case | Change | Frozen evaluator | `a8f09a0a` | `d812c139` |
+| --- | --- | --- | --- | --- |
+| `baseline-ab` | — | Pass, identity identical over 45 reports | Exit 0, 0 findings | Exit 0, 0 findings |
+| `baseline-deep` | — | Exit 1, the posted undecidable decision | Exit 0, 0 findings | Exit 0, 0 findings |
+| `r1f1-b2-revision-null` | B2 equidistant `revision` null | Pass | 1 | Exit 1 |
+| `r1f1-a2-revision-absent` | A2 stereographic `revision` removed | Pass | 2 | Exit 1 |
+| `r1f1-arm-revision-null-both` | measured equisolid `revision` null in both arms | Pass | 2 | Pass |
+| `r1f1-b1-revision-a` | a B1 tuning optical report given A's revision | Pass | 1 | Exit 1 |
+| `r1f2-empty-association-rows-both` | a pixels row's `associationRows` set to `[]` in both arms | Pass | 4 | Pass |
+| `r1f2-short-association-rows-both` | 11 fitting rows | Pass | 4 | Pass |
+| `r1f2-association-row-shape-both` | `residualPixels` `"NaN"` | Pass | 4 | Pass |
+| `r1f2-untraced-identity-both` | an identity added at `v1.settingsIdentitySha256`, an untraced measured-stars path | Pass | 4 | Pass |
+| `symmetric-nulling` | pixels `nominal.readoutIdentitySha256` null in both arms | Pass | 4 | Pass |
+| `zero-measured-count-both` | an accepted measured-stars count set to 0 | Pass | 2 | Pass |
+| `drop-withheld-score-and-failure-both` | an optical withheld score and its OPT :178 echo removed | Pass | 2 | Pass |
+| `drop-pixel-score-and-failure-both` | a pixels score and its echo removed | Pass | 4 | Pass |
+| `lowercase-u1-both` | U1 written in lower case | Pass | 4 | Pass |
+| `uppercase-lowercase-produced-both` | an L identity written in upper case | Pass | 8 | Pass |
+| `n1-warm-null-both` | a warm row's previous-assessment identity null | Pass | 4 | Pass |
+| `n2-accepted-null-both` | an accepted row's association identity null | Pass | 4 | Pass |
+| `a-arm-row-code` | the SOL B:50 code on an accepted A pixels row | Pass | 2 | Pass |
+| `a-arm-failure-text` | a UNC :203 failure with the SOL B:50 text added to an A uncertainty report | Pass | 1 | Pass |
+| `a-arm-optical-fit-code` | an A optical fit given the SESS B:95–96 status, code, rejections and echo | Pass | 4 | Pass |
+| `a-arm-uncertainty-session-code` | a SESS B:95–96 session echo added to an A uncertainty report's failures | Pass | 1 | Pass |
+| `b84-signature-mapped` | a mapped B pixels row given the SOL B:84–87 status, code, text and echo | Pass | 12 | Pass |
+| `b84-text-altered` | a B pixels row in the SOL B:84–87 shape with the bound in its text and echo changed to 2501 | Exit 1, identity changed, output-change | 4 | Pass |
+| `b-fit-code-validations` | a B optical fit given the SESS B:95–96 code, keeping its validations and calibration | Pass | 5 | Pass |
+| `b-fit-code-calibrated` | a B optical fit with every SESS B:95–96 early member except a non-null calibration | Exit 1, identity changed, output-change | 4 | Pass |
+| `b-omitted-beside-ordinary-fit` | the SESS B:95–96 code in `omittedDistortion` beside an ordinary fit | Pass | 4 | Pass |
+| `b-marker-outside-site` | the SOL B:50 text in a resources failure | Pass | 1 | Pass |
+| `b84-measured-echo-without-shape` | a MEAS :84 B:85 echo added for an accepted v2 solve | Pass | 2 | Pass |
+| `r1f3-admitted-negative` | `admittedIndexStars` and `metrics.indexStars` both −1 on `final-rectilinear-m50` | The posted undecidable decision | 1 | Pass |
+| `r1f3-admitted-mismatch` | `admittedIndexStars` 285 against `metrics.indexStars` 284 | The posted undecidable decision | 1 | Pass |
+| `r1f3-indexstars-null` | `metrics.indexStars` null | The posted undecidable decision | 1 | Pass |
+
+The `a8f09a0a` column gives finding counts, and every one of those 30 trigger runs exits 1. The `d812c139` check
+fails 3 of the 30, all on a revision. The frozen evaluator passes 25 of the 27 `ab` triggers. It sees only the two
+that change a compared leaf in the B arm alone.
+
+**Archive.** The self-test, the rewrap record and every condition-5 output are kept at `evidence/1167/a8f09a0a/`
+(`SHA256SUMS` sha256 `3baf98db8c917b21eec89dee78b44ba74d2b431932bab7ed6ec0e9dccdd94c0c`). The archive does not keep
+the 766 MiB of rewritten scratch JSON. Instead, each synthetic case keeps a manifest of every file it wrote, with
+path, bytes and SHA-256, and its symlink list. Every case was rebuilt from scratch, and all 32 reproduced their
+manifests and link lists exactly.
+
+**Disclosures.**
+
+- **First attempt.** The condition-5 driver first ran copies of both checks from `/tmp`, outside any clone. The
+  checks run `git` from their own directory, so all four check runs exited 2 and wrote nothing. The driver then
+  printed a misleading `STOP: the posted packs drew a new finding` and exited 3. No pack was evaluated. The record is
+  in `condition-5/attempt1-rc2/`. The second attempt runs each check in place inside a clone.
+- **Lock-line header.** The run logs carry a host and lock header. The first four of them piped `grep` into `sed`, so
+  their `heavy-lock line: none` could never print. In those logs, the absence of any `heavy-lock line:` means `grep`
+  matched no `/proc/locks` line for the lock's inode. Later headers print `none` explicitly.
