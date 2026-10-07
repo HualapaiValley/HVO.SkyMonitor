@@ -137,7 +137,9 @@ public sealed class DeepSkySceneTests
         var v2 = (await BuildAsync(utc, Fisheye(), [SolarSystemBody.Moon]).ConfigureAwait(false))
             .WithResolvedBodies([SolarDiskEphemeris.Get(SolarSystemBody.Moon, utc, Site)]);
         var v2Bytes = ProjectedSceneJson.Serialize(Create(v2));
-        Assert.AreSame(v2, v2.WithDeepSky(belowHorizon, ProjectedSceneDeepSkySelection.Default));
+        // The v2 scene is at a later instant, where the first object may have risen, so it gets its own.
+        var belowHorizonAtV2 = Catalog([Galaxy("NGC0005", At(-20, 10, utc), null, null, null)]);
+        Assert.AreSame(v2, v2.WithDeepSky(belowHorizonAtV2, ProjectedSceneDeepSkySelection.Default));
         Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, ProjectedSceneJson.Parse(v2Bytes).Scene!.SchemaVersion);
         Assert.DoesNotContain("deepSky", Encoding.UTF8.GetString(v2Bytes));
     }

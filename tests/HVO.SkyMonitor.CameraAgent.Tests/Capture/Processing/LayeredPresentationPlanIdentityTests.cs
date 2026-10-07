@@ -55,7 +55,7 @@ public sealed class LayeredPresentationPlanIdentityTests
     public void ScenePresentationLayer_DeepSkyOutputIsAddedOnlyWhenConfigured()
     {
         var unset = CreateSceneStep(new ScenePresentationLayerProcessingStepOptions());
-        var set = CreateSceneStep(new ScenePresentationLayerProcessingStepOptions { DeepSkyOutputVariant = "deep-sky-layer" });
+        var set = CreateSceneStep(new ScenePresentationLayerProcessingStepOptions { DeepSky = new() { OutputVariant = "deep-sky-layer" } });
 
         CollectionAssert.AreEqual(
             ExistingSceneOutputs,
@@ -82,21 +82,63 @@ public sealed class LayeredPresentationPlanIdentityTests
     }
 
     [TestMethod]
+    public void LayeredStepOptions_SerializeNoDeepSkyMemberUntilConfigured()
+    {
+        // Effective options are hashed into each node plan, so an unset deep-sky option must not serialize at all.
+        foreach (var names in new[]
+                 {
+                     Names(new ScenePresentationLayerProcessingStepOptions()),
+                     Names(new OverlayManifestProcessingStepOptions()),
+                     Names(new PresentationMaterializerProcessingStepOptions())
+                 })
+            Assert.IsFalse(names.Any(static name => name.Contains("deepSky", StringComparison.OrdinalIgnoreCase)),
+                string.Join(',', names));
+
+        // A present section materializes its defaults, so an explicit default and an omitted one hash alike.
+        var configured = CaptureContractJson.SerializeToElement(new ScenePresentationLayerProcessingStepOptions
+        {
+            DeepSky = new() { OutputVariant = "deep-sky-layer" }
+        }).GetProperty("deepSky");
+        Assert.AreEqual("deep-sky-layer", configured.GetProperty("outputVariant").GetString());
+        Assert.IsFalse(configured.GetProperty("catalogLabels").GetBoolean());
+        Assert.AreEqual(24, configured.GetProperty("maximumLabels").GetInt32());
+
+        static string[] Names<T>(T options) =>
+            [.. CaptureContractJson.SerializeToElement(options).EnumerateObject().Select(static property => property.Name)];
+    }
+
+    [TestMethod]
     [DataRow("scene-annotation-layer-v1")]
     [DataRow("scene-cardinal-layer-v1")]
     [DataRow("scene-image-circle-layer-v1")]
     [DataRow("scene-constellation-layer-v1")]
     [DataRow(" ")]
+    [DataRow("")]
     public void ScenePresentationLayerOptions_RejectADeepSkyVariantThatIsNotDistinct(string variant)
     {
-        var options = new ScenePresentationLayerProcessingStepOptions { DeepSkyOutputVariant = variant };
+        var options = new ScenePresentationLayerProcessingStepOptions { DeepSky = new() { OutputVariant = variant } };
 
         var results = options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).ToArray();
 
         Assert.HasCount(1, results);
         CollectionAssert.AreEqual(
-            new[] { nameof(ScenePresentationLayerProcessingStepOptions.DeepSkyOutputVariant) },
+            new[] { nameof(ScenePresentationLayerProcessingStepOptions.DeepSky) },
             results[0].MemberNames.ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(-1, false)]
+    [DataRow(0, true)]
+    [DataRow(64, true)]
+    [DataRow(65, false)]
+    public void ScenePresentationLayerOptions_BoundTheDeepSkyLabelCap(int maximumLabels, bool valid)
+    {
+        var options = new ScenePresentationLayerProcessingStepOptions
+        {
+            DeepSky = new() { OutputVariant = "deep-sky-layer", MaximumLabels = maximumLabels }
+        };
+
+        Assert.AreEqual(valid, !options.Validate(new System.ComponentModel.DataAnnotations.ValidationContext(options)).Any());
     }
 
     private static ScenePresentationLayerCaptureProcessingStep CreateSceneStep(ScenePresentationLayerProcessingStepOptions options) =>

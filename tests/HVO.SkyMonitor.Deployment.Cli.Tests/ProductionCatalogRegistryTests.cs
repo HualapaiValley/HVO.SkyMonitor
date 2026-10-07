@@ -11,9 +11,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class ProductionCatalogRegistryTests
 {
     private const string HygV44CatalogId = "hyg-v44-production";
+    private const string HygV44OpenNgcCatalogId = "hyg-v44-openngc-production";
     private const string HygV44PackageVersion = "hyg-v4.4-p4-s3-r1";
     private static readonly string[] HygV44RetainedFiles = ["manifest.json", "hyg_v44.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"];
-    private static readonly string[] RegistryV2OnlyCatalogIds = ["hyg-v44-openngc-production"];
+    private static readonly string[] RegistryV2OnlyCatalogIds = [HygV44OpenNgcCatalogId];
 
     [TestMethod]
     public void Registry_HygV42KeepsItsPinnedIdentityAndRemainsTheDefault()
@@ -142,13 +143,14 @@ public sealed class ProductionCatalogRegistryTests
         var root = Path.Combine(Path.GetTempPath(), $"hvo-registry-{Guid.NewGuid():N}");
         var hygV42 = InstallationPaths.Create(root, instanceId, HygV42.CatalogId);
         var hygV44 = hygV42.WithCatalog(HygV44CatalogId);
+        var hygV44OpenNgc = hygV42.WithCatalog(HygV44OpenNgcCatalogId);
 
         Assert.AreEqual(Path.Combine(hygV42.ProductRoot, "catalogs", HygV44CatalogId), hygV44.CatalogRoot);
         Assert.AreEqual(Path.Combine(hygV42.OperationsRoot, "catalog-references", HygV44CatalogId), hygV44.CatalogReferencesRoot);
         Assert.AreEqual(hygV42.InstanceRoot, hygV44.InstanceRoot);
         Assert.AreEqual(hygV42, hygV44.WithCatalog(HygV42.CatalogId));
         CollectionAssert.AreEquivalent(
-            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot },
+            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot, hygV44OpenNgc.CatalogRoot },
             hygV42.ForEveryApprovedCatalog().Select(static item => item.CatalogRoot).ToArray());
     }
 

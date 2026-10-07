@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -164,7 +165,7 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
                     MediaType: OutputMediaType)
             ];
             // The deep-sky output exists only when configured, so a definition without it keeps its node plan bytes.
-            return Options.DeepSkyOutputVariant is { } deepSkyVariant
+            return Options.DeepSky?.OutputVariant is { } deepSkyVariant
                 ? [.. outputs, new(OutputRole, deepSkyVariant, RecipeName, OutputSchemaVersion, SharedDeepSkyLayerRecipe,
                     MediaType: OutputMediaType)]
                 : outputs;
@@ -205,16 +206,16 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
             payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
         var constellations = PresentationProcessingProducts.CreateLayerProduct(
             payloads.Constellations, Options.ConstellationOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
-        if (Options.DeepSkyOutputVariant is not { } deepSkyVariant)
+        if (Options.DeepSky is not { } deepSkyOptions)
         {
             LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
             return ValueTask.CompletedTask;
         }
         // A scene without a deep-sky collection still yields the configured output, as an empty layer.
         var deepSky = PresentationDeepSkyLayerProducer.Create(scene, new PresentationDeepSkyStyleV1(
-            Options.MaximumDeepSkyLabels, Options.MaximumLabelCharacters, Options.LabelScale, Options.DeepSkyCatalogLabels));
+            deepSkyOptions.MaximumLabels, Options.MaximumLabelCharacters, Options.LabelScale, deepSkyOptions.CatalogLabels));
         var deepSkyProduct = PresentationProcessingProducts.CreateLayerProduct(
-            deepSky.Payload, deepSkyVariant, [source], PresentationDeepSkyLayerProducer.ProducerVersion);
+            deepSky.Payload, deepSkyOptions.OutputVariant, [source], PresentationDeepSkyLayerProducer.ProducerVersion);
         LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations, deepSkyProduct);
         return ValueTask.CompletedTask;
     }
@@ -566,24 +567,23 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(1, 8)] public int CardinalScale { get; init; } = 2;
 
     /// <summary>
-    /// The opt-in deep-sky layer's output variant. Absent means no deep-sky output, so existing definitions keep their
-    /// plan identity.
+    /// The opt-in deep-sky layer. Absent means no deep-sky output. Effective options are hashed into the node plan, so
+    /// an absent section is omitted and a definition without it keeps its plan identity.
     /// </summary>
-    [MaxLength(128)] public string? DeepSkyOutputVariant { get; init; }
-
-    /// <summary>Labels catalog-only NGC and IC designations as well as featured objects.</summary>
-    public bool DeepSkyCatalogLabels { get; init; }
-
-    [Range(0, 64)] public int MaximumDeepSkyLabels { get; init; } = 24;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ScenePresentationDeepSkyOptions? DeepSky { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (ConstellationIds.Count > 256 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);
-        if (DeepSkyOutputVariant is { } deepSky && (string.IsNullOrWhiteSpace(deepSky) ||
+        // Validation does not recurse into the section, so its bounds are checked here.
+        if (DeepSky is { OutputVariant: var deepSky } section && (string.IsNullOrWhiteSpace(deepSky) || deepSky.Length > 128 ||
+            section.MaximumLabels is < 0 or > 64 ||
             deepSky == AnnotationOutputVariant || deepSky == CardinalOutputVariant ||
             deepSky == ImageCircleOutputVariant || deepSky == ConstellationOutputVariant))
-            yield return new ValidationResult("The deep-sky output variant must be a distinct variant.", [nameof(DeepSkyOutputVariant)]);
+            yield return new ValidationResult(
+                "The deep-sky layer needs a distinct output variant and a label cap from 0 to 64.", [nameof(DeepSky)]);
     }
 }
 
@@ -619,6 +619,22 @@ internal sealed class EnvironmentPresentationLayerProcessingStepOptions
     ];
 }
 
+/// <summary>
+/// The scene step's opt-in deep-sky layer. Once the section is present its members materialize their defaults, so an
+/// explicit default and an omitted one share a plan identity.
+/// </summary>
+internal sealed record ScenePresentationDeepSkyOptions
+{
+    /// <summary>Gets the deep-sky layer's output variant, distinct from the step's other outputs.</summary>
+    public string OutputVariant { get; init; } = "";
+
+    /// <summary>Gets whether catalog-only NGC and IC designations are labelled as well as featured objects.</summary>
+    public bool CatalogLabels { get; init; }
+
+    /// <summary>Gets the deep-sky label cap, from 0 to 64.</summary>
+    public int MaximumLabels { get; init; } = 24;
+}
+
 internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 {
     [Required, MaxLength(128)] public string OutputVariant { get; init; } = "overlay-manifest-v1";
@@ -634,7 +650,8 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
     [Range(0, 1_000_000)] public int ConstellationOpacityMillionths { get; init; } = 780_000;
 
     /// <summary>The scene step's deep-sky output variant. Absent means the manifest carries no deep-sky layer.</summary>
-    [MaxLength(128)] public string? DeepSkyVariant { get; init; }
+    [MaxLength(128), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeepSkyVariant { get; init; }
     public IReadOnlyList<PresentationLayerSelectionOptions> Layers { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
@@ -661,7 +678,8 @@ internal sealed class PresentationMaterializerProcessingStepOptions : IValidatab
     [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
 
     /// <summary>The scene step's deep-sky output variant. Absent means the deep-sky layer is never supplied.</summary>
-    [MaxLength(128)] public string? DeepSkyVariant { get; init; }
+    [MaxLength(128), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeepSkyVariant { get; init; }
     public IReadOnlyList<string> EnabledLayerKinds { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)

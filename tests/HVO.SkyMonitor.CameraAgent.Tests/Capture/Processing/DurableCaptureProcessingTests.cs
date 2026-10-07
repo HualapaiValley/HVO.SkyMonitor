@@ -740,9 +740,10 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual("deep-sky-layer", deepSky.Options.GetProperty("Variant").GetString());
             Assert.AreEqual("catalog-expected-geometry", deepSky.Options.GetProperty("Basis").GetString());
             Assert.AreEqual("catalog position — not a detection", deepSky.Options.GetProperty("Legend").GetString());
-            // Off by default: the default materialization is the same pixels, with the layer only in its lineage.
+            // Off by default: the default materialization is the same pixels, and its lineage names only enabled layers.
             CollectionAssert.AreEqual(without.Materialized, run.Materialized);
-            Assert.HasCount(10, run.MaterializedSources);
+            Assert.HasCount(without.MaterializedSources.Count, run.MaterializedSources);
+            CollectionAssert.DoesNotContain(run.MaterializedSources.ToArray(), deepSky.SourceProduct.ArtifactId);
             // The edge SVG carries the layer as a hidden group the operator can switch on.
             Assert.IsFalse(run.Svg.Layers.Single(static layer =>
                 layer.Kind == LayeredPresentationCaptureProcessing.DeepSkyLayerKind).EnabledByDefault);
@@ -3530,7 +3531,7 @@ public sealed partial class DurableCaptureProcessingTests
                 CardinalOutputVariant = "cardinal-layer",
                 ImageCircleOutputVariant = "image-circle-layer",
                 ConstellationOutputVariant = "constellation-layer",
-                DeepSkyOutputVariant = wiring?.Scene
+                DeepSky = wiring?.Scene is { } deepSkyVariant ? new() { OutputVariant = deepSkyVariant } : null
             });
         var cloudLayer = new CloudPresentationLayerCaptureProcessingStep(
             new CaptureProcessingStepMetadata("cloud-presentation", "CloudPresentationLayer", 71),
