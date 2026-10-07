@@ -3384,12 +3384,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         // Every processing connection uses its own page cache. With a shared cache the availability reader's
         // table-level read lock on processing_outputs makes the node writer fail immediately with SQLite error 6
         // ("database table is locked") instead of coexisting with it under WAL, which stalled capture admission (#698).
+        // Private caches are still pooled, as the raw journal and lane store pooling the same file already are: an
+        // unpooled open re-read and re-parsed the whole schema before its first PRAGMA, which was the largest single
+        // CPU cost per frame (#1170). Pooled reuse carries no state between callers: the gallery rank function is
+        // re-registered per open, the window-candidate temp table is emptied before each use, and the migration temp
+        // tables are created and dropped inside the migration transaction.
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
             Mode = SqliteOpenMode.ReadWrite,
             Cache = SqliteCacheMode.Private,
-            Pooling = false,
+            Pooling = true,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         try
