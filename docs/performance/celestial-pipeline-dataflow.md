@@ -569,11 +569,11 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - `home-dev-01` steal was 307 ticks over 1,804 s (1,803.8 s; 0.014%). The busiest second, 13 ticks at 13:09:05Z, fell
     2 s before a trial started.
   - On `home-dev-02`, load1 had median 0.20 and max 0.79; busy had median 1.2%, p95 3.1% and max 10.3%.
-  - **Labelled activity on `home-dev-02`.** Other sessions did light work there during the window: one
+  - **Labelled activity on `home-dev-02`.** By the owner's account, other sessions did light work there during the window: one
     11-second scripted burst with no `dotnet`, plus `git fetch`, `git` reads and `gh` calls. The trials whose
     bounds overlap that activity are labelled, not adjusted:
 
-    | # | Activity | Overlapping trial | `home-dev-02` busy | `home-dev-01` steal |
+    | # | Activity (owner's account) | Overlapping trial | `home-dev-02` busy | `home-dev-01` steal |
     |---|---|---|---|---|
     | 1 | Scripted burst 12:55:42–12:55:52Z | None; it fell between B W2 allocation (ended 12:54:59Z) and B W2 cpu (started 12:55:53Z) | 6.3%, 10.3% (the window max) and 3.6% in the three samples covering it | 0 ticks |
     | 2 | `git` reads about 12:54:30–12:56:25Z | B W2 allocation (12:54:30–12:54:59Z overlap) and B W2 cpu (12:55:53–12:56:25Z overlap) | 1.0–3.3% outside the burst | at most 1 tick per second, in 17 seconds |

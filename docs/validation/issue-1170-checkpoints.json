@@ -88,7 +88,7 @@
             "attribution B 12:49:47Z-13:05:21Z rc=0",
             "attribution A 13:05:54Z-13:19:48Z rc=0"
           ],
-          "disclosure": "Light activity on home-dev-02 overlapped four trials, which are labelled and not adjusted: B s2-w2-night allocation and cpu (git reads about 12:54:30Z-12:56:25Z; an 11 s scripted burst at 12:55:42Z-12:55:52Z fell between them), A s2-w1-night-long allocation (git fetch 13:07:15Z) and A s2-w2-night allocation (git and gh reads 13:09:04Z-13:09:15Z). B s2-w2-night allocation, A s2-w1-night-long allocation and A s2-w2-night allocation are not outliers against their siblings. B s2-w2-night cpu: highest of 20 (+5.2%, sibling +4.1%); overlapped labelled interval 2 (the git reads); explanatory only; no verdict depends on it."
+          "disclosure": "By the owner's account, light activity on home-dev-02 overlapped four trials, which are labelled and not adjusted: B s2-w2-night allocation and cpu (git reads about 12:54:30Z-12:56:25Z; an 11 s scripted burst at 12:55:42Z-12:55:52Z fell between them), A s2-w1-night-long allocation (git fetch 13:07:15Z) and A s2-w2-night allocation (git and gh reads 13:09:04Z-13:09:15Z). B s2-w2-night allocation, A s2-w1-night-long allocation and A s2-w2-night allocation are not outliers against their siblings. B s2-w2-night cpu: highest of 20 (+5.2%, sibling +4.1%); overlapped labelled interval 2 (the git reads); explanatory only; no verdict depends on it."
         }
       ],
       "exclusions": [
