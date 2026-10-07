@@ -56,8 +56,21 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var artifact in artifacts)
         {
-            await scheduler.EnsureRequiredJobsAsync(
-                artifact.DevicePublicId, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await scheduler.EnsureRequiredJobsAsync(
+                    artifact.DevicePublicId, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+            }
+            catch (CentralArtifactIntegrityException exception)
+            {
+                // A source whose evidence fails validation is a per-artifact finding. Marking it removes it from the
+                // candidate query, so it neither aborts this pass nor leads every later window ahead of good work.
+                dbContext.ChangeTracker.Clear();
+                await CentralDerivativeSchedulingRejection.RecordAsync(
+                    dbContext, artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
+                telemetry.RecordOperation("transient-schedule", CentralDerivativeSchedulingRejection.Outcome);
+                Log.SchedulingRejected(logger, exception.ReasonCode);
+            }
         }
         if (artifacts.Count > 0)
         {
@@ -80,6 +93,7 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
                 && artifact.ObjectState == CentralArtifactObjectState.Available
                 && artifact.ReconstructionState == CentralReconstructionState.Complete
                 && artifact.Frame!.CaptureSequence != null
+                && artifact.StateReasonCode != CentralDerivativeSchedulingRejection.ReasonCode
                 && !dbContext.CentralDerivativeJobs.Any(job => job.SourceCentralArtifactId == artifact.Id &&
                     job.RecipeName == recipe.RecipeName &&
                     job.RequestedRecipeIdentitySha256 == recipe.RequestedRecipeIdentitySha256 &&
@@ -96,5 +110,9 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
         [LoggerMessage(2160, LogLevel.Information,
             "Central transient retrospective scheduling considered {ArtifactCount} source artifacts.")]
         public static partial void Scheduled(ILogger logger, int artifactCount);
+
+        [LoggerMessage(2142, LogLevel.Error,
+            "Central transient retrospective scheduling recorded a derivative scheduling rejection: ReasonCode={ReasonCode}")]
+        public static partial void SchedulingRejected(ILogger logger, string reasonCode);
     }
 }

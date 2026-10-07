@@ -427,6 +427,11 @@ processing profile, local profile and schedule identity checks intact. Historica
 viewer test modules explicitly handle `disconnect` when a capture change disposes
 the former viewer. All 33 focused GalleryDetail/W6 profile cases pass. These
 corrections change tests, with no additional production behavior or test count.
+Issue #518 later moves the effective W6 identity again, to
+`9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2`, because
+presentation producer `projected-scene-presentation-v10-resolved-footprints`
+enters the graph through its shared step version; the Unit and Manual pins move
+together and the desired, rig and profile identities are unchanged.
 
 The operator additionally directs that the goal be paused after the next #1035
 merge and cleanup, for assessment. Follow-up #1117 and further epic children

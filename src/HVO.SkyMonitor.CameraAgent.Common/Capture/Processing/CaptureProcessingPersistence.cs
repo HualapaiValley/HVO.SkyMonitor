@@ -50,8 +50,12 @@ internal sealed class CaptureProcessingPersistence(
     internal async ValueTask<StructuredProcessingProductManifestV1?> FindCommittedSceneUploadAsync(
         ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
     {
-        var candidates = await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-            SceneProvenance.RetainedProjectedSceneSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
+        var candidates = new List<DurableCaptureProduct>(2);
+        foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
+        {
+            candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
+                schemaVersion, 2, cancellationToken).ConfigureAwait(false));
+        }
         if (candidates.Count == 0) return null;
         if (candidates.Count != 1)
             throw new InvalidDataException("The capture's canonical projected scene is ambiguous.");
@@ -60,11 +64,14 @@ internal sealed class CaptureProcessingPersistence(
         return await CreateSceneUploadManifestAsync(descriptor, output, cancellationToken).ConfigureAwait(false);
     }
 
+    internal ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(Guid captureId, CancellationToken cancellationToken)
+        => _store.ReadAbandonedStandardWorkReasonAsync(captureId, cancellationToken);
+
     internal async ValueTask<StructuredProcessingProductManifestV1> CreateSceneUploadManifestAsync(
         ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
     {
         if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
-            output.ProductSchemaVersion != SceneProvenance.RetainedProjectedSceneSchemaVersion ||
+            !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
             output.Artifact.SourceArtifactIds.Count != 1 ||
             output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
             output.Capture != descriptor.Capture)

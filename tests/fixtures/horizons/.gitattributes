@@ -1,0 +1,2 @@
+# Recorded JPL Horizons responses are SHA-256 pinned; keep their bytes exact on every checkout.
+* -text whitespace=-trailing-space,-blank-at-eof

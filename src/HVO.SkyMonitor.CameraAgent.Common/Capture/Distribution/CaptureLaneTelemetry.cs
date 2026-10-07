@@ -102,6 +102,10 @@ public sealed class CaptureLaneTelemetry : IDisposable
         {
             _quarantined.Add(1, tags);
         }
+        else if (outcome == CaptureLaneHandlerOutcome.Abandoned)
+        {
+            _abandoned.Add(1, tags);
+        }
     }
 
     internal void RecordWakeup(string lane, bool required, bool queued)
@@ -159,6 +163,7 @@ public sealed class CaptureLaneTelemetry : IDisposable
         CaptureLaneHandlerOutcome.Completed => "completed",
         CaptureLaneHandlerOutcome.Deferred => "waiting",
         CaptureLaneHandlerOutcome.RetryableFailure => "retry",
+        CaptureLaneHandlerOutcome.Abandoned => "abandoned",
         _ => "terminal"
     };
 

@@ -1443,6 +1443,19 @@ internal sealed partial class CentralArtifactReconciliationService(
                 await RestoreImmediatelyDueSchedulingMarkerAsync(artifact.Id).ConfigureAwait(false);
                 throw;
             }
+            catch (CentralArtifactIntegrityException exception)
+            {
+                // Evidence that fails integrity validation while derivatives are scheduled is a per-artifact finding,
+                // not a cycle failure: the verified object is kept, the refusal is recorded durably, and the next
+                // recovery generation or an edge retry schedules again once the evidence validates.
+                db.ChangeTracker.Clear();
+                await CentralDerivativeSchedulingRejection.RecordAsync(db, artifact.Id, cancellationToken)
+                    .ConfigureAwait(false);
+                telemetry.RecordReconciled(CentralDerivativeSchedulingRejection.Outcome);
+                LogSchedulingRejected(exception.ReasonCode);
+                await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+                return completed;
+            }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
         }
         if (recordCompleted)
@@ -2129,4 +2142,8 @@ internal sealed partial class CentralArtifactReconciliationService(
     [LoggerMessage(2129, LogLevel.Error,
         "Central artifact recovery failed for one object-store record: FailureCategory={FailureCategory}")]
     private partial void LogObjectStoreRecordFailed(string failureCategory);
+
+    [LoggerMessage(2141, LogLevel.Error,
+        "Central artifact reconciliation recorded a derivative scheduling rejection: ReasonCode={ReasonCode}")]
+    private partial void LogSchedulingRejected(string reasonCode);
 }

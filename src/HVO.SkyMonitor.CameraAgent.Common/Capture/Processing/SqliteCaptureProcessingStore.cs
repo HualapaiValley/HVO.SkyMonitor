@@ -483,7 +483,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
         if (unavailable.Count == 0) return UnavailableNodeResolution.None;
         var deterministic = unavailable.All(static output =>
-            string.Equals(output.Schema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            ProjectedSceneV1.IsSupportedSchemaVersion(output.Schema));
         foreach (var output in unavailable)
         {
             using var history = connection.CreateCommand();
@@ -684,6 +684,29 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Returns why the capture's standard processing was abandoned, or <see langword="null"/> while that work can
+    /// still produce outputs. Abandoned standard work never commits a scene, so a scene-dependent consumer stops waiting.
+    /// </summary>
+    internal async ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COALESCE(work.failure_reason, 'abandoned')
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            WHERE raw.capture_id = $capture_id AND work.lane_name = 'standard' AND work.state = 'abandoned'
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]
     internal async ValueTask<IReadOnlyList<DurableCaptureProduct>> ReadCaptureProductsAsync(
         Guid captureId,
@@ -823,7 +846,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             SELECT DISTINCT capture_id
             FROM processing_outputs INDEXED BY ix_processing_outputs_product
             WHERE capture_id IN ({placeholders})
-              AND product_schema_version = 'projected-scene-v1'
+              AND product_schema_version IN ('projected-scene-v1', 'projected-scene-v2')
               AND product_kind = 'Metadata'
               AND content_identity_sha256 IS NOT NULL
               AND availability_state = 'Available'
@@ -1175,7 +1198,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await diagnostic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        var deterministic = string.Equals(productSchema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal);
+        var deterministic = ProjectedSceneV1.IsSupportedSchemaVersion(productSchema);
         using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;

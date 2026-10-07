@@ -2193,7 +2193,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                 EXISTS (
                     SELECT 1 FROM capture_lane_work
                     WHERE raw_capture_row_id = $raw
-                      AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                      AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                 OR EXISTS (
                     SELECT 1
                     FROM transient_candidate_sources s
