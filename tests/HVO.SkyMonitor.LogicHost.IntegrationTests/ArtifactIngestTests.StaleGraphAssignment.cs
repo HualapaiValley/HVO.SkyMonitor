@@ -89,6 +89,7 @@ public sealed partial class ArtifactIngestTests
         finally
         {
             await ClearStaleReconciliationStateAsync(stale.CentralArtifactId).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(stale).ConfigureAwait(false);
         }
     }
 
@@ -145,6 +146,7 @@ public sealed partial class ArtifactIngestTests
         finally
         {
             await ClearStaleReconciliationStateAsync(stale.CentralArtifactId).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(stale).ConfigureAwait(false);
         }
     }
 
@@ -294,6 +296,7 @@ public sealed partial class ArtifactIngestTests
             }
             await ClearStaleReconciliationStateAsync(stale.CentralArtifactId).ConfigureAwait(false);
             await ClearStaleReconciliationStateAsync(healthyArtifactId).ConfigureAwait(false);
+            await RetireStaleGraphCameraAsync(stale).ConfigureAwait(false);
         }
     }
 
@@ -388,6 +391,7 @@ public sealed partial class ArtifactIngestTests
             {
                 await ClearStaleReconciliationStateAsync(artifactId).ConfigureAwait(false);
             }
+            await RetireStaleGraphCameraAsync(stale[0]).ConfigureAwait(false);
         }
     }
 
@@ -697,6 +701,60 @@ public sealed partial class ArtifactIngestTests
                 .SetProperty(item => item.LeaseToken, (Guid?)null)
                 .SetProperty(item => item.LeaseExpiresAtUtc, (DateTimeOffset?)null))
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Leaves nothing of the stale camera live for later tests. The fixture's hosted worker is off, so an execution
+    /// that recovery expanded never runs: its open jobs are terminalized and the execution superseded, and every
+    /// installation of the camera is retired so no later ingest or reconciliation reaches its assignments. A live
+    /// expanded execution left behind is converged to Failed by the next test that terminalizes foreign jobs and
+    /// starts a worker, concurrently with that worker's own claims.
+    /// </summary>
+    private static async Task RetireStaleGraphCameraAsync(StaleAssignmentArtifact stale)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var installationIds = db.LogicalCameraInstallations
+            .Where(item => item.LogicalCameraId == stale.LogicalCameraId)
+            .Select(item => item.Id);
+        var executionIds = db.CentralProcessingGraphExecutions
+            .Where(item => installationIds.Contains(item.LogicalCameraInstallationId))
+            .Select(item => item.Id);
+        await db.CentralDerivativeJobs
+            .Where(job => job.GraphExecutionId != null && executionIds.Contains(job.GraphExecutionId.Value) &&
+                job.Status != CentralDerivativeJobStatus.Completed &&
+                job.Status != CentralDerivativeJobStatus.TerminalFailure &&
+                job.Status != CentralDerivativeJobStatus.Canceled &&
+                job.Status != CentralDerivativeJobStatus.Skipped &&
+                job.Status != CentralDerivativeJobStatus.Quarantined &&
+                job.Status != CentralDerivativeJobStatus.Superseded)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+            .ConfigureAwait(false);
+        // Superseded requires a CompletedAtUtc, and UpdatedAtUtc must not precede ExpandedAtUtc.
+        var retiredAtUtc = DateTimeOffset.UtcNow;
+        await db.CentralProcessingGraphExecutions
+            .Where(item => executionIds.Contains(item.Id) && item.ExpandedAtUtc != null &&
+                item.Status != CentralProcessingGraphExecutionStatus.Completed &&
+                item.Status != CentralProcessingGraphExecutionStatus.CompletedWithOptionalFailures &&
+                item.Status != CentralProcessingGraphExecutionStatus.Failed &&
+                item.Status != CentralProcessingGraphExecutionStatus.Canceled &&
+                item.Status != CentralProcessingGraphExecutionStatus.Superseded)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, CentralProcessingGraphExecutionStatus.Superseded)
+                .SetProperty(item => item.CompletedAtUtc, (DateTimeOffset?)retiredAtUtc)
+                .SetProperty(item => item.UpdatedAtUtc, retiredAtUtc))
+            .ConfigureAwait(false);
+        foreach (var installation in await db.LogicalCameraInstallations
+            .Where(item => item.LogicalCameraId == stale.LogicalCameraId && item.RetiredAtUtc == null)
+            .ToListAsync().ConfigureAwait(false))
+        {
+            installation.RetiredAtUtc = retiredAtUtc;
+            installation.RetiredByUserId = stale.OwnerUserId;
+            installation.RetirementReasonCode = "stale-graph-test-cleanup";
+        }
+        await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
     internal static string WithStaleAnnotationImplementationVersion(string definitionJson)

@@ -20,7 +20,9 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
 /// <summary>
 /// The edge view of a central graph assignment this binary cannot expand, as a recipe ImplementationVersion change
-/// leaves an operator assignment: ingest commits the upload and then fails scheduling with HTTP 500.
+/// leaves an operator assignment: ingest commits the upload and then fails scheduling with HTTP 500. The test runs its
+/// own CameraAgent host and device, so its drain uploads only that host's outbox and the shared device's backlog and
+/// central frames are neither consumed nor added to.
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
@@ -33,9 +35,13 @@ public sealed class StaleGraphAssignmentDeliveryTests
     [TestMethod]
     public async Task StaleAssignmentKeepsTheUploadRetryingAndHeldWithoutBlockingTheOutboxAndRecoversAfterReassignment()
     {
-        using var scope = Fixture.CreateCameraAgentScope();
+        var sharedHeadCutoff = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var sharedHeadBefore = ReadOutboxState(Fixture.StorageRoot, sharedHeadCutoff);
+        await using var agent = await Fixture.StartIsolatedCameraAgentAsync().ConfigureAwait(false);
+        var root = agent.StorageRoot;
+        using var scope = agent.Services.CreateScope();
         var services = scope.ServiceProvider;
-        var seeded = await SeedStaleCameraAssignmentAsync().ConfigureAwait(false);
+        var seeded = await SeedStaleCameraAssignmentAsync(agent.DeviceId).ConfigureAwait(false);
         var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
         var drainOptions = Options.Create(new CameraAgentHostOptions
         {
@@ -53,16 +59,17 @@ public sealed class StaleGraphAssignmentDeliveryTests
             // Condition 1: a raw of the stale camera is committed centrally, fails scheduling with HTTP 500, and the
             // edge keeps it as ordinary retry work: never terminal, never quarantined, and still a retention hold.
             var stale = await WaitForAsync(
-                () => FindStaleRetryAsync(seeded.InstallationId),
+                () => FindStaleRetryAsync(agent, seeded.InstallationId),
                 TimeSpan.FromSeconds(60),
-                "a stale-camera raw retrying on http-500").ConfigureAwait(false);
+                "a stale-camera raw retrying on http-500",
+                root).ConfigureAwait(false);
             Assert.AreEqual("retry", stale.Status);
             Assert.AreEqual("http-500", stale.LastReason);
             Assert.IsNull(stale.TerminalReason);
-            Assert.AreEqual(0, CountQuarantinedOnHttp500(),
+            Assert.AreEqual(0, CountQuarantinedOnHttp500(root),
                 "A stale graph assignment must never quarantine edge delivery.");
             var holds = await services.GetRequiredService<IArtifactOutbox>()
-                .GetRetentionHoldsAsync(Fixture.StorageRoot, CancellationToken.None).ConfigureAwait(false);
+                .GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(holds.Any(hold => hold.ArtifactId == stale.ArtifactId),
                 "The retrying upload must keep its local payload from retention.");
             using (var hostScope = Fixture.CreateHostScope())
@@ -80,12 +87,13 @@ public sealed class StaleGraphAssignmentDeliveryTests
             // No head-of-line block: while the stale record keeps retrying, the drain still settles other records.
             await WaitForAsync(
                 () => Task.FromResult<int?>(
-                    CountOtherSettledSince(stale.IdempotencyKey, stale.UpdatedUnixMs) is var settled and > 0
+                    CountOtherSettledSince(root, stale.IdempotencyKey, stale.UpdatedUnixMs) is var settled and > 0
                         ? settled
                         : null),
                 TimeSpan.FromSeconds(60),
-                "another record settled after the stale failure").ConfigureAwait(false);
-            Assert.AreNotEqual("acknowledged", ReadStatus(stale.IdempotencyKey),
+                "another record settled after the stale failure",
+                root).ConfigureAwait(false);
+            Assert.AreNotEqual("acknowledged", ReadStatus(root, stale.IdempotencyKey),
                 "The stale record cannot be acknowledged before the assignment is corrected.");
 
             // Condition 2: the operator correction. The edge's next attempt probes central status, which reconciles
@@ -96,9 +104,10 @@ public sealed class StaleGraphAssignmentDeliveryTests
             var recoveredRevisionId = await ReassignToCurrentRecipeRevisionAsync(seeded).ConfigureAwait(false);
             var reassignedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             await WaitForAsync(
-                () => Task.FromResult<string?>(ReadStatus(stale.IdempotencyKey) is "acknowledged" ? "acknowledged" : null),
+                () => Task.FromResult<string?>(ReadStatus(root, stale.IdempotencyKey) is "acknowledged" ? "acknowledged" : null),
                 TimeSpan.FromSeconds(60),
                 "the stale record acknowledged after reassignment",
+                root,
                 () => DescribeCentralSchedulingAsync(stale.CentralArtifactId)).ConfigureAwait(false);
             using (var hostScope = Fixture.CreateHostScope())
             {
@@ -110,19 +119,20 @@ public sealed class StaleGraphAssignmentDeliveryTests
                 Assert.IsGreaterThan(0, await db.CentralDerivativeJobs.AsNoTracking()
                     .CountAsync(item => item.GraphExecutionId == execution.Id).ConfigureAwait(false));
             }
-            Assert.AreEqual(0, CountQuarantinedOnHttp500());
+            Assert.AreEqual(0, CountQuarantinedOnHttp500(root));
 
             // Later frames of the camera ingest cleanly on the recovered revision. Each one notifies the window
             // resolver about every window it neighbours, including windows whose earlier positions have settled, so
             // ingest must never fail scheduling on a settled graph window.
             var later = await WaitForAsync(
-                async () => await ReadInstallationRecordsCreatedSinceAsync(seeded.InstallationId, reassignedUnixMs)
+                async () => await ReadInstallationRecordsCreatedSinceAsync(agent, seeded.InstallationId, reassignedUnixMs)
                     .ConfigureAwait(false) is { } records &&
                     records.Count(static record => record.Status == "acknowledged") >= 2
                         ? records
                         : null,
                 TimeSpan.FromSeconds(60),
                 "two later frames of the camera acknowledged after reassignment",
+                root,
                 () => DescribeCentralSchedulingAsync(stale.CentralArtifactId)).ConfigureAwait(false);
             Assert.IsFalse(later.Any(static record => record.LastReason == "http-500"),
                 "No frame created after reassignment may fail central scheduling.");
@@ -151,14 +161,16 @@ public sealed class StaleGraphAssignmentDeliveryTests
                 () => ReadTerminalWindowStatusesAsync(stale.CentralArtifactId),
                 TimeSpan.FromSeconds(120),
                 "the recovered execution's windows terminal",
+                root,
                 () => DescribeExecutionJobsAsync(stale.CentralArtifactId)).ConfigureAwait(false);
 
-            // Every other raw of the camera recovers the same way, so the shared outbox is left with no stale work.
+            // Every other raw of the camera recovers the same way, so no record is left retrying on the stale failure.
             await WaitForAsync(
                 () => Task.FromResult<string?>(
-                    CountRetryingOnHttp500() == 0 ? "drained" : null),
+                    CountRetryingOnHttp500(root) == 0 ? "drained" : null),
                 TimeSpan.FromSeconds(60),
-                "no record left retrying on http-500").ConfigureAwait(false);
+                "no record left retrying on http-500",
+                root).ConfigureAwait(false);
         }
         finally
         {
@@ -166,6 +178,9 @@ public sealed class StaleGraphAssignmentDeliveryTests
             drain.Dispose();
             await RetireInstallationAsync(seeded).ConfigureAwait(false);
         }
+
+        // The shared outbox is untouched: every record it held before the test is still in the same state.
+        CollectionAssert.AreEqual(sharedHeadBefore, ReadOutboxState(Fixture.StorageRoot, sharedHeadCutoff));
     }
 
     private sealed record SeededStaleCamera(
@@ -181,17 +196,17 @@ public sealed class StaleGraphAssignmentDeliveryTests
         long UpdatedUnixMs);
 
     /// <summary>
-    /// Installs a camera on the fixture device and assigns it a revision embedding an earlier Annotation
-    /// ImplementationVersion, so only the node registry rejects it. The installation predates every capture the
-    /// outbox still holds, so their frames bind to it on first ingest.
+    /// Installs a camera on the test's device and assigns it a revision embedding an earlier Annotation
+    /// ImplementationVersion, so only the node registry rejects it. The installation predates every capture of the
+    /// device, so their frames bind to it on first ingest.
     /// </summary>
-    private static async Task<SeededStaleCamera> SeedStaleCameraAssignmentAsync()
+    private static async Task<SeededStaleCamera> SeedStaleCameraAssignmentAsync(string deviceId)
     {
         using var hostScope = Fixture.CreateHostScope();
         var db = hostScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var registry = hostScope.ServiceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>();
         var registration = await db.DeviceRegistrations
-            .SingleAsync(item => item.DeviceId == Fixture.DeviceId).ConfigureAwait(false);
+            .SingleAsync(item => item.DeviceId == deviceId).ConfigureAwait(false);
         var seededAtUtc = DateTimeOffset.UnixEpoch.AddDays(-1);
         var camera = new LogicalCamera
         {
@@ -305,7 +320,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
         return revision.Id;
     }
 
-    /// <summary>Returns the fixture device to its uninstalled behaviour: a retired installation is never scheduled.</summary>
+    /// <summary>Retires the test camera's installation: a retired installation is never scheduled.</summary>
     private static async Task RetireInstallationAsync(SeededStaleCamera seeded)
     {
         using var hostScope = Fixture.CreateHostScope();
@@ -319,10 +334,11 @@ public sealed class StaleGraphAssignmentDeliveryTests
     }
 
     /// <summary>The first outbox record retrying on HTTP 500 whose central artifact is bound to the stale camera.</summary>
-    private static async Task<StaleRetry?> FindStaleRetryAsync(Guid installationId)
+    private static async Task<StaleRetry?> FindStaleRetryAsync(
+        CameraAgentIntegrationFixture.IsolatedCameraAgent agent, Guid installationId)
     {
         var candidates = new List<(string Key, Guid ArtifactId, string Status, string? LastReason, string? Terminal, long Updated)>();
-        using (var connection = OpenOutboxReadConnection())
+        using (var connection = OpenOutboxReadConnection(agent.StorageRoot))
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
@@ -352,7 +368,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
         var db = hostScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var artifactIds = candidates.Select(static item => item.ArtifactId).ToArray();
         var bound = await db.CentralArtifacts.AsNoTracking()
-            .Where(item => item.DevicePublicId == Fixture.DevicePublicId && artifactIds.Contains(item.ArtifactId) &&
+            .Where(item => item.DevicePublicId == agent.DevicePublicId && artifactIds.Contains(item.ArtifactId) &&
                 item.Frame!.LogicalCameraInstallationId == installationId)
             .Select(item => new { item.Id, item.ArtifactId })
             .ToListAsync().ConfigureAwait(false);
@@ -367,11 +383,12 @@ public sealed class StaleGraphAssignmentDeliveryTests
 
     /// <summary>Outbox records created since a moment whose central artifact is bound to the installation.</summary>
     private static async Task<IReadOnlyList<OutboxRecord>?> ReadInstallationRecordsCreatedSinceAsync(
+        CameraAgentIntegrationFixture.IsolatedCameraAgent agent,
         Guid installationId,
         long sinceUnixMs)
     {
         var records = new List<OutboxRecord>();
-        using (var connection = OpenOutboxReadConnection())
+        using (var connection = OpenOutboxReadConnection(agent.StorageRoot))
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
@@ -399,7 +416,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
         var db = hostScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var artifactIds = records.Select(static item => item.ArtifactId).ToArray();
         var bound = await db.CentralArtifacts.AsNoTracking()
-            .Where(item => item.DevicePublicId == Fixture.DevicePublicId && artifactIds.Contains(item.ArtifactId) &&
+            .Where(item => item.DevicePublicId == agent.DevicePublicId && artifactIds.Contains(item.ArtifactId) &&
                 item.Frame!.LogicalCameraInstallationId == installationId)
             .Select(item => item.ArtifactId)
             .ToListAsync().ConfigureAwait(false);
@@ -436,18 +453,18 @@ public sealed class StaleGraphAssignmentDeliveryTests
             $"{item.RecipeName}={item.Status}/{item.WaitKind}/{item.StateReasonCode}/{item.LastError}"));
     }
 
-    private static string? ReadStatus(string idempotencyKey)
+    private static string? ReadStatus(string root, string idempotencyKey)
     {
-        using var connection = OpenOutboxReadConnection();
+        using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT status FROM artifact_outbox_records WHERE idempotency_key = $key;";
         command.Parameters.AddWithValue("$key", idempotencyKey);
         return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
-    private static int CountQuarantinedOnHttp500()
+    private static int CountQuarantinedOnHttp500(string root)
     {
-        using var connection = OpenOutboxReadConnection();
+        using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COUNT(*) FROM artifact_outbox_records
@@ -456,9 +473,9 @@ public sealed class StaleGraphAssignmentDeliveryTests
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
-    private static int CountRetryingOnHttp500()
+    private static int CountRetryingOnHttp500(string root)
     {
-        using var connection = OpenOutboxReadConnection();
+        using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COUNT(*) FROM artifact_outbox_records
@@ -468,9 +485,9 @@ public sealed class StaleGraphAssignmentDeliveryTests
     }
 
     /// <summary>Other records the drain settled (acknowledged, or retried on the same stale camera) since a moment.</summary>
-    private static int CountOtherSettledSince(string idempotencyKey, long sinceUnixMs)
+    private static int CountOtherSettledSince(string root, string idempotencyKey, long sinceUnixMs)
     {
-        using var connection = OpenOutboxReadConnection();
+        using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COUNT(*) FROM artifact_outbox_records
@@ -482,9 +499,38 @@ public sealed class StaleGraphAssignmentDeliveryTests
         return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
-    private static string DescribeOutbox()
+    private sealed record OutboxRecordState(
+        string IdempotencyKey, string Status, string? LastReason, long AttemptCount, long CreatedUnixMs);
+
+    /// <summary>The settlement state of every record an outbox created before a moment, in key order.</summary>
+    private static List<OutboxRecordState> ReadOutboxState(string root, long createdBeforeUnixMs)
     {
-        using var connection = OpenOutboxReadConnection();
+        using var connection = OpenOutboxReadConnection(root);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT idempotency_key, status, last_reason, attempt_count, created_unix_ms
+            FROM artifact_outbox_records
+            WHERE created_unix_ms < $before
+            ORDER BY idempotency_key;
+            """;
+        command.Parameters.AddWithValue("$before", createdBeforeUnixMs);
+        using var reader = command.ExecuteReader();
+        var records = new List<OutboxRecordState>();
+        while (reader.Read())
+        {
+            records.Add(new OutboxRecordState(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4)));
+        }
+        return records;
+    }
+
+    private static string DescribeOutbox(string root)
+    {
+        using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT status, COALESCE(last_reason, '-'), COUNT(*), MAX(attempt_count)
@@ -502,11 +548,11 @@ public sealed class StaleGraphAssignmentDeliveryTests
         return string.Join(", ", groups);
     }
 
-    private static SqliteConnection OpenOutboxReadConnection()
+    private static SqliteConnection OpenOutboxReadConnection(string root)
     {
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db"),
+            DataSource = Path.Combine(root, "outbox", "artifact-outbox.db"),
             Mode = SqliteOpenMode.ReadOnly,
             DefaultTimeout = 5,
             Pooling = false
@@ -516,7 +562,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
     }
 
     private static async Task<T> WaitForAsync<T>(
-        Func<Task<T?>> observe, TimeSpan timeout, string expectation, Func<Task<string>>? diagnose = null)
+        Func<Task<T?>> observe, TimeSpan timeout, string expectation, string root, Func<Task<string>>? diagnose = null)
     {
         var stopwatch = Stopwatch.StartNew();
         while (true)
@@ -529,7 +575,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
             {
                 var central = diagnose is null ? string.Empty : " Central: " + await diagnose().ConfigureAwait(false);
                 Assert.Fail(
-                    $"Not observed within {timeout}: {expectation}. Outbox: {DescribeOutbox()}.{central}");
+                    $"Not observed within {timeout}: {expectation}. Outbox: {DescribeOutbox(root)}.{central}");
             }
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
         }

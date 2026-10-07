@@ -660,6 +660,8 @@ public sealed partial class CentralDerivativeWindowIntegrationTests
 
         public IServiceProvider Services => _factory.Services;
 
+        public string ConnectionString => _connection;
+
         public static async Task<IsolatedWindowHost> CreateAsync()
         {
             var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
