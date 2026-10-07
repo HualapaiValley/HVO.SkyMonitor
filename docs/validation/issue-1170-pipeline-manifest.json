@@ -13,9 +13,19 @@
     "S1 is the unchanged #1106 manifest run by docs/validation/issue-1106-qualification.sh with DOTNET_TieredCompilation=0, for comparability with the #1106 evidence. S2-S4 run with production runtime defaults (tiered compilation and dynamic PGO on) and record every DOTNET_* variable. The tc0-side-cell profile is labelled and is never production latency.",
     "Each S2/S4 trial is a separate process with 5 warm-up and 30 measured operations. Trial medians are reported as median/min/max across trials; p95 is reported per trial and pooled across all measured operations, never from trial medians.",
     "Measurement runs attach no collector. Attribution runs attach dotnet-trace (EventPipe) through the harness PID handshake; collector overhead is the attribution trial against the measurement trial median of the same cell. perf is used only where unprivileged sampling works; otherwise the index records it as unavailable with the host's perf_event_paranoid value.",
-    "Heavy work is serialized by flock -o on /tmp/hvo-1170-heavy.lock (#520 addendum 003) with MSBUILDDISABLENODEREUSE=1, UseSharedCompilation=false and UseRazorBuildServer=false, runs dotnet build-server shutdown before S1 and before every measured trial, and is gated on the one-minute load average; tenants are recorded, not paused.",
+    "Heavy work is serialized by flock -o on /tmp/hvo-1170-heavy.lock (#520 addendum 003) with MSBUILDDISABLENODEREUSE=1, UseSharedCompilation=false and UseRazorBuildServer=false, never runs dotnet build-server shutdown (#520 addendum 004), and is gated on the one-minute load average; tenants are recorded, not paused.",
     "Regression rule (after against baseline, same cell and profile): median-of-trial-medians above max(5%, baseline trial-median spread); allocated bytes above 1%; any full-frame copy increase; peak RSS above max(5%, 32 MiB); any S4 drain increase. Unexplained regression blocks merge.",
     "A harness failure is retained and reported; the runner exits nonzero after all processes finish."
+  ],
+  "methodAmendments": [
+    {
+      "field": "buildServerShutdown",
+      "baseline": { "revision": "d942bd86892418d96260c26580ecc454bcb9f5c5", "buildServerShutdown": true,
+                    "cause": "#520 addendum 003 line 20 required dotnet build-server shutdown before S1 and before every measured trial; the baseline S1 and measure packs ran under it." },
+      "after": { "buildServerShutdown": false,
+                 "cause": "#520 addendum 004 withdrew it on every host because it stops every session's build servers; the runner no longer calls it." },
+      "control": "A W2 control pack at d942bd86 plus only this amendment, product source byte-identical to productBase, is compared against the baseline W2 cell before after is compared against baseline."
+    }
   ],
   "loadGate": { "oneMinuteBelow": 0.5, "maxWaitSeconds": 1800 },
   "trials": 5,

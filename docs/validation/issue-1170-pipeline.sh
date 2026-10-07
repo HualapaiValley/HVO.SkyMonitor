@@ -14,7 +14,8 @@
 # The heavy lock follows #520 addendum 003: the script re-executes itself under `flock -o`, so only flock holds
 # the lock and no child (dotnet test, MSBuild nodes, build servers) inherits it or outlives the run holding it.
 # MSBuild node reuse and the compiler and Razor build servers are disabled for every build and test the run
-# starts, and `dotnet build-server shutdown` runs before S1 and before every measured trial.
+# starts, so it leaves no server of its own behind. It never runs `dotnet build-server shutdown`, which stops
+# every session's servers on the host (#520 addendum 004, withdrawing addendum 003's per-trial shutdown).
 # Every process must pass exactly one test and write its evidence; a filter that selects nothing is a
 # failure, never a skip. Failures are kept in the pack and the script exits nonzero once all processes
 # have finished. The pack gets an index, SHA256SUMS and a .tar.zst with its own hash beside it.
@@ -57,8 +58,6 @@ mkdir -p "$work" || exit 2
 utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 load1() { cut -d' ' -f1 /proc/loadavg; }
 tenants() { { utc; cat /proc/loadavg; ps -eo pid,user,pcpu,rss,etimes,comm --sort=-pcpu | head -25; } >"$1"; }
-# Stops build servers left by earlier builds so they are neither tenants nor part of CPU and memory snapshots.
-shutdown_build_servers() { dotnet build-server shutdown >"$1" 2>&1 || fatal "dotnet build-server shutdown failed; see $1"; }
 threshold=$(jq -r .loadGate.oneMinuteBelow "$manifest"); max_wait=$(jq -r .loadGate.maxWaitSeconds "$manifest")
 # Waits for the one-minute load to fall below the manifest threshold; prints the seconds waited.
 gate() {
@@ -96,13 +95,12 @@ host=$(jq -n --arg kernel "$(uname -sr)" --arg cpu "$(lscpu | sed -n 's/^Model n
       memTotal: $memory, swapTotal: $swap, sdk: $sdk, governor: $governor, perf: $perf,
       dotnetTrace: (if $trace == "" then null else $trace end), callerDotnetVariables: $dotnetvars,
       heavyLock: {path: "/tmp/hvo-1170-heavy.lock", form: "flock -o", buildVariables: $buildvars,
-                  buildServerShutdown: "before S1 and before every measured trial"}}') || fatal "could not record host"
+                  buildServerShutdown: false}}') || fatal "could not record host"
 
 results='[]'; failed=0
 record() { results=$(jq --argjson run "$1" '. + [$run]' <<<"$results") || fatal "could not record run"; }
 
 if [[ "$mode" == s1 ]]; then
-    shutdown_build_servers "$out/runs/s1-build-server-shutdown.log"
     waited=$(gate); before=$(load1); started=$(utc); seconds=$SECONDS
     "$repo/docs/validation/issue-1106-qualification.sh" "$out/s1" >"$out/runs/s1.log" 2>&1
     rc=$?; [[ $rc -eq 0 ]] || failed=1
@@ -141,7 +139,6 @@ else
                 name=$cell-t$trial${collector:+-$collector}; dir="$out/runs/$name"; mkdir -p "$dir"
                 extra=(); [[ "$profile" == tc0-side-cell ]] && extra+=(DOTNET_TieredCompilation=0)
                 [[ -n "$collector" ]] && { mkdir "$dir/attach"; extra+=(HVO_PIPELINE_ATTACH_DIR="$dir/attach"); }
-                shutdown_build_servers "$dir/build-server-shutdown.log"
                 waited=$(gate); before=$(load1); tenants "$dir/tenants-before.txt"
                 started=$(utc); seconds=$SECONDS
                 echo "=== $name $started load=$before waited=${waited}s"
