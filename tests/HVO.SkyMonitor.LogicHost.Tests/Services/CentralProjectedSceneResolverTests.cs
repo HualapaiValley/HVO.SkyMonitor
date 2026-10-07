@@ -163,6 +163,102 @@ public sealed class CentralProjectedSceneResolverTests
             frame, CancellationToken.None)).ConfigureAwait(false);
     }
 
+    // Every edge stamps the rig calibration version as the scene's projection version while its provenance names the
+    // rig projection algorithm, so a calibration other than the algorithm name must still select. A scene whose
+    // projection version is neither the provenance algorithm nor its own calibration is a genuine mismatch.
+    [TestMethod]
+    [DataRow("virtual-fisheye-180-equidistant-v1", "virtual-fisheye-180-equidistant-v1", "virtual-fisheye-180-equidistant-v1", true,
+        DisplayName = "edge convention with the sample calibration")]
+    [DataRow("unspecified", "unspecified", "unspecified", true, DisplayName = "edge convention with the default calibration")]
+    [DataRow("rig-projection-v2", "calibration-v1", "calibration-v1", true, DisplayName = "scene names the provenance algorithm")]
+    [DataRow("rig-projection-v1", "calibration-v1", "calibration-v1", false, DisplayName = "different projection algorithm")]
+    [DataRow("calibration-v1", "calibration-v1", "calibration-v2", false, DisplayName = "different calibration")]
+    [DataRow("calibration-v1", "calibration-v1", null, false, DisplayName = "calibration convention without provenance calibration")]
+    public async Task SelectionAcceptsTheEdgeProjectionVersionConventionAndRejectsAGenuineMismatch(
+        string sceneProjectionVersion, string sceneCalibrationVersion, string? provenanceCalibrationVersion, bool accepted)
+    {
+        await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
+        var utc = raw.Descriptor.Timing.ExposureStartedUtc;
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
+        ])).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+            new ProjectionContext(ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2,
+                ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
+                new string('C', 64), "test", "v1"), projectionVersion: sceneProjectionVersion)).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(2, 2),
+            new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId,
+                raw.IdempotencyKey), sceneCalibrationVersion, visible.Request.ProjectionVersion);
+        var provenance = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
+            scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", RigProjectionContextFactory.AlgorithmVersion,
+            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: utc, EphemerisModelVersion: scene.EphemerisModelVersion,
+            ProjectionCalibrationVersion: provenanceCalibrationVersion).WithoutProjectedGeometry();
+        var payload = ProjectedSceneJson.Serialize(scene);
+        var recipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene, "1.0.0", "fixture",
+            JsonSerializer.SerializeToElement(new { }));
+        var identity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "projected-scene",
+            ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256, [raw.Descriptor.Artifact.ArtifactId]);
+        var artifactDescriptor = new ArtifactDescriptor(ProcessingIdentity.CreateArtifactId(identity),
+            FrameArtifactRole.Metadata, "scene", "projected-scene", utc, [raw.Descriptor.Artifact.ArtifactId],
+            recipe, StructuredProcessingProductContracts.ProjectedSceneMediaType, PayloadChecksum.ComputeSha256(payload));
+        var descriptor = new StructuredProcessingProductDescriptorV1(raw.Descriptor, artifactDescriptor, identity,
+            [new("projected-scene", "fixture")], new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+            raw.Descriptor.Controls.EffectiveExposure.Ticks, payload.Length, ProcessingProductKind.Metadata,
+            scene.SchemaVersion, scene.SceneIdentitySha256);
+        var frame = new CentralFrame
+        {
+            FrameId = raw.Descriptor.Capture.CaptureId,
+            SceneProvenanceJson = JsonSerializer.Serialize(provenance, JsonSerializerOptions.Web)
+        };
+        var artifact = new CentralArtifact
+        {
+            Frame = frame,
+            CentralFrameId = frame.Id,
+            ArtifactId = artifactDescriptor.ArtifactId,
+            Role = FrameArtifactRole.Metadata,
+            MediaType = artifactDescriptor.MediaType,
+            ByteLength = payload.Length,
+            ChecksumSha256 = artifactDescriptor.ChecksumSha256,
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        };
+        artifact.StructuredProduct = new CentralStructuredProcessingProduct
+        {
+            Artifact = artifact,
+            CentralArtifactId = artifact.Id,
+            ContentIdentitySha256 = scene.SceneIdentitySha256,
+            DescriptorJson = Encoding.UTF8.GetString(StructuredProcessingProductManifestJson.SerializeDescriptor(descriptor))
+        };
+        db.Add(artifact);
+        db.Add(new CentralArtifact
+        {
+            Frame = frame,
+            CentralFrameId = frame.Id,
+            ArtifactId = raw.Descriptor.Artifact.ArtifactId,
+            Role = FrameArtifactRole.Raw,
+            IdempotencyKey = raw.IdempotencyKey,
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var resolver = new CentralProjectedSceneResolver(db, new SceneReader(payload));
+
+        if (!accepted)
+        {
+            var rejected = await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.SelectAsync(
+                frame, CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual("projected-scene.source-mismatch", rejected.ReasonCode);
+            return;
+        }
+        var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(selected);
+        var resolved = await resolver.ResolveAsync(selected.Reference, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(selected.Annotation.ProvenanceSha256, resolved.ProvenanceSha256);
+    }
+
     private sealed class SceneReader(byte[] payload) : ICentralArtifactObjectReader
     {
         internal int ReadCount { get; private set; }

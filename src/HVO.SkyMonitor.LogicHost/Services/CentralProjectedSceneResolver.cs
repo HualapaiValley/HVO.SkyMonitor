@@ -207,6 +207,12 @@ internal sealed class CentralProjectedSceneResolver(
             scene.ImageTransform.OutputHeightPixels != raw.Layout.Height)
             throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
         if (provenance is null) return;
+        // Edges stamp the rig calibration version as the scene's projection version while provenance names the rig
+        // projection algorithm, so either is a legitimate scene projection version for that provenance.
+        var projectionVersionMatches = scene.Projection.AlgorithmVersion == provenance.ProjectionAlgorithmVersion ||
+            provenance.ProjectionCalibrationVersion is not null &&
+            scene.Projection.AlgorithmVersion == scene.Projection.CalibrationVersion &&
+            scene.Projection.CalibrationVersion == provenance.ProjectionCalibrationVersion;
         if (scene.EffectiveUtc != provenance.SceneUtc ||
             scene.Catalog.Name != provenance.CatalogName || scene.Catalog.Version != provenance.CatalogVersion ||
             !string.Equals(scene.Catalog.ChecksumSha256, provenance.CatalogChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
@@ -215,7 +221,7 @@ internal sealed class CentralProjectedSceneResolver(
             provenance.CatalogSchemaVersion is not null && scene.Catalog.SchemaVersion != provenance.CatalogSchemaVersion ||
             provenance.CatalogPreprocessingVersion is not null && scene.Catalog.PreprocessingVersion != provenance.CatalogPreprocessingVersion ||
             !string.Equals(scene.Projection.Model.ToString(), provenance.ProjectionModel, StringComparison.OrdinalIgnoreCase) ||
-            scene.Projection.AlgorithmVersion != provenance.ProjectionAlgorithmVersion ||
+            !projectionVersionMatches ||
             provenance.ProjectionCalibrationVersion is not null && scene.Projection.CalibrationVersion != provenance.ProjectionCalibrationVersion ||
             scene.AstronomyAlgorithmVersion != provenance.AstronomyAlgorithmVersion ||
             scene.EphemerisModelVersion != provenance.EphemerisModelVersion ||
