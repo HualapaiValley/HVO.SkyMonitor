@@ -461,6 +461,8 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
 
   - Each holder released on the driver's done marker, after the last timing trial. No cell ran outside a held
     window.
+  - The caps are the holder's invocation arguments. `holder.log` does not record them, and no cap took effect,
+    because every hold ended with `reason=done`.
   - In (a), one `home-dev-02` sample exceeded 10% busy: 12.3% in the 5 s ending 11:43:07Z, inside pair 11 arm
     A's trial 5 (11:42:58–11:43:12Z). Pair 11 shows no resolvable change.
   - During the pairs, six seconds had 10 or more steal ticks, all in (b) and (c). Each was checked against the
@@ -536,17 +538,23 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   Every range overlaps between the arms, and all 30 operations complete in every trial.
 - **S1.** S1 is output identity only; its timings are not evidence. It ran three times:
   - A, 09:22:49–09:43:56Z, rc=1. This run is the record and is unchanged. It failed the #1106 4× wall-clock gate
-    on `measured-stars-held-out` 01-mono-bin2: v2 took 64 ms against v1's 12 ms (5.3×). Every output assertion
-    passed.
+    on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
+    the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
     - The run was outside a quiet window. `home-dev-02` was the probable co-resident host, and #526's Tier C
-      held its lock, with load 15.67/14.83/10.37 at 09:43:09Z.
-    - The gate has only about 1.2–1.4× headroom on this host. The headroom belongs to the #520 software envelope,
+      held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z. No sampler ran in
+      this window, so no retained record holds that reading.
+    - The gate has only about 1.2–1.4× headroom on this host (4× over the A r2 ratios below). The headroom belongs to the #520 software envelope,
       and neither the gate nor the test is changed here.
   - B, 09:43:56–10:04:02Z, rc=0, also outside a quiet window.
   - A r2, in window (a), rc=0 with all 16 runs passed. It is an additional sample, not a replacement.
     - Loads at its start: `home-dev-01` 0.02/0.03/0.18, `home-dev-02` 0.17/0.95/2.46.
-    - The same bin2 ratios read 3.3× (01-mono-bin2, 36 ms against 11 ms), 3.6×, 3.2×, 3.4×, 2.8× and 3.4×.
-      The rc=1 run read 5.3×, 3.8×, 3.8×, 3.5×, 3.1× and 2.1×.
+    - The bin2 ratios, each computed from the unrounded `measurementMs` and rounded once:
+
+      | Run | 01-mono-bin2 | 01-mono-roi-bin2 | 05-mono-bin2 | 05-mono-roi-bin2 | 09-mono-bin2 | 09-mono-roi-bin2 |
+      |---|---:|---:|---:|---:|---:|---:|
+      | A r2 | 3.4× (36.297 / 10.822 ms) | 3.5× | 3.2× | 3.3× | 2.8× | 3.3× |
+      | A (rc=1) | 5.4× (64.251 / 11.952 ms) | 3.6× | 3.7× | 3.6× | 3.0× | 2.1× |
+
     - The reading is that the gate is load-sensitive.
   - Identity:
     - A r2 against B is **identical**: 0 differences. Each of the 118 ignored leaf keys is a timing,
@@ -557,9 +565,9 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   trial per cell and collector ran at each arm in a separate quiet window, B then A, on `home-dev-01` only.
   `home-dev-02`'s heavy lock was held from 12:49:35Z to 13:19:57Z with a 50-minute cap.
   - B 12:49:47–13:05:15Z and A 13:05:54–13:19:42Z. Both arms passed.
-  - `home-dev-01` steal was 307 ticks over 1,803 s (0.014%). The busiest second, 13 ticks at 13:09:05Z, fell
+  - `home-dev-01` steal was 307 ticks over 1,804 s (1,803.8 s; 0.014%). The busiest second, 13 ticks at 13:09:05Z, fell
     2 s before a trial started.
-  - On `home-dev-02`, load1 had median 0.20 and max 0.79; busy had median 1.2%, p95 3.0% and max 10.3%.
+  - On `home-dev-02`, load1 had median 0.20 and max 0.79; busy had median 1.2%, p95 3.1% and max 10.3%.
   - **Labelled activity on `home-dev-02`.** Other sessions did light work there during the window: one
     11-second scripted burst with no `dotnet`, plus `git fetch`, `git` reads and `gh` calls. The trials whose
     bounds overlap that activity are labelled, not adjusted:
@@ -603,9 +611,12 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
     - Running totals agree within 1.2%. One trial per arm can't resolve a change, so no frame difference is
       claimed in either direction.
     - One direction is consistent, however. SQLite prepare is higher at B in all five cells, by 11 to 26 ms per
-      trace (4.5% to 12.9%), and #518 changed the SQLite processing and raw-ingress stores. The difference is under
+      trace (4.3% to 12.9%), and #518 changed the SQLite processing and raw-ingress stores. The difference is under
       0.5% of running time in every cell. The pairs, which are the record, show no resolvable change in any cell.
-    - No `SolarDisk` frame appears in any trace, as the `renderSolarSystemDisks` exclusion predicts.
+    - No `SolarDisk` frame appears in any of the ten `cpu` traces, as the `renderSolarSystemDisks` exclusion
+      predicts. The check covers each trace's full frame set (2,196–2,374 distinct frames), not only the
+      top-200 rankings in `oncpu.json`, and those sets do hold the VirtualSky and planet-ephemeris frames. A
+      sampled trace shows that no such frame was on-CPU at any sample. It can't prove the code never ran.
 
 ### Comparator corrections (reviews r0 to r2)
 
@@ -904,23 +915,39 @@ at the revision that records the checkpoint, this checks that every cited pack w
 manifest and still matches its recorded hashes, then re-runs the comparison:
 
 ```bash
-E=~/development-state/HVO.SkyMonitor/evidence/1170 id=cp-518
-m=$(sha256sum < docs/validation/issue-1170-pipeline-manifest.json | cut -d' ' -f1)
-jq -r --arg id "$id" '.checkpoints[] | select(.id == $id) | .evidence[]
-    | [.pack, .manifestSha256, .archiveSha256, .sha256SumsSha256] | @tsv' docs/validation/issue-1170-checkpoints.json |
+(
+set -euo pipefail
+E=~/development-state/HVO.SkyMonitor/evidence/1170 id=${ID:-cp-518}
+S=${S:-docs/validation/issue-1170-checkpoints.json} M=docs/validation/issue-1170-pipeline-manifest.json
+m=$(sha256sum < "$M" | cut -d' ' -f1)
+# Exactly one checkpoint with that id, with at least one cited pack.
+[[ $(jq --arg id "$id" '[.checkpoints[] | select(.id == $id and (.evidence | length) > 0)] | length' "$S") == 1 ]] ||
+    { echo "FAIL checkpoint $id"; exit 1; }
+rows=$(jq -er --arg id "$id" '.checkpoints[] | select(.id == $id) | .evidence[]
+    | [.pack, .manifestSha256, .archiveSha256, .sha256SumsSha256] | @tsv' "$S")
+n=0 bad=0
 while IFS=$'\t' read -r pack ms archive sums; do
-    d=$E/$pack
+    d=$E/$pack n=$((n + 1))
     if [[ $ms == "$m" && $(jq -r .manifestSha256 "$d/index.json") == "$m" &&
           $(sha256sum < "$d.tar.zst" | cut -d' ' -f1) == "$archive" &&
           $(sha256sum < "$d/SHA256SUMS" | cut -d' ' -f1) == "$sums" ]] &&
-       (cd "$d" && sha256sum --quiet -c SHA256SUMS); then echo "ok $pack"; else echo "FAIL $pack"; fi
-done
+       (cd "$d" && sha256sum --quiet -c SHA256SUMS); then echo "ok $pack"; else echo "FAIL $pack"; bad=$((bad + 1)); fi
+done <<< "$rows"
+echo "packs=$n failed=$bad"
+((n > 0 && bad == 0)) || exit 1
 # The cp518 directory also holds the attribution packs, which pairs would report as incomplete slots, so the
 # comparison reads a scratch root that links only the interleaved slots.
-r=$(mktemp -d); ln -s "$E"/cp518/[0-9][0-9]-* "$r"/
+r=$(mktemp -d); trap 'rm -rf "$r"' EXIT
+ln -s "$E"/cp518/[0-9][0-9]-* "$r"/
 python3 -I docs/validation/issue-1170-interleaved.py pairs "$r" "$r.pairs.json" \
-    "$(jq -r '[.cells[].id] | join(",")' docs/validation/issue-1170-pipeline-manifest.json)"
+    "$(jq -r '[.cells[].id] | join(",")' "$M")"
+)
 ```
+
+The block runs in a subshell and exits nonzero if the checkpoint is missing or empty, if any pack fails, or if
+the comparison fails. The comparison runs only after every pack verifies. Two negative checks must exit 1:
+`ID=cp-none`, and `S="$t"` after
+`t=$(mktemp); jq '.checkpoints[0].evidence[0].archiveSha256 = "'"$(printf '0%.0s' {1..64})"'"' docs/validation/issue-1170-checkpoints.json > "$t"`.
 
 Attribution needs `dotnet-trace` installed outside the repository tool manifest, in the directory named by
 `HVO_1170_TOOLS` (default `~/.local/share/hvo-1170-tools`):
@@ -1085,7 +1112,8 @@ Samplers:
   - `hd02-load-bc.txt`: `6676026e0931457a9d67bc1a94e7936591fe1420c6a8cf5ba2db85c498340b52`
   - `hd02-load-attr.txt`: `53ab28b464cfd8e0335a1b5c7783d8eb6485a87c4145b772fe6d7e97b79acaaf`
   - The columns are epoch seconds, the three load averages, cumulative busy jiffies (user, nice, system, irq,
-    softirq) and cumulative idle plus iowait jiffies. Busy is Δbusy / (Δbusy + Δidle).
+    softirq) and cumulative idle plus iowait jiffies. Busy is Δbusy / (Δbusy + Δidle) between consecutive
+    samples, and p95 is the nearest-rank 95th percentile of those intervals.
   - The holder script is `holder.sh` (`8e32715fc35fc367f3389a83dc494b3989d626934a944f735a4ce8fcc0db4da2`), and
     its acquire and release log is `holder.log` (`ab983d43aff116a8e67b8b23acf51630f6073610f49e261414f02410082b0791`).
 
@@ -1098,6 +1126,10 @@ Analysis outputs are in `cp518-analysis/` beside the packs:
   explanatory only, and was produced by `attribution/attr.py`
   (`b659c24417e57cac12584b30ceeef30109e26278d6e1de08854188fe3bc5ea8c`).
   `metrics.sh` accepts only measure packs, so it does not apply to the attribution packs.
+- `attribution/frames/`: the distinct frame names of each `cpu` trace, one `<arm>-<cell>.frames.txt` per trace,
+  with `SHA256SUMS` (`3ba587c0ab4cbe67fab81f5d8f13e2618a77eac18b3d9a28d478d57afd7c59ff`). Each list comes from
+  a scratch copy of the pack's `trace.nettrace`, converted with
+  `dotnet-trace convert --format Speedscope` (10.0.745401) and reduced to the sorted `shared.frames[].name` set.
 
 The driver scripts and logs are in `run-cp518/`. These drivers produced the cited packs:
 - `prof.sh` (the S1 A and B runs in the `prof` slot): `0e7837cb6b546bf5e03daa797179c241163ef2e779377963c27a47de67ede9dd`
