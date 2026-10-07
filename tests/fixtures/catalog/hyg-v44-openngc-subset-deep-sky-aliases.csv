@@ -14,6 +14,7 @@ C65,NGC0253,caldwell
 "ESO 474-029",NGC0253,identifier
 "ESO-LV 474-0290",NGC0253,identifier
 "Eps Ori",NGC1990,identifier
+"Great Orion Nebula",NGC1976,common
 "HD 037128",NGC1990,identifier
 "HD 037903",NGC2023,identifier
 "HIP 26311",NGC1990,hipparcos
@@ -25,16 +26,23 @@ C65,NGC0253,caldwell
 "IRAS 14013+5435",NGC5457,identifier
 "IRAS 15051+5557",NGC5866,identifier
 "LBN 954",NGC2023,identifier
+"LBN 974",NGC1976,identifier
 "Little Dumbbell Nebula",NGC0650,common
 M101,NGC5457,messier
 M102,NGC5457,disputed
 M31,NGC0224,messier
 M40,M040,designation
+M42,NGC1976,messier
+M45,Mel022,messier
 M76,NGC0650,messier
 "MCG +07-02-016",NGC0224,identifier
 "MCG +09-23-028",NGC5457,identifier
 "MCG +09-25-017",NGC5866,identifier
 "MCG -04-03-009",NGC0253,identifier
+"MWSC 0305",Mel022,identifier
+"MWSC 0582",NGC1976,identifier
+"Mel 22",Mel022,designation
+"NGC 1976",NGC1976,designation
 "NGC 1990",NGC1990,designation
 "NGC 2023",NGC2023,designation
 "NGC 224",NGC0224,designation
@@ -43,11 +51,13 @@ M76,NGC0650,messier
 "NGC 5866",NGC5866,designation
 "NGC 650",NGC0650,designation
 "NGC 651",NGC0650,duplicate
+"Orion Nebula",NGC1976,common
 "PGC 002557",NGC0224,identifier
 "PGC 002789",NGC0253,identifier
 "PGC 050063",NGC5457,identifier
 "PGC 053933",NGC5866,identifier
 "PN G130.9-10.5",NGC0650,identifier
+Pleiades,Mel022,common
 "SDSS J140312.52+542056.2",NGC5457,identifier
 "Sculptor Filament",NGC0253,common
 "Silver Coin",NGC0253,common

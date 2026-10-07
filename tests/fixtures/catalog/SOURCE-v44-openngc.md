@@ -37,8 +37,8 @@ is complete.
 - `hyg-v44-openngc-subset-star-aliases.csv` holds every star alias naming one of
   those 17 stars.
 - `hyg-v44-openngc-subset-deep-sky-objects.csv` holds the deep-sky objects
-  `M040`, `NGC0224`, `NGC0253`, `NGC0650`, `NGC1990`, `NGC2023`, `NGC5457` and
-  `NGC5866`.
+  `M040`, `Mel022`, `NGC0224`, `NGC0253`, `NGC0650`, `NGC1976`, `NGC1990`,
+  `NGC2023`, `NGC5457` and `NGC5866`.
 - `hyg-v44-openngc-subset-deep-sky-aliases.csv` holds every deep-sky alias
   naming one of those objects.
 - `hyg-v44-openngc-subset-deep-sky-tombstones.csv` holds the tombstones
@@ -48,7 +48,9 @@ is complete.
 
 The objects were chosen to exercise these behaviours:
 
-- **Messier identity:** M31 is NGC 224 and carries its common name.
+- **Messier identity:** M31 is NGC 224 and carries its common name. M42 is
+  NGC 1976, the Orion Nebula. M45 is Mel 22, the Pleiades, whose primary
+  designation is not an NGC or IC number.
 - **The disputed Messier 102:** M101 is NGC 5457, and `M102` is its disputed
   alias. NGC 5866, the competing identification, carries no `M102` alias.
 - **A double star with a Messier label:** M40 is a `**` row from the OpenNGC
@@ -57,10 +59,12 @@ The objects were chosen to exercise these behaviours:
   so the star and the deep-sky row share Hipparcos ID 26311.
 - **A Caldwell identifier and common names:** NGC 253 is C65.
 - **Extents:** M31, NGC 253, M101 and NGC 5866 have both axes and a position
-  angle. M76 (NGC 650) has only a major axis. NGC 2023 has unequal axes and no
-  position angle.
+  angle. M76 (NGC 650) has only a major axis. M45 has equal axes and a position
+  angle. M42 and NGC 2023 have unequal axes and no position angle.
 - **A resolved duplicate:** NGC 651 is a duplicate alias of NGC 650.
 - **Outlines:** NGC 650 has outlines at levels 1, 2 and 3, and its level-3
+  outline has two rings. M45 has outlines at levels 1, 2 and 3, and its level-2
+  outline has two rings. M42 has outlines at levels 1, 2 and 3, and its level-3
   outline has two rings. NGC 2023 has outlines only at levels 2 and 3.
 - **Tombstones:** IC 67 and NGC 412 are nonexistent objects.
 

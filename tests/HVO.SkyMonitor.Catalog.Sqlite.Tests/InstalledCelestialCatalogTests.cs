@@ -188,7 +188,7 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual(17L, health.Data["RowCount"]);
         Assert.AreEqual(snapshot.DeepSkyCounts!.ObjectCount, health.Data["DeepSkyObjectCount"]);
         Assert.AreEqual(snapshot.DeepSkyCounts.OutlineObjectCount, health.Data["DeepSkyOutlineObjectCount"]);
-        Assert.AreEqual(8L, health.Data["DeepSkyObjectCount"]);
+        Assert.AreEqual(10L, health.Data["DeepSkyObjectCount"]);
     }
 
     [TestMethod]

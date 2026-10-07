@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 [DoNotParallelize]
 internal sealed class HygV44OpenNgcCatalogTests
 {
-    private const string FixtureChecksum = "1459299e1592b0770e6fef263f8abbe028796c7f89e989e19de8d162a22bf6e0";
+    private const string FixtureChecksum = "42590e36f804b30e444d917ca188f35287684584d1b741838ed297446bd669c8";
     private const string FixtureCatalogId = "hyg-v44-openngc-fixture";
     private const string SnapshotVersion = "hyg-v44-openngc-fixture-1";
     private const string DatabaseFile = "hyg_v44_openngc.sqlite";
@@ -23,14 +23,17 @@ internal sealed class HygV44OpenNgcCatalogTests
     private static readonly string SchemaThreeFixturePath =
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite");
 
-    // Eight objects, two tombstones, and outlines for NGC 650 (levels 1-3, two rings at level 3) and NGC 2023
-    // (levels 2-3); SOURCE-v44-openngc.md records the selection.
+    // Ten objects, two tombstones, and outlines for NGC 650 (levels 1-3, two rings at level 3), M45 (levels 1-3, two
+    // rings at level 2), M42 (levels 1-3, two rings at level 3) and NGC 2023 (levels 2-3); SOURCE-v44-openngc.md
+    // records the selection.
     private static readonly CatalogDeepSkyCounts FixtureCounts =
-        new(8, 59, 2, 2, 5, 6, 679);
+        new(10, 69, 2, 4, 11, 14, 3357);
     private static readonly string[] FixtureObjectIds =
-        ["M040", "NGC0224", "NGC0253", "NGC0650", "NGC1990", "NGC2023", "NGC5457", "NGC5866"];
-    private static readonly int[] LittleDumbbellLevels = [1, 2, 3];
+        ["M040", "Mel022", "NGC0224", "NGC0253", "NGC0650", "NGC1976", "NGC1990", "NGC2023", "NGC5457", "NGC5866"];
+    private static readonly int[] AllLevels = [1, 2, 3];
     private static readonly int[] LittleDumbbellRingCounts = [1, 1, 2];
+    private static readonly int[] PleiadesRingCounts = [1, 2, 1];
+    private static readonly int[] OrionNebulaRingCounts = [1, 1, 2];
     private static readonly int[] ReflectionLevels = [2, 3];
     private static readonly CelestialCollectionKind[] AlnilamCollections =
         [CelestialCollectionKind.Star, CelestialCollectionKind.DeepSky];
@@ -96,6 +99,56 @@ internal sealed class HygV44OpenNgcCatalogTests
         Assert.AreEqual(35.0, andromeda.PositionAngleDegrees);
         Assert.IsTrue(andromeda.HasOrientedExtent);
         Assert.IsEmpty(deepSky.GetOutlines("NGC0224"));
+    }
+
+    [TestMethod]
+    public void TheOrionNebulaAndThePleiadesResolveToTheirCanonicalObjects()
+    {
+        var catalog = CreateCatalog();
+        var deepSky = catalog.DeepSky!;
+        var search = new CelestialObjectSearch(catalog, catalog);
+
+        Assert.AreEqual(new DeepSkyAlias("M42", "NGC1976", DeepSkyAliasKinds.Messier), deepSky.FindByAlias("m42").Single());
+        Assert.AreEqual(
+            new DeepSkyAlias("Orion Nebula", "NGC1976", DeepSkyAliasKinds.Common), deepSky.FindByAlias("orion nebula").Single());
+        Assert.IsTrue(deepSky.TryGetObject("NGC1976", out var orion));
+        Assert.AreEqual("NGC 1976", orion.Designation);
+        Assert.AreEqual("M42", orion.DisplayName);
+        Assert.AreEqual(42, orion.MessierNumber);
+        Assert.AreEqual("Great Orion Nebula", orion.CommonName);
+        Assert.AreEqual("Cl+N", orion.ObjectType);
+        Assert.AreEqual("Ori", orion.Constellation);
+        Assert.AreEqual(5 + 35 / 60.0 + 16.48 / 3600.0, orion.RightAscensionHours, 1e-12);
+        Assert.AreEqual(-(5 + 23 / 60.0 + 22.8 / 3600.0), orion.DeclinationDegrees, 1e-12);
+        Assert.AreEqual(90.0, orion.MajorAxisArcminutes);
+        Assert.AreEqual(60.0, orion.MinorAxisArcminutes);
+        Assert.IsNull(orion.PositionAngleDegrees);
+        Assert.IsFalse(orion.HasOrientedExtent);
+
+        // The Pleiades are Melotte 22: the canonical object of M45 has no NGC or IC designation.
+        Assert.AreEqual(new DeepSkyAlias("M45", "Mel022", DeepSkyAliasKinds.Messier), deepSky.FindByAlias("m45").Single());
+        Assert.AreEqual(new DeepSkyAlias("Mel 22", "Mel022", DeepSkyAliasKinds.Designation), deepSky.FindByAlias("MEL 22").Single());
+        Assert.AreEqual(new DeepSkyAlias("Pleiades", "Mel022", DeepSkyAliasKinds.Common), deepSky.FindByAlias("pleiades").Single());
+        Assert.IsTrue(deepSky.TryGetObject("Mel022", out var pleiades));
+        Assert.AreEqual("Mel 22", pleiades.Designation);
+        Assert.AreEqual("M45", pleiades.DisplayName);
+        Assert.AreEqual(45, pleiades.MessierNumber);
+        Assert.AreEqual("Pleiades", pleiades.CommonName);
+        Assert.AreEqual("OCl", pleiades.ObjectType);
+        Assert.AreEqual("Tau", pleiades.Constellation);
+        Assert.AreEqual(3 + 47 / 60.0 + 28.6 / 3600.0, pleiades.RightAscensionHours, 1e-12);
+        Assert.AreEqual(24 + 6 / 60.0 + 19 / 3600.0, pleiades.DeclinationDegrees, 1e-12);
+        Assert.AreEqual(150.0, pleiades.MajorAxisArcminutes);
+        Assert.AreEqual(150.0, pleiades.MinorAxisArcminutes);
+        Assert.AreEqual(90.0, pleiades.PositionAngleDegrees);
+        Assert.IsTrue(pleiades.HasOrientedExtent);
+
+        Assert.AreEqual(
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC1976", "M42", DeepSkyAliasKinds.Messier, false),
+            search.Find("M42").Single());
+        Assert.AreEqual(
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "Mel022", "Pleiades", DeepSkyAliasKinds.Common, false),
+            search.Find("Pleiades").Single());
     }
 
     [TestMethod]
@@ -176,11 +229,17 @@ internal sealed class HygV44OpenNgcCatalogTests
         var deepSky = CreateCatalog().DeepSky!;
 
         var littleDumbbell = deepSky.GetOutlines("NGC0650");
-        CollectionAssert.AreEqual(LittleDumbbellLevels, littleDumbbell.Select(static item => item.Level).ToArray());
+        CollectionAssert.AreEqual(AllLevels, littleDumbbell.Select(static item => item.Level).ToArray());
         CollectionAssert.AreEqual(LittleDumbbellRingCounts, littleDumbbell.Select(static item => item.Rings.Count).ToArray());
+        var pleiades = deepSky.GetOutlines("Mel022");
+        CollectionAssert.AreEqual(AllLevels, pleiades.Select(static item => item.Level).ToArray());
+        CollectionAssert.AreEqual(PleiadesRingCounts, pleiades.Select(static item => item.Rings.Count).ToArray());
+        var orionNebula = deepSky.GetOutlines("NGC1976");
+        CollectionAssert.AreEqual(AllLevels, orionNebula.Select(static item => item.Level).ToArray());
+        CollectionAssert.AreEqual(OrionNebulaRingCounts, orionNebula.Select(static item => item.Rings.Count).ToArray());
         var reflection = deepSky.GetOutlines("NGC2023");
         CollectionAssert.AreEqual(ReflectionLevels, reflection.Select(static item => item.Level).ToArray());
-        foreach (var ring in littleDumbbell.Concat(reflection).SelectMany(static item => item.Rings))
+        foreach (var ring in littleDumbbell.Concat(pleiades).Concat(orionNebula).Concat(reflection).SelectMany(static item => item.Rings))
         {
             Assert.IsGreaterThanOrEqualTo(DeepSkyCatalog.MinimumRingPointCount, ring.Points.Count);
             Assert.AreEqual(ring.Points[0], ring.Points[^1]);

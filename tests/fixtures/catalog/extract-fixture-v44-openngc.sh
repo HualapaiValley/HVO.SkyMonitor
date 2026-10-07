@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 
 readonly star_ids="'103879','103883','11734','24129','26155','26156','26159','27919','30365','32263','57767','69451','70666','71456','87665','90979'"
 readonly star_hipparcos="'26311'"
-readonly deep_sky_ids="'M040','NGC0224','NGC0253','NGC0650','NGC1990','NGC2023','NGC5457','NGC5866'"
+readonly deep_sky_ids="'M040','Mel022','NGC0224','NGC0253','NGC0650','NGC1976','NGC1990','NGC2023','NGC5457','NGC5866'"
 readonly tombstone_ids="'IC0067','NGC0412'"
 readonly output="hyg-v44-openngc-subset.sqlite"
 
@@ -101,7 +101,7 @@ SQL
 )"
 printf '%s\n' "$comparison"
 
-expected_rows="celestial_objects|17 deep_sky_objects|8 deep_sky_tombstones|2 catalog_metadata|25"
+expected_rows="celestial_objects|17 deep_sky_objects|10 deep_sky_tombstones|2 catalog_metadata|25"
 for expected in $expected_rows; do
     grep -qx "${expected%%|*}|${expected#*|}|0|0" <<<"$comparison" || {
         echo "fixture table ${expected%%|*} does not hold exactly ${expected#*|} production rows" >&2
