@@ -63,8 +63,8 @@ public sealed class VirtualLongExposureCapacityTests
         var rows = new List<object>(); var failures = new List<string>(); var outcomes = new Dictionary<string, (bool Refused, double? Motion)>();
         foreach (var probe in probes)
         {
-            var (row, refused, motion) = await RunProbeAsync(snapshot, probe, failures).ConfigureAwait(false);
-            rows.Add(row); outcomes[probe.Name] = (refused, motion);
+            var (row, refused, sampleMotion) = await RunProbeAsync(snapshot, probe, failures).ConfigureAwait(false);
+            rows.Add(row); outcomes[probe.Name] = (refused, sampleMotion);
         }
         var fits = outcomes["rectilinear-boundary-fits"]; var exceeds = outcomes["rectilinear-boundary-exceeds"];
         var derived = !fits.Refused && exceeds.Refused && fits.Motion is { } motion
@@ -120,17 +120,16 @@ public sealed class VirtualLongExposureCapacityTests
         // Re-deriving the speed bound from its reported product is exact to a few ulps; a requirement within this band of an
         // integer cannot be resolved and yields two candidates, never a wrong one.
         const double Tolerance = 1e-9;
-        (int, double)? found = null;
+        var candidates = new List<(int Slots, double SpeedBoundPixelsPerSecond)>();
         for (var slots = 1; slots <= maximumSlots; slots++)
         {
             var speed = fittedMotionPixels * TimeSpan.TicksPerSecond / ((fitted.Ticks + slots - 1) / slots);
             var required = fitted.TotalSeconds * speed / stepPixels;
             if (required > slots + Tolerance || required <= slots - 1 - Tolerance ||
                 refused.TotalSeconds * speed / stepPixels <= maximumSlots + Tolerance) continue;
-            if (found is not null) return null;
-            found = (slots, speed);
+            candidates.Add((slots, speed));
         }
-        return found;
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     /// <summary>Initializes and captures one probe. Only the probe's own declared refusal, at its declared stage, is caught.</summary>
