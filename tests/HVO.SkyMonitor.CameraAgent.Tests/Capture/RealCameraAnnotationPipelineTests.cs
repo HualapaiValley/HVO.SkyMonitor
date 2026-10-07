@@ -186,6 +186,52 @@ public sealed class RealCameraAnnotationPipelineTests
         Assert.AreEqual(captureLocation.ToProvenance(), locationStore.Resolved);
     }
 
+    [TestMethod]
+    public async Task AnnotationSceneProvider_InstalledHygV42RetryKeepsPreLineageProvenanceBytes()
+    {
+        // An installed schema-2 (HYG 4.2) package reports its catalog ID and package version, but provenance
+        // regenerated for a retained capture must stay byte-identical to the evidence recorded before #521.
+        var catalog = CreateCatalog(schemaVersion: "2", catalogId: "hyg-v42-production", packageVersion: "hyg-v4.2-p3-s2-r1");
+        var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
+
+        var first = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+        var retry = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+
+        Assert.IsNull(retry.Provenance.CatalogId);
+        Assert.IsNull(retry.Provenance.CatalogPackageVersion);
+        var json = JsonSerializer.SerializeToUtf8Bytes(retry.Provenance);
+        using var document = JsonDocument.Parse(json);
+        Assert.IsFalse(document.RootElement.EnumerateObject().Any(static property =>
+            property.Name.StartsWith("catalogId", StringComparison.OrdinalIgnoreCase) ||
+            property.Name.StartsWith("catalogPackage", StringComparison.OrdinalIgnoreCase)),
+            "Schema-2 provenance must not gain package-identity properties.");
+        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(first.Provenance), json);
+    }
+
+    [TestMethod]
+    public async Task AnnotationSceneProvider_SchemaThreeLineageRecordsCatalogIdentity()
+    {
+        var catalog = CreateCatalog(schemaVersion: "3", catalogId: "hyg-v44-production", packageVersion: "hyg-v4.4-p4-s3-r1");
+        var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
+
+        var scene = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+
+        Assert.AreEqual("hyg-v44-production", scene.Provenance.CatalogId);
+        Assert.AreEqual("hyg-v4.4-p4-s3-r1", scene.Provenance.CatalogPackageVersion);
+    }
+
+    private static async Task<AnnotationSceneResult> BuildCapturedSceneAsync(AnnotationSceneProvider provider)
+    {
+        var captureLocation = DeploymentLocationSnapshot.Create(
+            "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC");
+        var config = CreateConfig() with { DeploymentLocation = captureLocation };
+        var raw = new CameraFrame(
+            Utc, 200, 200, CameraPixelFormat.Mono16, new byte[200 * 200 * 2],
+            new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
+        return await provider.BuildAsync(config, null, raw, ExpectedConstellationIds, CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
     private static ServiceProvider CreateServices(
         ICelestialCatalog catalog,
         IConstellationTopology topology)
@@ -270,7 +316,10 @@ public sealed class RealCameraAnnotationPipelineTests
                 DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC")
         };
 
-    private static TestCatalog CreateCatalog()
+    private static TestCatalog CreateCatalog(
+        string schemaVersion = "1",
+        string? catalogId = null,
+        string? packageVersion = null)
     {
         CelestialCatalogObject Create(string id, string hip, AltAzPoint horizontal)
         {
@@ -283,20 +332,30 @@ public sealed class RealCameraAnnotationPipelineTests
         return new TestCatalog([
             Create("from", "1", new AltAzPoint(60, 90)),
             Create("to", "2", new AltAzPoint(60, 270))
-        ]);
+        ], schemaVersion, catalogId, packageVersion);
     }
 
     private sealed class TestCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource
     {
         private readonly InMemoryCelestialCatalog _inner;
 
-        public TestCatalog(IEnumerable<CelestialCatalogObject> objects)
+        public TestCatalog(
+            IEnumerable<CelestialCatalogObject> objects,
+            string schemaVersion,
+            string? catalogId,
+            string? packageVersion)
         {
             _inner = new InMemoryCelestialCatalog(objects);
+            Metadata = new("test-catalog", "1", new Uri("https://example.test/catalog"), new string('B', 64), "CC0", schemaVersion);
+            CatalogId = catalogId;
+            CatalogPackageVersion = packageVersion;
         }
 
-        public CatalogMetadata Metadata { get; } = new(
-            "test-catalog", "1", new Uri("https://example.test/catalog"), new string('B', 64), "CC0", "1");
+        public CatalogMetadata Metadata { get; }
+
+        public string? CatalogId { get; }
+
+        public string? CatalogPackageVersion { get; }
 
         public string PreprocessingVersion => "fixture-v1";
 

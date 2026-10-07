@@ -313,35 +313,124 @@ public sealed class DistributionAcquirerTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogCheck_InstalledSignedPackage_ReportsTheRetainedIdentityAndChangesNothing()
     {
+        // Environment-gated like the lifecycle transitions: proving an installed package needs the real bundle.
+        var bundle = RequireProductionBundle();
+        var productRoot = Path.Combine(Path.GetTempPath(), $"hvo-catalog-check-{Guid.NewGuid():N}");
+        try
+        {
+            var installed = await InstallProductionPackageAsync(bundle, productRoot);
+            using var fixture = CatalogDistributionFixture.Create(
+                signProductionDatabaseIdentity: true, signedBundleManifestSha256: installed.ManifestSha256);
+            using var handler = new FixtureHandler(fixture.NetworkAssets);
+            var before = Snapshot(productRoot);
+
+            var result = await CheckAsync(fixture, handler, productRoot);
+
+            Assert.AreEqual("installed", result.Outcome);
+            Assert.AreEqual(installed, result.Catalog);
+            CollectionAssert.AreEqual(before, Snapshot(productRoot));
+            AssertNoCacheEntries(fixture);
+        }
+        finally
+        {
+            DeleteWritable(productRoot);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogCheck_RetainedRecordWithoutInstalledPayload_IsRefused()
+    {
+        // A matching installed.json over an empty version directory is a record, not an installed package.
         using var fixture = CatalogDistributionFixture.Create(signProductionDatabaseIdentity: true);
         using var handler = new FixtureHandler(fixture.NetworkAssets);
         var productRoot = Path.Combine(fixture.Root, "product");
         var signed = await ResolveSignedCatalogAsync(fixture);
-        var installed = InstallRetainedIdentity(productRoot, signed.BundleManifestSha256);
+        InstallRetainedIdentity(productRoot, signed.BundleManifestSha256);
         var before = Snapshot(productRoot);
 
-        var result = await CheckAsync(fixture, handler, productRoot);
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CheckAsync(fixture, handler, productRoot));
 
-        Assert.AreEqual("installed", result.Outcome);
-        Assert.AreEqual(installed, result.Catalog);
+        Assert.AreEqual("The installed catalog version is missing, corrupt, or not the approved package.", exception.Message);
         CollectionAssert.AreEqual(before, Snapshot(productRoot));
         AssertNoCacheEntries(fixture);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("corrupt-database")]
+    [DataRow("truncated-database")]
+    [DataRow("wrong-lineage-manifest")]
+    public async Task CatalogCheck_DamagedOrSubstitutedInstalledPayload_IsRefused(string damage)
+    {
+        var bundle = RequireProductionBundle();
+        var productRoot = Path.Combine(Path.GetTempPath(), $"hvo-catalog-check-{Guid.NewGuid():N}");
+        try
+        {
+            var installed = await InstallProductionPackageAsync(bundle, productRoot);
+            using var fixture = CatalogDistributionFixture.Create(
+                signProductionDatabaseIdentity: true, signedBundleManifestSha256: installed.ManifestSha256);
+            using var handler = new FixtureHandler(fixture.NetworkAssets);
+            var versionRoot = Path.Combine(installed.InstallRoot, "versions", installed.PackageVersion);
+            var target = Path.Combine(versionRoot, damage == "wrong-lineage-manifest" ? "manifest.json" : "hyg_v42.sqlite");
+            File.SetUnixFileMode(versionRoot, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(target, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            switch (damage)
+            {
+                case "corrupt-database":
+                    var bytes = await File.ReadAllBytesAsync(target);
+                    bytes[bytes.Length / 2] ^= 0xFF;
+                    await File.WriteAllBytesAsync(target, bytes);
+                    break;
+                case "truncated-database":
+                    await using (var stream = File.Open(target, FileMode.Open, FileAccess.Write))
+                        stream.SetLength(stream.Length / 2);
+                    break;
+                default:
+                    // The retained record still names HYG 4.2, but the installed manifest now claims the 4.4 lineage.
+                    var manifest = await File.ReadAllTextAsync(target);
+                    await File.WriteAllTextAsync(target, manifest.Replace(
+                        "\"hyg-v42-production\"", "\"hyg-v44-production\"", StringComparison.Ordinal));
+                    break;
+            }
+            var before = Snapshot(productRoot);
+
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CheckAsync(fixture, handler, productRoot));
+
+            Assert.AreEqual("The installed catalog version is missing, corrupt, or not the approved package.", exception.Message);
+            CollectionAssert.AreEqual(before, Snapshot(productRoot));
+            AssertNoCacheEntries(fixture);
+        }
+        finally
+        {
+            DeleteWritable(productRoot);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogCheck_InstalledBytesDifferingFromTheSignedIdentity_AreRefused()
     {
-        using var fixture = CatalogDistributionFixture.Create();
-        using var handler = new FixtureHandler(fixture.NetworkAssets);
-        var productRoot = Path.Combine(fixture.Root, "product");
-        InstallRetainedIdentity(productRoot, new string('c', 64));
-        var before = Snapshot(productRoot);
+        // A valid installed package whose bundle manifest is not the one the release signed is refused.
+        var bundle = RequireProductionBundle();
+        var productRoot = Path.Combine(Path.GetTempPath(), $"hvo-catalog-check-{Guid.NewGuid():N}");
+        try
+        {
+            await InstallProductionPackageAsync(bundle, productRoot);
+            using var fixture = CatalogDistributionFixture.Create(
+                signProductionDatabaseIdentity: true, signedBundleManifestSha256: new string('c', 64));
+            using var handler = new FixtureHandler(fixture.NetworkAssets);
+            var before = Snapshot(productRoot);
 
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CheckAsync(fixture, handler, productRoot));
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CheckAsync(fixture, handler, productRoot));
 
-        Assert.AreEqual("The installed catalog differs from its signed release identity.", exception.Message);
-        CollectionAssert.AreEqual(before, Snapshot(productRoot));
+            Assert.AreEqual("The installed catalog differs from its signed release identity.", exception.Message);
+            CollectionAssert.AreEqual(before, Snapshot(productRoot));
+        }
+        finally
+        {
+            DeleteWritable(productRoot);
+        }
     }
 
     private static Task<LifecycleResult> CheckAsync(CatalogDistributionFixture fixture, FixtureHandler handler, string productRoot)
@@ -362,6 +451,34 @@ public sealed class DistributionAcquirerTests
         var resolved = await acquirer.ResolveCatalogAsync(fixture.LocalRequest(), CancellationToken.None);
         Assert.IsNotNull(resolved);
         return resolved.Catalog;
+    }
+
+    private static string RequireProductionBundle()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to check an installed catalog.");
+        return bundle;
+    }
+
+    // Installs the real HYG 4.2 bundle side by side and retains its identity exactly as catalog install records it.
+    private static async Task<CatalogInstallationIdentity> InstallProductionPackageAsync(string bundle, string productRoot)
+    {
+        var paths = InstallationPaths.Create(productRoot, Guid.Empty, HygV42.CatalogId);
+        var installed = CatalogInstaller.Install(bundle, paths.CatalogRoot, Guid.NewGuid());
+        var references = Path.Combine(paths.CatalogReferencesRoot, installed.PackageVersion);
+        Directory.CreateDirectory(references);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            Path.Combine(references, "installed.json"), installed,
+            DeploymentJsonContext.Default.CatalogInstallationIdentity, CancellationToken.None);
+        return installed;
+    }
+
+    private static void DeleteWritable(string root)
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).Prepend(root))
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Directory.Delete(root, recursive: true);
     }
 
     // Retains an installed HYG 4.2 package side by side exactly as catalog install records it.
@@ -485,9 +602,12 @@ public sealed class DistributionAcquirerTests
 
         /// <summary>
         /// Creates a signed catalog release. A read-only availability check never opens the bundle, so a caller may
-        /// sign the pinned production database identity instead of the placeholder to model an installed package.
+        /// sign the pinned production database identity instead of the placeholder to model an installed package, and
+        /// the installed bundle manifest digest so the signed identity names that exact package.
         /// </summary>
-        public static CatalogDistributionFixture Create(bool signProductionDatabaseIdentity = false)
+        public static CatalogDistributionFixture Create(
+            bool signProductionDatabaseIdentity = false,
+            string? signedBundleManifestSha256 = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-distribution-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -527,7 +647,7 @@ public sealed class DistributionAcquirerTests
             var trustRoot = DistributionTrustRoot.FromPem(key.ExportSubjectPublicKeyInfoPem());
             var catalog = new DistributionCatalogIdentity(
                 "hyg-v42-production", "hyg-v4.2-p3-s2-r1", "production", 2, "2", "3",
-                Hash(manifestBytes), databaseSha256, databaseLength, rowCount, "CC-BY-SA-4.0",
+                signedBundleManifestSha256 ?? Hash(manifestBytes), databaseSha256, databaseLength, rowCount, "CC-BY-SA-4.0",
                 "LICENSE-HYG.md", "ATTRIBUTION-HYG.md", "fixture-topology", new string('e', 64));
             var artifacts = new[]
             {

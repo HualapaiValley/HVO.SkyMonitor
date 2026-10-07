@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -166,6 +167,17 @@ internal static class CatalogLifecycleManager
             return Result(request.Operation, "available", null, paths, available, null);
         var installed = await ReadInstalledIdentityAsync(paths, release.Catalog.PackageVersion, cancellationToken)
             .ConfigureAwait(false);
+        // The retained record alone proves nothing about the bytes it names: resolve the installed payload (read-only,
+        // in memory) so a missing, corrupt or substituted package is refused rather than reported as installed.
+        try
+        {
+            ValidateInstalled(paths, installed);
+        }
+        catch (Exception exception) when (exception is not (InstallerException or OperationCanceledException))
+        {
+            throw new InstallerException(
+                "The installed catalog version is missing, corrupt, or not the approved package.", exception);
+        }
         ValidateSignedIdentity(installed, release.Catalog);
         return Result(request.Operation, "installed", null, paths, installed, null);
     }
@@ -323,9 +335,23 @@ internal static class CatalogLifecycleManager
             Phase = LifecycleOperationPhase.Prepared,
             MutationStarted = true
         }, cancellationToken).ConfigureAwait(false);
+        string? processingRefusal = null;
         try
         {
             var continuity = await lifecycle.PauseAndDrainAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            // A capture-processing node that has not committed regenerates its annotated derivative from whichever
+            // catalog is mounted when it retries. Under another package that derivative gets a different scene
+            // identity, so central would refuse it as a second derivative of the capture. Refuse the switch until
+            // processing drains, including work awaiting retry; raw captures and queued uploads are untouched.
+            if (continuity.ProcessingPending > 0)
+            {
+                var verb = request.Operation == LifecycleOperationKind.CatalogRollback ? "rollback" : "selection";
+                processingRefusal = $"Catalog {verb} refused: CameraAgent still has " +
+                    continuity.ProcessingPending.ToString(CultureInfo.InvariantCulture) +
+                    " capture-processing item(s) pending or awaiting retry, which would be re-annotated under a different " +
+                    "catalog package. Retry after capture processing drains; no capture was discarded.";
+                throw new InstallerException(processingRefusal);
+            }
             operation = await CameraAgentLifecycleManager.RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Drained,
@@ -430,7 +456,11 @@ internal static class CatalogLifecycleManager
                     $"Catalog selection failed and exact rollback also failed: {Redaction.SafeDiagnostic(recoveryException.Message)}", exception);
             }
             await CameraAgentLifecycleManager.FailAsync(paths, operation, exception, CancellationToken.None).ConfigureAwait(false);
-            throw new InstallerException("Catalog selection failed and the prior exact selection was restored.", exception);
+            throw new InstallerException(
+                processingRefusal is null
+                    ? "Catalog selection failed and the prior exact selection was restored."
+                    : $"{processingRefusal} The prior exact selection was restored.",
+                exception);
         }
     }
 

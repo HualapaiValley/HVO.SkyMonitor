@@ -752,6 +752,22 @@ public sealed class LifecycleContractTests
         Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
 
         await WriteSelectionAsync(image, image with { ImageId = $"sha256:{new string('6', 64)}" });
+        // A 4.2 capture whose processing has not committed would be re-annotated under 4.4 on retry, so the
+        // selection is refused at the drained boundary and the exact 4.2 selection is restored and resumed.
+        var pendingSelection = new FakeLifecycleClient { DrainedProcessingPending = 3 };
+        var selectionRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => pendingSelection, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.StartsWith(selectionRefusal.Message,
+            "Catalog selection refused: CameraAgent still has 3 capture-processing item(s) pending or awaiting retry",
+            StringComparison.Ordinal);
+        StringAssert.EndsWith(selectionRefusal.Message, "The prior exact selection was restored.", StringComparison.Ordinal);
+        Assert.AreEqual(1, pendingSelection.ResumeCount);
+        Assert.AreEqual(original, (await ReadManifestAsync()).Catalog);
+        Assert.AreEqual(HygV42.CatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
+        Assert.AreEqual(original.PackageVersion, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredPackageVersion")));
+        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={fixture.Paths.CatalogRoot}");
+
         var selected = await CameraAgentLifecycleManager.ExecuteAsync(
             request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);
@@ -770,6 +786,19 @@ public sealed class LifecycleContractTests
             fixture.Paths.CatalogReferencesRoot, original.PackageVersion, "historical", $"cameraagent-{fixture.InstanceId:D}.json")));
         CollectionAssert.AreEquivalent(originalRoot, Fingerprint(fixture.Paths.CatalogRoot));
 
+        // The reverse: 4.4 processing work awaiting retry refuses the rollback and keeps 4.4 selected.
+        var pendingRollback = new FakeLifecycleClient { DrainedProcessingPending = 1 };
+        var rollbackRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
+            _ => pendingRollback, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.StartsWith(rollbackRefusal.Message,
+            "Catalog rollback refused: CameraAgent still has 1 capture-processing item(s) pending or awaiting retry",
+            StringComparison.Ordinal);
+        Assert.AreEqual(1, pendingRollback.ResumeCount);
+        Assert.AreEqual(candidate, (await ReadManifestAsync()).Catalog);
+        Assert.AreEqual(candidateCatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
+        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={candidatePaths.CatalogRoot}");
+
         var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
@@ -784,7 +813,8 @@ public sealed class LifecycleContractTests
         Assert.IsTrue(File.Exists(Path.Combine(
             candidatePaths.CatalogReferencesRoot, candidate.PackageVersion, "historical", $"cameraagent-{fixture.InstanceId:D}.json")));
         CollectionAssert.AreEquivalent(originalRoot, Fingerprint(fixture.Paths.CatalogRoot));
-        Assert.AreEqual(2, fixture.Runner.ComposeUpCount);
+        // Each refusal recreates the original selection once during exact restoration; neither restarts a candidate.
+        Assert.AreEqual(4, fixture.Runner.ComposeUpCount);
         Assert.AreEqual(2, fixture.Runner.ComposeRestartCount);
 
         async Task WriteSelectionAsync(ImageInstallationIdentity selectedImage, ImageInstallationIdentity? previousImage)
@@ -3016,6 +3046,8 @@ public sealed class LifecycleContractTests
     private sealed class FakeLifecycleClient : ICameraAgentLifecycleClient
     {
         public bool RejectNextResume { get; set; }
+        public long DrainedProcessingPending { get; set; }
+        public int ResumeCount { get; private set; }
         public int PauseCount { get; private set; }
         public int ConfirmCount { get; private set; }
         public int RecoveryResumeCalls { get; private set; }
@@ -3059,7 +3091,7 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0));
         }
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
@@ -3072,6 +3104,7 @@ public sealed class LifecycleContractTests
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
+            ResumeCount++;
             if (RejectNextResume)
             {
                 RejectNextResume = false;

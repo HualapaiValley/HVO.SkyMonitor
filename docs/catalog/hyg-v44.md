@@ -163,6 +163,15 @@ selection retires the retained image rollback because that rollback environment
 mounts the old lineage's root. Catalog `rollback` returns to the previous catalog
 selection, including across lineages.
 
+Selection and rollback both refuse while CameraAgent still has capture-processing
+work pending or awaiting retry at the drained boundary. A processing node that has
+not committed regenerates its annotated derivative from whichever catalog is
+mounted when it retries. Under another package, that derivative gets a different
+scene identity, and central would refuse it as a second derivative of the same
+capture. The refusal restores and resumes the exact prior selection and names the
+pending count. Raw captures and queued uploads are untouched, so retry once
+processing has drained.
+
 Two instances on one host may select different catalog IDs, and offline
 instances on different hosts may run different IDs. Each host resolves only the
 root it mounts.
@@ -193,10 +202,14 @@ alias lookup index is then built on first use.
 
 The catalog health check reports `CatalogId`, `PackageVersion`,
 `CatalogVersion`, `SchemaVersion`, the database checksum and the row count.
-Every frame's scene provenance records `CatalogId` and `CatalogPackageVersion`
-alongside the existing `CatalogName`, `CatalogVersion` and
-`CatalogChecksumSha256`. Frames recorded before these fields existed deserialize
-with both values `null` and continue to resolve through their recorded checksum.
+Scenes rendered from a schema-3 lineage such as HYG 4.4 record `CatalogId` and
+`CatalogPackageVersion` alongside the existing `CatalogName`, `CatalogVersion`
+and `CatalogChecksumSha256`. Schema-2 HYG 4.2 scenes record neither, because
+name, version and checksum already identify them. As a result, provenance
+regenerated for a retained 4.2 capture stays byte-identical to the evidence
+recorded before HYG 4.4 existed. Frames recorded before these fields existed
+deserialize with both values `null` and continue to resolve through their
+recorded checksum.
 A selection never rewrites recorded provenance. The displaced package stays
 pinned as a historical reference, so garbage collection refuses to delete a
 snapshot that recorded frames still name.

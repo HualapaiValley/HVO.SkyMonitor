@@ -166,16 +166,79 @@ internal static partial class Program
         var revision = RequireGitOid(options, "--revision");
         var tree = RequireGitOid(options, "--tree");
         var createdUtc = RequireUtc(options, "--created-utc");
-        var bundle = RequireExistingDirectory(options, "--bundle");
-        var output = PrepareOutput(options);
-        var innerManifestPath = Path.Combine(bundle, "manifest.json");
-        using var inner = JsonDocument.Parse(await File.ReadAllBytesAsync(innerManifestPath, cancellationToken).ConfigureAwait(false));
+        var source = RequireExistingDirectory(options, "--bundle");
+        var staging = Directory.CreateTempSubdirectory("hvo-catalog-release-");
+        try
+        {
+            var bundle = StageValidatedCatalogBundle(source, staging.FullName);
+            await CreateCatalogArtifactsAsync(options, revision, tree, createdUtc, bundle, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            staging.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Copies the bundle's exact registry file set into a private staging root and resolves it through the approved
+    /// snapshot resolver, which checks the manifest, database bytes, schema, preprocessing, row count and retained
+    /// notices against the registry. Every release artifact is then built from the staged copy, so the archive
+    /// carries exactly the bytes that were validated and a refused bundle produces no release output.
+    /// </summary>
+    private static string StageValidatedCatalogBundle(string source, string stagingRoot)
+    {
+        using var inner = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(source, "manifest.json")));
         var root = inner.RootElement;
         var packageVersion = root.GetProperty("package").GetProperty("version").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits package.version.");
         ValidateSafeIdentifier(packageVersion, "catalog package version");
         var catalogId = root.GetProperty("catalog").GetProperty("id").GetString()
             ?? throw new ReleaseToolException("The catalog manifest omits catalog.id.");
+        var specification = ReleaseCatalogs.Get(catalogId, packageVersion);
+        var expected = ReleaseCatalogs.OrderedFiles(specification);
+        var entries = new DirectoryInfo(source).EnumerateFileSystemInfos().ToArray();
+        if (!entries.Select(static entry => entry.Name).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal) ||
+            entries.Any(static entry => entry is not FileInfo || entry.LinkTarget is not null))
+        {
+            throw new ReleaseToolException("The catalog bundle does not contain the exact release file set.");
+        }
+        var staged = Path.Combine(stagingRoot, "versions", packageVersion);
+        Directory.CreateDirectory(staged);
+        foreach (var name in expected)
+        {
+            File.Copy(Path.Combine(source, name), Path.Combine(staged, name));
+        }
+        try
+        {
+            _ = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(stagingRoot, specification.CatalogId)
+            {
+                ExpectedPackageKind = CatalogSnapshotPackageKind.Production,
+                ExpectedPackageVersion = packageVersion
+            });
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or
+                                           System.Data.Common.DbException)
+        {
+            throw new ReleaseToolException(
+                $"The catalog bundle does not match its approved specification: {exception.Message}", exception);
+        }
+        return staged;
+    }
+
+    private static async Task CreateCatalogArtifactsAsync(
+        IReadOnlyDictionary<string, string> options,
+        string revision,
+        string tree,
+        DateTimeOffset createdUtc,
+        string bundle,
+        CancellationToken cancellationToken)
+    {
+        var output = PrepareOutput(options);
+        var innerManifestPath = Path.Combine(bundle, "manifest.json");
+        using var inner = JsonDocument.Parse(await File.ReadAllBytesAsync(innerManifestPath, cancellationToken).ConfigureAwait(false));
+        var root = inner.RootElement;
+        var packageVersion = root.GetProperty("package").GetProperty("version").GetString()!;
+        var catalogId = root.GetProperty("catalog").GetProperty("id").GetString()!;
         var specification = ReleaseCatalogs.Get(catalogId, packageVersion);
         var archiveName = $"{packageVersion}.bundle.tar.gz";
         await WriteCatalogArchiveAsync(bundle, Path.Combine(output, archiveName), packageVersion, specification, createdUtc, cancellationToken)

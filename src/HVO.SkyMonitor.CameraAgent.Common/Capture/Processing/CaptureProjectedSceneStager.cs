@@ -88,6 +88,7 @@ public sealed class CaptureProjectedSceneStager(
         var stageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"hvo.skymonitor.projected-scene-stage-key.v1\0{captureId:N}")));
         var topologyMetadata = options.ConstellationIds.Count > 0 ? topology?.Metadata : null;
+        var (catalogId, catalogPackageVersion) = CatalogSceneProvenanceIdentity.For(metadataSource);
         var provenance = new SceneProvenance(
             stageKey,
             config.Rig.ProfileVersion,
@@ -119,8 +120,8 @@ public sealed class CaptureProjectedSceneStager(
             ProjectedSceneStageKey: stageKey,
             ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
             ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion,
-            CatalogId: metadataSource.CatalogId,
-            CatalogPackageVersion: metadataSource.CatalogPackageVersion);
+            CatalogId: catalogId,
+            CatalogPackageVersion: catalogPackageVersion);
         await stagingStore.StageAsync(
             stageKey,
             stageKey,
