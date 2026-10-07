@@ -7,6 +7,7 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using System.Security.Cryptography;
 using System.Security.Claims;
 using FluentAssertions;
@@ -733,6 +734,42 @@ public sealed partial class ArtifactIngestTests
                 PresentationLayerCompositor.SemanticAlgorithmVersion, "integration-style-v2", 20,
                 PresentationBlendMode.Normal, 1_000_000, true, JsonSerializer.SerializeToElement(new { })));
         }
+        // The opt-in deep-sky layer is an ordinary uploaded layer that starts hidden. Central rendering, the cache
+        // check and the central materializer carry it exactly as the CameraAgent does.
+        PresentationLayerV1? deepSkyContract = null;
+        PresentationLayerPayloadV1? deepSkyPayload = null;
+        byte[]? deepSkyBytes = null;
+        if (versions == "v3")
+        {
+            deepSkyPayload = PresentationLayerPayloadJson.Create(
+                sourceIdentity,
+                2,
+                2,
+                segments: [new(new(0, 1.5), new(2, 1.5), 1, new(255, 196, 120), new PresentationStrokeV2(6, 4, 900_000))]);
+            deepSkyBytes = PresentationLayerPayloadJson.Serialize(deepSkyPayload);
+            var deepSkyUpload = CreateStructuredManifest(rawManifest, deepSkyPayload, deepSkyBytes, "deep-sky-layer");
+            using var deepSkyResponse = await PostAsync(ingestClient, deepSkyUpload, deepSkyBytes).ConfigureAwait(false);
+            deepSkyResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            deepSkyContract = LayeredPresentationJson.CreateLayer(
+                "deep-sky",
+                new(deepSkyUpload.Descriptor.Artifact.ArtifactId, deepSkyPayload.ContentIdentitySha256,
+                    PresentationLayerPayloadJson.MediaType, compatibility),
+                sourceIdentity,
+                PresentationCoordinateSpace.ScenePixels,
+                PresentationLayerCompositor.AlgorithmVersion,
+                PresentationDeepSkyLayerProducer.ProducerVersion,
+                12,
+                PresentationBlendMode.Normal,
+                1_000_000,
+                false,
+                JsonSerializer.SerializeToElement(new
+                {
+                    Variant = "deep-sky-layer",
+                    PresentationDeepSkyLayerProducer.Basis,
+                    PresentationDeepSkyLayerProducer.Legend
+                }));
+            retainedLayers.Add(deepSkyContract);
+        }
         var overlay = LayeredPresentationJson.CreateManifest(
             new(baseArtifactId, baseOutputIdentity, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
             sourceIdentity,
@@ -902,6 +939,11 @@ public sealed partial class ArtifactIngestTests
         svgResponse.Headers.ETag.Should().NotBeNull();
         Encoding.UTF8.GetString(concurrentBodies[0]).Should()
             .Contain($"data-layer-identity=\"{layerContract.LayerIdentitySha256}\"");
+        var svgGroups = XDocument.Parse(Encoding.UTF8.GetString(concurrentBodies[0])).Root!.Elements()
+            .ToDictionary(group => group.Attribute("data-layer-kind")!.Value, StringComparer.Ordinal);
+        svgGroups.Keys.Should().BeEquivalentTo(retainedLayers.Select(item => item.LayerKind));
+        svgGroups.Should().AllSatisfy(group => ((string?)group.Value.Attribute("display")).Should()
+            .Be(group.Key == "deep-sky" ? "none" : null, "only the opt-in deep-sky layer starts hidden"));
         await using (var cacheScope = fixture.Factory.Services.CreateAsyncScope())
         {
             var cache = cacheScope.ServiceProvider.GetRequiredService<IDistributedCache>();
@@ -910,6 +952,8 @@ public sealed partial class ArtifactIngestTests
             var validCache = JsonSerializer.Deserialize<CentralLayeredPresentation>(
                 validCacheBytes!, cacheJsonOptions);
             validCache.Should().NotBeNull();
+            validCache!.Layers.Should().AllSatisfy(item => item.EnabledByDefault.Should().Be(item.Kind != "deep-sky"));
+            validCache.Layers.Any(item => item.Kind == "deep-sky").Should().Be(deepSkyContract is not null);
             var invalidLayerCache = validCache! with
             {
                 Layers = [null!]
@@ -1162,6 +1206,65 @@ public sealed partial class ArtifactIngestTests
         using var retainedOptions = JsonDocument.Parse(stored.Recipe!.OptionsJson);
         retainedOptions.RootElement.GetProperty("MaterializationIdentitySha256").GetString()
             .Should().Be(expectedRequest.MaterializationIdentitySha256);
+        if (deepSkyContract is null)
+        {
+            return;
+        }
+
+        // Host parity: the CameraAgent materializer composes the same retained manifest, base and layers, including the
+        // hidden-by-default deep-sky layer once it is selected, into the pixels LogicHost stored.
+        var processingCompatibility = new ProcessingCompatibilityIdentity(
+            "rig", "orientation", "calibration", "mask", "sensor", "night", "processing");
+        var edgeBase = new ProcessingArtifact(
+            baseArtifactId, FrameArtifactRole.Preview, "presentation-base",
+            ProcessingIdentity.CreateRecipeIdentity(baseRecipe).IdentitySha256, CentralPresentationBaseDecoder.PackedMediaType,
+            rawManifest.Descriptor.Layout, baseBytes, DateTimeOffset.UnixEpoch.AddMinutes(1), TimeSpan.FromSeconds(1),
+            processingCompatibility)
+        {
+            ContentIdentitySha256 = baseOutputIdentity
+        };
+        var edgeManifest = new ProcessingArtifact(
+            overlayArtifact.ArtifactId, FrameArtifactRole.Metadata, "overlay-manifest",
+            ProcessingIdentity.CreateRecipeIdentity(overlayRecipe).IdentitySha256,
+            PresentationProcessingProducts.ManifestMediaType, null, overlayBytes, DateTimeOffset.UnixEpoch.AddMinutes(2),
+            TimeSpan.FromSeconds(1), processingCompatibility)
+        {
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = OverlayManifestV1.CurrentSchemaVersion,
+            ContentIdentitySha256 = overlay.ManifestIdentitySha256
+        };
+        var edgeLayers = new[]
+            {
+                (Contract: layerContract, Payload: layer, Bytes: layerBytes),
+                (Contract: deepSkyContract, Payload: deepSkyPayload!, Bytes: deepSkyBytes!)
+            }
+            .Select(item => new PresentationLayerProductInput(item.Contract, new ProcessingArtifact(
+                item.Contract.SourceProduct.ArtifactId, FrameArtifactRole.Metadata, item.Contract.LayerKind,
+                new string('0', 64), PresentationLayerPayloadJson.MediaType, null, item.Bytes, DateTimeOffset.UnixEpoch,
+                TimeSpan.FromSeconds(1), processingCompatibility)
+            {
+                ProductKind = ProcessingProductKind.Metadata,
+                SchemaVersion = item.Payload.SchemaVersion,
+                ContentIdentitySha256 = item.Payload.ContentIdentitySha256
+            }))
+            .ToArray();
+        var deepSkyIdentity = deepSkyContract.LayerIdentitySha256;
+        var edge = PresentationMaterializationExecutor.MaterializePacked(
+            edgeBase, edgeManifest, overlay, edgeLayers, selection, "rendered");
+        var withoutDeepSky = PresentationMaterializationExecutor.MaterializePacked(
+            edgeBase, edgeManifest, overlay, edgeLayers,
+            selection.Where(identity => identity != deepSkyIdentity), "rendered");
+        using var centralPixels = new MemoryStream();
+        await materializationScope.ServiceProvider.GetRequiredService<IObjectStore>().ReadAsync(
+            "skymonitor-artifacts",
+            stored.StorageReference["object://skymonitor-artifacts/".Length..],
+            null,
+            (stream, token) => stream.CopyToAsync(centralPixels, token),
+            CancellationToken.None).ConfigureAwait(false);
+        centralPixels.ToArray().Should().Equal(edge.Payload.ToArray());
+        stored.ChecksumSha256.Should().BeEquivalentTo(edge.ChecksumSha256);
+        withoutDeepSky.ChecksumSha256.Should().NotBe(edge.ChecksumSha256,
+            "the selected deep-sky layer contributes pixels on both hosts");
     }
 
     [TestMethod]

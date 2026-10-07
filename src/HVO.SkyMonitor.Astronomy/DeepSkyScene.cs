@@ -116,6 +116,22 @@ public sealed record ProjectedDeepSkyObject(
     /// <summary>Returns whether a catalog object is featured: it has a Messier or Caldwell number, or a common name.</summary>
     public static bool IsFeatured(int? messierNumber, int? caldwellNumber, string? commonName) =>
         messierNumber is not null || caldwellNumber is not null || commonName is not null;
+
+    /// <summary>
+    /// Orders placed objects by the rule the scene assigned representations in,
+    /// <see cref="ProjectedDeepSky.CurrentAlgorithmVersion"/>, so a consumer that degrades them spends its own budget
+    /// in the same order.
+    /// </summary>
+    public static int ComparePriority(ProjectedDeepSkyObject left, ProjectedDeepSkyObject right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        return DeepSkySceneProjector.ComparePriority(
+            new DeepSkySceneProjector.PriorityKey(
+                left.Featured, left.MajorAxisPixels, left.VisualMagnitude ?? left.BlueMagnitude, left.Id),
+            new DeepSkySceneProjector.PriorityKey(
+                right.Featured, right.MajorAxisPixels, right.VisualMagnitude ?? right.BlueMagnitude, right.Id));
+    }
 }
 
 /// <summary>
@@ -276,7 +292,7 @@ internal static class DeepSkySceneProjector
                 {
                     var footprint = ResolvedFootprintSampler.Sample(
                         request, id, item.DisplayName, ResolvedFootprintSourceKind.DeepSkyObject,
-                        CreateExtent(item, source), candidate.Geometric, null);
+                        CreateExtent(item, source, request.Utc), candidate.Geometric, null);
                     if (footprint is not null)
                     {
                         footprints.Add(footprint);
@@ -359,14 +375,63 @@ internal static class DeepSkySceneProjector
             Freeze(parts));
     }
 
-    private static ResolvedFootprintExtent CreateExtent(DeepSkyObject item, string source)
+    private static ResolvedFootprintExtent CreateExtent(DeepSkyObject item, string source, DateTimeOffset utc)
     {
         var major = item.MajorAxisArcminutes!.Value / 120d;
         var minor = item.MinorAxisArcminutes!.Value / 120d;
         return major == minor
             ? ResolvedFootprintExtent.Circle(major, source)
-            : new ResolvedFootprintExtent(
-                ResolvedFootprintShape.Ellipse, major, minor, item.PositionAngleDegrees!.Value, null, null, null, source);
+            : new ResolvedFootprintExtent(ResolvedFootprintShape.Ellipse, major, minor,
+                PositionAngleOfDate(item.RightAscensionHours, item.DeclinationDegrees, item.PositionAngleDegrees!.Value, utc),
+                null, null, null, source);
+    }
+
+    /// <summary>
+    /// Rotates a catalogue position angle, measured from J2000 north, to north of date, the frame a resolved
+    /// footprint's position angle uses. Precession is a rotation, so the bearing from the precessed centre to a
+    /// precessed point one degree along the J2000 axis is the axis' position angle of date. Near the pole the two
+    /// differ by about 0.9 degrees at declination 80 in 2026, too much to ignore on an outline.
+    /// </summary>
+    internal static double PositionAngleOfDate(
+        double rightAscensionHours,
+        double declinationDegrees,
+        double positionAngleDegrees,
+        DateTimeOffset utc)
+    {
+        const double Step = Math.PI / 180d;
+        var rightAscension = rightAscensionHours * Math.PI / 12d;
+        var declination = declinationDegrees * Math.PI / 180d;
+        var angle = positionAngleDegrees * Math.PI / 180d;
+        var offsetDeclination = Math.Asin(Math.Clamp(
+            Math.Sin(declination) * Math.Cos(Step) + Math.Cos(declination) * Math.Sin(Step) * Math.Cos(angle), -1d, 1d));
+        var offsetRightAscension = rightAscension + Math.Atan2(
+            Math.Sin(angle) * Math.Sin(Step) * Math.Cos(declination),
+            Math.Cos(Step) - Math.Sin(declination) * Math.Sin(offsetDeclination));
+        var center = EquatorialPrecession.PrecessJ2000(new EquatorialPoint(rightAscensionHours, declinationDegrees), utc);
+        var offset = EquatorialPrecession.PrecessJ2000(new EquatorialPoint(
+            NormalizeHours(offsetRightAscension * 12d / Math.PI), offsetDeclination * 180d / Math.PI), utc);
+        return Bearing(center, offset);
+    }
+
+    /// <summary>Returns the position angle, in [0, 180), of the great circle from one point toward another.</summary>
+    internal static double Bearing(EquatorialPoint from, EquatorialPoint to)
+    {
+        var fromDeclination = from.DeclinationDegrees * Math.PI / 180d;
+        var toDeclination = to.DeclinationDegrees * Math.PI / 180d;
+        var difference = (to.RightAscensionHours - from.RightAscensionHours) * Math.PI / 12d;
+        var degrees = Math.Atan2(
+            Math.Sin(difference) * Math.Cos(toDeclination),
+            Math.Cos(fromDeclination) * Math.Sin(toDeclination) -
+                Math.Sin(fromDeclination) * Math.Cos(toDeclination) * Math.Cos(difference)) * 180d / Math.PI % 180d;
+        if (degrees < 0) degrees += 180d;
+        return degrees >= 180d ? 0 : degrees;
+    }
+
+    private static double NormalizeHours(double hours)
+    {
+        var normalized = hours % 24d;
+        if (normalized < 0) normalized += 24d;
+        return normalized >= 24d ? 0 : normalized;
     }
 
     /// <summary>
@@ -410,12 +475,18 @@ internal static class DeepSkySceneProjector
     private static double AngleDegrees(EnuVector left, EnuVector right) =>
         Math.Acos(Math.Clamp(EnuVector.Dot(left, right), -1d, 1d)) * 180d / Math.PI;
 
-    private static int ComparePriority(Candidate left, Candidate right)
+    private static int ComparePriority(Candidate left, Candidate right) =>
+        ComparePriority(
+            new PriorityKey(left.Featured, left.MajorAxisPixels, left.Magnitude, left.Value.Id),
+            new PriorityKey(right.Featured, right.MajorAxisPixels, right.Magnitude, right.Value.Id));
+
+    // Scene IDs share one prefix, so ordering them is ordering their catalog IDs.
+    internal static int ComparePriority(PriorityKey left, PriorityKey right)
     {
         var result = right.Featured.CompareTo(left.Featured);
         if (result == 0) result = CompareDescendingNullsLast(left.MajorAxisPixels, right.MajorAxisPixels);
         if (result == 0) result = CompareAscendingNullsLast(left.Magnitude, right.Magnitude);
-        return result == 0 ? StringComparer.Ordinal.Compare(left.Value.Id, right.Value.Id) : result;
+        return result == 0 ? StringComparer.Ordinal.Compare(left.Id, right.Id) : result;
     }
 
     private static int CompareDescendingNullsLast(double? left, double? right) =>
@@ -437,6 +508,8 @@ internal static class DeepSkySceneProjector
         };
 
     private static ReadOnlyCollection<T> Freeze<T>(IEnumerable<T> values) => new(values.ToArray());
+
+    internal readonly record struct PriorityKey(bool Featured, double? MajorAxisPixels, double? Magnitude, string Id);
 
     private sealed record Candidate(
         DeepSkyObject Value,

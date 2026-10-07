@@ -200,7 +200,8 @@
 .overlay-list strong { font-size: .68rem; }
 .overlay-list small { margin-top: .12rem; color: var(--muted); font: .54rem ui-monospace, monospace; }
 .layer-swatch { width: .6rem; height: .6rem; border-radius: 2px; background: var(--blue); }
-.layer-swatch.deep-sky { border: 1px solid var(--cyan); border-radius: 50%; background: transparent; }
+.layer-swatch.deep-sky-association { border: 1px solid var(--cyan); border-radius: 50%; background: transparent; }
+.layer-swatch.deep-sky { border: 1px dashed #ffc478; border-radius: 50%; background: transparent; }
 .layer-swatch.constellations, .layer-swatch.scene-constellations { background: var(--purple); }
 .layer-swatch.bodies { border: 1px dashed var(--purple); border-radius: 50%; background: transparent; }
 .layer-swatch.cardinals, .layer-swatch.scene-cardinals, .layer-swatch.cardinal-directions { background: #c3ecff; }

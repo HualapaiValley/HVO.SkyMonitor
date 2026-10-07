@@ -9,6 +9,15 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal static class LayeredPresentationCaptureProcessing
 {
+    /// <summary>
+    /// A plan-identity pin, not a parse set. Dependency schema versions are hashed into the shared input contract and
+    /// the node plan, so the scene-consuming layer steps keep declaring the #518 set and their plans stay byte-identical
+    /// when a projected-scene schema is added. A later scene schema is still admitted at run time, because it satisfies
+    /// the declared family root <c>projected-scene-v1</c>; parse with <see cref="ProjectedSceneV1.SupportedSchemaVersions"/>.
+    /// </summary>
+    internal static IReadOnlyList<string> PlanIdentitySceneSchemaVersions { get; } =
+        Array.AsReadOnly([ProjectedSceneV1.CurrentSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion]);
+
     internal static void Add(CaptureProcessingContext context, params ProcessingProduct[] products)
     {
         var outcome = ProcessingOutcome.Produced(products);
@@ -28,7 +37,8 @@ internal static class LayeredPresentationCaptureProcessing
         int opacityMillionths,
         bool enabled,
         CaptureProcessingContext context,
-        PresentationCompatibilityDescriptor compatibility)
+        PresentationCompatibilityDescriptor compatibility,
+        JsonElement? options = null)
     {
         var artifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, product);
         var payload = PresentationLayerPayloadJson.Parse(product.Payload).Payload
@@ -38,9 +48,33 @@ internal static class LayeredPresentationCaptureProcessing
         var layer = LayeredPresentationJson.CreateLayer(
             kind, reference, sceneIdentity, PresentationCoordinateSpace.ScenePixels,
             PresentationLayerCompositor.AlgorithmVersion, product.Recipe.Descriptor.ImplementationVersion,
-            zOrder, blendMode, opacityMillionths, enabled, JsonSerializer.SerializeToElement(new { product.Variant }));
+            zOrder, blendMode, opacityMillionths, enabled, options ?? JsonSerializer.SerializeToElement(new { product.Variant }));
         return new(layer, artifact);
     }
+
+    /// <summary>The opt-in deep-sky layer kind. Its layer records its basis and legend and is off by default.</summary>
+    internal const string DeepSkyLayerKind = "deep-sky";
+
+    /// <summary>
+    /// The deep-sky layer dependency, present only when a variant is configured, so a definition without it keeps its
+    /// plan identity.
+    /// </summary>
+    internal static IEnumerable<CaptureProcessingDependencyRequirement> DeepSkyRequirement(string? variant) => variant is null
+        ? []
+        :
+        [
+            new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+                new HashSet<string>(StringComparer.Ordinal) { ScenePresentationLayerCaptureProcessingStep.Recipe },
+                new HashSet<string>(StringComparer.Ordinal) { PresentationLayerPayloadV1.CurrentSchemaVersion }, variant)
+        ];
+
+    /// <summary>The deep-sky layer's options: its variant, the catalog-geometry basis, and the legend shown with it.</summary>
+    internal static JsonElement DeepSkyLayerOptions(ProcessingProduct product) => JsonSerializer.SerializeToElement(new
+    {
+        product.Variant,
+        PresentationDeepSkyLayerProducer.Basis,
+        PresentationDeepSkyLayerProducer.Legend
+    });
 }
 
 internal static class PresentationLayerKinds
@@ -49,7 +83,8 @@ internal static class PresentationLayerKinds
     [
         "scene-annotation", "scene-cardinals", "scene-image-circle", "scene-constellations",
         "cloud-mask", "cloud-labels", "environment",
-        "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations"
+        "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations",
+        LayeredPresentationCaptureProcessing.DeepSkyLayerKind
     ], StringComparer.Ordinal);
 
     internal static bool IsSupported(string kind) => Supported.Contains(kind);
@@ -101,6 +136,11 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
         "1.0.0",
         PresentationLayerProducers.SceneProducerVersion,
         ProcessingOperationKind.Transform);
+    private static readonly ProcessingRecipeDefinition SharedDeepSkyLayerRecipe = new(
+        PresentationProcessingProducts.LayerRecipeName,
+        "1.0.0",
+        PresentationDeepSkyLayerProducer.ProducerVersion,
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => Recipe;
     public string? SharedStepVersion => PresentationLayerProducers.SceneProducerVersion;
@@ -108,23 +148,34 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
     public string OutputVariant => Options.AnnotationOutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
     public string? OutputMediaType => PresentationLayerPayloadJson.MediaType;
-    public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
-    [
-        new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
-            MediaType: OutputMediaType),
-        new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
-            MediaType: OutputMediaType),
-        new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
-            MediaType: OutputMediaType),
-        new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
-            MediaType: OutputMediaType)
-    ];
+    public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs
+    {
+        get
+        {
+            CaptureProcessingOutputDescriptor[] outputs =
+            [
+                new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+                    MediaType: OutputMediaType),
+                new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+                    MediaType: OutputMediaType),
+                new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+                    MediaType: OutputMediaType),
+                new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+                    MediaType: OutputMediaType)
+            ];
+            // The deep-sky output exists only when configured, so a definition without it keeps its node plan bytes.
+            return Options.DeepSkyOutputVariant is { } deepSkyVariant
+                ? [.. outputs, new(OutputRole, deepSkyVariant, RecipeName, OutputSchemaVersion, SharedDeepSkyLayerRecipe,
+                    MediaType: OutputMediaType)]
+                : outputs;
+        }
+    }
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal))
+            new HashSet<string>(LayeredPresentationCaptureProcessing.PlanIdentitySceneSchemaVersions, StringComparer.Ordinal))
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -154,7 +205,17 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
             payloads.ImageCircle, Options.ImageCircleOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
         var constellations = PresentationProcessingProducts.CreateLayerProduct(
             payloads.Constellations, Options.ConstellationOutputVariant, [source], PresentationLayerProducers.SceneProducerVersion);
-        LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
+        if (Options.DeepSkyOutputVariant is not { } deepSkyVariant)
+        {
+            LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations);
+            return ValueTask.CompletedTask;
+        }
+        // A scene without a deep-sky collection still yields the configured output, as an empty layer.
+        var deepSky = PresentationDeepSkyLayerProducer.Create(scene, new PresentationDeepSkyStyleV1(
+            Options.MaximumDeepSkyLabels, Options.MaximumLabelCharacters, Options.LabelScale, Options.DeepSkyCatalogLabels));
+        var deepSkyProduct = PresentationProcessingProducts.CreateLayerProduct(
+            deepSky.Payload, deepSkyVariant, [source], PresentationDeepSkyLayerProducer.ProducerVersion);
+        LayeredPresentationCaptureProcessing.Add(context, annotation, cardinals, imageCircle, constellations, deepSkyProduct);
         return ValueTask.CompletedTask;
     }
 }
@@ -253,7 +314,7 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal)),
+            new HashSet<string>(LayeredPresentationCaptureProcessing.PlanIdentitySceneSchemaVersions, StringComparer.Ordinal)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
             Variant: Options.StackPreviewVariant)
     ];
@@ -341,7 +402,8 @@ internal sealed class OverlayManifestCaptureProcessingStep(
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudMaskVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudLabelVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { PresentationProcessingProducts.MetadataFactsRecipeName }, new HashSet<string> { PresentationMetadataFactsProductV1.CurrentSchemaVersion }, Options.EnvironmentFactsVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant)
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant),
+        .. LayeredPresentationCaptureProcessing.DeepSkyRequirement(Options.DeepSkyVariant)
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -368,6 +430,13 @@ internal sealed class OverlayManifestCaptureProcessingStep(
             layerProducts.Add(CreateLayer(cloudMask, "cloud-mask", 30, PresentationBlendMode.Normal, 1_000_000));
             layerProducts.Add(CreateLayer(cloudLabels, "cloud-labels", 40, PresentationBlendMode.Lighten, 1_000_000));
         }
+        if (Options.DeepSkyVariant is { } deepSkyVariant)
+        {
+            var deepSky = products.Single(product => product.Variant == deepSkyVariant);
+            layerProducts.Add(CreateLayer(deepSky, LayeredPresentationCaptureProcessing.DeepSkyLayerKind, 12,
+                PresentationBlendMode.Normal, 1_000_000, enabledByDefault: false,
+                LayeredPresentationCaptureProcessing.DeepSkyLayerOptions(deepSky)));
+        }
         var manifest = PresentationProcessingProducts.CreateManifestProduct(
             reference, scenePayload.SourceIdentitySha256, layerProducts, Options.OutputVariant, baseArtifact);
         LayeredPresentationCaptureProcessing.Add(context, manifest);
@@ -375,7 +444,7 @@ internal sealed class OverlayManifestCaptureProcessingStep(
 
         PresentationLayerProductInput CreateLayer(
             ProcessingProduct product, string kind, int defaultZOrder,
-            PresentationBlendMode blendMode, int opacityMillionths)
+            PresentationBlendMode blendMode, int opacityMillionths, bool enabledByDefault = true, JsonElement? options = null)
         {
             var selection = Options.Layers.FirstOrDefault(item => string.Equals(item.Kind, kind, StringComparison.Ordinal))
                 ?? Options.Layers.FirstOrDefault(item => item.Kind != "scene-annotation" && PresentationLayerKinds.Matches(item.Kind, kind))
@@ -384,8 +453,8 @@ internal sealed class OverlayManifestCaptureProcessingStep(
                 ? PresentationLayerKinds.ResolveZOrder(selection.Kind, kind, configuredZOrder)
                 : defaultZOrder;
             return LayeredPresentationCaptureProcessing.Layer(product, kind, scenePayload.SourceIdentitySha256,
-                zOrder, blendMode, opacityMillionths, selection?.Enabled ?? true,
-                context, reference.Compatibility);
+                zOrder, blendMode, opacityMillionths, selection?.Enabled ?? enabledByDefault,
+                context, reference.Compatibility, options);
         }
     }
 }
@@ -426,7 +495,8 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudMaskVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { CloudPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.CloudLabelVariant, Required: false),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { PresentationProcessingProducts.MetadataFactsRecipeName }, new HashSet<string> { PresentationMetadataFactsProductV1.CurrentSchemaVersion }, Options.EnvironmentFactsVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant)
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant),
+        .. LayeredPresentationCaptureProcessing.DeepSkyRequirement(Options.DeepSkyVariant)
     ];
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -437,9 +507,13 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
         var manifestProduct = products.Single(product => product.SchemaVersion == OverlayManifestV1.CurrentSchemaVersion);
         var manifest = LayeredPresentationJson.ParseManifest(manifestProduct.Payload).Document
             ?? throw new InvalidDataException("The overlay-manifest dependency is invalid.");
-        var suppliedLayers = products.Where(product => PresentationLayerPayloadV1.SupportsSchema(product.SchemaVersion))
+        // The scene step's deep-sky output reaches every consumer of that step; one not configured for it is not supplied it.
+        var layerProducts = products.Where(product => PresentationLayerPayloadV1.SupportsSchema(product.SchemaVersion) &&
+            (Options.DeepSkyVariant is not null || !string.Equals(product.Recipe.Descriptor.ImplementationVersion,
+                PresentationDeepSkyLayerProducer.ProducerVersion, StringComparison.Ordinal))).ToArray();
+        var suppliedLayers = layerProducts
             .ToDictionary(product => CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
-        if (suppliedLayers.Count != products.Count(product => PresentationLayerPayloadV1.SupportsSchema(product.SchemaVersion)) ||
+        if (suppliedLayers.Count != layerProducts.Length ||
             suppliedLayers.Keys.Any(id => manifest.Layers.All(layer => layer.SourceProduct.ArtifactId != id)))
             throw new InvalidDataException("Materializer dependencies contain duplicate or undeclared layer products.");
         var layers = manifest.Layers.Where(layer => suppliedLayers.ContainsKey(layer.SourceProduct.ArtifactId))
@@ -490,10 +564,26 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(0, 255)] public byte? ImageCircleValue { get; init; }
     [Range(0, 255)] public byte? CardinalValue { get; init; }
     [Range(1, 8)] public int CardinalScale { get; init; } = 2;
+
+    /// <summary>
+    /// The opt-in deep-sky layer's output variant. Absent means no deep-sky output, so existing definitions keep their
+    /// plan identity.
+    /// </summary>
+    [MaxLength(128)] public string? DeepSkyOutputVariant { get; init; }
+
+    /// <summary>Labels catalog-only NGC and IC designations as well as featured objects.</summary>
+    public bool DeepSkyCatalogLabels { get; init; }
+
+    [Range(0, 64)] public int MaximumDeepSkyLabels { get; init; } = 24;
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (ConstellationIds.Count > 256 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);
+        if (DeepSkyOutputVariant is { } deepSky && (string.IsNullOrWhiteSpace(deepSky) ||
+            deepSky == AnnotationOutputVariant || deepSky == CardinalOutputVariant ||
+            deepSky == ImageCircleOutputVariant || deepSky == ConstellationOutputVariant))
+            yield return new ValidationResult("The deep-sky output variant must be a distinct variant.", [nameof(DeepSkyOutputVariant)]);
     }
 }
 
@@ -542,6 +632,9 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
     [Required, MaxLength(128)] public string EnvironmentVariant { get; init; } = "environment-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
     [Range(0, 1_000_000)] public int ConstellationOpacityMillionths { get; init; } = 780_000;
+
+    /// <summary>The scene step's deep-sky output variant. Absent means the manifest carries no deep-sky layer.</summary>
+    [MaxLength(128)] public string? DeepSkyVariant { get; init; }
     public IReadOnlyList<PresentationLayerSelectionOptions> Layers { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
@@ -549,6 +642,8 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
         if (Layers.Count > 10 || Layers.Any(item => item is null || !PresentationLayerKinds.IsSupported(item.Kind)) ||
             Layers.Select(static item => PresentationLayerKinds.Canonicalize(item.Kind)).Distinct(StringComparer.Ordinal).Count() != Layers.Count)
             yield return new ValidationResult("Layer overrides must be unique supported layer kinds.", [nameof(Layers)]);
+        if (DeepSkyVariant is not null && string.IsNullOrWhiteSpace(DeepSkyVariant))
+            yield return new ValidationResult("The deep-sky variant must not be blank.", [nameof(DeepSkyVariant)]);
     }
 }
 
@@ -564,6 +659,9 @@ internal sealed class PresentationMaterializerProcessingStepOptions : IValidatab
     [Required, MaxLength(128)] public string CloudLabelVariant { get; init; } = "cloud-label-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentVariant { get; init; } = "environment-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
+
+    /// <summary>The scene step's deep-sky output variant. Absent means the deep-sky layer is never supplied.</summary>
+    [MaxLength(128)] public string? DeepSkyVariant { get; init; }
     public IReadOnlyList<string> EnabledLayerKinds { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
@@ -571,6 +669,11 @@ internal sealed class PresentationMaterializerProcessingStepOptions : IValidatab
         if (EnabledLayerKinds.Count > 10 || EnabledLayerKinds.Any(kind => !PresentationLayerKinds.IsSupported(kind)) ||
             EnabledLayerKinds.Select(PresentationLayerKinds.Canonicalize).Distinct(StringComparer.Ordinal).Count() != EnabledLayerKinds.Count)
             yield return new ValidationResult("Enabled layers must be unique supported layer kinds.", [nameof(EnabledLayerKinds)]);
+        if (DeepSkyVariant is not null && string.IsNullOrWhiteSpace(DeepSkyVariant))
+            yield return new ValidationResult("The deep-sky variant must not be blank.", [nameof(DeepSkyVariant)]);
+        // Enabling a layer the step is never given would fail every materialization, so reject it at configuration.
+        if (DeepSkyVariant is null && EnabledLayerKinds.Contains(LayeredPresentationCaptureProcessing.DeepSkyLayerKind, StringComparer.Ordinal))
+            yield return new ValidationResult("Enabling the deep-sky layer requires its variant.", [nameof(EnabledLayerKinds)]);
     }
 }
 

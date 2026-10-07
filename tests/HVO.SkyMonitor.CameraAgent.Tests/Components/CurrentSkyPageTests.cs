@@ -450,7 +450,8 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "arrives with #525", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "extended-source association not yet enabled (#526)", StringComparison.Ordinal);
+        Assert.DoesNotContain("arrives with #525", cut.Find(".scene-panel").TextContent, StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "arrives with #523", StringComparison.Ordinal);
         await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
@@ -499,10 +500,47 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        Assert.HasCount(14, cut.FindAll(".scene-panel input:disabled"));
+        Assert.HasCount(15, cut.FindAll(".scene-panel input:disabled"));
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Deep-sky (catalog positions)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not a detection / not retained for this capture", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sun footprint", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Moon footprint", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
+    }
+
+    [TestMethod]
+    public void RetainedDeepSkyLayerIsCatalogSkyContextThatStartsUnselected()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var deepSky = new string('E', 64);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            Layered(id, new string('D', 64)) with
+            {
+                Layers =
+                [
+                    new(new string('D', 64), "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1"),
+                    new(deepSky, "deep-sky", "hvo-layer-1", 12, false, 1_000_000, "renderer-v1", "style-v1")
+                ],
+                Svg = System.Text.Encoding.UTF8.GetBytes(
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g><g id=\"hvo-layer-1\" display=\"none\"></g></svg>")
+            }));
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
+
+        // Catalog geometry is sky context, never a measured layer, and stays off until the operator selects it.
+        var label = cut.FindAll("[aria-label='Sky context layers'] label")
+            .Single(row => row.QuerySelector($"input[data-layer-identity='{deepSky}']") is not null);
+        Assert.IsFalse(label.QuerySelector("input")!.HasAttribute("checked"));
+        StringAssert.Contains(label.TextContent, "Deep-sky (catalog positions)", StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "catalog position — not a detection", StringComparison.Ordinal);
+        Assert.IsNotNull(label.QuerySelector(".layer-swatch.deep-sky"));
+        Assert.IsEmpty(cut.FindAll("[aria-label='Measured layers'] input[data-layer-identity]"));
+        Assert.DoesNotContain("not a detection / not retained", cut.Find(".scene-panel").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("1 selected", cut.Find(".scene-panel header > span").TextContent);
     }
 
     [TestMethod]

@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -681,6 +683,215 @@ public sealed partial class DurableCaptureProcessingTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task ProductionLayeredPresentation_DeepSkyLayerIsAdditiveAndStartsUnselected()
+    {
+        // One capture, three ways: without the layer; with it over a scene that has no deep-sky collection; and with it
+        // over a projected-scene-v3 scene. The existing layers and the default materialization never move.
+        var wiring = new DeepSkyWiring("deep-sky-layer", "deep-sky-layer", "deep-sky-layer");
+        var without = await RunAsync(null, null).ConfigureAwait(false);
+        var configured = await RunAsync(null, wiring).ConfigureAwait(false);
+        var catalogued = await RunAsync(ProductionDeepSkyCatalog(), wiring).ConfigureAwait(false);
+        string[] existing = ["scene-layer", "cardinal-layer", "image-circle-layer", "constellation-layer", "environment-layer"];
+        string[] withDeepSky = [ExpectedProductionLayerOrder[0], LayeredPresentationCaptureProcessing.DeepSkyLayerKind,
+            .. ExpectedProductionLayerOrder.Skip(1)];
+
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, without.SceneSchemaVersion);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, configured.SceneSchemaVersion);
+        Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, catalogued.SceneSchemaVersion);
+        Assert.IsFalse(without.Layers.ContainsKey("deep-sky-layer"));
+        CollectionAssert.AreEqual(ExpectedProductionLayerOrder,
+            without.Manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
+        Assert.HasCount(9, without.MaterializedSources);
+
+        // The configured option adds one output and leaves every existing output byte-identical.
+        CollectionAssert.AreEquivalent(without.Layers.Keys.Append("deep-sky-layer").ToArray(), configured.Layers.Keys.ToArray());
+        foreach (var (variant, layer) in without.Layers)
+        {
+            Assert.AreEqual(layer.Identity, configured.Layers[variant].Identity, variant);
+            Assert.AreEqual(layer.Implementation, configured.Layers[variant].Implementation, variant);
+            CollectionAssert.AreEqual(layer.Payload, configured.Layers[variant].Payload, variant);
+        }
+        Assert.AreEqual(PresentationDeepSkyLayerProducer.ProducerVersion, configured.Layers["deep-sky-layer"].Implementation);
+        Assert.IsEmpty(Primitives(configured.Layers["deep-sky-layer"].Payload));
+        foreach (var layer in without.Manifest.Layers)
+            Assert.AreEqual(layer.LayerIdentitySha256,
+                configured.Manifest.Layers.Single(item => item.LayerKind == layer.LayerKind).LayerIdentitySha256, layer.LayerKind);
+
+        // A deep-sky scene reaches both scene-consuming steps and draws the existing layers exactly as before.
+        foreach (var variant in existing)
+            CollectionAssert.AreEqual(Primitives(without.Layers[variant].Payload), Primitives(catalogued.Layers[variant].Payload),
+                variant);
+        Assert.AreEqual(PresentationDeepSkyLayerProducer.ProducerVersion, catalogued.Layers["deep-sky-layer"].Implementation);
+        Assert.IsNotEmpty(Primitives(catalogued.Layers["deep-sky-layer"].Payload));
+
+        foreach (var run in new[] { configured, catalogued })
+        {
+            CollectionAssert.AreEqual(withDeepSky, run.Manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
+            var deepSky = run.Manifest.Layers.Single(static layer =>
+                layer.LayerKind == LayeredPresentationCaptureProcessing.DeepSkyLayerKind);
+            Assert.IsFalse(deepSky.EnabledByDefault);
+            Assert.IsTrue(run.Manifest.Layers.Where(static layer => layer.LayerKind != LayeredPresentationCaptureProcessing.DeepSkyLayerKind)
+                .All(static layer => layer.EnabledByDefault));
+            Assert.AreEqual(PresentationDeepSkyLayerProducer.ProducerVersion, deepSky.StyleVersion);
+            Assert.AreEqual("deep-sky-layer", deepSky.Options.GetProperty("Variant").GetString());
+            Assert.AreEqual(PresentationDeepSkyLayerProducer.Basis, deepSky.Options.GetProperty("Basis").GetString());
+            Assert.AreEqual(PresentationDeepSkyLayerProducer.Legend, deepSky.Options.GetProperty("Legend").GetString());
+            // Off by default: the default materialization is the same pixels, with the layer only in its lineage.
+            CollectionAssert.AreEqual(without.Materialized, run.Materialized);
+            Assert.HasCount(10, run.MaterializedSources);
+            // The edge SVG carries the layer as a hidden group the operator can switch on.
+            Assert.IsFalse(run.Svg.Layers.Single(static layer =>
+                layer.Kind == LayeredPresentationCaptureProcessing.DeepSkyLayerKind).EnabledByDefault);
+            var groups = XDocument.Parse(Encoding.UTF8.GetString(run.Svg.Svg.Span)).Root!.Elements()
+                .ToDictionary(static group => (string)group.Attribute("data-layer-kind")!, StringComparer.Ordinal);
+            CollectionAssert.AreEqual(withDeepSky, groups.Keys.ToArray());
+            foreach (var (kind, group) in groups)
+                Assert.AreEqual(kind == LayeredPresentationCaptureProcessing.DeepSkyLayerKind ? "none" : null,
+                    (string?)group.Attribute("display"), kind);
+        }
+        Assert.IsEmpty(XDocument.Parse(Encoding.UTF8.GetString(without.Svg.Svg.Span)).Root!.Elements()
+            .Where(static group => group.Attribute("display") is not null));
+
+        static string[] Primitives(byte[] json)
+        {
+            var payload = PresentationLayerPayloadJson.Parse(json).Payload!;
+            return
+            [
+                .. payload.Markers.Select(static item => item.ToString()),
+                .. payload.Segments.Select(static item => item.ToString()),
+                .. payload.Ellipses.Select(static item => item.ToString()),
+                // Lines is the only collection member; every other member prints by value.
+                .. payload.TextBlocks.Select(static item => $"{string.Join('|', item.Lines)}#{item with { Lines = [] }}")
+            ];
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    [DataRow(false, DisplayName = "consumers without the variant are not supplied the layer")]
+    [DataRow(true, DisplayName = "a materializer configured for an undeclared layer fails")]
+    public async Task ProductionLayeredPresentation_DeepSkyOutputReachesOnlyConsumersConfiguredForIt(bool materializerConfigured)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var graph = await CreateProductionLayeredGraphAsync(fixture, root, ProductionDeepSkyCatalog(),
+                new DeepSkyWiring("deep-sky-layer", null, materializerConfigured ? "deep-sky-layer" : null)).ConfigureAwait(false);
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            var captureId = fixture.Manifest.Descriptor.Capture.CaptureId;
+            var manifestNode = (await store.ReadNodeAsync(captureId, "overlay-manifest", CancellationToken.None)
+                .ConfigureAwait(false))!;
+            var manifest = LayeredPresentationJson.ParseManifest(await File.ReadAllBytesAsync(
+                Path.Combine(root, manifestNode.Outputs.Single().PayloadRelativePath)).ConfigureAwait(false)).Document!;
+            CollectionAssert.AreEqual(ExpectedProductionLayerOrder, manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
+            var materializer = (await store.ReadNodeAsync(captureId, "presentation-materializer", CancellationToken.None)
+                .ConfigureAwait(false))!;
+            if (materializerConfigured)
+            {
+                // The manifest never declared the layer, so a materializer configured for it refuses to render.
+                Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, result.Outcome);
+                Assert.AreEqual(DurableProcessingNodeStatus.RetryableFailure, materializer.Status);
+                Assert.AreEqual("processing.step-exception", materializer.Reason);
+                Assert.IsEmpty(materializer.Outputs);
+            }
+            else
+            {
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, materializer.Status);
+                Assert.HasCount(9, materializer.Outputs.Single().Artifact.SourceArtifactIds);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task<LayeredRun> RunAsync(IDeepSkyCatalog? deepSky, DeepSkyWiring? wiring)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var graph = await CreateProductionLayeredGraphAsync(fixture, root, deepSky, wiring).ConfigureAwait(false);
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            var scene = (await OutputsAsync("projected-scene").ConfigureAwait(false)).Single();
+            var layers = new Dictionary<string, LayeredRunOutput>(StringComparer.Ordinal);
+            var payloads = new Dictionary<Guid, byte[]>();
+            foreach (var nodeId in new[] { "scene-presentation", "cloud-presentation", "environment-presentation" })
+            {
+                foreach (var output in await OutputsAsync(nodeId).ConfigureAwait(false))
+                {
+                    var payload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
+                    payloads.Add(output.ArtifactId, payload);
+                    if (nodeId != "cloud-presentation")
+                        layers.Add(output.Artifact.Variant, new(output.OutputIdentitySha256,
+                            output.Artifact.Recipe.ImplementationVersion, payload));
+                }
+            }
+            var manifestOutput = (await OutputsAsync("overlay-manifest").ConfigureAwait(false)).Single();
+            var manifest = LayeredPresentationJson.ParseManifest(await File.ReadAllBytesAsync(
+                Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false)).Document!;
+            // The edge's grouped SVG, rendered from the retained layer payloads exactly as the gallery service reads them.
+            var svg = CameraAgentLayeredPresentationService.Render(fixture.Manifest.Descriptor.Capture.CaptureId, manifest,
+                manifest.Layers.Select(layer => PresentationLayerPayloadJson.Parse(payloads[layer.SourceProduct.ArtifactId]).Payload!)
+                    .ToList(), new string('0', 64));
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, svg.Status, svg.Reason);
+            var materialized = (await OutputsAsync("presentation-materializer").ConfigureAwait(false)).Single();
+            return new LayeredRun(scene.ProductSchemaVersion!, layers, manifest,
+                await File.ReadAllBytesAsync(Path.Combine(root, materialized.PayloadRelativePath)).ConfigureAwait(false),
+                materialized.Artifact.SourceArtifactIds.ToArray(), svg.Presentation!);
+
+            async Task<IReadOnlyList<DurableProcessingOutput>> OutputsAsync(string nodeId)
+            {
+                var node = await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                    nodeId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(node, nodeId);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, nodeId);
+                return node.Outputs;
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>One Messier galaxy ten degrees from the zenith of the production layered fixture's 2x2 frame.</summary>
+    private static DeepSkyCatalog ProductionDeepSkyCatalog()
+    {
+        var utc = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8])
+            .Descriptor.Timing.ExposureStartedUtc;
+        var at = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(80, 45), utc, 0, 0), utc);
+        DeepSkyObject[] objects =
+        [
+            new("NGC0224", "NGC 224", "M31", "G", at.RightAscensionHours, at.DeclinationDegrees, "And",
+                190, 60, 35, null, 3.4, null, null, 31, null, null, "Andromeda Galaxy")
+        ];
+        return new DeepSkyCatalog(
+            new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote"),
+            objects, objects.Select(static item => new DeepSkyAlias(item.Designation, item.Id, DeepSkyAliasKinds.Designation)),
+            [], []);
     }
 
     [TestMethod]
@@ -2616,7 +2827,7 @@ public sealed partial class DurableCaptureProcessingTests
             CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
         {
             Kind = ProcessingProductKind.Metadata,
-            SchemaVersion = ProjectedSceneV1.CurrentSchemaVersion,
+            SchemaVersion = scene.SchemaVersion,
             ContentIdentitySha256 = scene.SceneIdentitySha256
         };
     }
@@ -3285,7 +3496,11 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
     }
 
-    private static async Task<CaptureProcessingGraph> CreateProductionLayeredGraphAsync(Fixture fixture, string root)
+    private static async Task<CaptureProcessingGraph> CreateProductionLayeredGraphAsync(
+        Fixture fixture,
+        string root,
+        IDeepSkyCatalog? deepSky = null,
+        DeepSkyWiring? wiring = null)
     {
         var descriptor = fixture.Manifest.Descriptor;
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(
@@ -3294,6 +3509,7 @@ public sealed partial class DurableCaptureProcessingTests
                 new CatalogQuery(6.5, 10),
                 new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('A', 64), "test", "1"),
                 projectionVersion: "projection-v1")).ConfigureAwait(false);
+        if (deepSky is not null) visible = visible.WithDeepSky(deepSky, ProjectedSceneDeepSkySelection.Default);
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(2, 2),
             new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
@@ -3313,7 +3529,8 @@ public sealed partial class DurableCaptureProcessingTests
                 AnnotationOutputVariant = "scene-layer",
                 CardinalOutputVariant = "cardinal-layer",
                 ImageCircleOutputVariant = "image-circle-layer",
-                ConstellationOutputVariant = "constellation-layer"
+                ConstellationOutputVariant = "constellation-layer",
+                DeepSkyOutputVariant = wiring?.Scene
             });
         var cloudLayer = new CloudPresentationLayerCaptureProcessingStep(
             new CaptureProcessingStepMetadata("cloud-presentation", "CloudPresentationLayer", 71),
@@ -3353,7 +3570,8 @@ public sealed partial class DurableCaptureProcessingTests
                 CloudMaskVariant = "cloud-mask",
                 CloudLabelVariant = "cloud-label",
                 EnvironmentFactsVariant = "environment-facts",
-                EnvironmentVariant = "environment-layer"
+                EnvironmentVariant = "environment-layer",
+                DeepSkyVariant = wiring?.Manifest
             });
         var materializer = new PresentationMaterializerCaptureProcessingStep(
             new CaptureProcessingStepMetadata("presentation-materializer", "PresentationMaterializer", 81),
@@ -3368,7 +3586,8 @@ public sealed partial class DurableCaptureProcessingTests
                 CloudMaskVariant = "cloud-mask",
                 CloudLabelVariant = "cloud-label",
                 EnvironmentFactsVariant = "environment-facts",
-                EnvironmentVariant = "environment-layer"
+                EnvironmentVariant = "environment-layer",
+                DeepSkyVariant = wiring?.Materializer
             });
         return new CaptureProcessingGraph([
             Node("projected-scene", projected, []),
@@ -4104,4 +4323,17 @@ public sealed partial class DurableCaptureProcessingTests
         ArtifactManifestV2 Manifest,
         IOptions<CameraAgentHostOptions> Options,
         FrameProcessingItem Item);
+
+    /// <summary>The deep-sky variant each layered step is configured with; null leaves that step unconfigured.</summary>
+    private sealed record DeepSkyWiring(string? Scene, string? Manifest, string? Materializer);
+
+    private sealed record LayeredRunOutput(string Identity, string Implementation, byte[] Payload);
+
+    private sealed record LayeredRun(
+        string SceneSchemaVersion,
+        IReadOnlyDictionary<string, LayeredRunOutput> Layers,
+        OverlayManifestV1 Manifest,
+        byte[] Materialized,
+        IReadOnlyList<Guid> MaterializedSources,
+        CameraAgentLayeredPresentation Svg);
 }

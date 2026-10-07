@@ -85,6 +85,23 @@ public sealed class DeepSkySceneTests
     }
 
     [TestMethod]
+    public void FootprintPositionAngleTurnsFromJ2000NorthToNorthOfDate()
+    {
+        var j2000 = new EquatorialPoint(6, 80);
+        Assert.AreEqual(30, DeepSkySceneProjector.PositionAngleOfDate(6, 80, 30,
+            new DateTimeOffset(2000, 1, 1, 12, 0, 0, TimeSpan.Zero)), 1e-4);
+
+        var ofDate = DeepSkySceneProjector.PositionAngleOfDate(6, 80, 30, EffectiveUtc);
+
+        // About n sin(ra) sec(dec) t = 20.04" x 5.76 x 25 years, so near the pole the turn is most of a degree.
+        Assert.AreEqual(.8, Math.Abs(ofDate - 30), .05);
+        // A point one degree along the axis of date, rotated back to J2000, lies on the catalogue's axis.
+        var along = EquatorialPrecession.PrecessToJ2000(
+            Destination(EquatorialPrecession.PrecessJ2000(j2000, EffectiveUtc), ofDate, 1), EffectiveUtc);
+        Assert.AreEqual(30, DeepSkySceneProjector.Bearing(j2000, along), 1e-9);
+    }
+
+    [TestMethod]
     public async Task ProjectedScene_V3RoundTripsAndAV2OnlyReaderFailsClosedOnTheSchemaVersion()
     {
         var projected = await CreateV3Async().ConfigureAwait(false);
@@ -474,6 +491,19 @@ public sealed class DeepSkySceneTests
             Point(ra + raHalf, center.Dec + half), Point(ra - raHalf, center.Dec + half)
         ];
         return new DeepSkyOutline(id, level, [new DeepSkyOutlineRing([.. corners, corners[0]])]);
+    }
+
+    /// <summary>Returns the point the given number of degrees from a start along a position angle.</summary>
+    private static EquatorialPoint Destination(EquatorialPoint start, double positionAngleDegrees, double distanceDegrees)
+    {
+        var declination = start.DeclinationDegrees * Math.PI / 180;
+        var angle = positionAngleDegrees * Math.PI / 180;
+        var distance = distanceDegrees * Math.PI / 180;
+        var end = Math.Asin(Math.Sin(declination) * Math.Cos(distance) +
+            Math.Cos(declination) * Math.Sin(distance) * Math.Cos(angle));
+        var hours = start.RightAscensionHours + Math.Atan2(Math.Sin(angle) * Math.Sin(distance) * Math.Cos(declination),
+            Math.Cos(distance) - Math.Sin(declination) * Math.Sin(end)) * 12 / Math.PI;
+        return new EquatorialPoint((hours % 24 + 24) % 24, end * 180 / Math.PI);
     }
 
     /// <summary>Returns the J2000 position whose geometric direction at the given instant is the given one.</summary>

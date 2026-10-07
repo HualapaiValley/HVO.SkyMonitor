@@ -608,7 +608,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerGroup(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
+        "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" or "deep-sky" => "Sky context",
         _ => "Diagnostics"
     };
 
@@ -616,6 +616,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         "scene-annotation" or "star-annotations" => "expected / projected catalog, not measured associations (#526)",
         "scene-constellations" or "constellations" => "expected / HYG topology",
+        "deep-sky" => "catalog position \u2014 not a detection / OpenNGC extents",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
         "scene-image-circle" or "image-circle" => "native sensor coordinates",
         "environment" or "corner-annotations" => "source and coordinate provenance",
@@ -887,6 +888,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",
         "scene-constellations" or "constellations" => "Constellation lines",
+        "deep-sky" => "Deep-sky (catalog positions)",
         "environment" or "corner-annotations" => "Frame facts",
         "cloud-mask" => "Measured cloud mask",
         "cloud-labels" => "Measured cloud assessment",

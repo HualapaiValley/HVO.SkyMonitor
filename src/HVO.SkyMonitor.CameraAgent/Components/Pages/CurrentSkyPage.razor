@@ -245,12 +245,13 @@
                 <div class="overlay-list sky-layer-controls">
                     <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
                         <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Associated stars</strong><small>source-association / arrives with #526</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>OpenNGC aliases + extents / arrives with #525</small></span></label>
+                        <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky-association"></span><span><strong>Deep-sky associations</strong><small>OpenNGC aliases + extents / extended-source association not yet enabled (#526)</small></span></label>
                     </div>
                     <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
                         @foreach (var layer in RetainedLayers("Sky context")) { @LayerToggle(layer) }
                         @if (!HasLayer("scene-annotation", "star-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Catalog stars</strong><small>expected / not retained for this capture</small></span></label> }
                         @if (!HasLayer("scene-constellations", "constellations")) { <label><input type="checkbox" disabled /><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>expected / not retained for this capture</small></span></label> }
+                        @if (!HasLayer("deep-sky", "deep-sky")) { <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky (catalog positions)</strong><small>catalog position &mdash; not a detection / not retained for this capture</small></span></label> }
                         <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Sun footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
                         <label><input type="checkbox" disabled /><span class="layer-swatch bodies"></span><span><strong>Moon footprint</strong><small>projected physical limb / not retained for this capture, #518</small></span></label>
                         @if (!HasLayer("scene-cardinals", "cardinal-directions")) { <label><input type="checkbox" disabled /><span class="layer-swatch cardinals"></span><span><strong>Cardinal directions</strong><small>configured rig geometry / not retained</small></span></label> }

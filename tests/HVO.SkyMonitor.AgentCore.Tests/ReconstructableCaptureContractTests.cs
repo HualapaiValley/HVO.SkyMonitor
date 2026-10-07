@@ -48,6 +48,28 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    [DataRow(SceneProvenance.RetainedProjectedSceneSchemaVersion)]
+    [DataRow(SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion)]
+    [DataRow(SceneProvenance.DeepSkyProjectedSceneSchemaVersion)]
+    public void ManifestV2_AcceptsEveryRetainedProjectedSceneSchemaVersion(string schemaVersion)
+    {
+        var scene = new SceneProvenance(
+            new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
+            "astronomy-v1", "sensor-v1", RigProfileHashSha256: new string('B', 64),
+            SceneUtc: DateTimeOffset.UnixEpoch, ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1",
+            ProjectedSceneStageKey: new string('C', 64)).WithoutProjectedGeometry() with
+        {
+            ProjectedSceneSchemaVersion = schemaVersion
+        };
+        var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
+
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(schemaVersion, parsed.Document!.Manifest.Scene!.ProjectedSceneSchemaVersion);
+    }
+
+    [TestMethod]
     [DataRow("unsupported-product-schema")]
     [DataRow("inline-segments")]
     [DataRow("missing-scene-utc")]
