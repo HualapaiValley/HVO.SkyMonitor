@@ -27,7 +27,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 [TestClass]
 [TestCategory("Integration")]
-public sealed class CentralDerivativeWindowIntegrationTests
+public sealed partial class CentralDerivativeWindowIntegrationTests
 {
     private const string Bucket = "skymonitor-artifacts";
 
@@ -2265,12 +2265,15 @@ public sealed class CentralDerivativeWindowIntegrationTests
         int height = 2,
         CameraPixelFormat pixelFormat = CameraPixelFormat.Mono16,
         string? objectKeyOverride = null,
-        bool publishPayload = true)
+        bool publishPayload = true,
+        IReadOnlyList<string>? graphNodeIds = null,
+        IServiceProvider? services = null,
+        Func<ProcessingGraphNodeDefinition, ProcessingGraphNodeDefinition>? shapeGraphNode = null)
     {
         var capturedAtUtc = capturedBase.AddSeconds(sequence);
         var objectKey = objectKeyOverride ?? $"integration/{scenario}/{sequence:D8}.raw";
         var checksum = Convert.ToHexString(SHA256.HashData(payload));
-        await using var uploadScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        await using var uploadScope = (services ?? AssemblyHooks.Fixture.Factory.Services).CreateAsyncScope();
         var objectStore = uploadScope.ServiceProvider.GetRequiredService<IObjectStore>();
         if (publishPayload)
         {
@@ -2332,6 +2335,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
             "window-integration",
             CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
+        Guid? installationId = graphNodeIds is null
+            ? null
+            : await EnsureGraphInstallationAsync(db, registration, scenario, graphNodeIds, capturedAtUtc, shapeGraphNode)
+                .ConfigureAwait(false);
         var deploymentLocationId = $"{scenario}-window-location";
         var deploymentLocation = await db.DeviceDeploymentLocationVersions.SingleOrDefaultAsync(item =>
             item.RegistrationId == registration.Id && item.LocationId == deploymentLocationId && item.Version == 1)
@@ -2403,6 +2410,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var frame = new CentralFrame
         {
             RegistrationId = registration.Id,
+            LogicalCameraInstallationId = installationId,
             DevicePublicId = devicePublicId,
             ObservatoryId = registration.ObservatoryId,
             AgentId = scenario,
@@ -2528,6 +2536,92 @@ public sealed class CentralDerivativeWindowIntegrationTests
         await uploadScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>()
             .EnsureRequiredJobsAsync(source, DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
         return source.Id;
+    }
+
+    /// <summary>
+    /// Installs a logical camera on the scenario registration and assigns it a camera-scoped central graph made of
+    /// the named canonical basic-graph nodes, so every frame the registration captures expands graph-owned jobs.
+    /// </summary>
+    private static async Task<Guid> EnsureGraphInstallationAsync(
+        ApplicationDbContext db,
+        DeviceRegistration registration,
+        string scenario,
+        IReadOnlyList<string> nodeIds,
+        DateTimeOffset capturedAtUtc,
+        Func<ProcessingGraphNodeDefinition, ProcessingGraphNodeDefinition>? shapeNode)
+    {
+        var existing = await db.LogicalCameraInstallations.AsNoTracking()
+            .Where(item => item.RegistrationId == registration.Id && item.RetiredAtUtc == null)
+            .Select(item => (Guid?)item.Id)
+            .SingleOrDefaultAsync().ConfigureAwait(false);
+        if (existing is { } existingId)
+        {
+            return existingId;
+        }
+        var now = DateTimeOffset.UtcNow;
+        var camera = new LogicalCamera
+        {
+            ObservatoryId = registration.ObservatoryId,
+            Slug = scenario,
+            Name = scenario,
+            Description = "Graph-owned window integration camera",
+            CreatedAtUtc = capturedAtUtc.AddDays(-1),
+            CreatedByUserId = scenario
+        };
+        var installation = new LogicalCameraInstallation
+        {
+            LogicalCamera = camera,
+            LogicalCameraId = camera.Id,
+            RegistrationId = registration.Id,
+            InstallationPublicId = Guid.NewGuid(),
+            AssignedAtUtc = capturedAtUtc.AddDays(-1),
+            AssignedByUserId = scenario,
+            AssignmentReasonCode = "window-integration"
+        };
+        var recipeCatalog = new CentralDerivativeRecipeCatalog();
+        var registry = new CentralProcessingGraphNodeRegistry(recipeCatalog);
+        var basic = DatabaseSeeder.CreateBasicCentralProcessingGraph(recipeCatalog);
+        var definition = basic with
+        {
+            Name = $"window-graph-{scenario}",
+            Nodes = [.. basic.Nodes.Where(node => nodeIds.Contains(node.Id, StringComparer.Ordinal))
+                .Select(node => shapeNode is null ? node : shapeNode(node))]
+        };
+        var portable = ProcessingGraphCompiler.Compile(definition);
+        portable.IsValid.Should().BeTrue(string.Join(Environment.NewLine, portable.Diagnostics));
+        var central = ProcessingGraphCompiler.Compile(
+            definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+        central.IsValid.Should().BeTrue(string.Join(Environment.NewLine, central.Diagnostics));
+        var revision = new CentralProcessingGraphRevision
+        {
+            Name = definition.Name,
+            Revision = definition.Revision,
+            DefinitionJson = System.Text.Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+            DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
+            CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
+            CreatedAtUtc = now.AddMinutes(-1),
+            CreatedByUserId = scenario,
+            PublishedAtUtc = now.AddSeconds(-1),
+            PublishedByUserId = scenario
+        };
+        var assignment = new CentralProcessingGraphAssignment
+        {
+            Revision = revision,
+            RevisionId = revision.Id,
+            TargetHost = CentralProcessingGraphTargetHost.Central,
+            Scope = CentralProcessingGraphAssignmentScope.LogicalCamera,
+            ObservatoryId = registration.ObservatoryId,
+            LogicalCameraId = camera.Id,
+            EffectiveFromUtc = now.AddMinutes(-1),
+            CreatedAtUtc = now.AddMinutes(-1),
+            ActorUserId = scenario,
+            ReasonCode = "window-integration"
+        };
+        revision.Assignments.Add(assignment);
+        db.AddRange(camera, installation, revision, assignment);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        return installation.Id;
     }
 
     private static async Task<CentralArtifact> LoadSchedulableArtifactAsync(ApplicationDbContext db, Guid sourceId)
