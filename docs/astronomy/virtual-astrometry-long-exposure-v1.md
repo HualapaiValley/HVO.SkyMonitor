@@ -19,6 +19,9 @@ envelope.
 - **Measured.** Continuity, tuning and the single held-out pack then ran on the re-frozen manifest; see
   [results](#results). Three held-out uncertainty processes failed, so covariance above 1 s is withheld from the
   [supported envelope](#supported-envelope).
+- **Continuity tightened after review.** The independent r0 review found two gaps in the continuity rules. Before any
+  evidence existed for the corrected head, the manifest's continuity section was tightened, and nothing else in it
+  changed; see [continuity](#continuity-with-1126). `continuity-f7e69d99` was scored under the earlier rules.
 - **Rerun pending.** `development/v1` has since changed paths that this manifest's revision-rerun rule covers. The
   envelope is final only after the [revision rerun](#revision-rerun).
 
@@ -183,9 +186,26 @@ these are not outcomes. The 1 s floors are unchanged.
 
 ## Continuity with #1126
 
-With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds
-base `0639e27d` and this head in Release. It then runs every #1126 manifest entry on base and then on head, in one
-heavy-lock session on hvo-dev-02. No `src/` path differs between the two.
+With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds a
+base revision and this head in Release. It then runs every #1126 manifest entry on base and then on head, in one
+heavy-lock session. The base is `0639e27d`; the [revision rerun](#revision-rerun) uses a later `development/v1`
+revision. No `src/` path differs between base and head.
+
+**Tightened in response to r0.** The independent r0 review of `39119200` found two ways continuity could pass on
+evidence it should reject:
+- F1: a head-only allocation miss passed as a timing difference. The allocation tripwire was a stated condition, but
+  the runner did not enforce it.
+- F2: any difference under the measured-stars scorer prefixes passed as `scorer-by-design`, whatever its size.
+
+Before any evidence existed for the corrected head, the manifest's `continuity` section was changed in exactly two
+ways: the runner now enforces the allocation tripwire, and scorer-by-design became an enumerated list of exact paths,
+each checked against a #1126 point-rule score. Nothing else in the manifest changed. The matrix, refusals,
+tolerances, floors and held-out criteria are byte-identical.
+
+| Manifest | SHA-256 |
+| --- | --- |
+| Before, at `39119200`; every pack under [results](#results) | `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65` |
+| After, tightened | `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05` |
 
 A pair passes only when all of these hold:
 
@@ -199,7 +219,8 @@ A pair passes only when all of these hold:
   harness's final `Assert.IsEmpty(failures)` message, listing its report's failures in order. The `pixels-tuning`
   base is the one exception: it must fail with exactly the pinned #1126 grid-count assertion, 725 of 750, as v2
   records. The head counts only accepted sources there, so it reaches `Assert.IsEmpty`.
-- Every differing report leaf is classified.
+- **No head-only allocation miss**, under the allocation tripwire below.
+- Every differing report leaf is classified, and the [legacy score](#legacy-point-rule-score) is identical.
 
 A base that records any other deterministic failure, or fails any other way, invalidates the run as environment or
 setup. That pair is `invalid`, the pack is incomplete, and it is not a continuity pass.
@@ -209,12 +230,20 @@ a timing or resource outcome, not output: a measured time, allocation or working
 
 - The patterns cover the pixel solve time budget, and the measured-stars, resources, calibration and uncertainty
   time, allocation and working-set budgets.
-- None matches a solve mode, reason code, association, accuracy, count, mapping or round-trip failure.
+- None matches a solve mode, reason code, association, accuracy, coverage, count, mapping or round-trip failure.
 - With no `src/` change, a resource failure that appears or disappears between revisions is a classified timing
-  difference. Both revisions' elapsed seconds are recorded. It never fails continuity.
+  difference. Both revisions' elapsed seconds are recorded, and every resource failure is listed by pair, with its
+  message.
+- **Allocation tripwire.** A head allocation miss fails the pair, with reason `head-only-allocation-miss`, unless the
+  base records a miss in the same report, on the same allocation pattern, with the same subject: the text before the
+  first colon. The allocation patterns are the measured-stars B/pixel budgets, per case and under window pressure,
+  and the calibration and uncertainty-estimator allocation budgets. They are matched in every failures list of the
+  report, nested ones included.
+  Each miss is recorded under the pair's `allocationTripwire`, with its report and message.
+- Working-set and time misses are listed, never failed.
 - A deterministic failure that appears or disappears always fails continuity.
 
-Every report leaf that differs must be classified:
+Every report leaf that differs must be classified. Array indices collapse to `N`.
 
 | Class | Meaning |
 | --- | --- |
@@ -223,10 +252,46 @@ Every report leaf that differs must be classified:
 | resource-outcome | A resource failure, split out of `failures` before classification. |
 | declared-changed | An exact base and head value named in the manifest, such as the schema versions. |
 | declared-added | A new field, such as `exposureSeconds`, `cases`, `cells` or `negativeControl`. |
-| scorer-by-design | Under a scorer prefix: the scorers became trail-aware by design. |
+| scorer-by-design | A leaf whose exact path is listed under its report's `scorer`: a trail-aware eligibility, recovery or recall count, or a missed-reason count. Its legacy counterpart, the same path under `reports.N.legacy`, must not differ. It must be identical on both sides, or absent from both, because missed-reason counts list only the reasons that occur. Only the measured-stars reports list any. |
 
-Any unclassified leaf fails continuity. So does any difference in solver, measurement, mapping, uncertainty or
-identity hashes.
+A leaf present on one side only must be head-only under a declared-added prefix, a resource outcome, or
+scorer-by-design by that rule. Any unclassified leaf fails continuity. So does any legacy difference, and any
+difference in solver, measurement, mapping, uncertainty or identity hashes.
+
+### Legacy point-rule score
+
+The measured-stars head report carries `reports.N.legacy`. It holds the eligible truth stars, the v1 baseline, the
+v2 candidate and the v2 missed-reason counts, scored by the #1126 point rule, verbatim from `0639e27d`:
+
+- Over the visible stars, those whose mid-exposure sample projects, in the same order.
+- **Legacy-eligible:** the star's mid-exposure pixel is more than 6 px inside the nominal frame border, more than
+  12 px inside a circular aperture, and more than 12 px from every other visible star's mid-exposure pixel.
+- **Legacy-recovered:** a detection lies within 1.5 px of that pixel.
+- The scores and missed reasons use the base `Score` and `MissedReasons` code.
+
+The base harness already scores by this rule. So the runner synthesizes the base's `legacy` block from that base
+report's own fields, the manifest's `legacyMirrors`, and refuses a base that already has one. Legacy equality is
+exact: any difference fails the pair, and no legacy leaf or case is ever dropped.
+
+The legacy score is computed by test and harness code only. `src/` is unchanged.
+
+**Invariants.** The measured-stars harness checks three invariants at every exposure, in every pack that runs it:
+continuity, tuning, final and the revision rerun. A violation is a harness failure, `<caseId>: invariant <n>: …`. It
+matches no resource-failure pattern, so it fails its process and its pack. The invariants may not be narrowed after
+evidence.
+
+1. Every trail-eligible star is legacy-eligible.
+2. For v1 and for v2, a trail-eligible star recovered at its mid-exposure point, by a detection within 1.5 px, is
+   recovered on its trail, by a detection within 1.5 px of the trail polyline.
+3. A reclassified star, legacy-eligible but not trail-eligible, has a geometric cause within its reach `r`.
+   - `r` is the largest distance from its mid-exposure pixel to any of its nine samples above the horizon, projected
+     without image-circle or readout clipping, plus 1e-9 px.
+   - At least one of these holds:
+     - its mid-exposure pixel fails the point rule's interior test with both margins widened by `r`: more than
+       6 + `r` px inside the nominal frame border, and more than 12 + `r` px inside the aperture;
+     - another visible star's mid-exposure pixel lies within 12 + `r` + that star's reach;
+     - a sample lies at or below the horizon;
+     - a sample above the horizon lies outside the projection's supported domain.
 
 ### Harness defects found on continuity
 
@@ -273,8 +338,13 @@ docs/validation/issue-1168-qualification.sh final <new pack directory>
 docs/validation/issue-1168-metrics.sh summary <pack>
 ```
 
-The runner refuses a dirty tree and runs one process per declared cell. It records the host, the TRX counters,
-and the harness source blobs. Every pack is sealed with `SHA256SUMS`.
+The runner refuses a dirty tree and runs one process per declared cell. It records the host, the load average at
+the start and end of each process, the TRX counters and the harness source blobs. Every pack is sealed with
+`SHA256SUMS`.
+
+For the revision rerun, `HVO_CONTINUITY_BASE=<revision>` replaces the continuity base. `rescore <continuity pack>
+<new pack directory>` builds and runs nothing. It verifies a sealed continuity pack against its `SHA256SUMS` and
+classifies its recorded pairs again under this head's manifest.
 
 ## Revision rerun
 
@@ -289,7 +359,11 @@ before the branch was synchronized with `development/v1`.
   module paths.
 
 **What runs.** The rerun runs once, after #518 merges, at this branch's synchronized head:
-1. Continuity: the new `development/v1` base against the synchronized head, under the continuity rules above.
+1. Continuity: the new `development/v1` base against the synchronized head, under the continuity rules above, as
+   tightened in response to r0.
+   - The runner takes that base from `HVO_CONTINUITY_BASE`.
+   - It refuses a base that does not descend from the manifest base `0639e27d`, or is not an ancestor of the head.
+   - It also refuses one that does not carry every declared base input and the #1126 manifest at the same blobs.
 2. The complete final manifest set, all 40 processes, with the committed floors unchanged.
 
 There is no tuning rerun. This is a revision rerun, not a re-roll.
@@ -305,7 +379,11 @@ There is no tuning rerun. This is a revision rerun, not a re-roll.
 
 All three packs ran sequentially under the heavy lock, from a clean tree on hvo-dev-02:
 - Intel Core Ultra 9 285H, 8 logical processors, SDK 10.0.401;
-- manifest SHA-256 `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65`.
+- manifest SHA-256 `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65`, before the continuity
+  criteria were [tightened in response to r0](#continuity-with-1126).
+
+They ran while another measured workload ran on a VM that probably shares this host; see
+[measurement environment](#measurement-environment).
 
 Each pack is sealed by its `SHA256SUMS`, and the table gives that file's SHA-256. Times are UTC on 2026-10-07.
 
@@ -338,13 +416,73 @@ Each pack is sealed by its `SHA256SUMS`, and the table gives that file's SHA-256
 - the floors, re-derived from the tuning pack's reports: they are bit-identical medians with the same declared
   values.
 
+### Measurement environment
+
+hvo-dev-02 and hvo-dev-03 are both 8-vCPU KVM guests on an Intel Core Ultra 9 285H and probably share one physical
+host. The 285H is a hybrid part, so a busy neighbour can slow a guest without visible steal time. Every #1168 run on
+hvo-dev-02 overlapped #1167's measured matrix on hvo-dev-03, which ran from 03:58:50 to 08:18:01:
+
+| Run on hvo-dev-02 | Time |
+| --- | --- |
+| `continuity-27c611dc`, a diagnostic | 04:26:59–05:11:33 |
+| `continuity-f7e69d99` | 05:22:25–06:05:30 |
+| `tuning-f7e69d99` | 06:07:02–06:28:14 |
+| `final-350044f8` | 06:30:36–07:59:38 |
+
+The two VMs are now treated as one measurement domain. The revision rerun holds both VMs' heavy lock for its whole
+window. Every result here falls in one of five classes.
+
+**Decided by geometry or determinism.** No boundary or claim is derived from a timing measurement:
+- **Renderer capacity.** The slot count is `ceil(exposureSeconds × speedBound / 0.15)`. The renderer's "temporal
+  budget" is that slot count, not a clock. Rectilinear `mono-native` renders at 56 s and refuses at 57 s whatever
+  the elapsed time.
+- **Uncertainty floors.** They come from tuning residuals and coverage, with no timing input.
+- **Budgets.** The capture and warm-solve budgets are the declared #522 and #1126 values, not derived from these runs.
+
+**Timing-independent.** The product solver has cooperative wall-clock budgets: cold, warm (500 ms) and the
+calibration session budget.
+- Exceeding one can only turn an acceptance into a rejection, `time-budget` or `resource-limit`. It never alters an
+  accepted solution.
+- So the accuracy, coverage and uncertainty of accepted solves are timing-independent.
+- Acceptance and rejection counts are timing-independent only where no case hit a budget. In `final-350044f8`:
+  - The 720 pixel dispositions are 570 `accepted` and 150 `rejected-acquisition-or-quality-failed`, with no
+    `rejected-time-budget` or `rejected-resource-limit`. Every fail-closed rejection there is deterministic.
+  - None of the 30 uncertainty failures is `solve not accepted`.
+- **Continuity acceptance counts are not claimed timing-independent.** One continuity case hit a time budget:
+  `02-mono-roi-bin2-1: solve exceeded declared cold/warm time budget` in `pixels-tuning`. It occurred on both base
+  and head, and it is pinned from #1126.
+- The raw tuning and continuity reports are searched for `time-budget`, `resource-limit` and `solve not accepted`
+  once both VMs are free. The result is recorded in the PR ledger.
+
+**Compared within one session.** Both sides of each comparison ran under roughly the same neighbour load:
+- continuity elapsed seconds, base against head, since each pair ran base then head;
+- the measured-stars v1 against v2 time-ratio gate at 1 s, with both measurers in one process;
+- the resources table's statements across exposures, such as the solve medians, since its cells ran in sequence in
+  one pack.
+
+**Contended absolute milliseconds.** The resources table's capture, detection, solve and CPU times were measured
+under contention, and so were the time-budget checks of every harness.
+- Each passing check passed by a wide margin: capture p95 at most 1,137 ms against 10 s or 40 s, and solve p95 at
+  most 11.3 ms against 500 ms. Under contention a pass is conservative.
+- The absolute values are not comparable with figures from a quiet host.
+- Allocation is set by the program, and working set is local to the VM. Neither follows neighbour CPU load. Both were
+  measured on the shared host.
+
+**Not evidence.** The `continuity-27c611dc` diagnostic. Its base-only `v2 measurement 44 ms vs v1 10 ms` miss was
+plausibly contention.
+
 ### Continuity result
 
 `continuity-f7e69d99` compared base `0639e27d` with head `f7e69d99` on the #1126 manifest
 (`issue-1126-qualification-manifest.json`, SHA-256 `8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee`).
-Its verdict is `passed`:
+Under the continuity rules of manifest `cd046476`, before r0, its verdict is `passed`:
 - Every pair passes, and every differing report leaf is classified.
 - No solver, measurement, mapping, uncertainty or identity hash differs.
+
+It is not continuity evidence under the [tightened rules](#continuity-with-1126). Its head, `f7e69d99`, predates the
+legacy score, so its measured-stars reports carry no `legacy` block. The pack is re-scored under the tightened manifest
+with `issue-1168-qualification.sh rescore`, and the result is recorded with the revision rerun. Continuity under the
+tightened rules is the revision rerun's continuity pack.
 
 | Pair | Base / head | Elapsed base / head (s) | Identical leaves | Classified differing leaves |
 | --- | --- | ---: | ---: | --- |
@@ -365,10 +503,12 @@ Its verdict is `passed`:
   - **List, don't absorb.** The verdict lists every resource failure by pair, with its message and both revisions'
     values, even though none fails continuity.
   - **Allocation tripwire.** A head-only allocation miss, with the base within budget, stops the run for review. It
-    does not pass as a timing difference. Working-set and time misses are listed.
+    does not pass as a timing difference. Working-set and time misses are listed. When this pack ran, the tripwire
+    was a stated condition that the runner did not enforce; r0's F1.
 - **Resource failures listed.** The only one in the pack is `02-mono-roi-bin2-1: solve exceeded declared cold/warm
   time budget` in `pixels-tuning`. It appears on both base and head, so it creates no differing leaf. No pair has a
-  `resource-outcome` leaf or a recorded reason, and the allocation tripwire was not triggered.
+  `resource-outcome` leaf or a recorded reason. With no head-only resource failure of any kind, there is no head-only
+  allocation miss.
 
 ### Tuning result
 
@@ -559,23 +699,30 @@ Held-out estimated at the declared floor for its exposure in every cell, using t
   carries `model-invalid-residual-excess` or `model-invalid-held-out-prediction`.
 - Coverage is computed over released frames only.
 
-The harness turns withholding into a failure per profile and pooled:
+The harness turns withholding into a failure per profile and pooled. These quotations are verbatim from
+`VirtualAstrometricUncertaintyQualificationTests.cs` at `350044f8`, the held-out revision, blob `79fad2bb`, with
+the leading indentation removed. Line 30:
 
 ```csharp
 private const double MaximumFalseWithholdFraction = .02;
+```
+
+Lines 130–131:
+
+```csharp
 if (withheld > MaximumFalseWithholdFraction * all.Length + 1)
-    failures.Add($"{label}: {withheld} of {all.Length} accepted frames withheld: …");
+    failures.Add($"{label}: {withheld} of {all.Length} accepted frames withheld: {string.Join(",", all.Where(f => f.Status != AstrometricUncertaintyEstimator.Available).Select(f => f.ReasonCode).Distinct())}");
 ```
 
 At 60 frames a profile fails at 3 withheld. Pooled, it fails at 10 of 420 or 9 of 360.
 
-It fails a coverage level when the coverage of released frames misses that level by more than:
+It fails a coverage level when the coverage of released frames misses that level by more than this bound, line 136:
 
 ```csharp
 var bound = CoverageToleranceSigma * Math.Sqrt(Levels[level] * (1 - Levels[level]) / n);
 ```
 
-That uses `CoverageToleranceSigma = 3.5` and `Levels = [.6827, .95, .99]`, over `n` released frames.
+That uses `CoverageToleranceSigma = 3.5` and `Levels = [.6827, .95, .99]`, lines 23–24, over `n` released frames.
 
 **The 30 failures:**
 
@@ -678,7 +825,9 @@ The renderer-capacity process passed in 8 s with no failures. On rectilinear `mo
 - derived maximum exposure 56.8637 s;
 - last rendered exposure 56 s and first refused 57 s.
 
-**Probes that rendered, each in 64 slots:**
+**Probes that rendered** under the 64-slot ceiling. The report records that ceiling, `maximumTemporalSamples` 64,
+which is the configured `MaximumStellarSamples`, not a slot count each probe used. An actual slot count is derived
+only for the rectilinear boundary, above.
 
 | Probe | Max motion per slot (px) |
 | --- | ---: |
