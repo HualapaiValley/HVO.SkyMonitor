@@ -35,8 +35,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
     [TestMethod]
     public async Task StaleAssignmentKeepsTheUploadRetryingAndHeldWithoutBlockingTheOutboxAndRecoversAfterReassignment()
     {
-        var sharedHeadCutoff = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sharedHeadBefore = ReadOutboxState(Fixture.StorageRoot, sharedHeadCutoff);
+        var sharedHeadBefore = ReadOutboxState(Fixture.StorageRoot);
         await using var agent = await Fixture.StartIsolatedCameraAgentAsync().ConfigureAwait(false);
         var root = agent.StorageRoot;
         using var scope = agent.Services.CreateScope();
@@ -179,8 +178,12 @@ public sealed class StaleGraphAssignmentDeliveryTests
             await RetireInstallationAsync(seeded).ConfigureAwait(false);
         }
 
-        // The shared outbox is untouched: every record it held before the test is still in the same state.
-        CollectionAssert.AreEqual(sharedHeadBefore, ReadOutboxState(Fixture.StorageRoot, sharedHeadCutoff));
+        // The shared outbox is untouched: every record it held before the test is still in the same state. The shared
+        // device keeps capturing, so records it commits meanwhile are excluded by key, not by creation time: a record's
+        // creation time is its capture's, which can precede a commit that lands after the first read.
+        var heldBefore = sharedHeadBefore.Select(static record => record.IdempotencyKey).ToHashSet(StringComparer.Ordinal);
+        CollectionAssert.AreEqual(sharedHeadBefore, ReadOutboxState(Fixture.StorageRoot)
+            .Where(record => heldBefore.Contains(record.IdempotencyKey)).ToList());
     }
 
     private sealed record SeededStaleCamera(
@@ -502,18 +505,16 @@ public sealed class StaleGraphAssignmentDeliveryTests
     private sealed record OutboxRecordState(
         string IdempotencyKey, string Status, string? LastReason, long AttemptCount, long CreatedUnixMs);
 
-    /// <summary>The settlement state of every record an outbox created before a moment, in key order.</summary>
-    private static List<OutboxRecordState> ReadOutboxState(string root, long createdBeforeUnixMs)
+    /// <summary>The settlement state of every record an outbox holds, in key order.</summary>
+    private static List<OutboxRecordState> ReadOutboxState(string root)
     {
         using var connection = OpenOutboxReadConnection(root);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT idempotency_key, status, last_reason, attempt_count, created_unix_ms
             FROM artifact_outbox_records
-            WHERE created_unix_ms < $before
             ORDER BY idempotency_key;
             """;
-        command.Parameters.AddWithValue("$before", createdBeforeUnixMs);
         using var reader = command.ExecuteReader();
         var records = new List<OutboxRecordState>();
         while (reader.Read())
