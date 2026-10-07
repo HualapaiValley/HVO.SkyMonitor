@@ -13,6 +13,8 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
+    Justification = "MSTest constructs this class through the assembly's DiscoverInternals contract.")]
 internal sealed class DeepSkyReferenceTests
 {
     private const string ReferenceSha256 = "2ce52b9eaf706c9b8f6fa5d7cd6e25e53261df8ea15b151cd3e925f52efba035";
