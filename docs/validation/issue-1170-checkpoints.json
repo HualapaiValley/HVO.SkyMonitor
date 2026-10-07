@@ -18,7 +18,7 @@
       },
       "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
       "productSourceUnchangedFromBase": false,
-      "protocol": "Full unchanged manifest, interleaved arms in one session on home-dev-01: odd pair indices run A then B, even pair indices run B then A, and only adjacent arms are compared. Measured cells ran only while the home-dev-02 holder held /tmp/hvo-520-heavy.lock.",
+      "protocol": "Full unchanged manifest, interleaved arms in one session on home-dev-01: odd pair indices run A then B, even pair indices run B then A, and only adjacent arms are compared. By the owner's account, measured cells ran only while the home-dev-02 holder held /tmp/hvo-520-heavy.lock.",
       "windows": [
         {
           "slot": "prof",
@@ -29,7 +29,7 @@
             "S1 A 09:22:49Z-09:43:56Z rc=1",
             "S1 B 09:43:56Z-10:04:02Z rc=0"
           ],
-          "disclosure": "Outside a quiet window. home-dev-02 was the probable co-resident host and #526's Tier C held its lock; home-dev-02 load 15.67/14.83/10.37 at 09:43:09Z, as read by the #520 coordinator; its decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window."
+          "disclosure": "Outside a quiet window. home-dev-02 was the probable co-resident host and, by the owner's account, #526's Tier C held its lock; home-dev-02 load 15.67/14.83/10.37 at 09:43:09Z, as read by the #520 coordinator; its decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window."
         },
         {
           "slot": "a",

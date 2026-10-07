@@ -450,11 +450,11 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - cp-518 therefore measures the production composition. Footprint-free scenes keep `projected-scene-v1` and the
     released annotation identity (`AnnotationRenderer.AlgorithmVersionFor`, #518 commit `72c9fc45`).
   - A disks-on cell would measure synthetic-source cost that no production camera pays.
-- **Windows and quiet neighbour.** Each window held `home-dev-02`'s heavy lock for its whole length. A 5 s
+- **Windows and quiet neighbour.** By the owner's account, each window held `home-dev-02`'s heavy lock for its whole length. A 5 s
   sampler there recorded load and CPU busy. A 1 s sampler on `home-dev-01` recorded aggregate steal ticks
   (`clk_tck` 100, 12 vCPUs).
 
-  | Window | `home-dev-02` lock held | Runs | `home-dev-01` steal | `home-dev-02` during the window |
+  | Window | `home-dev-02` lock held (owner's account) | Runs | `home-dev-01` steal | `home-dev-02` during the window |
   |---|---|---|---|---|
   | (a) | 10:36:14Z–11:47:59Z (95-minute cap) | S1 A r2 10:36:22–10:54:09Z; pairs 01–05 and 09–11 10:54:09–11:47:43Z | r2: 69 ticks over 1,066 s (0.005%), at most 10 in one second. Pairs: 383 ticks over 3,214 s (0.010%), at most 6 | 861 samples: load1 median 0.11, max 0.73; busy median 1.0%, p95 2.7%, max 12.3% |
   | (b) | 11:49:24Z–12:43:39Z (75-minute cap) | pairs 06–07 11:49:32–12:35:11Z | 464 ticks over 2,739 s (0.014%), at most 59 | 651 samples over (b) and (c): load1 median 0.14, max 0.56; busy median 1.2%, p95 3.1%, max 5.3% |
@@ -541,7 +541,7 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
   - A, 09:22:49–09:43:56Z, rc=1. This run is the record and is unchanged. It failed the #1106 4× wall-clock gate
     on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
     the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
-    - The run was outside a quiet window. `home-dev-02` was the probable co-resident host, and #526's Tier C
+    - The run was outside a quiet window. `home-dev-02` was the probable co-resident host, and, by the owner's account, #526's Tier C
       held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z; its decisions ledger
       (heartbeat 09:43:27Z) retains the one-minute figure. No sampler ran in this window.
     - The gate has only about 1.2–1.4× headroom on this host (4× over the A r2 ratios below). The headroom belongs to the #520 software envelope,
@@ -564,7 +564,7 @@ matrix. The runner, method and verdict rule are unchanged. The checkpoint is rec
       code and its single failure line. No measured value, catalog or provenance field differs.
 - **Attribution.** This is explanatory only, and the interleaved pairs above stay the evidence of record. One
   trial per cell and collector ran at each arm in a separate quiet window, B then A, on `home-dev-01` only.
-  `home-dev-02`'s heavy lock was held from 12:49:35Z to 13:19:57Z with a 50-minute cap.
+  By the owner's account, `home-dev-02`'s heavy lock was held from 12:49:35Z to 13:19:57Z with a 50-minute cap.
   - B 12:49:47–13:05:15Z and A 13:05:54–13:19:42Z. Both arms passed.
   - `home-dev-01` steal was 307 ticks over 1,804 s (1,803.8 s; 0.014%). The busiest second, 13 ticks at 13:09:05Z, fell
     2 s before a trial started.
