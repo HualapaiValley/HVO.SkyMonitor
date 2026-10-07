@@ -21,6 +21,9 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
 {
     private const int BatchSize = 100;
 
+    /// <summary>The candidate sources taken per query; a test seam, production always uses the default.</summary>
+    internal int CandidateBatchSize { get; init; } = BatchSize;
+
     public async Task ScheduleBatchAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
         var settings = options.Value;
@@ -47,35 +50,95 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
                 provisionalJobId, now, cancellationToken).ConfigureAwait(false);
         }
         dbContext.ChangeTracker.Clear();
-        var artifacts = await CreateRetrospectiveCandidateQuery(
-                dbContext, settings.SourceRole, recipe, executionOptionsIdentity)
-            .OrderBy(artifact => artifact.ReceivedAtUtc)
-            .ThenBy(artifact => artifact.Id)
-            .Select(artifact => new { artifact.DevicePublicId, artifact.ArtifactId })
-            .Take(BatchSize)
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var artifact in artifacts)
+        // A camera whose resolved central graph revision this binary cannot expand keeps its sources as candidates
+        // with nothing written, so they would fill every batch ahead of newer schedulable sources. Within this pass
+        // the batch is re-queried with each such camera excluded, until a batch finds no new one; a restart
+        // rediscovers them on its first pass. Resolution is by observatory and logical camera, and a camera belongs
+        // to one observatory, so the camera is the key every candidate resolving to that revision shares.
+        Dictionary<Guid, CentralProcessingGraphUnexpandableRevision>? staleCameras = null;
+        Dictionary<CentralProcessingGraphUnexpandableRevision, int>? deferred = null;
+        // A re-query returns again every earlier candidate that is still one; each source is attempted once a pass.
+        var considered = new HashSet<(Guid DevicePublicId, Guid ArtifactId)>();
+        while (true)
         {
-            try
+            var excludedCameraIds = staleCameras?.Keys.ToArray() ?? [];
+            var artifacts = await CreateRetrospectiveCandidateQuery(
+                    dbContext, settings.SourceRole, recipe, executionOptionsIdentity)
+                .Where(artifact => artifact.Frame!.LogicalCameraInstallationId == null ||
+                    !excludedCameraIds.Contains(artifact.Frame.LogicalCameraInstallation!.LogicalCameraId))
+                .OrderBy(artifact => artifact.ReceivedAtUtc)
+                .ThenBy(artifact => artifact.Id)
+                .Select(artifact => new
+                {
+                    artifact.DevicePublicId,
+                    artifact.ArtifactId,
+                    LogicalCameraId = (Guid?)artifact.Frame!.LogicalCameraInstallation!.LogicalCameraId
+                })
+                .Take(CandidateBatchSize)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            var foundStaleCamera = false;
+            foreach (var artifact in artifacts)
             {
-                await scheduler.EnsureRequiredJobsAsync(
-                    artifact.DevicePublicId, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+                if (!considered.Add((artifact.DevicePublicId, artifact.ArtifactId)))
+                {
+                    continue;
+                }
+                if (artifact.LogicalCameraId is { } knownCameraId &&
+                    staleCameras?.GetValueOrDefault(knownCameraId) is { } known)
+                {
+                    deferred![known] = deferred.GetValueOrDefault(known) + 1;
+                    continue;
+                }
+                try
+                {
+                    await scheduler.EnsureRequiredJobsAsync(
+                        artifact.DevicePublicId, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+                }
+                catch (CentralDerivativeJobStateException exception) when (
+                    CentralProcessingGraphPlanVerification.IsUnexpandableRevision(exception, out var unexpandable))
+                {
+                    // Nothing was written for this source and it stays a candidate for a later pass.
+                    dbContext.ChangeTracker.Clear();
+                    deferred ??= [];
+                    deferred[unexpandable] = deferred.GetValueOrDefault(unexpandable) + 1;
+                    if (artifact.LogicalCameraId is { } cameraId)
+                    {
+                        staleCameras ??= [];
+                        foundStaleCamera |= staleCameras.TryAdd(cameraId, unexpandable);
+                    }
+                }
+                catch (CentralArtifactIntegrityException exception)
+                {
+                    // A source whose evidence fails validation is a per-artifact finding. Marking it removes it from
+                    // the candidate query, so it neither aborts this pass nor leads every later window ahead of good
+                    // work.
+                    dbContext.ChangeTracker.Clear();
+                    await CentralDerivativeSchedulingRejection.RecordAsync(
+                        dbContext, artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
+                    telemetry.RecordOperation("transient-schedule", CentralDerivativeSchedulingRejection.Outcome);
+                    Log.SchedulingRejected(logger, exception.ReasonCode);
+                }
             }
-            catch (CentralArtifactIntegrityException exception)
+            // Each re-query follows a batch that found a camera not yet excluded and excludes it, so a pass ends after
+            // at most one query per distinct stale camera plus one, and a schedulable source behind any number of them
+            // is reached in this pass. A fixed cap would leave it behind the same cameras on every pass.
+            if (!foundStaleCamera || artifacts.Count == 0)
             {
-                // A source whose evidence fails validation is a per-artifact finding. Marking it removes it from the
-                // candidate query, so it neither aborts this pass nor leads every later window ahead of good work.
-                dbContext.ChangeTracker.Clear();
-                await CentralDerivativeSchedulingRejection.RecordAsync(
-                    dbContext, artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
-                telemetry.RecordOperation("transient-schedule", CentralDerivativeSchedulingRejection.Outcome);
-                Log.SchedulingRejected(logger, exception.ReasonCode);
+                break;
             }
         }
-        if (artifacts.Count > 0)
+        if (deferred is not null)
+        {
+            foreach (var (revision, count) in deferred)
+            {
+                Log.UnexpandableGraphRevision(logger, count, revision.AssignmentId, revision.RevisionId,
+                    revision.UnsupportedNode ?? "(none)", revision.ReasonCode);
+            }
+        }
+        if (considered.Count > 0)
         {
             telemetry.RecordOperation("transient-schedule", "scheduled");
-            Log.Scheduled(logger, artifacts.Count);
+            Log.Scheduled(logger, considered.Count);
         }
     }
 
@@ -110,6 +173,14 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
         [LoggerMessage(2160, LogLevel.Information,
             "Central transient retrospective scheduling considered {ArtifactCount} source artifacts.")]
         public static partial void Scheduled(ILogger logger, int artifactCount);
+
+        [LoggerMessage(2169, LogLevel.Error,
+            "Central transient retrospective scheduling deferred {ArtifactCount} source artifacts: central processing " +
+            "graph assignment {AssignmentId} resolves revision {RevisionId}, which this binary cannot expand (node " +
+            "{NodeAlias}: {ReasonCode}). They are retried on later batches until an operator ends this assignment or " +
+            "reassigns a revision published on the current recipe versions.")]
+        public static partial void UnexpandableGraphRevision(
+            ILogger logger, int artifactCount, Guid? assignmentId, Guid revisionId, string nodeAlias, string reasonCode);
 
         [LoggerMessage(2142, LogLevel.Error,
             "Central transient retrospective scheduling recorded a derivative scheduling rejection: ReasonCode={ReasonCode}")]

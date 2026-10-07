@@ -37,19 +37,44 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     // floor of 0.037-0.045 px (mono), 0.024-0.031 px (mono 2x2) and 0.062-0.065 px (CFA) for chi-square per degree to reach one.
     // Each declared value is the tuning median, rounded to 0.001 px. A margin above it was tried and rejected on tuning: it
     // inflates the covariance and over-covers, which the two-sided coverage test fails as surely as under-coverage. The
-    // held-out partition must pass with these unchanged.
-    private static readonly Dictionary<string, double> DeclaredFloorPixels = new(StringComparer.Ordinal)
+    // held-out partition must pass with these unchanged. Floors are keyed by exposure seconds, then view: the #1105 values
+    // are the 1 s floors, and each longer exposure's floors are declared by the same rule from its own #1168 tuning partition.
+    private static readonly Dictionary<int, Dictionary<string, double>> DeclaredFloorPixels = new()
     {
-        ["mono-native"] = .042,
-        ["mono-roi"] = .042,
-        ["mono-mirror"] = .042,
-        ["mono-roll"] = .042,
-        ["mono-bin2"] = .028,
-        ["mono-roi-bin2"] = .028,
-        ["cfa-native"] = .063
+        [1] = new(StringComparer.Ordinal)
+        {
+            ["mono-native"] = .042,
+            ["mono-roi"] = .042,
+            ["mono-mirror"] = .042,
+            ["mono-roll"] = .042,
+            ["mono-bin2"] = .028,
+            ["mono-roi-bin2"] = .028,
+            ["cfa-native"] = .063
+        },
+        [20] = new(StringComparer.Ordinal)
+        {
+            ["mono-native"] = .015,
+            ["mono-roi"] = .015,
+            ["mono-mirror"] = .015,
+            ["mono-roll"] = .015,
+            ["mono-bin2"] = .019,
+            ["mono-roi-bin2"] = .019,
+            ["cfa-native"] = .044
+        },
+        [60] = new(StringComparer.Ordinal)
+        {
+            ["mono-native"] = .022,
+            ["mono-roi"] = .022,
+            ["mono-mirror"] = .022,
+            ["mono-roll"] = .022,
+            ["mono-bin2"] = .016,
+            ["mono-roi-bin2"] = .016,
+            ["cfa-native"] = .038
+        }
     };
 
-    private static AstrometricUncertaintyOptions Budget(string profile) => new(SystematicPixelSigma: DeclaredFloorPixels[profile]);
+    private static AstrometricUncertaintyOptions Budget(IReadOnlyDictionary<string, double> floors, string profile) =>
+        new(SystematicPixelSigma: floors[profile]);
 
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new(VirtualAstrometryFixture.JsonOptions)
     {
@@ -76,6 +101,13 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         Assert.HasCount(1637, catalog.Stars); Assert.IsTrue(catalog.IsCompleteForRequestedMagnitude);
         if (!tuning) VirtualAstrometryQualificationTests.RequireRevision();
+        Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Uncertainty evidence renders only the unvaried scene.");
+        var exposureSeconds = VirtualAstrometryFixture.ExposureSeconds;
+        // Tuning an undeclared exposure estimates at the 1 s floors only so that it can report each frame's required floor.
+        var declared = DeclaredFloorPixels.TryGetValue(exposureSeconds, out var floors);
+        Assert.IsTrue(declared || tuning, $"Held-out uncertainty evidence requires floors declared from tuning at {exposureSeconds} s.");
+        floors ??= DeclaredFloorPixels[1];
+        var floorSource = declared ? $"declared-{exposureSeconds}s" : "provisional-1s-tuning-only";
         var partitions = tuning ? new[] { (Month: 2, Day: 10, Seed: 110520) }
             : [(Month: 1, Day: 15, Seed: 110501), (Month: 5, Day: 15, Seed: 110505), (Month: 9, Day: 15, Seed: 110509)];
         var realizations = tuning ? 8 : 20;
@@ -84,8 +116,8 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         foreach (var (month, day, seed) in partitions)
         {
             foreach (var name in VirtualAstrometryFixture.Profiles(seed).Select(p => p.Name))
-                frames.AddRange(await ProfileAsync(snapshot, catalog, month, day, seed, name, realizations, failures).ConfigureAwait(false));
-            sessions.Add(await SessionChainAsync(snapshot, catalog, month, day, seed, failures).ConfigureAwait(false));
+                frames.AddRange(await ProfileAsync(snapshot, catalog, floors, month, day, seed, name, realizations, failures).ConfigureAwait(false));
+            sessions.Add(await SessionChainAsync(snapshot, catalog, floors, month, day, seed, failures).ConfigureAwait(false));
         }
 
         // Coverage is judged per profile and pooled; an unsupported or withheld frame is a failure, never an exclusion.
@@ -133,6 +165,8 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
         {
             schema = "virtual-astrometric-uncertainty-v1",
             projectionFamily = VirtualAstrometryFixture.Family.Name,
+            exposureSeconds,
+            floorSource,
             partition,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
@@ -153,7 +187,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
                 MaximumEstimatorMilliseconds,
                 MaximumEstimatorAllocatedBytes,
                 MaximumEstimatorToFrameRatio,
-                DeclaredFloorPixels
+                DeclaredFloorPixels = floors
             },
             realizationsPerProfile = realizations,
             coverage,
@@ -180,7 +214,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     /// nominal optics, then warm refinement, each frame measured with covariance and estimated at the declared systematic budget.
     /// </summary>
     private static async Task<List<Realization>> ProfileAsync(CatalogSnapshotResult snapshot, AstrometricCatalogData catalog,
-        int month, int day, int seed, string name, int count, List<string> failures)
+        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, string name, int count, List<string> failures)
     {
         var results = new List<Realization>(); AstrometricFrameAssessment? prior = null;
         for (var index = 0; index < count; index++)
@@ -204,9 +238,9 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             prior = solved.Assessment;
             var (uncertainty, estimator) = VirtualOpticalCalibrationQualificationTests.Sample(() => AstrometricUncertaintyEstimator.Estimate(nominal, catalog,
                 VirtualAstrometryFixture.SolverOptions, solved, VirtualAstrometryFixture.Detections(measured), Covariances(measured),
-                AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(name)));
+                AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(floors, name)));
             var repeat = AstrometricUncertaintyEstimator.Estimate(nominal, catalog, VirtualAstrometryFixture.SolverOptions, solved,
-                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(name));
+                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, input.Layout.Readout, options: Budget(floors, name));
             if (repeat.IdentitySha256 != uncertainty.IdentitySha256) failures.Add($"{caseId}: estimate is not deterministic");
             var required = RequiredFloor(sigma => AstrometricUncertaintyEstimator.Estimate(nominal, catalog, VirtualAstrometryFixture.SolverOptions, solved,
                 VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, input.Layout.Readout,
@@ -232,8 +266,8 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
     /// frame's total under that calibration. Truth is the rendering lens itself, so the frame's true zoom is one and the
     /// calibration component must carry the calibrated lens's own error.
     /// </summary>
-    private static async Task<object> SessionChainAsync(CatalogSnapshotResult snapshot, AstrometricCatalogData catalog, int month, int day, int seed,
-        List<string> failures)
+    private static async Task<object> SessionChainAsync(CatalogSnapshotResult snapshot, AstrometricCatalogData catalog,
+        IReadOnlyDictionary<string, double> floors, int month, int day, int seed, List<string> failures)
     {
         var template = VirtualAstrometryFixture.Profiles(seed)[0];
         var nominalRig = template.Config.Rig;
@@ -294,7 +328,7 @@ public sealed class VirtualAstrometricUncertaintyQualificationTests
             var solved = VirtualAstrometryFixture.SolveV2(pixels, calibration, catalog, measured);
             if (!solved.Assessment.HasMeasuredMapping) { failures.Add($"{caseId}-{readout}: {solved.Assessment.Reason}"); continue; }
             var uncertainty = AstrometricUncertaintyEstimator.Estimate(calibration, catalog, VirtualAstrometryFixture.SolverOptions, solved,
-                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, pixels.Layout.Readout, shared, Budget($"mono-{readout}"));
+                VirtualAstrometryFixture.Detections(measured), Covariances(measured), AstrometricClockFacts.NotSupplied, pixels.Layout.Readout, shared, Budget(floors, $"mono-{readout}"));
             if (uncertainty.Total.Status != AstrometricUncertaintyEstimator.Available)
             {
                 failures.Add($"{caseId}-{readout}: total {uncertainty.Total.Status} {uncertainty.ReasonCode} {uncertainty.Total.ReasonCode}");

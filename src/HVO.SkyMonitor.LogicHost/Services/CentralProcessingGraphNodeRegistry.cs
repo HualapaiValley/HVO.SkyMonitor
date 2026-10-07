@@ -26,6 +26,14 @@ internal interface ICentralProcessingGraphNodeRegistry
     CentralProcessingGraphNodeHandler GetRequired(string stepAlias);
 
     bool Validate(ProcessingGraphExecutionPlan plan);
+
+    /// <summary>
+    /// The step alias of the first node this host cannot execute as declared, <see cref="UnsupportedSources"/> when
+    /// the plan's sources are unsupported, or <see langword="null"/> exactly when <see cref="Validate"/> accepts it.
+    /// </summary>
+    string? FindUnsupported(ProcessingGraphExecutionPlan plan);
+
+    internal const string UnsupportedSources = "$sources";
 }
 
 internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGraphNodeRegistry
@@ -77,7 +85,9 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
             : throw new CentralDerivativeJobStateException(
                 $"Processing graph step alias '{stepAlias}' is not supported by LogicHost.");
 
-    public bool Validate(ProcessingGraphExecutionPlan plan)
+    public bool Validate(ProcessingGraphExecutionPlan plan) => FindUnsupported(plan) is null;
+
+    public string? FindUnsupported(ProcessingGraphExecutionPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
         // Live central scheduling is triggered only by Raw/Calibrated artifact ingestion
@@ -88,17 +98,17 @@ internal sealed class CentralProcessingGraphNodeRegistry : ICentralProcessingGra
                 !IsSupportedSourceRole(source.Outputs[0].Role)) ||
             plan.Sources.Select(static source => source.Outputs[0].Role).Distinct().Count() != plan.Sources.Length)
         {
-            return false;
+            return ICentralProcessingGraphNodeRegistry.UnsupportedSources;
         }
         foreach (var node in plan.Nodes)
         {
             if (!_handlers.TryGetValue(node.Definition.StepAlias, out var handler) ||
                 !ValidateNode(node, handler))
             {
-                return false;
+                return node.Definition.StepAlias;
             }
         }
-        return true;
+        return null;
     }
 
     /// <summary>Source roles whose ingestion triggers live central graph scheduling.</summary>

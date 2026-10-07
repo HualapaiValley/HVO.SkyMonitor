@@ -8,6 +8,10 @@
 > `ambiguous` blind rejection on the mono ROI+2×2 readout. See
 > [pre-existing finding against the v1 equidistant envelope](virtual-astrometry-qualification-v2.md#pre-existing-finding-against-the-v1-equidistant-envelope).
 > The held-out measurements below are unchanged.
+>
+> **Long exposures.** This envelope was measured on 1 s frames. Issue
+> [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168) states which longer exposures are supported in
+> [virtual-astrometry-long-exposure-v1](virtual-astrometry-long-exposure-v1.md).
 
 Issue [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) (V7 of epic
 [#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098)) reruns every delivered qualification harness
