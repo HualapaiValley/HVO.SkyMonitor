@@ -48,7 +48,8 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     arms = {}
-    for pack in sorted(glob.glob(os.path.join(argv[1], "[AB]-*"))):
+    # Each pack's archive sidecars (A-<revision>.tar.zst.sha256) sit beside it in the slot.
+    for pack in sorted(path for path in glob.glob(os.path.join(argv[1], "[AB]-*")) if os.path.isdir(path)):
         rows = [trial(path) for path in sorted(glob.glob(os.path.join(pack, "runs", "*", "evidence.json")))]
         arms[os.path.basename(pack)] = {
             "trials": rows,
