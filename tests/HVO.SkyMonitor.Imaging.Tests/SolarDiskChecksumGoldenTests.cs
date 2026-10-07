@@ -32,18 +32,18 @@ public sealed class SolarDiskChecksumGoldenTests
         var result = format switch
         {
             CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(scene, layout, new()
-                { BackgroundElectronsPerSecond = 20, SolarDisks = disks }),
+            { BackgroundElectronsPerSecond = 20, SolarDisks = disks }),
             CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, new()
-                { BackgroundElectronsPerSecond = 20, SolarDisks = disks }),
+            { BackgroundElectronsPerSecond = 20, SolarDisks = disks }),
             _ => BayerRggb16Renderer.Render(scene, layout, new()
-                { ChannelResponse = new(1, 1, 1), BackgroundElectronsPerSecond = 20, SolarDisks = disks })
+            { ChannelResponse = new(1, 1, 1), BackgroundElectronsPerSecond = 20, SolarDisks = disks })
         };
         var background = format switch
         {
             CameraPixelFormat.Mono16 => Mono16SceneRenderer.Render(scene, layout, new() { BackgroundElectronsPerSecond = 20 }),
             CameraPixelFormat.Rgb24 => Rgb24CompatibilityRenderer.Render(scene, layout, new() { BackgroundElectronsPerSecond = 20 }),
             _ => BayerRggb16Renderer.Render(scene, layout, new()
-                { ChannelResponse = new(1, 1, 1), BackgroundElectronsPerSecond = 20 })
+            { ChannelResponse = new(1, 1, 1), BackgroundElectronsPerSecond = 20 })
         };
 
         // Both discs land in frame, so the fixture pins disk pixels rather than an empty background.
