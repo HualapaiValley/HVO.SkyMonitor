@@ -12,13 +12,16 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class VirtualLongExposureFixtureTests
 {
     private static readonly CelestialCatalogObject Star = new("star", "star", 0, 0, 1);
+    private static readonly string[] VariantNames = ["none", "product-depth", "bright-background", "clouds-partial", "overcast"];
+    private static readonly int[] ExposureSeconds = [1, 20, 60];
+    private static readonly string[] EquidistantNativeViews = ["mono-native", "cfa-native"];
+    private static readonly string[] MonoNativeView = ["mono-native"];
 
     [TestMethod]
     public void Variants_AreFrozenWithTheUnchangedBaselineFirst()
     {
         var variants = VirtualAstrometryFixture.Variants;
-        CollectionAssert.AreEqual(new[] { "none", "product-depth", "bright-background", "clouds-partial", "overcast" },
-            variants.Select(v => v.Name).ToArray());
+        CollectionAssert.AreEqual(VariantNames, variants.Select(v => v.Name).ToArray());
         Assert.AreEqual(VirtualAstrometryFixture.QualificationDepth, variants[0].Depth);
         Assert.AreEqual(VirtualLongExposureVariant.Accepted, variants[0].ExpectedOutcome);
         Assert.IsNull(variants[0].CloudScenario);
@@ -28,7 +31,7 @@ public sealed class VirtualLongExposureFixtureTests
         Assert.AreEqual(VirtualLongExposureVariant.Rejected, variants[4].ExpectedOutcome);
         Assert.IsTrue(variants.Where(v => v.Depth != VirtualAstrometryFixture.ProductDepth)
             .All(v => v.Depth == VirtualAstrometryFixture.QualificationDepth), "Only product depth renders deeper than the qualification depth.");
-        CollectionAssert.AreEqual(new[] { 1, 20, 60 }, VirtualAstrometryFixture.ExposureSecondsValues.ToArray());
+        CollectionAssert.AreEqual(ExposureSeconds, VirtualAstrometryFixture.ExposureSecondsValues.ToArray());
     }
 
     [TestMethod]
@@ -51,8 +54,8 @@ public sealed class VirtualLongExposureFixtureTests
         foreach (var variant in VirtualAstrometryFixture.Variants.Skip(1))
         {
             var profiles = VirtualAstrometryFixture.Profiles(1, equidistant, variant);
-            CollectionAssert.AreEqual(new[] { "mono-native", "cfa-native" }, profiles.Select(p => p.Name).ToArray(), variant.Name);
-            CollectionAssert.AreEqual(new[] { "mono-native" }, VirtualAstrometryFixture.Profiles(1, rectilinear, variant).Select(p => p.Name).ToArray());
+            CollectionAssert.AreEqual(EquidistantNativeViews, profiles.Select(p => p.Name).ToArray(), variant.Name);
+            CollectionAssert.AreEqual(MonoNativeView, VirtualAstrometryFixture.Profiles(1, rectilinear, variant).Select(p => p.Name).ToArray());
         }
         Assert.HasCount(7, VirtualAstrometryFixture.Profiles(1, equidistant, VirtualAstrometryFixture.Variants[0]));
     }
@@ -156,16 +159,16 @@ public sealed class VirtualLongExposureFixtureTests
         Assert.AreSame(first, VirtualAstrometryReference.Nearest([invisible, first, tie, far], new(4, 2)));
         Assert.AreSame(tie, VirtualAstrometryReference.Nearest([tie, first], new(4, 2)));
         Assert.AreSame(tie, VirtualAstrometryReference.Nearest([far, first, tie], new(4, 3)));
-        // A trail whose box touches the best distance exactly is still evaluated, so an exact tie keeps MinBy order.
-        var random = new Random(1168);
-        var trails = Enumerable.Range(0, 64).Select(_ =>
+        // A trail whose box touches the best distance exactly is still evaluated, so an exact tie keeps MinBy order. Integer
+        // coordinates from fixed strides make exact ties common.
+        var trails = Enumerable.Range(0, 64).Select(i =>
         {
-            var start = new PixelPoint(random.Next(0, 200), random.Next(0, 200));
-            return Trail(Line(start, new(start.X + random.Next(-20, 21), start.Y + random.Next(-20, 21))));
+            var start = new PixelPoint(i * 53 % 200, i * 97 % 200);
+            return Trail(Line(start, new(start.X + i * 29 % 41 - 20, start.Y + i * 31 % 41 - 20)));
         }).ToArray();
         for (var k = 0; k < 256; k++)
         {
-            var pixel = new PixelPoint(random.Next(-10, 211), random.Next(-10, 211));
+            var pixel = new PixelPoint(k * 71 % 221 - 10, k * 113 % 221 - 10);
             Assert.AreSame(trails.MinBy(trail => trail.DistanceTo(pixel)), VirtualAstrometryReference.Nearest(trails, pixel), $"{pixel}");
         }
     }
