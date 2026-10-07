@@ -364,7 +364,7 @@ re-run there with the same runner, method and verdict rule.
     was released early, after the last timing trial (04:01:37Z), while S1 ran. S1 is output identity only.
   - The `home-dev-02` sampler over the window, 03:36:46–04:14:08Z (449 samples): busy median 1.1%, p95 2.6%,
     max 10.7%; load1 median 0.16. Busy p95 here and below is the nearest-rank 95th percentile of the 5 s
-    intervals. load1 stayed above 2 only until 03:37:51Z, the decay of a gate that exited
+    intervals. load1 stayed above 2 only until 03:37:51Z: by the owner's account, the decay of a gate that exited
     just before the lock was taken.
 - **Steal.** `home-dev-01` steal ticks were sampled once a second (`clk_tck` 100, 12 vCPUs) and attributed to
   each trial:
