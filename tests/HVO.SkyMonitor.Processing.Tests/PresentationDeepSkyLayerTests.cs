@@ -18,6 +18,8 @@ public sealed class PresentationDeepSkyLayerTests
     private static readonly ObserverLocation Site = new(35.347, -113.878, 0);
     private static readonly PresentationStrokeV2 GeometryDash = new(6, 4, 900_000);
     private static readonly PresentationStrokeV2 UnknownExtentDash = new(2, 3, 900_000);
+    private static readonly string[] FeaturedLabels = ["M101", "NGC 2"];
+    private static readonly string[] CatalogLabels = ["M101", "NGC 1", "NGC 2"];
 
     [TestMethod]
     public async Task AtItsPrimitiveCapTheLayerDegradesInPriorityOrderAndRepeatsByteForByte()
@@ -81,8 +83,8 @@ public sealed class PresentationDeepSkyLayerTests
         var catalog = PresentationDeepSkyLayerProducer.Create(scene, new PresentationDeepSkyStyleV1(LabelCatalogObjects: true));
         var none = PresentationDeepSkyLayerProducer.Create(scene, new PresentationDeepSkyStyleV1(MaximumLabels: 0));
 
-        CollectionAssert.AreEquivalent(new[] { "M101", "NGC 2" }, Labels(featured));
-        CollectionAssert.AreEquivalent(new[] { "M101", "NGC 1", "NGC 2" }, Labels(catalog));
+        CollectionAssert.AreEquivalent(FeaturedLabels, Labels(featured));
+        CollectionAssert.AreEquivalent(CatalogLabels, Labels(catalog));
         Assert.IsEmpty(none.Payload.TextBlocks);
         Assert.AreEqual("M101", featured.Objects.Single(static item => item.Id == "deep-sky:NGC5457").Label);
         Assert.IsNull(featured.Objects.Single(static item => item.Id == "deep-sky:NGC0001").Label);
@@ -129,8 +131,6 @@ public sealed class PresentationDeepSkyLayerTests
         PresentationColor[] otherColors =
             [new(210, 184, 244), new(188, 140, 255), new(116, 209, 255), new(195, 236, 255), new(57, 197, 207)];
         Assert.DoesNotContain(color, otherColors);
-        Assert.AreEqual("catalog-expected-geometry", PresentationDeepSkyLayerProducer.Basis);
-        Assert.AreEqual("catalog position — not a detection", PresentationDeepSkyLayerProducer.Legend);
     }
 
     [TestMethod]

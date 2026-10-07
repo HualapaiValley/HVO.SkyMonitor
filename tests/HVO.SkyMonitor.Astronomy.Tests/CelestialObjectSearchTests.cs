@@ -21,9 +21,9 @@ public sealed class CelestialObjectSearchTests
         var matches = search.Find("hip 26311");
 
         Assert.AreEqual(2, matches.Count);
-        Assert.AreEqual(new CelestialSearchMatch(CelestialSearchCollection.Star, "26241", "HIP 26311", "hipparcos", false), matches[0]);
+        Assert.AreEqual(new CelestialSearchMatch(CelestialCollectionKind.Star, "26241", "HIP 26311", "hipparcos", false), matches[0]);
         Assert.AreEqual(
-            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC1990", "HIP 26311", DeepSkyAliasKinds.Hipparcos, false),
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC1990", "HIP 26311", DeepSkyAliasKinds.Hipparcos, false),
             matches[1]);
     }
 
@@ -36,10 +36,10 @@ public sealed class CelestialObjectSearchTests
         var messier = search.Find("m101");
 
         Assert.AreEqual(
-            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC5457", "M102", DeepSkyAliasKinds.Disputed, true),
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC5457", "M102", DeepSkyAliasKinds.Disputed, true),
             disputed.Single());
         Assert.AreEqual(
-            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC5457", "M101", DeepSkyAliasKinds.Messier, false),
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC5457", "M101", DeepSkyAliasKinds.Messier, false),
             messier.Single());
     }
 

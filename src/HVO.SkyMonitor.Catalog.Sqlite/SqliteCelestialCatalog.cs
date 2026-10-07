@@ -529,20 +529,13 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     private static void ValidatePrimaryKeyOnly(SqliteConnection connection, string table)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = table switch
-        {
-            "celestial_object_aliases" => "PRAGMA index_list('celestial_object_aliases')",
-            "deep_sky_objects" => "PRAGMA index_list('deep_sky_objects')",
-            "deep_sky_aliases" => "PRAGMA index_list('deep_sky_aliases')",
-            "deep_sky_tombstones" => "PRAGMA index_list('deep_sky_tombstones')",
-            "deep_sky_outline_points" => "PRAGMA index_list('deep_sky_outline_points')",
-            _ => throw new ArgumentOutOfRangeException(nameof(table))
-        };
+        command.CommandText = "SELECT origin FROM pragma_index_list($table)";
+        command.Parameters.AddWithValue("$table", table);
         using var reader = command.ExecuteReader();
         var primaryKeys = 0;
         while (reader.Read())
         {
-            if (!string.Equals(reader.GetString(3), "pk", StringComparison.Ordinal))
+            if (!string.Equals(reader.GetString(0), "pk", StringComparison.Ordinal))
             {
                 throw new InvalidDataException($"Catalog {table} table contains an unexpected index.");
             }

@@ -13,6 +13,7 @@ public sealed class ProductionCatalogRegistryTests
     private const string HygV44CatalogId = "hyg-v44-production";
     private const string HygV44PackageVersion = "hyg-v4.4-p4-s3-r1";
     private static readonly string[] HygV44RetainedFiles = ["manifest.json", "hyg_v44.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"];
+    private static readonly string[] RegistryV2OnlyCatalogIds = ["hyg-v44-openngc-production"];
 
     [TestMethod]
     public void Registry_HygV42KeepsItsPinnedIdentityAndRemainsTheDefault()
@@ -73,7 +74,7 @@ public sealed class ProductionCatalogRegistryTests
         CollectionAssert.IsSubsetOf(
             CameraAgentImageContract.RegistryV1CatalogIds.ToArray(), CameraAgentImageContract.RegistryV2CatalogIds.ToArray());
         CollectionAssert.AreEqual(
-            new[] { "hyg-v44-openngc-production" },
+            RegistryV2OnlyCatalogIds,
             CameraAgentImageContract.RegistryV2CatalogIds.Except(CameraAgentImageContract.RegistryV1CatalogIds).ToArray());
     }
 

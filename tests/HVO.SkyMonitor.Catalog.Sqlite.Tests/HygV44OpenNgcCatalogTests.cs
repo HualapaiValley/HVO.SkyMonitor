@@ -27,6 +27,13 @@ internal sealed class HygV44OpenNgcCatalogTests
     // (levels 2-3); SOURCE-v44-openngc.md records the selection.
     private static readonly CatalogDeepSkyCounts FixtureCounts =
         new(8, PendingExtraction, 2, 2, 5, 6, PendingExtraction);
+    private static readonly string[] FixtureObjectIds =
+        ["M040", "NGC0224", "NGC0253", "NGC0650", "NGC1990", "NGC2023", "NGC5457", "NGC5866"];
+    private static readonly int[] LittleDumbbellLevels = [1, 2, 3];
+    private static readonly int[] LittleDumbbellRingCounts = [1, 1, 2];
+    private static readonly int[] ReflectionLevels = [2, 3];
+    private static readonly CelestialCollectionKind[] AlnilamCollections =
+        [CelestialCollectionKind.Star, CelestialCollectionKind.DeepSky];
 
     [TestMethod]
     public void InternalTestClassSupportsReflectionConstruction()
@@ -66,9 +73,7 @@ internal sealed class HygV44OpenNgcCatalogTests
         var catalog = CreateCatalog();
 
         Assert.AreEqual(FixtureCounts, Counts(catalog.DeepSky!));
-        CollectionAssert.AreEqual(
-            new[] { "M040", "NGC0224", "NGC0253", "NGC0650", "NGC1990", "NGC2023", "NGC5457", "NGC5866" },
-            catalog.DeepSky!.Objects.Select(static item => item.Id).ToArray());
+        CollectionAssert.AreEqual(FixtureObjectIds, catalog.DeepSky!.Objects.Select(static item => item.Id).ToArray());
     }
 
     [TestMethod]
@@ -171,10 +176,10 @@ internal sealed class HygV44OpenNgcCatalogTests
         var deepSky = CreateCatalog().DeepSky!;
 
         var littleDumbbell = deepSky.GetOutlines("NGC0650");
-        CollectionAssert.AreEqual(new[] { 1, 2, 3 }, littleDumbbell.Select(static item => item.Level).ToArray());
-        CollectionAssert.AreEqual(new[] { 1, 1, 2 }, littleDumbbell.Select(static item => item.Rings.Count).ToArray());
+        CollectionAssert.AreEqual(LittleDumbbellLevels, littleDumbbell.Select(static item => item.Level).ToArray());
+        CollectionAssert.AreEqual(LittleDumbbellRingCounts, littleDumbbell.Select(static item => item.Rings.Count).ToArray());
         var reflection = deepSky.GetOutlines("NGC2023");
-        CollectionAssert.AreEqual(new[] { 2, 3 }, reflection.Select(static item => item.Level).ToArray());
+        CollectionAssert.AreEqual(ReflectionLevels, reflection.Select(static item => item.Level).ToArray());
         foreach (var ring in littleDumbbell.Concat(reflection).SelectMany(static item => item.Rings))
         {
             Assert.IsGreaterThanOrEqualTo(DeepSkyCatalog.MinimumRingPointCount, ring.Points.Count);
@@ -223,12 +228,10 @@ internal sealed class HygV44OpenNgcCatalogTests
 
         var alnilam = search.Find("Alnilam");
 
-        CollectionAssert.AreEqual(
-            new[] { CelestialSearchCollection.Star, CelestialSearchCollection.DeepSky },
-            alnilam.Select(static item => item.Collection).ToArray());
+        CollectionAssert.AreEqual(AlnilamCollections, alnilam.Select(static item => item.Collection).ToArray());
         Assert.AreEqual("NGC1990", alnilam[1].ObjectId);
         Assert.AreEqual(
-            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC0224", "M31", DeepSkyAliasKinds.Messier, false),
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC0224", "M31", DeepSkyAliasKinds.Messier, false),
             search.Find("M31").Single());
         Assert.IsTrue(search.Find("M102").Single().Disputed);
     }

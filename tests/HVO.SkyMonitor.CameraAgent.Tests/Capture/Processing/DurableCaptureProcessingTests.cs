@@ -738,8 +738,8 @@ public sealed partial class DurableCaptureProcessingTests
                 .All(static layer => layer.EnabledByDefault));
             Assert.AreEqual(PresentationDeepSkyLayerProducer.ProducerVersion, deepSky.StyleVersion);
             Assert.AreEqual("deep-sky-layer", deepSky.Options.GetProperty("Variant").GetString());
-            Assert.AreEqual(PresentationDeepSkyLayerProducer.Basis, deepSky.Options.GetProperty("Basis").GetString());
-            Assert.AreEqual(PresentationDeepSkyLayerProducer.Legend, deepSky.Options.GetProperty("Legend").GetString());
+            Assert.AreEqual("catalog-expected-geometry", deepSky.Options.GetProperty("Basis").GetString());
+            Assert.AreEqual("catalog position — not a detection", deepSky.Options.GetProperty("Legend").GetString());
             // Off by default: the default materialization is the same pixels, with the layer only in its lineage.
             CollectionAssert.AreEqual(without.Materialized, run.Materialized);
             Assert.HasCount(10, run.MaterializedSources);

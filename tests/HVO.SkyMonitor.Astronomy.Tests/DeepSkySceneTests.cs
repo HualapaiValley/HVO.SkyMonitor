@@ -10,6 +10,7 @@ public sealed class DeepSkySceneTests
     private const double Focal = 2_000;
     private static readonly DateTimeOffset EffectiveUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly ObserverLocation Site = new(35.347, -113.878, 0);
+    private static readonly string[] FootprintIds = ["deep-sky:NGC0006", "deep-sky:NGC5457", "deep-sky:NGC6720"];
     private static readonly CatalogMetadata Metadata =
         new("fixture", "1", new Uri("https://example.test/catalog"), new string('B', 64), "test", "v1");
     private static readonly DeepSkySemantics Semantics = new(
@@ -73,7 +74,7 @@ public sealed class DeepSkySceneTests
         var deepSkyFootprints = scene.ResolvedFootprints
             .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject).ToArray();
         CollectionAssert.AreEqual(
-            new[] { "deep-sky:NGC0006", "deep-sky:NGC5457", "deep-sky:NGC6720" },
+            FootprintIds,
             deepSkyFootprints.Select(static item => item.Id).ToArray());
         Assert.AreEqual(ResolvedFootprintShape.Circle, deepSkyFootprints[2].Extent.Shape);
         Assert.IsTrue(deepSkyFootprints[0].Clipped);

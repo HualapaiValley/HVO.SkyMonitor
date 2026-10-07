@@ -1,7 +1,7 @@
 namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>The catalog collection a search match belongs to.</summary>
-public enum CelestialSearchCollection
+public enum CelestialCollectionKind
 {
     /// <summary>The fixed-star collection.</summary>
     Star,
@@ -15,7 +15,7 @@ public enum CelestialSearchCollection
 /// finds the object but must be flagged wherever it is shown, and is never used as the object's display name.
 /// </summary>
 public sealed record CelestialSearchMatch(
-    CelestialSearchCollection Collection,
+    CelestialCollectionKind Collection,
     string ObjectId,
     string Alias,
     string Kind,
@@ -59,13 +59,13 @@ public sealed class CelestialObjectSearch : ICelestialObjectSearch
         for (var index = 0; index < stars.Count; index++)
         {
             var item = stars[index];
-            result[index] = new CelestialSearchMatch(CelestialSearchCollection.Star, item.ObjectId, item.Alias, item.Kind, false);
+            result[index] = new CelestialSearchMatch(CelestialCollectionKind.Star, item.ObjectId, item.Alias, item.Kind, false);
         }
         for (var index = 0; index < deepSky.Count; index++)
         {
             var item = deepSky[index];
             result[stars.Count + index] = new CelestialSearchMatch(
-                CelestialSearchCollection.DeepSky, item.ObjectId, item.Alias, item.Kind, item.IsDisputed);
+                CelestialCollectionKind.DeepSky, item.ObjectId, item.Alias, item.Kind, item.IsDisputed);
         }
         return result;
     }

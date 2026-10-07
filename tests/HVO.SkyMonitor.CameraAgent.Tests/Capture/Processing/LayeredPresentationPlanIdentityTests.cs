@@ -10,6 +10,12 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class LayeredPresentationPlanIdentityTests
 {
+    private static readonly string[] ExistingSceneOutputs =
+    [
+        "scene-annotation-layer-v1", "scene-cardinal-layer-v1", "scene-image-circle-layer-v1",
+        "scene-constellation-layer-v1"
+    ];
+
     [TestMethod]
     public void PlanIdentitySceneSchemaVersions_StayTheResolvedFootprintSetAndAdmitEveryLaterSceneSchema()
     {
@@ -52,11 +58,7 @@ public sealed class LayeredPresentationPlanIdentityTests
         var set = CreateSceneStep(new ScenePresentationLayerProcessingStepOptions { DeepSkyOutputVariant = "deep-sky-layer" });
 
         CollectionAssert.AreEqual(
-            new[]
-            {
-                "scene-annotation-layer-v1", "scene-cardinal-layer-v1", "scene-image-circle-layer-v1",
-                "scene-constellation-layer-v1"
-            },
+            ExistingSceneOutputs,
             unset.Outputs.Select(output => output.Variant).ToArray());
         Assert.IsFalse(unset.Outputs.Any(output =>
             output.SharedRecipe?.ImplementationVersion == PresentationDeepSkyLayerProducer.ProducerVersion));

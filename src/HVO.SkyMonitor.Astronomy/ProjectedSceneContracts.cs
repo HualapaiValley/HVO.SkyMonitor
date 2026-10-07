@@ -600,20 +600,20 @@ public static class ProjectedSceneJson
         var section = scene.DeepSky!;
         var selection = scene.Selection.DeepSky!;
         if (!string.Equals(section.ContractVersion, ProjectedDeepSky.CurrentContractVersion, StringComparison.Ordinal))
-            throw new ArgumentException("Deep-sky contract version is unsupported.", $"{path}.contractVersion");
+            throw new ArgumentException("Deep-sky contract version is unsupported.", nameof(scene));
         ValidateText(section.AlgorithmVersion, $"{path}.algorithmVersion");
         ValidateText(section.SourceName, $"{path}.sourceName");
         ValidateText(section.SourceVersion, $"{path}.sourceVersion");
         ValidateText(section.SourceCommit, $"{path}.sourceCommit");
         ValidateText(section.License, $"{path}.license");
         if (section.SourceUrl is null || !section.SourceUrl.IsAbsoluteUri)
-            throw new ArgumentException("Deep-sky source URL must be absolute.", $"{path}.sourceUrl");
+            throw new ArgumentException("Deep-sky source URL must be absolute.", nameof(scene));
         if (section.OmittedCandidateCount < 0 ||
             section.Objects is null || section.Objects.Count == 0 || section.Objects.Count > selection.MaximumObjects ||
             section.Objects.Any(static item => item is null) ||
             section.Outlines is null || section.Outlines.Count > selection.MaximumOutlines ||
             section.Outlines.Any(static item => item is null))
-            throw new ArgumentException("Deep-sky collection counts exceed their bounds.", path);
+            throw new ArgumentException("Deep-sky collection counts exceed their bounds.", nameof(scene));
 
         var expectedRefractionModel = scene.Refraction.Enabled ? AtmosphericRefraction.ModelVersion : null;
         var outlinesById = new Dictionary<string, ProjectedDeepSkyOutline>(StringComparer.Ordinal);
@@ -625,7 +625,7 @@ public static class ProjectedSceneJson
             ValidateText(item.Id, $"{itemPath}.id");
             ValidateText(item.SamplingAlgorithmVersion, $"{itemPath}.samplingAlgorithmVersion");
             if (index > 0 && StringComparer.Ordinal.Compare(section.Outlines[index - 1].Id, item.Id) >= 0)
-                throw new ArgumentException("Deep-sky outlines must be unique and in ID order.", path);
+                throw new ArgumentException("Deep-sky outlines must be unique and in ID order.", nameof(scene));
             if (!string.Equals(item.ContractVersion, ProjectedDeepSkyOutline.CurrentContractVersion, StringComparison.Ordinal) ||
                 !string.Equals(item.RefractionModel, expectedRefractionModel, StringComparison.Ordinal) ||
                 item.Level is < DeepSkyOutline.WidestLevel or > DeepSkyOutline.NarrowestLevel ||
@@ -644,13 +644,13 @@ public static class ProjectedSceneJson
             outlinesById.Add(item.Id, item);
         }
         if (outlinePoints > ProjectedDeepSky.MaximumTotalOutlinePointCount)
-            throw new ArgumentException("Deep-sky outlines exceed the scene point budget.", path);
+            throw new ArgumentException("Deep-sky outlines exceed the scene point budget.", nameof(scene));
 
         var footprintsById = (scene.ResolvedFootprints ?? [])
             .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
             .ToDictionary(static item => item.Id, StringComparer.Ordinal);
         if (footprintsById.Count > selection.MaximumFootprints)
-            throw new ArgumentException("Deep-sky footprints exceed the selected bound.", path);
+            throw new ArgumentException("Deep-sky footprints exceed the selected bound.", nameof(scene));
         var linkedOutlines = 0;
         var linkedFootprints = 0;
         for (var index = 0; index < section.Objects.Count; index++)
@@ -663,7 +663,7 @@ public static class ProjectedSceneJson
             ValidateText(item.ObjectType, $"{itemPath}.objectType");
             if (item.CommonName is not null) ValidateText(item.CommonName, $"{itemPath}.commonName");
             if (index > 0 && StringComparer.Ordinal.Compare(section.Objects[index - 1].Id, item.Id) >= 0)
-                throw new ArgumentException("Deep-sky objects must be unique and in ID order.", path);
+                throw new ArgumentException("Deep-sky objects must be unique and in ID order.", nameof(scene));
             if (!item.Id.StartsWith(ProjectedDeepSkyObject.IdPrefix, StringComparison.Ordinal) ||
                 item.Id.Length == ProjectedDeepSkyObject.IdPrefix.Length ||
                 !DeepSkyObjectTypes.IsSupported(item.ObjectType) ||
@@ -723,7 +723,7 @@ public static class ProjectedSceneJson
             if (item.Representation == DeepSkyRepresentation.Footprint) linkedFootprints++;
         }
         if (linkedOutlines != outlinesById.Count || linkedFootprints != footprintsById.Count)
-            throw new ArgumentException("Every deep-sky outline and footprint must belong to one placed object.", path);
+            throw new ArgumentException("Every deep-sky outline and footprint must belong to one placed object.", nameof(scene));
 
         static bool FootprintMatches(ProjectedDeepSkyObject item, ProjectedResolvedFootprint footprint) =>
             item.MajorAxisArcminutes is { } major && item.MinorAxisArcminutes is { } minor &&

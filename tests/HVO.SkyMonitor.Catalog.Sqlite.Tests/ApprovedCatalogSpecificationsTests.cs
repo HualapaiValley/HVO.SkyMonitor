@@ -17,6 +17,7 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private const string ComposedCatalogId = "hyg-v44-openngc-production";
     private static readonly string[] ApprovedCatalogIds = ["hyg-v42-production", ComposedCatalogId, "hyg-v44-production"];
+    private static readonly string[] DisputedDuplicateSubjects = ["M102->NGC5457"];
 
     [TestMethod]
     public void InternalTestClassSupportsReflectionConstruction()
@@ -93,7 +94,7 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
         Assert.AreEqual(
             1, composition.Transformations.Single(static item => item.Id == "sh2-identifier-dropped").Count);
         CollectionAssert.AreEqual(
-            new[] { "M102->NGC5457" },
+            DisputedDuplicateSubjects,
             composition.Transformations.Single(static item => item.Id == "duplicate-disputed").Subjects.ToArray());
     }
 

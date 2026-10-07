@@ -155,8 +155,11 @@ public sealed record ProjectedDeepSkyOutline(
     public const int MaximumPointCount = 16_384;
 
     /// <summary>Returns whether parts are exactly one closed part per ring.</summary>
-    public static bool IsComplete(IReadOnlyList<ResolvedFootprintPart> parts, int ringCount) =>
-        parts.Count == ringCount && parts.All(static part => part.Closed);
+    public static bool IsComplete(IReadOnlyList<ResolvedFootprintPart> parts, int ringCount)
+    {
+        ArgumentNullException.ThrowIfNull(parts);
+        return parts.Count == ringCount && parts.All(static part => part.Closed);
+    }
 }
 
 /// <summary>

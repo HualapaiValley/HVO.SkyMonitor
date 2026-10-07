@@ -88,7 +88,7 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.IsNotNull(deepSky.DeepSky);
         Assert.AreSame(search, provider.GetRequiredService<ICelestialObjectSearch>());
         Assert.AreEqual(
-            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC0224", "M31", DeepSkyAliasKinds.Messier, false),
+            new CelestialSearchMatch(CelestialCollectionKind.DeepSky, "NGC0224", "M31", DeepSkyAliasKinds.Messier, false),
             search.Find("M31").Single());
         Assert.IsTrue(search.Find("M102").Single().Disputed);
         Assert.AreEqual("explicit-manifest-v3", logger.Entries.Single().Properties["CatalogIdentitySource"]);
