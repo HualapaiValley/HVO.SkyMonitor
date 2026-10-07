@@ -1833,7 +1833,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
         }
         if (contract.SchemaVersion is { } schemaVersion &&
-            !string.Equals(schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion, StringComparison.Ordinal))
+            !StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+                schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion))
         {
             return false;
         }

@@ -204,7 +204,7 @@ the change appends the next chain entry. Treat it as an upgrade:
    - ingest commits the upload and then answers HTTP 500. The edge keeps the
      record as ordinary `retry` work with reason `http-500`, never quarantined,
      and holds its local payload from retention;
-   - reconciliation logs `2141` and backs off that artifact only;
+   - reconciliation logs `2146` and backs off that artifact only;
    - retrospective transient scheduling logs `2169` once per assignment and
      revision.
 5. End the stale assignment or assign a revision published on the current recipe

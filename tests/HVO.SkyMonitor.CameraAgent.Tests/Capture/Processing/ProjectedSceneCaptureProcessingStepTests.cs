@@ -186,6 +186,93 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task VirtualStageWithResolvedFootprintsProducesProjectedSceneV2OnlyWhenEvidenceAgrees()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var scene = await CreateSceneAsync(resolvedSun: true).ConfigureAwait(false);
+            Assert.HasCount(1, scene.ResolvedFootprints);
+            var stageKey = new string('1', 64);
+            var sceneId = new string('A', 64);
+            await staging.StageAsync(stageKey, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
+            var step = CreateStep(staging);
+
+            var fixture = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion
+            });
+            await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, fixture.Context.ProcessingOutcomes.Single().Status,
+                $"{fixture.Context.ProcessingOutcomes.Single().ReasonCode}: {fixture.Context.ProcessingOutcomes.Single().Field}");
+            var product = fixture.Context.ProcessingProducts.Single();
+            Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, product.SchemaVersion);
+            var parsed = ProjectedSceneJson.Parse(product.Payload);
+            Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+            Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, parsed.Scene!.SchemaVersion);
+            // The product carries the canonical (rounded) footprints the stage recorded.
+            var stage = await staging.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(JsonSerializer.Serialize(stage!.ResolvedFootprints),
+                JsonSerializer.Serialize(parsed.Scene.ResolvedFootprints));
+
+            // Capture evidence that promised a v1 scene cannot silently bind a stage that now carries footprints.
+            var stale = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion
+            });
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => step.ProcessAsync(stale.Context, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.IsEmpty(stale.Context.ProcessingProducts);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayRejectsAFrozenSceneWhoseSchemaDisagreesWithItsLabelOrEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var resolved = await CreateSceneAsync(resolvedSun: true).ConfigureAwait(false);
+            var stageKey = new string('6', 64);
+            var sceneId = new string('F', 64);
+            var step = CreateStep(staging);
+
+            // A v2 payload stored under a v1 label is not the product submission pinned.
+            var mislabelled = CreateContext(root, CreateStageProvenance(stageKey, sceneId), CreateReplayExecution());
+            mislabelled.Context.BeginNode("projected-scene", [], ["$raw"]);
+            mislabelled.Context.SetFrozenAuxiliaryInputs([CreateFrozenSceneArtifact(mislabelled.Descriptor, resolved,
+                ProjectedSceneV1.CurrentSchemaVersion).Artifact]);
+            await step.ProcessAsync(mislabelled.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene,
+                mislabelled.Context.ProcessingOutcomes.Single().ReasonCode);
+
+            // A correctly labelled v2 product still fails against capture evidence that declared v1.
+            var declaredV1 = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion
+            }, CreateReplayExecution());
+            declaredV1.Context.BeginNode("projected-scene", [], ["$raw"]);
+            declaredV1.Context.SetFrozenAuxiliaryInputs(
+                [CreateFrozenSceneArtifact(declaredV1.Descriptor, resolved).Artifact]);
+            await step.ProcessAsync(declaredV1.Context, CancellationToken.None).ConfigureAwait(false);
+            var outcome = declaredV1.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, outcome.ReasonCode);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task DescriptorOnlyProjectedSceneExecutesThroughLocalRunner()
     {
         var root = CreateRoot();
@@ -686,7 +773,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         ProjectedSceneStageKey: stageKey);
 
     private static (ProcessingArtifact Artifact, ProjectedSceneV1 Scene) CreateFrozenSceneArtifact(
-        ReconstructionDescriptor descriptor, VisibleScene visible)
+        ReconstructionDescriptor descriptor, VisibleScene visible, string? labelledSchemaVersion = null)
     {
         var source = new ProjectedSceneSource(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor));
@@ -694,11 +781,12 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             ProjectedSceneKind.VirtualRenderAuthoritative, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
             "projection-v1", "projection-v1");
         var payload = ProjectedSceneJson.Serialize(scene);
+        var schemaVersion = labelledSchemaVersion ?? scene.SchemaVersion;
         var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(BuiltInProcessingRecipes.ProjectedScene,
             JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
             ProcessingInputSelector.Raw(descriptor.Artifact.Variant), auxiliaryInputs:
             [new ProcessingAuxiliaryInput("scene", ProcessingAuxiliaryInputKind.CanonicalJson,
-                SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)]);
+                SchemaVersion: schemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)]);
         var outputIdentity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "projected-scene-v1",
             recipe.IdentitySha256, [descriptor.Artifact.ArtifactId]);
         var artifact = new ProcessingArtifact(
@@ -707,7 +795,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             TimeSpan.Zero, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
         {
             ProductKind = ProcessingProductKind.Metadata,
-            SchemaVersion = ProjectedSceneV1.CurrentSchemaVersion,
+            SchemaVersion = schemaVersion,
             ContentIdentitySha256 = scene.SceneIdentitySha256
         };
         return (artifact, scene);
@@ -813,15 +901,23 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         return (new CaptureProcessingContext(contextConfig ?? config, submission, receipt), descriptor, payloadPath);
     }
 
-    private static ValueTask<VisibleScene> CreateSceneAsync() =>
-        new VisibleSceneBuilder(new InMemoryCelestialCatalog([
-            new CelestialCatalogObject("star", "Star", 0, 0, 1)
-        ])).BuildAsync(new VisibleSceneRequest(
+    private static async ValueTask<VisibleScene> CreateSceneAsync(bool resolvedSun = false)
+    {
+        var catalog = new InMemoryCelestialCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
+        var scene = await (resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(
             DateTimeOffset.UnixEpoch, new ObserverLocation(0, 0, 0),
             new EquidistantProjectionContext(1, 1, 1, 1, WidthPixels: 2, HeightPixels: 2),
             new CatalogQuery(6.5, 10),
             new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1"),
-            projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1"));
+            projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        return resolvedSun
+            ? scene.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, DateTimeOffset.UnixEpoch,
+                new AltAzPoint(80, 0), 5, 0, 1, 0, 149600000)])
+            : scene;
+    }
 
     private static ProjectedSceneStagingStore CreateStaging(string root) => new(
         Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));

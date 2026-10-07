@@ -522,8 +522,7 @@ internal sealed class CentralDerivativeJobExecutor(
     internal static ProcessingAnnotationInput CreateAnnotation(
         string sceneId, IReadOnlyList<ProjectedObjectProvenance>? projectedObjects,
         IReadOnlyList<ProjectedSegmentProvenance>? projectedSegments)
-    {
-        var objects = projectedObjects?.Select(item =>
+        => CreateAnnotation(sceneId, projectedObjects?.Select(item =>
         {
             var annotate = ShouldAnnotate(item);
             return new ProjectedAnnotationObject(
@@ -532,7 +531,20 @@ internal sealed class CentralDerivativeJobExecutor(
                 new PixelPoint(item.PixelX, item.PixelY),
                 annotate,
                 annotate);
-        }).ToArray() ?? [];
+        }).ToArray() ?? [], projectedSegments);
+
+    /// <summary>
+    /// Annotates a resolved-footprint scene exactly as the edge annotates the same artifact: outlines, footprint-only
+    /// bodies and labels come from the shared mapping, and the footprint parts are bound into the input identity.
+    /// </summary>
+    internal static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, ProjectedSceneV1 scene, IReadOnlyList<ProjectedSegmentProvenance> projectedSegments)
+        => CreateAnnotation(sceneId, ProjectedSceneAnnotation.CreateObjects(scene, MaximumLabelMagnitude), projectedSegments);
+
+    private static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, IReadOnlyList<ProjectedAnnotationObject> objects,
+        IReadOnlyList<ProjectedSegmentProvenance>? projectedSegments)
+    {
         var segments = projectedSegments?.Select(item => new ProjectedAnnotationSegment(
             item.ConstellationId,
             new PixelPoint(item.FromPixelX, item.FromPixelY),

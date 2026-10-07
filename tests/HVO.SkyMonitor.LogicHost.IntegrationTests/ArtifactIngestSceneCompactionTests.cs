@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using FluentAssertions.Execution;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -430,6 +431,53 @@ public sealed partial class ArtifactIngestTests
             .SelectAsync(frame, CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
     }
 
+    // Every shipped edge configuration selects ["ORI","UMA","UMI","CAS","CYG","LYR"], declared in that order while the
+    // scene records it sorted. The upload used to fail scheduling with projected-scene.source-mismatch, a 500 the
+    // edge retries without end; the declared selection now selects the scene and schedules its annotation.
+    [TestMethod]
+    public async Task SceneDeclaringItsConstellationsInConfigurationOrderIsAcceptedAndSelected()
+    {
+        var data = await CreateSceneIngestCaseAsync(graph: false,
+            constellationIds: ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"]).ConfigureAwait(false);
+        data.Raw.Scene!.ConstellationIds.Should().Equal("ORI", "UMA", "UMI", "CAS", "CYG", "LYR");
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var raw = await PostAsync(client, data.Raw, data.Pixels).ConfigureAwait(false);
+        using var scene = await PostAsync(client, data.SceneManifest, data.SceneBytes).ConfigureAwait(false);
+        // The status probe is the edge's retry path; it reschedules, so it must not fail where the upload did.
+        using var status = await PostStatusAsync(client, data.SceneManifest).ConfigureAwait(false);
+        using (new AssertionScope())
+        {
+            raw.StatusCode.Should().Be(HttpStatusCode.Accepted, await raw.Content.ReadAsStringAsync().ConfigureAwait(false));
+            scene.StatusCode.Should().Be(HttpStatusCode.Accepted, await scene.Content.ReadAsStringAsync().ConfigureAwait(false));
+            ((int)status.StatusCode).Should().BeInRange(200, 299, await status.Content.ReadAsStringAsync().ConfigureAwait(false));
+        }
+
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var captureId = data.Raw.Descriptor.Capture.CaptureId;
+        try
+        {
+            var job = await db.CentralDerivativeJobs.Include(item => item.InputRequirements).Include(item => item.Inputs)
+                .SingleAsync(item => item.SourceArtifact!.Frame!.FrameId == captureId &&
+                    item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
+            var reference = CentralProjectedSceneResolver.ReadReference(job);
+            reference.Should().NotBeNull();
+            reference!.Source.ArtifactIdentitySha256.Should().Be(data.Raw.IdempotencyKey);
+        }
+        finally
+        {
+            // Tests in this assembly claim the next job from the shared database; leave none of this capture's claimable.
+            await db.CentralDerivativeJobs.Where(item => item.SourceArtifact!.Frame!.FrameId == captureId &&
+                    (item.Status == CentralDerivativeJobStatus.Waiting || item.Status == CentralDerivativeJobStatus.Pending ||
+                        item.Status == CentralDerivativeJobStatus.RetryableFailure))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(item => item.AvailableAtUtc, (DateTimeOffset?)null)).ConfigureAwait(false);
+        }
+    }
+
     private sealed class RejectSceneRawCopyStore(IObjectStore inner) : PerformanceObjectStoreDecorator(inner)
     {
         public int Failures { get; private set; }
@@ -478,7 +526,8 @@ public sealed partial class ArtifactIngestTests
         Guid RegistrationId);
 
     private static async Task<SceneIngestCase> CreateSceneIngestCaseAsync(
-        bool graph, FrameArtifactRole derivativeRole = FrameArtifactRole.Preview)
+        bool graph, FrameArtifactRole derivativeRole = FrameArtifactRole.Preview,
+        IReadOnlyList<string>? constellationIds = null)
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
         var rig = CreateRig($"compact-scene-{Guid.NewGuid():N}");
@@ -487,13 +536,18 @@ public sealed partial class ArtifactIngestTests
         var utc = DateTimeOffset.UnixEpoch;
         var pixels = new byte[] { 1, 32, 128, 255 };
         var raw = CreateManifestV2(deviceId, rig, pixels, 1055);
+        // A selection needs topology provenance; the scene needs no segments to record the selection.
+        var topology = constellationIds is null ? null : new InMemoryConstellationTopology([],
+            new ConstellationTopologyMetadata("fixture", "1", new Uri("https://example.test/constellations"),
+                new string('E', 64), "test", "v1"));
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
             new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
-        ])).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+        ]), topology).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
             new ProjectionContext(ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
-                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1")).ConfigureAwait(false);
+                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1",
+            constellationIds: constellationIds)).ConfigureAwait(false);
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(2, 2),
             new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId,
@@ -503,7 +557,12 @@ public sealed partial class ArtifactIngestTests
             scene.AstronomyAlgorithmVersion, "sensor-v1",
             Objects: scene.Objects.Select(item => new ProjectedObjectProvenance(
                 item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            Segments: [], ConstellationIds: [], RigProfileHashSha256: CameraRigProfileIdentity.ComputeSha256(rig),
+            Segments: [], ConstellationTopologyVersion: scene.ConstellationTopology?.Version,
+            ConstellationTopologySourceUrl: scene.ConstellationTopology?.SourceUrl,
+            ConstellationTopologySha256: scene.ConstellationTopology?.SourceSha256,
+            ConstellationTopologyLicense: scene.ConstellationTopology?.License,
+            ConstellationTopologyPreprocessingVersion: scene.ConstellationTopology?.PreprocessingVersion,
+            ConstellationIds: constellationIds ?? [], RigProfileHashSha256: CameraRigProfileIdentity.ComputeSha256(rig),
             ProjectionCalibrationVersion: "calibration-v1", SceneUtc: utc,
             ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('E', 64));
         raw = raw with { Scene = full.WithoutProjectedGeometry() };

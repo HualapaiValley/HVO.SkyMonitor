@@ -16,6 +16,9 @@ public readonly record struct RefractionOptions(bool Enabled, double MinimumAlti
 /// <summary>Atmospheric refraction calculations using Bennett's 1982 approximation.</summary>
 public static class AtmosphericRefraction
 {
+    /// <summary>Identifies the refraction formula recorded by geometry that applies it.</summary>
+    public const string ModelVersion = "bennett-1982-standard-atmosphere-v1";
+
     /// <summary>
     /// Returns apparent altitude after standard-atmosphere refraction. The
     /// correction is not applied below the configured altitude floor.

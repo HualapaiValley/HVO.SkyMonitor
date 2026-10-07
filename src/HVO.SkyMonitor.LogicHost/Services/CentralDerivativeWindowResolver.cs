@@ -906,11 +906,11 @@ internal sealed partial class CentralDerivativeWindowResolver(
         public static partial void Resolution(
             ILogger logger, Guid jobId, string recipe, string fromStatus, string toStatus, int selectedCount, string reason);
 
-        [LoggerMessage(2142, LogLevel.Warning,
+        [LoggerMessage(2144, LogLevel.Warning,
             "Central derivative window resolution faulted and was rotated behind the batch: JobId={JobId}, Reason={Reason}")]
         public static partial void ResolutionFaulted(ILogger logger, Guid jobId, string reason);
 
-        [LoggerMessage(2143, LogLevel.Warning,
+        [LoggerMessage(2145, LogLevel.Warning,
             "Central derivative window fault rotation failed; the job keeps its batch position: JobId={JobId}, Reason={Reason}")]
         public static partial void ResolutionFaultRotationFailed(ILogger logger, Guid jobId, string reason);
     }

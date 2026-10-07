@@ -2,6 +2,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -37,6 +38,56 @@ public sealed class ProjectedSceneStagingStoreTests
             Assert.IsNotNull(recovered);
             Assert.AreEqual(identity, recovered.StageIdentitySha256);
             Assert.AreEqual(stagedPixel, recovered.Objects[0].Pixel);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task StageAsync_ResolvedFootprintsSurviveRestartAndBindAsProjectedSceneV2()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var resolved = await CreateSceneAsync(FixtureUtc, 10, resolvedSun: true).ConfigureAwait(false);
+            var plain = await CreateSceneAsync(FixtureUtc, 10).ConfigureAwait(false);
+            Assert.HasCount(1, resolved.ResolvedFootprints);
+            var source = new ProjectedSceneSource(Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                Guid.Parse("22222222-2222-2222-2222-222222222222"), new string('B', 64));
+            string identity;
+            using (var first = CreateStore(root))
+            {
+                await first.StageAsync(new string('1', 64), new string('A', 64), resolved, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await first.StageAsync(new string('2', 64), new string('A', 64), plain, CancellationToken.None)
+                    .ConfigureAwait(false);
+                identity = (await first.ReadAsync(new string('1', 64), CancellationToken.None).ConfigureAwait(false))!
+                    .StageIdentitySha256;
+            }
+
+            using var restarted = CreateStore(root);
+            var staged = await restarted.ReadAsync(new string('1', 64), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(staged);
+            Assert.AreEqual(identity, staged.StageIdentitySha256);
+            // The stage keeps the canonical (rounded) footprints that a directly created projected scene carries.
+            var expected = JsonSerializer.Serialize(ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, resolved,
+                ProjectedSceneImageTransformV1.Identity(resolved.Request.Projection.WidthPixels,
+                    resolved.Request.Projection.HeightPixels),
+                source, resolved.Request.ProjectionVersion, resolved.Request.ProjectionVersion).ResolvedFootprints);
+            Assert.AreEqual(expected, JsonSerializer.Serialize(staged.ResolvedFootprints));
+            var bound = staged.Bind(source, ProjectedSceneKind.Predicted);
+            Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, bound.SchemaVersion);
+            Assert.AreEqual(expected, JsonSerializer.Serialize(bound.ResolvedFootprints));
+
+            // A stage without resolved footprints keeps binding the released v1 scene.
+            var plainStaged = await restarted.ReadAsync(new string('2', 64), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(plainStaged);
+            Assert.IsNull(plainStaged.ResolvedFootprints);
+            var plainBound = plainStaged.Bind(source, ProjectedSceneKind.Predicted);
+            Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, plainBound.SchemaVersion);
+            Assert.IsNull(plainBound.ResolvedFootprints);
         }
         finally
         {
@@ -562,18 +613,27 @@ public sealed class ProjectedSceneStagingStoreTests
             beforeNonLinuxPublish: beforeNonLinuxPublish);
     }
 
-    private static async ValueTask<VisibleScene> CreateSceneAsync(DateTimeOffset utc, double rightAscensionHours)
+    private static async ValueTask<VisibleScene> CreateSceneAsync(
+        DateTimeOffset utc, double rightAscensionHours, bool resolvedSun = false)
     {
         var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("test-star", "Test Star", rightAscensionHours, 45, 1)
         ]);
-        return await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(
+        var builder = resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog);
+        var scene = await builder.BuildAsync(new VisibleSceneRequest(
             utc, new ObserverLocation(35, -115, 1000),
             new EquidistantProjectionContext(32, 32, 25, 25, WidthPixels: 64, HeightPixels: 64),
             new CatalogQuery(6.5, 10),
             new CatalogMetadata("test", "1", new Uri("https://example.invalid/catalog"), new string('0', 64), "test", "1"),
             projectionVersion: "test-projection-v1",
-            algorithmVersion: "test-astronomy-v1")).ConfigureAwait(false);
+            algorithmVersion: "test-astronomy-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        return resolvedSun
+            ? scene.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, utc, new AltAzPoint(70, 0), 5, 0, 1, 0,
+                149600000)])
+            : scene;
     }
 
     private static string CreateRoot()

@@ -1510,7 +1510,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.CommandText = """
             UPDATE raw_captures SET retention_hold = CASE WHEN
                 EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
-                    AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                    AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                 OR EXISTS (SELECT 1 FROM transient_candidate_sources source
                     JOIN transient_candidates candidate ON candidate.candidate_id = source.candidate_id
                     WHERE source.raw_capture_row_id = $raw AND candidate.source_hold_released = 0)

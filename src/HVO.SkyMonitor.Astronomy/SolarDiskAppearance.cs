@@ -10,6 +10,9 @@ public static class SolarDiskEphemeris
 {
     public const string AlgorithmVersion = "astronomy-engine-2.1.19-topocentric-disk-v1";
 
+    /// <summary>Identifies the radius source recorded with resolved Sun and Moon footprints.</summary>
+    public const string RadiusSource = "asin(nasa-volumetric-mean-radius/topocentric-distance)-v1";
+
     public static SolarDiskAppearance Get(SolarSystemBody body, DateTimeOffset utc, ObserverLocation site)
     {
         if (body is not (SolarSystemBody.Sun or SolarSystemBody.Moon))

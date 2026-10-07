@@ -855,6 +855,12 @@ internal sealed class RawCaptureIngress :
                 actualOutcome == CaptureLaneHandlerOutcome.Deferred ? lease.Attempt : lease.Attempt + 1,
                 reason);
         }
+        else if (actualOutcome == CaptureLaneHandlerOutcome.Abandoned)
+        {
+            // Abandonment can repeat for every frame while a superseded plan stays active; the condition itself is
+            // reported once through processing health, so the per-frame record stays at Debug.
+            _logger.CaptureLaneAbandoned(lease.Lane, reason);
+        }
         else
         {
             _logger.CaptureLaneTerminal(lease.Lane, "quarantined", reason);
