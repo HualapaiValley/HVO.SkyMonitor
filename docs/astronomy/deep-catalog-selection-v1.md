@@ -334,7 +334,7 @@ differing leaves are all derived from timing:
 
 Neither assertion is part of the frozen A/B rule. The #520 coordinator ruled the detector spike disclosed only.
 
-| Family | Cold solves | A1 ms | B1 ms | B2 ms | A2 ms | B1/A1 | B2/A2 |
+| Family | Cold solves | A1 ms | B1 ms | B2 ms\* | A2 ms\* | B1/A1 | B2/A2\* |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | equidistant | 30 | 2,490 | 2,166 | 2,135 | 2,141 | 0.870 | 0.997 |
 | equisolid | 18 | 2,327 | 2,242 | 2,290 | 2,223 | 0.963 | 1.030 |
@@ -342,8 +342,13 @@ Neither assertion is part of the frozen A/B rule. The #520 coordinator ruled the
 | orthographic | 18 | 1,887 | 1,840 | 1,770 | 1,837 | 0.975 | 0.964 |
 | rectilinear | 18 | 1,794 | 1,899 | 1,849 | 1,780 | 1.059 | 1.039 |
 
-Medians of held-out cold solves. No family exceeds 1.10 in both pairs. Rectilinear is the only family slower in both,
-by 5.9% and 3.9%.
+\* Recorded, inputs unarchived. These pair-2 values appear only in the sealed `ab-decision.json`. The B2 and A2 pixel
+reports they were computed from are not in the evidence pack (see
+[Evidence completeness check](#evidence-completeness-check)).
+
+Medians of held-out cold solves. The verdict rests on the archived pair 1. Every family's B1/A1 is at most 1.10; the
+largest is rectilinear's 1.0586. The both-pairs rule therefore cannot fire, whatever pair 2 holds. Rectilinear is the
+only family slower in both pairs: by 5.9% in pair 1, and by 3.9% in pair 2 (recorded, inputs unarchived).
 
 #### Default-path changes
 
@@ -455,8 +460,19 @@ with the default search and 15 s cold budget, every family and view, 2026-01-15T
 | rectilinear 8 mm | 6 | 0 | 0 | 6 | 6,604 | 1,157 |
 
 The fisheye solves allocated up to 12.1 GiB each before the 15 s budget stopped them. The rectilinear solves finished
-inside the budget with a 6,256-star index. Every rejection was "Independent verification, residual, count, or
-coverage gates failed". No false association was recorded.
+inside the budget and were all rejected. Every rejection was "Independent verification, residual, count, or coverage
+gates failed". No false association was recorded.
+
+Their recorded `indexStars` maximum of 6,256 is the number of eligible training stars, not the size of an index. The
+report takes `indexStars` from `CatalogIndexStars` (`VirtualDeepAstrometryQualificationTests.cs:340`). On a
+rejection, the solver fills that field with `training.Count`, as `AstrometricSolverCore.cs:120` shows:
+
+```csharp
+CoreResult Reject(string reason, CoreQuality? q = null, int candidates = 0) => new(false, "rejected", reason, null, null, q, [], training.Count, ...);
+```
+
+The index the solver actually builds is capped at 1,500 stars (`MaximumIndexStars`, `:72`, enforced at `:132`). Its
+size is not recorded on this path.
 
 ## Evidence
 
@@ -491,6 +507,15 @@ Every other path in the table above is byte-identical at the merge head. The evi
 The evidence pack is kept outside the repository under the #520 evidence root, at `evidence/1167/d3b78737/`, with a
 `SHA256SUMS` manifest. It holds the tuning, held-out, magnitude-7 and A/B reports and logs, `decision.json`,
 `decision-ruling.json`, `freeze.json`, `steps.json` and the fit-05 diagnostic and attribution sessions.
+
+Some A/B files are unarchived:
+
+- **The B2 and A2 pixel reports.** Their values are recorded only in the sealed `ab-decision.json`.
+- **Every per-run `test.log` and `run.trx` of the four #1126 arms.** Each arm's `index.json` still records every TRX
+  file's SHA-256, total, executed, passed and failed counts. Neither the evaluator nor the evidence check reads the
+  files themselves. The check reads only the counts the index records.
+
+[Evidence completeness check](#evidence-completeness-check) records the cause and the disposition.
 
 ### Evidence completeness check
 
@@ -540,7 +565,87 @@ evaluator already makes every decision that depends on it undecidable.
 2. It was then run on the `d3b78737` final and A/B packs.
 3. Finally, the reviewer's F1–F3 triggers were applied to scratch copies of those packs, outside the repository.
 
-The commit, the results and the trigger runs are recorded below once they exist.
+The check was committed as `3cb05cf9` and pushed at 2026-10-07T14:47:06Z. It ran on the measured packs from
+14:47:12Z to 14:47:16Z.
+
+**Results.**
+
+| Mode | Exit | Result |
+| --- | --- | --- |
+| `deep` | 0 | Complete, 0 findings. 34 reported runs hold all 1,944 declared case rows and 288 bounded perspective cold rows. All 34 p95 values are exact. All 19 quoted declarations were found. |
+| `ab` | 1 | Incomplete, 10 findings: the B2 and A2 pixel report is missing for each of the 5 families. The four arms are complete: 25, 20, 25 and 20 runs; every report hashes to its index; all 17 quoted declarations were found. |
+
+In `deep` mode, `final-equidistant-d55` and `final-equidistant-d60` are listed as `error` runs with no report. This is
+consistent with the standing undecidable-G0 ruling (see [Decision](#decision)).
+
+The check was not changed to pass the `ab` pack. Its result stands as recorded.
+
+**Disposition of the `ab` result.** Pair-2 (B2/A2) pixel-pair inputs were not archived. Their values are recorded
+only in the sealed `ab-decision.json`. The verdict rests on archived pair 1, in which every family is ≤ 1.10 (max
+rectilinear 1.0586), so the both-pairs rule cannot fire whatever pair 2 holds.
+
+**Pair 1 recomputed.** A script recomputed every family's A1 and B1 cold medians and B1/A1 ratio from the archived
+`a1-final` and `b1-final` reports. It loads the frozen evaluator's own `load` and `cold_median` from the `d3b78737`
+blob, verified against SHA-256 `aa028b40b6595b1583ce4c52072d7a0b7a2f2ed11a4df54118ec8d185d068ff8` and run unmodified.
+It reads each input only after checking it against the pack's `SHA256SUMS`.
+
+All 15 values are exactly equal to `ab-decision.json`. The largest ratio is rectilinear's 1.0586199732301054, and none
+exceeds 1.10. The script and its output are in `evidence/1167/3cb05cf9/pair1-recompute/` (`SHA256SUMS` sha256
+`91b57453a97fec331d3bc2f00895ea0041070ce0fc2da2b1a4cd7d8b992c7d02`).
+
+**Cause.** The evidence transfer (`transfer-record/copy-evidence.sh`, `SHA256SUMS` sha256
+`f65f9d8e57c8d5b029cbb1a9c81740e8ac3fc9f608241d8db779ca8cd3f85adb`) was a whitelist. It had no rule for `ab/a2/`,
+`ab/b2/` or the four A/B arms' `runs/` files, so those files were never copied; its file list, `pack-files.txt`,
+names none of them. The empty `a2/` and `b2/` directory trees most likely remain from an earlier interrupted copy,
+which is not archived.
+
+Future measured packs are copied as a whole tree, not through a whitelist. A copy counts as archived only after it
+verifies complete against a source-side `find -type f | sha256sum` manifest and the evidence check passes on the
+archived copy.
+
+**Trigger runs.** The reviewer's triggers were applied to scratch symlink-tree copies of the posted packs in `/tmp`,
+outside the repository, at HEAD `3cb05cf9`. They ran from 2026-10-07T14:56:53Z to 14:58:36Z.
+
+`trigger.py` rewrites each edited report as a new file and re-indexes its SHA-256 and size. A stale hash therefore
+never reveals a trigger.
+
+Neither real pack lets the frozen evaluator reach a clean pass, so "the evaluator passes" is shown as "the evaluator's
+outcome is unchanged from its own baseline":
+
+- The `deep` baseline is undecidable (exit 1). Its scratch `decision.json` is byte-identical to the archived one.
+- `ab()` raises `FileNotFoundError` at the first pair-2 read. The A/B triggers are therefore also run through the
+  frozen `compare_reports`, exactly as `ab()` calls it.
+
+| Trigger | Change | Frozen evaluator | Evidence check |
+| --- | --- | --- | --- |
+| None, `deep` | — | Exit 1, undecidable | Exit 0, complete |
+| F1 | `mono-bin2` rows, and their failing cases and failures, removed from the 5 equisolid runs | Exit 1, same undecidable list, no G0 finding. Equisolid d55 turns from failing G1 to passing (6 failing cases to 0); m55 falls from 14 to 6, m60 from 17 to 8, d60 from 9 to 3 | Exit 1, 10 findings: each run has "45 case rows, declared 54" and "9 declared cases missing" |
+| F3a | `selection` set to 0 warm-ups, 0 samples, p95 0 in all 34 runs | Exit 1, unchanged; every `selectionP95Ms` is 0 and no G4 finding | Exit 1, 102 findings |
+| F3b | `indexPrefix` set to null on the cold rows of the 16 rectilinear runs | Exit 1, unchanged; `maxIndexPrefixBytes` becomes null and no G8 finding | Exit 1, 288 findings: each row "has no index-bound evidence" |
+| None, `ab` | — | `ab()` raises at pair 2; `compare_reports` identical over 45 reports | Exit 1, the 10 pair-2 findings |
+| F2 | `optical-calibration-held-out-stereographic` report deleted from `a1-final` and `b1-final` | `ab()` raises at pair 2; `compare_reports` identical over 44 reports | Exit 1, 14 findings: the 10 above, plus "is missing" and "report files differ from the indexed reports" for each arm |
+| F2, unindexed | The same report directory deleted, and its run removed from each arm's index | `ab()` raises at pair 2; `compare_reports` identical over 44 reports | Exit 1, 12 findings: the 10 above, plus "runs are not the #1126 inventory: missing [...]" for each arm |
+
+The posted `d3b78737` pack verified 428 of 428 entries afterwards, with no file newer than the run's start. The tools,
+outputs and decisions are in `evidence/1167/3cb05cf9/discrimination/` (`SHA256SUMS` sha256
+`488c5cea40f3036ebca6e31072db2e707c3db119a4337c7f66b03e264dfc56ae`).
+
+**F2 on the full `ab()` (synthetic).** This run is **SYNTHETIC: discrimination only, not performance evidence.** It
+shows that F2 reaches `ab()`'s verdict, and not only `compare_reports`.
+
+In each scratch copy, every empty pair-2 family directory was given one symlink to that family's pair-1 report: B2 to
+`b1-final`, A2 to `a1-final`. Each pair-2 ratio therefore equals its pair-1 ratio. The run took place from
+2026-10-07T15:03:36Z to 15:04:53Z.
+
+| Trigger | Frozen `ab()` | Evidence check |
+| --- | --- | --- |
+| None | Exit 0: "identity identical over 45 reports; regression none; verdict pass" | Exit 0, complete |
+| F2 | Exit 0: "identity identical over 44 reports; regression none; verdict pass" | Exit 1, 4 findings: "is missing" and "report files differ from the indexed reports" for each arm |
+| F2, unindexed | Exit 0: "identity identical over 44 reports; regression none; verdict pass" | Exit 1, 2 findings: "runs are not the #1126 inventory: missing [...]" for each arm |
+
+The posted pack again verified 428 of 428 entries, with no file newer than the start. The run is in
+`evidence/1167/3cb05cf9/discrimination-synthetic/` (`SHA256SUMS` sha256
+`a0f5a702a59f952b4125df5560e31026a3228981cfe80839dfca865dec2d3719`).
 
 **Disclosure.** Before the check was written, while verifying the r0 findings, the #1167 owner inspected the `d3b78737`
 final reports: their view names, a recomputed p95, and whether `indexPrefix` was present and matched the bound formula.
