@@ -253,20 +253,67 @@ public sealed class CentralProjectedSceneResolverTests
         Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false));
     }
 
+    // Edges declare the constellation selection as configured: VirtualSky upper-cases and de-duplicates it in
+    // configuration order, and the capture stager passes it raw. The scene records the selection normalized, so
+    // either declaration of the scene's selection selects, and a different selection is still a mismatch.
+    [TestMethod]
+    [DataRow(new[] { "ORI", "UMA", "UMI", "CAS", "CYG", "LYR" }, true, DisplayName = "VirtualSky shape")]
+    [DataRow(new[] { "ori", "Uma", "UMI", "cas", "ORI", "cyg", "LYR", "lyr" }, true, DisplayName = "stager shape")]
+    [DataRow(new[] { "CAS", "CYG", "LYR", "ORI", "UMA", "UMI" }, true, DisplayName = "already normalized")]
+    [DataRow(new[] { "ORI", "UMA", "UMI", "CAS", "CYG" }, false, DisplayName = "missing constellation")]
+    [DataRow(new[] { "ORI", "UMA", "UMI", "CAS", "CYG", "LYR", "AND" }, false, DisplayName = "extra constellation")]
+    [DataRow(new[] { "ORI", "UMA", "UMI", "CAS", "CYG", "LYR", " " }, false, DisplayName = "blank constellation")]
+    [DataRow(new[] { "ORI", "UMA", "UMI", "CAS", "CYG", "LYR", null }, false, DisplayName = "null constellation")]
+    public async Task SelectionAcceptsTheDeclaredConstellationsInConfigurationOrderAndCase(string?[] declared, bool accepted)
+    {
+        await using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var raw = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono8, 2, 2, 2, [1, 2, 3, 4]);
+        var scene = await CreateSceneAsync(raw, "perspective-v1", "calibration-v1", resolvedSun: false,
+            constellationIds: ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"]).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new[] { "CAS", "CYG", "LYR", "ORI", "UMA", "UMI" }, scene.Selection.ConstellationIds.ToArray());
+        var topology = scene.ConstellationTopology!;
+        var provenance = new SceneProvenance(new string('D', 64), "rig", scene.Catalog.Name,
+            scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
+            scene.AstronomyAlgorithmVersion, "sensor", SceneUtc: scene.EffectiveUtc,
+            EphemerisModelVersion: scene.EphemerisModelVersion, ConstellationTopologyVersion: topology.Version,
+            ConstellationTopologySourceUrl: topology.SourceUrl, ConstellationTopologySha256: topology.SourceSha256,
+            ConstellationTopologyLicense: topology.License,
+            ConstellationTopologyPreprocessingVersion: topology.PreprocessingVersion,
+            ConstellationIds: declared.Select(static id => id!).ToArray()).WithoutProjectedGeometry();
+        var frame = await SeedAsync(db, raw, scene, provenance).ConfigureAwait(false);
+        var resolver = new CentralProjectedSceneResolver(db, new SceneReader(ProjectedSceneJson.Serialize(scene)));
+
+        if (!accepted)
+        {
+            var rejected = await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.SelectAsync(
+                frame, CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual("projected-scene.source-mismatch", rejected.ReasonCode);
+            return;
+        }
+        Assert.IsNotNull(await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false));
+    }
+
     private static async Task<ProjectedSceneV1> CreateSceneAsync(
-        ArtifactManifestV2 raw, string projectionVersion, string calibrationVersion, bool resolvedSun)
+        ArtifactManifestV2 raw, string projectionVersion, string calibrationVersion, bool resolvedSun,
+        IReadOnlyList<string>? constellationIds = null)
     {
         var utc = raw.Descriptor.Timing.ExposureStartedUtc;
         var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
         ]);
+        // A selection needs topology provenance; the scene needs no segments to record the selection.
+        var topology = constellationIds is null ? null : new InMemoryConstellationTopology([],
+            new ConstellationTopologyMetadata("fixture", "1", new Uri("https://example.test/constellations"),
+                new string('E', 64), "test", "v1"));
         var visible = await (resolvedSun
-            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
-            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+            ? new VisibleSceneBuilder(catalog, topology, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog, topology)).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
             new ProjectionContext(ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
                 new string('C', 64), "test", "v1"), projectionVersion: projectionVersion,
+            constellationIds: constellationIds,
             solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
         if (resolvedSun)
         {

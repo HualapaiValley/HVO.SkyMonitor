@@ -235,7 +235,10 @@ internal sealed class CentralProjectedSceneResolver(
             !string.Equals(scene.ConstellationTopology?.SourceSha256, provenance.ConstellationTopologySha256, StringComparison.OrdinalIgnoreCase) ||
             scene.ConstellationTopology?.License != provenance.ConstellationTopologyLicense ||
             scene.ConstellationTopology?.PreprocessingVersion != provenance.ConstellationTopologyPreprocessingVersion ||
-            !scene.Selection.ConstellationIds.SequenceEqual(provenance.ConstellationIds ?? []) ||
+            // Edges declare the constellation selection in configuration order and case; the scene records it normalized.
+            provenance.ConstellationIds?.Any(string.IsNullOrWhiteSpace) == true ||
+            !scene.Selection.ConstellationIds.SequenceEqual(
+                ProjectedSceneJson.NormalizeConstellationIds(provenance.ConstellationIds ?? [])) ||
             scene.Selection.IncludeConstellationEndpointStars != provenance.IncludeConstellationEndpointStars)
             throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
     }

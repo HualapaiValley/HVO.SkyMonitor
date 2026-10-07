@@ -223,8 +223,7 @@ public static class ProjectedSceneJson
             new ProjectedSceneSelection(
                 request.CatalogQuery.MaximumMagnitude,
                 request.CatalogQuery.MaximumResults,
-                Freeze(request.ConstellationIds.Select(static id => id.ToUpperInvariant())
-                    .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)),
+                NormalizeConstellationIds(request.ConstellationIds),
                 Freeze(request.SolarSystemBodies.Distinct().Order()),
                 request.IncludeConstellationEndpointStars),
             new ProjectedSceneProjection(
@@ -324,6 +323,19 @@ public static class ProjectedSceneJson
         {
             return new(null, "$scene");
         }
+    }
+
+    /// <summary>
+    /// Returns a constellation selection as a scene records it: each identifier is converted with
+    /// <see cref="string.ToUpperInvariant()"/>, then duplicates are removed by ordinal comparison, then the result is
+    /// sorted by ordinal comparison. Producers declare the selection in configuration order, so a declared selection is
+    /// normalized this way before it is compared with a scene.
+    /// </summary>
+    public static IReadOnlyList<string> NormalizeConstellationIds(IEnumerable<string> constellationIds)
+    {
+        ArgumentNullException.ThrowIfNull(constellationIds);
+        return Freeze(constellationIds.Select(static id => id.ToUpperInvariant())
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
     }
 
     public static string ComputeIdentity(ProjectedSceneV1 scene)
