@@ -62,27 +62,53 @@ public sealed class ProductionCatalogRegistryTests
     }
 
     [TestMethod]
-    public void ImageContract_RegistryV1CatalogIdsEqualTheEmbeddedRegistry()
+    public void ImageContract_RegistryV2CatalogIdsEqualTheEmbeddedRegistry()
         => CollectionAssert.AreEquivalent(
             ProductionCatalog.Specifications.All.Select(static item => item.CatalogId).ToArray(),
-            CameraAgentImageContract.RegistryV1CatalogIds.ToArray());
+            CameraAgentImageContract.RegistryV2CatalogIds.ToArray());
 
     [TestMethod]
+    public void ImageContract_RegistryV2IsASupersetOfRegistryV1()
+    {
+        CollectionAssert.IsSubsetOf(
+            CameraAgentImageContract.RegistryV1CatalogIds.ToArray(), CameraAgentImageContract.RegistryV2CatalogIds.ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "hyg-v44-openngc-production" },
+            CameraAgentImageContract.RegistryV2CatalogIds.Except(CameraAgentImageContract.RegistryV1CatalogIds).ToArray());
+    }
+
+    [TestMethod]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v42-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v44-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v44-openngc-production", true)]
+    [DataRow("hvo-approved-catalogs-v2", "hyg-v45-production", false)]
+    [DataRow("hvo-approved-catalogs-v2", null, false)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v42-production", true)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v44-production", true)]
+    [DataRow("hvo-approved-catalogs-v1", "hyg-v44-openngc-production", false)]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v45-production", false)]
     [DataRow("hvo-approved-catalogs-v1", null, false)]
     [DataRow("hyg-v42-production-p3-s2", "hyg-v42-production", true)]
     [DataRow("hyg-v42-production-p3-s2", "hyg-v44-production", false)]
+    [DataRow("hyg-v42-production-p3-s2", "hyg-v44-openngc-production", false)]
     [DataRow("hyg-v44-production-p4-s3", "hyg-v44-production", false)]
+    [DataRow("hvo-approved-catalogs-v3", "hyg-v44-openngc-production", false)]
     [DataRow(null, "hyg-v42-production", false)]
     public void ImageContract_SupportsOnlyTheCatalogsItsRegistryApproves(string? catalogContract, string? catalogId, bool supported)
     {
         Assert.AreEqual(supported, CameraAgentImageContract.SupportsCatalog(catalogContract, catalogId));
         Assert.AreEqual(
-            catalogContract is "hvo-approved-catalogs-v1" or "hyg-v42-production-p3-s2",
+            catalogContract is "hvo-approved-catalogs-v2" or "hvo-approved-catalogs-v1" or "hyg-v42-production-p3-s2",
             CameraAgentImageContract.IsKnownCatalogContract(catalogContract));
     }
+
+    [TestMethod]
+    [DataRow("hyg-v42-production", "hvo-approved-catalogs-v1")]
+    [DataRow("hyg-v44-production", "hvo-approved-catalogs-v1")]
+    [DataRow("hyg-v44-openngc-production", "hvo-approved-catalogs-v2")]
+    public void ImageContract_RequiredCatalogContractIsTheEarliestRegistryApprovingTheCatalog(
+        string catalogId, string expected)
+        => Assert.AreEqual(expected, CameraAgentImageContract.RequiredCatalogContract(catalogId));
 
     [TestMethod]
     [DataRow(HygV42.CatalogId, HygV42.PackageVersion)]

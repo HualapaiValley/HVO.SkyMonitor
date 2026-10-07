@@ -346,6 +346,18 @@ public sealed class VirtualSkyCameraModule(
             ? VisibleSceneReadoutTransform.ToOutput(
                 renderScene, outputProjection, _resolvedReadout!.Geometry.BinX, _resolvedReadout.Geometry.BinY)
             : renderScene;
+        if (_options.DeepSky is { } deepSkyOptions)
+        {
+            // Deep-sky content is annotation geometry only: it never reaches the renderer, and it is placed in output
+            // pixels so the resolvable-size threshold applies to the emitted frame. Its cost joins the reference stage.
+            var deepSkyCpuStarted = ReadProcessCpu();
+            var deepSkyStarted = Stopwatch.GetTimestamp();
+            var deepSkyCatalog = (catalog as IDeepSkyCatalogSource)?.DeepSky ?? throw new InvalidOperationException(
+                "Virtual deep-sky scene content requires an installed catalog with a deep-sky collection.");
+            scene = scene.WithDeepSky(deepSkyCatalog, deepSkyOptions.ToSelection());
+            referenceMilliseconds += Stopwatch.GetElapsedTime(deepSkyStarted).TotalMilliseconds;
+            referenceProcessCpuMilliseconds += (ReadProcessCpu() - deepSkyCpuStarted).TotalMilliseconds;
+        }
         var layout = _resolvedReadout is null
             ? new ImageLayout(sensor.WidthPixels, sensor.HeightPixels, sensor.PixelFormat,
                 sensor.StrideBytes ?? checked(sensor.WidthPixels * ImageLayout.BytesPerPixel(sensor.PixelFormat)))
@@ -503,9 +515,7 @@ public sealed class VirtualSkyCameraModule(
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
-            ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ResolvedFootprints.Count > 0
-                ? SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion
-                : SceneProvenance.RetainedProjectedSceneSchemaVersion,
+            ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
             CatalogId: catalogIdentity.CatalogId,
             CatalogPackageVersion: catalogIdentity.PackageVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -1418,6 +1428,13 @@ public sealed class VirtualSkyCameraModuleOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualSimulatedFocusOptions? SimulatedFocus { get; init; }
 
+    /// <summary>
+    /// Opt-in deep-sky collection on the projected scene. Absent means off, which keeps existing scene identities and
+    /// scene bytes; the rendered frame never changes either way.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualDeepSkyOptions? DeepSky { get; init; }
+
     internal void Validate()
     {
         SimulatedFocus?.Validate(PsfSigmaPixels);
@@ -1434,6 +1451,7 @@ public sealed class VirtualSkyCameraModuleOptions
             (Asi174Sensor.Enabled ? 1 : 0) + (Asi178Sensor.Enabled ? 1 : 0) +
             (Asi676Enabled ? 1 : 0) > 1 ||
             ConstellationIds is null || ConstellationIds.Any(string.IsNullOrWhiteSpace) ||
+            DeepSky is not null && !DeepSky.IsValid ||
             SyntheticCalibration is not null && VirtualCalibration is not null ||
             SolarSystemBodies is null || SolarSystemBodies.Any(name =>
                 string.IsNullOrWhiteSpace(name) || !Enum.TryParse<SolarSystemBody>(name, true, out var body) || !Enum.IsDefined(body)))
@@ -1483,6 +1501,42 @@ public sealed class VirtualSkyCameraModuleOptions
                 BortleClass, MagnitudeZeroElectronsPerSecond,
                 projection.FocalLengthXPixels, projection.FocalLengthYPixels)
             : ResolveBackgroundElectronsPerSecond());
+}
+
+/// <summary>
+/// Bounds for the virtual deep-sky collection. Each member defaults to
+/// <see cref="ProjectedSceneDeepSkySelection.Default"/>, so <c>"DeepSky": { "Enabled": true }</c> turns the layer
+/// on with the default bounds.
+/// </summary>
+public sealed record VirtualDeepSkyOptions
+{
+    /// <summary>Gets whether the collection is placed. It must be true; omit the section to turn the layer off.</summary>
+    public bool Enabled { get; init; }
+    public int MaximumObjects { get; init; } = ProjectedSceneDeepSkySelection.Default.MaximumObjects;
+    public int MaximumFootprints { get; init; } = ProjectedSceneDeepSkySelection.Default.MaximumFootprints;
+    public int MaximumOutlines { get; init; } = ProjectedSceneDeepSkySelection.Default.MaximumOutlines;
+    public int PreferredOutlineLevel { get; init; } = ProjectedSceneDeepSkySelection.Default.PreferredOutlineLevel;
+    public double MinimumGlyphPixels { get; init; } = ProjectedSceneDeepSkySelection.Default.MinimumGlyphPixels;
+
+    internal bool IsValid
+    {
+        get
+        {
+            if (!Enabled) return false;
+            try
+            {
+                ToSelection().Validate();
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+    }
+
+    internal ProjectedSceneDeepSkySelection ToSelection() =>
+        new(MaximumObjects, MaximumFootprints, MaximumOutlines, PreferredOutlineLevel, MinimumGlyphPixels);
 }
 
 public sealed record VirtualCalibrationLightOptions

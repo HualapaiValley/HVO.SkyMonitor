@@ -194,7 +194,8 @@ public sealed class ResolvedFootprintTests
         CollectionAssert.AreEqual(bytes, ProjectedSceneJson.Serialize(parsed.Scene));
         Assert.IsTrue(ProjectedSceneV1.IsSupportedSchemaVersion(v2.SchemaVersion));
         Assert.IsTrue(SceneProvenance.IsRetainedProjectedSceneSchemaVersion(v1.SchemaVersion));
-        Assert.IsFalse(ProjectedSceneV1.IsSupportedSchemaVersion("projected-scene-v3"));
+        Assert.IsTrue(ProjectedSceneV1.IsSupportedSchemaVersion(ProjectedSceneV1.DeepSkySchemaVersion));
+        Assert.IsFalse(ProjectedSceneV1.IsSupportedSchemaVersion("projected-scene-v4"));
         Assert.ThrowsExactly<NotSupportedException>(() =>
             ((IList<PixelPoint>)parsed.Scene.ResolvedFootprints![0].Parts[0].Points).Clear());
     }

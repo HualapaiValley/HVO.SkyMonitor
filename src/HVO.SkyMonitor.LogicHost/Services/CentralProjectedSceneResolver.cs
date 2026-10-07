@@ -249,11 +249,12 @@ internal sealed class CentralProjectedSceneResolver(
             item.ConstellationId, item.FromObjectId, item.ToObjectId, item.FromPixel.X, item.FromPixel.Y,
             item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray();
         // A projected-scene-v1 artifact keeps its released point-mark mapping, so its bytes and identity are unchanged.
-        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal)
-            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments)
-            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
+        // v2 and v3 share the edge mapping, which draws solar-system footprints and leaves deep-sky ones to their layer.
+        return string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal)
+            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneId,
                 scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments);
+                    item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(), segments)
+            : CentralDerivativeJobExecutor.CreateAnnotation(sceneId, scene, segments);
     }
 
     // The existing immutable requirement selector carries the compact reference. The artifact input keeps

@@ -49,7 +49,7 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
                     logger,
                     result.PackageKind,
                     result.CatalogId,
-                    "explicit-manifest-v2",
+                    result.CatalogIdentitySource,
                     result.CatalogVersion,
                     result.SchemaVersion,
                     result.PreprocessingVersion,
@@ -70,6 +70,11 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<ICelestialCatalogDetailsSource>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+        services.AddSingleton<IDeepSkyCatalogSource>(static serviceProvider =>
+            serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+        services.AddSingleton<ICelestialObjectSearch>(static serviceProvider => new CelestialObjectSearch(
+            serviceProvider.GetRequiredService<ICelestialCatalogDetailsSource>(),
+            serviceProvider.GetRequiredService<IDeepSkyCatalogSource>()));
 
         return services;
     }

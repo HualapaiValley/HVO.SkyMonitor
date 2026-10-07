@@ -121,6 +121,26 @@ public sealed class PresentationResolvedFootprintTests
         Assert.IsEmpty(groups.StarAnnotations.Segments);
     }
 
+    [TestMethod]
+    public async Task DeepSkyGeometryIsNeverDrawnAsAStarOrSolarSystemAnnotation()
+    {
+        (string, string, AltAzPoint, double)[] stars = [("bright", "BRIGHT", new AltAzPoint(60.5, 0), 1)];
+        var v2 = await ProjectedSceneAnnotationTests.SceneAsync(60, new AltAzPoint(60, 0), .25, null, stars)
+            .ConfigureAwait(false);
+        var v3 = await ProjectedSceneAnnotationTests.SceneAsync(60, new AltAzPoint(60, 0), .25,
+            ProjectedSceneAnnotationTests.DeepSkyFixture(), stars).ConfigureAwait(false);
+        Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, v3.SchemaVersion);
+
+        var expected = PresentationLayerProducers.FromProjectedSceneGroupsV2(v2, includeConstellations: false);
+        var actual = PresentationLayerProducers.FromProjectedSceneGroupsV2(v3, includeConstellations: false);
+
+        CollectionAssert.AreEqual(expected.StarAnnotations.Segments.ToArray(), actual.StarAnnotations.Segments.ToArray());
+        CollectionAssert.AreEqual(expected.StarAnnotations.Markers.ToArray(), actual.StarAnnotations.Markers.ToArray());
+        CollectionAssert.AreEqual(
+            expected.StarAnnotations.TextBlocks.Select(static block => $"{string.Join('|', block.Lines)}@{block.Point}").ToArray(),
+            actual.StarAnnotations.TextBlocks.Select(static block => $"{string.Join('|', block.Lines)}@{block.Point}").ToArray());
+    }
+
     private static async Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels)
     {
         // A first-magnitude star 0.24 degrees below the Sun's centre, inside its 0.25 degree limb.

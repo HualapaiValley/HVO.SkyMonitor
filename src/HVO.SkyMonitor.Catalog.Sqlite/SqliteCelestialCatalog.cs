@@ -10,10 +10,16 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 /// Validates and loads a read-only SQLite snapshot into a connection-independent immutable cache.
 /// </summary>
 public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource,
-    IAstrometricCatalogSource, ICelestialCatalogDetailsSource
+    IAstrometricCatalogSource, ICelestialCatalogDetailsSource, IDeepSkyCatalogSource
 {
     private const int Sha256HexLength = 64;
     private const string DetailedSchemaVersion = "3";
+    // Schema 4 is schema 3's stars tables, unchanged, plus a deep-sky collection.
+    private const string DeepSkySchemaVersion = "4";
+    private const string DeepSkyAxisUnit = "arcminute";
+    private const string DeepSkyOutlineLevelConvention = "1-widest-2-standard-3-narrowest";
+    private const string DeepSkyPositionAngleConvention = "degrees-north-through-east-0-inclusive-to-180-exclusive";
+    private const string DeepSkySurfaceBrightnessUnit = "b-mag-per-square-arcsecond-within-25-mag-isophote";
     private const string CoordinateFrame = "equatorial-j2000-icrs-aligned";
     private const string CoordinateEpoch = "J2000.0";
     private const string ProperMotionConvention = "mu-alpha-cos-delta-and-mu-delta-mas-per-year";
@@ -24,6 +30,24 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         "magnitude_band", "name", "preprocessing_version", "proper_motion_convention", "proper_motion_unknown_rule",
         "schema_version", "source_commit", "source_url"
     ];
+    private static readonly string[] DeepSkyMetadataKeys =
+    [
+        "deep_sky_axis_unit", "deep_sky_coordinate_epoch", "deep_sky_coordinate_frame", "deep_sky_license",
+        "deep_sky_outline_level_convention", "deep_sky_position_angle_convention", "deep_sky_source_commit",
+        "deep_sky_source_name", "deep_sky_source_url", "deep_sky_source_version", "deep_sky_surface_brightness_unit"
+    ];
+    private const string DeepSkyObjectQuery =
+        "SELECT id, designation, display_name, object_type, right_ascension_hours, declination_degrees, constellation, " +
+        "major_axis_arcminutes, minor_axis_arcminutes, position_angle_degrees, b_magnitude, v_magnitude, " +
+        "surface_brightness, hubble_type, messier_number, caldwell_number, hipparcos_id, common_name " +
+        "FROM deep_sky_objects ORDER BY id COLLATE BINARY";
+    private const string DeepSkyAliasQuery =
+        "SELECT alias, object_id, kind FROM deep_sky_aliases ORDER BY alias COLLATE BINARY, object_id COLLATE BINARY";
+    private const string DeepSkyTombstoneQuery =
+        "SELECT id, designation, reason, candidates FROM deep_sky_tombstones ORDER BY id COLLATE BINARY";
+    private const string DeepSkyOutlineQuery =
+        "SELECT object_id, level, ring, sequence, right_ascension_degrees, declination_degrees " +
+        "FROM deep_sky_outline_points ORDER BY object_id COLLATE BINARY, level, ring, sequence";
     private const string LegacyObjectQuery =
         "SELECT id, display_name, right_ascension_hours, declination_degrees, magnitude, color_index, hipparcos_id " +
         "FROM celestial_objects ORDER BY magnitude, id COLLATE BINARY";
@@ -92,8 +116,15 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             privateSnapshot.Load(connection);
 
             ValidateIntegrity(connection);
-            var detailed = string.Equals(options.ExpectedSchemaVersion, DetailedSchemaVersion, StringComparison.Ordinal);
-            ValidateSchema(connection, detailed);
+            var deepSky = string.Equals(options.ExpectedSchemaVersion, DeepSkySchemaVersion, StringComparison.Ordinal);
+            var detailed = deepSky ||
+                string.Equals(options.ExpectedSchemaVersion, DetailedSchemaVersion, StringComparison.Ordinal);
+            if (!deepSky && options.ExpectedDeepSkyCounts is not null)
+            {
+                throw new ArgumentException(
+                    $"Only a schema {DeepSkySchemaVersion} snapshot has deep-sky counts to expect.", nameof(options));
+            }
+            ValidateSchema(connection, detailed, deepSky);
             var metadata = ReadMetadata(connection);
             ValidateVersion("schema_version", options.ExpectedSchemaVersion, metadata);
             ValidateVersion("preprocessing_version", options.ExpectedPreprocessingVersion, metadata);
@@ -111,7 +142,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 RequiredMetadata(metadata, "license"),
                 RequiredMetadata(metadata, "schema_version"));
             PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
-            Semantics = detailed ? ReadSemantics(metadata) : CatalogSemantics.LegacyFixedJ2000;
+            Semantics = detailed ? ReadSemantics(metadata, deepSky) : CatalogSemantics.LegacyFixedJ2000;
             var details = new Dictionary<string, CelestialCatalogObjectDetails>(StringComparer.Ordinal);
             _objects = Array.AsReadOnly(ReadObjects(connection, detailed ? details : null));
             _detailsById = details;
@@ -127,6 +158,12 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             {
                 throw new InvalidDataException(
                     $"Catalog row count mismatch. Expected {expectedRowCount}, got {_objects.Count}.");
+            }
+            if (deepSky)
+            {
+                var collection = ReadDeepSky(connection, ReadDeepSkySemantics(metadata));
+                ValidateDeepSkyCounts(collection, options.ExpectedDeepSkyCounts);
+                DeepSky = collection;
             }
             _objectsByHipparcosId = _objects
                 .Where(static item => item.HipparcosId is not null)
@@ -169,6 +206,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
 
     /// <summary>Gets the number of validated catalog objects in the immutable cache.</summary>
     public int ObjectCount => _objects.Count;
+
+    /// <summary>
+    /// Gets the validated deep-sky collection of a schema-4 snapshot, or <see langword="null"/> for an earlier schema.
+    /// Its objects are separate from <see cref="ObjectCount"/>, which stays the star count.
+    /// </summary>
+    public DeepSkyCatalog? DeepSky { get; }
+
+    IDeepSkyCatalog? IDeepSkyCatalogSource.DeepSky => DeepSky;
 
     /// <summary>
     /// Copies at most the requested solver bound from the immutable magnitude index. Only a fully
@@ -354,7 +399,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         }
     }
 
-    private static void ValidateSchema(SqliteConnection connection, bool detailed)
+    private static void ValidateSchema(SqliteConnection connection, bool detailed, bool deepSky)
     {
         var objects = ReadSchemaObjects(connection);
         var expectedObjects = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -366,6 +411,13 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         if (detailed)
         {
             expectedObjects.Add("celestial_object_aliases", "table");
+        }
+        if (deepSky)
+        {
+            expectedObjects.Add("deep_sky_objects", "table");
+            expectedObjects.Add("deep_sky_aliases", "table");
+            expectedObjects.Add("deep_sky_tombstones", "table");
+            expectedObjects.Add("deep_sky_outline_points", "table");
         }
         if (objects.Count != expectedObjects.Count ||
             expectedObjects.Any(expected => !objects.TryGetValue(expected.Key, out var type) || type != expected.Value))
@@ -414,28 +466,91 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 new("object_id", "TEXT", true, 2),
                 new("kind", "TEXT", true, 0)
             ]);
-            ValidateAliasIndexes(connection);
+            ValidatePrimaryKeyOnly(connection, "celestial_object_aliases");
+        }
+        if (deepSky)
+        {
+            ValidateDeepSkySchema(connection);
         }
         ValidateIndex(connection);
     }
 
-    private static void ValidateAliasIndexes(SqliteConnection connection)
+    private static void ValidateDeepSkySchema(SqliteConnection connection)
+    {
+        ValidateTable(connection, "deep_sky_objects",
+        [
+            new("id", "TEXT", true, 1),
+            new("designation", "TEXT", true, 0),
+            new("display_name", "TEXT", true, 0),
+            new("object_type", "TEXT", true, 0),
+            new("right_ascension_hours", "REAL", true, 0),
+            new("declination_degrees", "REAL", true, 0),
+            new("constellation", "TEXT", true, 0),
+            new("major_axis_arcminutes", "REAL", false, 0),
+            new("minor_axis_arcminutes", "REAL", false, 0),
+            new("position_angle_degrees", "REAL", false, 0),
+            new("b_magnitude", "REAL", false, 0),
+            new("v_magnitude", "REAL", false, 0),
+            new("surface_brightness", "REAL", false, 0),
+            new("hubble_type", "TEXT", false, 0),
+            new("messier_number", "INTEGER", false, 0),
+            new("caldwell_number", "INTEGER", false, 0),
+            new("hipparcos_id", "TEXT", false, 0),
+            new("common_name", "TEXT", false, 0)
+        ]);
+        ValidateTable(connection, "deep_sky_aliases",
+        [
+            new("alias", "TEXT", true, 1),
+            new("object_id", "TEXT", true, 2),
+            new("kind", "TEXT", true, 0)
+        ]);
+        ValidateTable(connection, "deep_sky_tombstones",
+        [
+            new("id", "TEXT", true, 1),
+            new("designation", "TEXT", true, 0),
+            new("reason", "TEXT", true, 0),
+            new("candidates", "TEXT", false, 0)
+        ]);
+        ValidateTable(connection, "deep_sky_outline_points",
+        [
+            new("object_id", "TEXT", true, 1),
+            new("level", "INTEGER", true, 2),
+            new("ring", "INTEGER", true, 3),
+            new("sequence", "INTEGER", true, 4),
+            new("right_ascension_degrees", "REAL", true, 0),
+            new("declination_degrees", "REAL", true, 0)
+        ]);
+        foreach (var table in (string[])["deep_sky_objects", "deep_sky_aliases", "deep_sky_tombstones", "deep_sky_outline_points"])
+        {
+            ValidatePrimaryKeyOnly(connection, table);
+        }
+    }
+
+    private static void ValidatePrimaryKeyOnly(SqliteConnection connection, string table)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA index_list('celestial_object_aliases')";
+        command.CommandText = table switch
+        {
+            "celestial_object_aliases" => "PRAGMA index_list('celestial_object_aliases')",
+            "deep_sky_objects" => "PRAGMA index_list('deep_sky_objects')",
+            "deep_sky_aliases" => "PRAGMA index_list('deep_sky_aliases')",
+            "deep_sky_tombstones" => "PRAGMA index_list('deep_sky_tombstones')",
+            "deep_sky_outline_points" => "PRAGMA index_list('deep_sky_outline_points')",
+            _ => throw new ArgumentOutOfRangeException(nameof(table))
+        };
         using var reader = command.ExecuteReader();
         var primaryKeys = 0;
         while (reader.Read())
         {
             if (!string.Equals(reader.GetString(3), "pk", StringComparison.Ordinal))
             {
-                throw new InvalidDataException("Catalog celestial_object_aliases table contains an unexpected index.");
+                throw new InvalidDataException($"Catalog {table} table contains an unexpected index.");
             }
             primaryKeys++;
         }
         if (primaryKeys != 1)
         {
-            throw new InvalidDataException("Catalog celestial_object_aliases primary key is missing.");
+            throw new InvalidDataException($"Catalog {table} primary key is missing.");
         }
     }
 
@@ -461,6 +576,10 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             "catalog_metadata" => "PRAGMA table_list('catalog_metadata')",
             "celestial_objects" => "PRAGMA table_list('celestial_objects')",
             "celestial_object_aliases" => "PRAGMA table_list('celestial_object_aliases')",
+            "deep_sky_objects" => "PRAGMA table_list('deep_sky_objects')",
+            "deep_sky_aliases" => "PRAGMA table_list('deep_sky_aliases')",
+            "deep_sky_tombstones" => "PRAGMA table_list('deep_sky_tombstones')",
+            "deep_sky_outline_points" => "PRAGMA table_list('deep_sky_outline_points')",
             _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
         var tableInfoCommandText = name switch
@@ -468,6 +587,10 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             "catalog_metadata" => "PRAGMA table_xinfo('catalog_metadata')",
             "celestial_objects" => "PRAGMA table_xinfo('celestial_objects')",
             "celestial_object_aliases" => "PRAGMA table_xinfo('celestial_object_aliases')",
+            "deep_sky_objects" => "PRAGMA table_xinfo('deep_sky_objects')",
+            "deep_sky_aliases" => "PRAGMA table_xinfo('deep_sky_aliases')",
+            "deep_sky_tombstones" => "PRAGMA table_xinfo('deep_sky_tombstones')",
+            "deep_sky_outline_points" => "PRAGMA table_xinfo('deep_sky_outline_points')",
             _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
         using (var tableCommand = connection.CreateCommand())
@@ -577,11 +700,13 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ? value
             : throw new InvalidDataException($"Catalog metadata is missing required key '{key}'.");
 
-    private static CatalogSemantics ReadSemantics(Dictionary<string, string> metadata)
+    private static CatalogSemantics ReadSemantics(Dictionary<string, string> metadata, bool deepSky)
     {
-        if (metadata.Count != DetailedMetadataKeys.Length || DetailedMetadataKeys.Any(key => !metadata.ContainsKey(key)))
+        string[] keys = deepSky ? [.. DetailedMetadataKeys, .. DeepSkyMetadataKeys] : DetailedMetadataKeys;
+        if (metadata.Count != keys.Length || keys.Any(key => !metadata.ContainsKey(key)))
         {
-            throw new InvalidDataException("Catalog schema 3 metadata must contain exactly the declared semantic keys.");
+            throw new InvalidDataException(
+                $"Catalog schema {(deepSky ? DeepSkySchemaVersion : DetailedSchemaVersion)} metadata must contain exactly the declared semantic keys.");
         }
         ValidateVersion("coordinate_frame", CoordinateFrame, metadata);
         ValidateVersion("coordinate_equinox", CoordinateEpoch, metadata);
@@ -720,6 +845,207 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         }
         return result;
     }
+
+    /// <summary>
+    /// Reads the deep-sky provenance and requires each convention to be the one this runtime interprets, so that a
+    /// snapshot declaring another unit or convention fails closed instead of being drawn with the wrong meaning.
+    /// </summary>
+    private static DeepSkySemantics ReadDeepSkySemantics(IReadOnlyDictionary<string, string> metadata)
+    {
+        ValidateVersion("deep_sky_coordinate_frame", CoordinateFrame, metadata);
+        ValidateVersion("deep_sky_coordinate_epoch", CoordinateEpoch, metadata);
+        ValidateVersion("deep_sky_axis_unit", DeepSkyAxisUnit, metadata);
+        ValidateVersion("deep_sky_position_angle_convention", DeepSkyPositionAngleConvention, metadata);
+        ValidateVersion("deep_sky_outline_level_convention", DeepSkyOutlineLevelConvention, metadata);
+        ValidateVersion("deep_sky_surface_brightness_unit", DeepSkySurfaceBrightnessUnit, metadata);
+        if (!Uri.TryCreate(RequiredMetadata(metadata, "deep_sky_source_url"), UriKind.Absolute, out var sourceUrl) ||
+            sourceUrl.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new InvalidDataException("Catalog deep_sky_source_url must be an absolute HTTPS URL.");
+        }
+        return new DeepSkySemantics(
+            RequiredMetadata(metadata, "deep_sky_source_name"),
+            RequiredMetadata(metadata, "deep_sky_source_version"),
+            RequiredMetadata(metadata, "deep_sky_source_commit"),
+            sourceUrl,
+            RequiredMetadata(metadata, "deep_sky_license"),
+            CoordinateFrame,
+            CoordinateEpoch,
+            DeepSkyAxisUnit,
+            DeepSkyPositionAngleConvention,
+            DeepSkyOutlineLevelConvention,
+            DeepSkySurfaceBrightnessUnit);
+    }
+
+    private static DeepSkyCatalog ReadDeepSky(SqliteConnection connection, DeepSkySemantics semantics)
+    {
+        try
+        {
+            return new DeepSkyCatalog(
+                semantics,
+                ReadDeepSkyObjects(connection),
+                ReadDeepSkyAliases(connection),
+                ReadDeepSkyTombstones(connection),
+                ReadDeepSkyOutlines(connection));
+        }
+        catch (InvalidCastException exception)
+        {
+            throw new InvalidDataException("Catalog deep-sky tables contain a value of an unsupported type.", exception);
+        }
+        catch (OverflowException exception)
+        {
+            throw new InvalidDataException("Catalog deep-sky tables contain an out-of-range number.", exception);
+        }
+    }
+
+    private static List<DeepSkyObject> ReadDeepSkyObjects(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = DeepSkyObjectQuery;
+        using var reader = command.ExecuteReader();
+        var result = new List<DeepSkyObject>();
+        // OpenNGC names one of 89 constellation abbreviations and a few dozen type codes; each is retained once.
+        var pool = new HashSet<string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            result.Add(new DeepSkyObject(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                Shared(pool, reader.GetString(3)),
+                reader.GetDouble(4),
+                reader.GetDouble(5),
+                Shared(pool, reader.GetString(6)),
+                OptionalDouble(reader, 7),
+                OptionalDouble(reader, 8),
+                OptionalDouble(reader, 9),
+                OptionalDouble(reader, 10),
+                OptionalDouble(reader, 11),
+                OptionalDouble(reader, 12),
+                reader.IsDBNull(13) ? null : Shared(pool, reader.GetString(13)),
+                OptionalInt32(reader, 14),
+                OptionalInt32(reader, 15),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.IsDBNull(17) ? null : reader.GetString(17)));
+        }
+        return result;
+    }
+
+    private static List<DeepSkyAlias> ReadDeepSkyAliases(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = DeepSkyAliasQuery;
+        using var reader = command.ExecuteReader();
+        var result = new List<DeepSkyAlias>();
+        var pool = new HashSet<string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            // Object IDs and kinds repeat across alias rows; one string per distinct value is retained.
+            result.Add(new DeepSkyAlias(reader.GetString(0), Shared(pool, reader.GetString(1)), Shared(pool, reader.GetString(2))));
+        }
+        return result;
+    }
+
+    private static List<DeepSkyTombstone> ReadDeepSkyTombstones(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = DeepSkyTombstoneQuery;
+        using var reader = command.ExecuteReader();
+        var result = new List<DeepSkyTombstone>();
+        while (reader.Read())
+        {
+            result.Add(new DeepSkyTombstone(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? [] : reader.GetString(3).Split(',')));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads outline points in key order. Within each object and level the rings must be numbered 0, 1, ... and each
+    /// ring's points 0, 1, ..., so a gap or a renumbering fails here rather than silently joining two rings.
+    /// </summary>
+    private static List<DeepSkyOutline> ReadDeepSkyOutlines(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = DeepSkyOutlineQuery;
+        using var reader = command.ExecuteReader();
+        var result = new List<DeepSkyOutline>();
+        var rings = new List<DeepSkyOutlineRing>();
+        var points = new List<DeepSkyOutlinePoint>();
+        string? objectId = null;
+        var level = 0L;
+        var ring = 0L;
+        while (reader.Read())
+        {
+            var rowObject = reader.GetString(0);
+            var rowLevel = reader.GetInt64(1);
+            var rowRing = reader.GetInt64(2);
+            var rowSequence = reader.GetInt64(3);
+            var sameSet = string.Equals(rowObject, objectId, StringComparison.Ordinal) && rowLevel == level;
+            if (!sameSet || rowRing != ring)
+            {
+                if (objectId is not null)
+                {
+                    rings.Add(new DeepSkyOutlineRing(points.ToArray()));
+                    points.Clear();
+                }
+                if (!sameSet)
+                {
+                    if (objectId is not null)
+                    {
+                        result.Add(new DeepSkyOutline(objectId, checked((int)level), rings.ToArray()));
+                        rings.Clear();
+                    }
+                    objectId = rowObject;
+                    level = rowLevel;
+                }
+                ring = rowRing;
+                if (rowRing != rings.Count)
+                {
+                    throw new InvalidDataException($"Catalog outline rings for '{rowObject}' are not numbered from zero.");
+                }
+            }
+            if (rowSequence != points.Count)
+            {
+                throw new InvalidDataException($"Catalog outline points for '{rowObject}' are not numbered from zero.");
+            }
+            points.Add(new DeepSkyOutlinePoint(reader.GetDouble(4), reader.GetDouble(5)));
+        }
+        if (objectId is not null)
+        {
+            rings.Add(new DeepSkyOutlineRing(points.ToArray()));
+            result.Add(new DeepSkyOutline(objectId, checked((int)level), rings.ToArray()));
+        }
+        return result;
+    }
+
+    private static void ValidateDeepSkyCounts(DeepSkyCatalog collection, CatalogDeepSkyCounts? expected)
+    {
+        var actual = new CatalogDeepSkyCounts(
+            collection.Objects.Count,
+            collection.AliasCount,
+            collection.Tombstones.Count,
+            collection.OutlineObjectCount,
+            collection.OutlineCount,
+            collection.OutlineRingCount,
+            collection.OutlinePointCount);
+        if (expected is not null && actual != expected)
+        {
+            throw new InvalidDataException($"Catalog deep-sky counts mismatch. Expected {expected}, got {actual}.");
+        }
+    }
+
+    private static double? OptionalDouble(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetDouble(ordinal);
+
+    private static int? OptionalInt32(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : checked((int)reader.GetInt64(ordinal));
+
+    private static string Shared(HashSet<string> pool, string value)
+        => pool.TryGetValue(value, out var shared) ? shared : Add(pool, value);
 
     private static CelestialCatalogObject[] ReadObjects(
         SqliteConnection connection,

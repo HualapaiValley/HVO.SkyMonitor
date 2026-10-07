@@ -58,11 +58,14 @@ public sealed record SceneProvenance(
     public const string RetainedProjectedSceneSchemaVersion = "projected-scene-v1";
     /// <summary>Retained scene schema emitted only when the scene carries resolved footprints.</summary>
     public const string ResolvedFootprintProjectedSceneSchemaVersion = "projected-scene-v2";
+    /// <summary>Retained scene schema emitted only when the scene carries a deep-sky collection.</summary>
+    public const string DeepSkyProjectedSceneSchemaVersion = "projected-scene-v3";
 
     /// <summary>Returns whether a retained projected-scene schema version is one this release reads.</summary>
     public static bool IsRetainedProjectedSceneSchemaVersion(string? schemaVersion) =>
         string.Equals(schemaVersion, RetainedProjectedSceneSchemaVersion, StringComparison.Ordinal) ||
-        string.Equals(schemaVersion, ResolvedFootprintProjectedSceneSchemaVersion, StringComparison.Ordinal);
+        string.Equals(schemaVersion, ResolvedFootprintProjectedSceneSchemaVersion, StringComparison.Ordinal) ||
+        string.Equals(schemaVersion, DeepSkyProjectedSceneSchemaVersion, StringComparison.Ordinal);
 
     /// <summary>New capture evidence resolves geometry from its source-bound retained metadata product.</summary>
     [JsonIgnore]

@@ -395,7 +395,8 @@ internal sealed class AnnotationCaptureProcessingStep(
         // Known limitation (#518, epic #520 coordinator decision 2026-10-06T22:48Z): a projected-scene-v1 input keeps
         // its released source-pixel landmarks because its Annotation execution identity is unchanged and its bytes
         // must be too. Remove this one gate under the next Annotation recipe implementation bump to correct v1.
-        if (!string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal))
+        // projected-scene-v2 and v3 are new inputs, so both take the corrected landmarks.
+        if (string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal))
         {
             return source;
         }

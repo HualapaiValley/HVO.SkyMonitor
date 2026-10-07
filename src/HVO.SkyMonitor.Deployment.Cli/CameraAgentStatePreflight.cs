@@ -49,30 +49,45 @@ internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
     /// <summary>
-    /// The catalog contract a current image declares: the image embeds version 1 of the approved catalog registry
-    /// (issue #521), so it can resolve every catalog that registry version approves.
+    /// The catalog contract a current image declares: the image embeds version 2 of the approved catalog registry
+    /// (issue #525), a superset of version 1 that adds the composed HYG 4.4 + OpenNGC catalog.
     /// </summary>
-    public const string CatalogContract = "hvo-approved-catalogs-v1";
+    public const string CatalogContract = "hvo-approved-catalogs-v2";
+
+    /// <summary>The catalog contract images from issue #521 to issue #525 declared: registry version 1.</summary>
+    public const string RegistryV1CatalogContract = "hvo-approved-catalogs-v1";
 
     /// <summary>The catalog contract images before issue #521 declared; such an image can resolve only HYG 4.2.</summary>
     public const string LegacyCatalogContract = "hyg-v42-production-p3-s2";
 
     public const string ReplayRunnerContract = "local-replay-runner-v1";
 
-    /// <summary>The catalog IDs approved by registry version 1. A unit test pins this to the embedded registry.</summary>
+    /// <summary>The catalog IDs approved by registry version 1, which a registry-v1 image can resolve.</summary>
     public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
 
+    /// <summary>The catalog IDs approved by registry version 2. A unit test pins this to the embedded registry.</summary>
+    public static IReadOnlyList<string> RegistryV2CatalogIds { get; } =
+        ["hyg-v42-production", "hyg-v44-openngc-production", "hyg-v44-production"];
+
     public static bool IsKnownCatalogContract(string? catalogContract)
-        => catalogContract is CatalogContract or LegacyCatalogContract;
+        => catalogContract is CatalogContract or RegistryV1CatalogContract or LegacyCatalogContract;
 
     /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
     public static bool SupportsCatalog(string? catalogContract, string? catalogId)
         => catalogContract switch
         {
-            CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
+            CatalogContract => catalogId is not null && RegistryV2CatalogIds.Contains(catalogId, StringComparer.Ordinal),
+            RegistryV1CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
             LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
             _ => false
         };
+
+    /// <summary>
+    /// The earliest registry contract that approves <paramref name="catalogId"/>, which is what a candidate must at
+    /// least declare to resolve it.
+    /// </summary>
+    public static string RequiredCatalogContract(string? catalogId)
+        => SupportsCatalog(RegistryV1CatalogContract, catalogId) ? RegistryV1CatalogContract : CatalogContract;
 }
 
 /// <summary>
@@ -410,7 +425,8 @@ internal static class CameraAgentStatePreflight
             findings.Add(new CameraAgentStatePreflightFinding(
                 "contract-catalog", boundary, Blocking: true, "io.hvo.skymonitor.catalog-contract",
                 candidate.CatalogContract ?? "none",
-                $"{CameraAgentImageContract.CatalogContract} (selected catalog {selectedCatalogId})", remediation));
+                $"{CameraAgentImageContract.RequiredCatalogContract(selectedCatalogId)} (selected catalog {selectedCatalogId})",
+                remediation));
         }
         // An in-process instance never dispatches to the local replay runner, so it imposes no requirement here;
         // a LocalRunner instance requires the runner contract exactly as the upgrade does.
@@ -448,19 +464,24 @@ internal static class CameraAgentStatePreflight
                 "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"a readable manifest declaring version {CatalogSnapshotResolver.SupportedManifestVersion}"),
+                    $"a readable manifest declaring a version from {CatalogSnapshotResolver.MinimumSupportedManifestVersion} through {CatalogSnapshotResolver.SupportedManifestVersion}"),
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        // A candidate that declares no manifest version is still compared against the resolver the runtime uses.
-        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.SupportedManifestVersion;
-        if (manifest.Value.ManifestVersion != expectedManifestVersion)
+        // The label names the highest manifest version the candidate reads; every resolver since issue #525 also reads
+        // each earlier supported version, so a candidate accepts the range up to its label. A candidate that declares
+        // no manifest version is still compared against the resolver the runtime uses.
+        var highestManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.SupportedManifestVersion;
+        var lowestManifestVersion = Math.Min(CatalogSnapshotResolver.MinimumSupportedManifestVersion, highestManifestVersion);
+        if (manifest.Value.ManifestVersion < lowestManifestVersion || manifest.Value.ManifestVersion > highestManifestVersion)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-version", boundary, Blocking: true, manifestPath,
                 manifest.Value.ManifestVersion.ToString(CultureInfo.InvariantCulture),
-                expectedManifestVersion.ToString(CultureInfo.InvariantCulture),
-                "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
+                lowestManifestVersion == highestManifestVersion
+                    ? highestManifestVersion.ToString(CultureInfo.InvariantCulture)
+                    : string.Create(CultureInfo.InvariantCulture, $"{lowestManifestVersion} through {highestManifestVersion}"),
+                "Select an installed catalog whose manifest version the candidate image reads, then rerun the deployment."));
         }
         // The paths are bound to the instance's selected catalog, whose side-by-side root is named by its ID.
         var selectedCatalogId = Path.GetFileName(paths.CatalogRoot);

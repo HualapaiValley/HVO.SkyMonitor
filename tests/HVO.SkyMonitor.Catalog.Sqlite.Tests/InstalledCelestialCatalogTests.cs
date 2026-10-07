@@ -44,6 +44,9 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreSame(concrete, provider.GetRequiredService<IHipparcosCatalog>());
         Assert.AreSame(concrete, provider.GetRequiredService<IAstrometricCatalogSource>());
         Assert.AreSame(concrete, provider.GetRequiredService<ICelestialCatalogMetadataSource>());
+        Assert.AreSame(concrete, provider.GetRequiredService<IDeepSkyCatalogSource>());
+        Assert.IsNull(provider.GetRequiredService<IDeepSkyCatalogSource>().DeepSky);
+        Assert.AreSame(provider.GetRequiredService<ICelestialObjectSearch>(), provider.GetRequiredService<ICelestialObjectSearch>());
         Assert.AreSame(snapshot, provider.GetRequiredService<CatalogSnapshotResult>());
 
         Assert.HasCount(1, logger.Entries);
@@ -61,6 +64,35 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual(9L, entry.Properties["RowCount"]);
         Assert.HasCount(9, entry.Properties);
         Assert.IsFalse(entry.Message.Contains(installation.Root, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void RegistrationsExposeTheDeepSkyCollectionAndSearchOfAComposedCatalog()
+    {
+        using var installation = HygV44OpenNgcCatalogTests.CreateInstallation();
+        var logger = new RecordingLogger<SqliteCelestialCatalog>();
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(Configuration(("Catalog:Root", installation.Root),
+            ("Catalog:RequiredCatalogId", "hyg-v44-openngc-fixture"),
+            ("Catalog:RequiredPackageKind", "Fixture")));
+        services.AddSingleton<ILogger<SqliteCelestialCatalog>>(logger);
+        services.AddInstalledCelestialCatalog();
+        using var provider = services.BuildServiceProvider();
+
+        var concrete = provider.GetRequiredService<SqliteCelestialCatalog>();
+        var deepSky = provider.GetRequiredService<IDeepSkyCatalogSource>();
+        var search = provider.GetRequiredService<ICelestialObjectSearch>();
+
+        Assert.AreSame(concrete, deepSky);
+        Assert.AreSame(concrete.DeepSky, deepSky.DeepSky);
+        Assert.IsNotNull(deepSky.DeepSky);
+        Assert.AreSame(search, provider.GetRequiredService<ICelestialObjectSearch>());
+        Assert.AreEqual(
+            new CelestialSearchMatch(CelestialSearchCollection.DeepSky, "NGC0224", "M31", DeepSkyAliasKinds.Messier, false),
+            search.Find("M31").Single());
+        Assert.IsTrue(search.Find("M102").Single().Disputed);
+        Assert.AreEqual("explicit-manifest-v3", logger.Entries.Single().Properties["CatalogIdentitySource"]);
+        Assert.AreEqual(17L, logger.Entries.Single().Properties["RowCount"]);
     }
 
     [TestMethod]
@@ -140,6 +172,23 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual(snapshot.DatabaseSha256, fixture.Data["DatabaseSha256"]);
         Assert.AreEqual(snapshot.RowCount, fixture.Data["RowCount"]);
         Assert.IsFalse(fixture.Data.Keys.Any(static key => key.Contains("Path", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task HealthKeepsTheStarRowCountAndAddsDeepSkyCountsForAComposedCatalog()
+    {
+        using var installation = HygV44OpenNgcCatalogTests.CreateInstallation();
+        var snapshot = HygV44OpenNgcCatalogTests.Resolve(installation.Root);
+
+        var health = await new CatalogSnapshotHealthCheck(snapshot)
+            .CheckHealthAsync(new HealthCheckContext(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(11, health.Data);
+        Assert.AreEqual("explicit-manifest-v3", health.Data["CatalogIdentitySource"]);
+        Assert.AreEqual(17L, health.Data["RowCount"]);
+        Assert.AreEqual(snapshot.DeepSkyCounts!.ObjectCount, health.Data["DeepSkyObjectCount"]);
+        Assert.AreEqual(snapshot.DeepSkyCounts.OutlineObjectCount, health.Data["DeepSkyOutlineObjectCount"]);
+        Assert.AreEqual(8L, health.Data["DeepSkyObjectCount"]);
     }
 
     [TestMethod]

@@ -72,7 +72,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # minimum-compatible-revision produced catalog manifest v1, Identity migration
 # 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
 # adopt in place. Deployment preflight compares the three declared boundaries below against
-# the persisted state before the container starts.
+# the persisted state before the container starts. catalog-manifest-version is the highest
+# catalog manifest version the image reads; it also reads every version from 2 up to it.
 ARG HVO_SOURCE_REVISION=unknown
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
@@ -80,9 +81,9 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="14" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-to-v14" \
-      io.hvo.skymonitor.catalog-manifest-version="2" \
+      io.hvo.skymonitor.catalog-manifest-version="3" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
-      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v1" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v2" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
 

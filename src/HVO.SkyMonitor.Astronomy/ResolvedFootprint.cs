@@ -233,6 +233,37 @@ public static class ResolvedFootprintSampler
             centerPixel, !IsSingleClosed(parts), ComputeBounds(parts), parts, appearance);
     }
 
+    /// <summary>
+    /// Samples one closed ring of geometric directions whose consecutive vertices are joined by great-circle arcs.
+    /// Each arc is refined, refracted, projected and clipped exactly as a limb is, so a ring is closed only when
+    /// none of it was clipped.
+    /// </summary>
+    internal static List<ResolvedFootprintPart> SampleGreatCircleRing(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        IReadOnlyList<EnuVector> vertices,
+        double maximumEdgeStepRadians)
+    {
+        var chords = new List<(PixelPoint From, PixelPoint To)>();
+        var clipped = false;
+        for (var index = 0; index < vertices.Count; index++)
+        {
+            var from = vertices[index];
+            var to = vertices[(index + 1) % vertices.Count];
+            var angle = Math.Acos(Math.Clamp(EnuVector.Dot(from, to), -1d, 1d));
+            if (!double.IsFinite(angle) || angle >= Math.PI - 1e-9)
+                throw new ArgumentException("A great-circle edge must join two non-antipodal directions.", nameof(vertices));
+            EnuVector Edge(double parameter) =>
+                parameter <= 0 ? from : parameter >= 1 ? to : VisibleSceneBuilder.Slerp(from, to, parameter);
+            var steps = Math.Max(1, (int)Math.Ceiling(angle / maximumEdgeStepRadians));
+            for (var step = 0; step < steps; step++)
+            {
+                AppendLimbChord(request, basis, Edge, (double)step / steps, (double)(step + 1) / steps, 0, chords, ref clipped);
+            }
+        }
+        return Stitch(chords, closedCandidate: !clipped);
+    }
+
     internal static bool IsSingleClosed(IReadOnlyList<ResolvedFootprintPart> parts) =>
         parts.Count == 1 && parts[0].Closed;
 

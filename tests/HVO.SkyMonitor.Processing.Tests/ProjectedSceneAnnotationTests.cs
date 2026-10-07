@@ -108,15 +108,76 @@ public sealed class ProjectedSceneAnnotationTests
         Assert.IsTrue(objects.All(static item => item.FootprintParts is null));
     }
 
+    [TestMethod]
+    public async Task DeepSkyGeometryLeavesTheStarSunAndMoonAnnotationUnchanged()
+    {
+        (string, string, AltAzPoint, double)[] stars = [("bright", "BRIGHT", new AltAzPoint(60.5, 0), 1)];
+        var v2 = await SceneAsync(60, new AltAzPoint(60, 0), .25, null, stars).ConfigureAwait(false);
+        var v3 = await SceneAsync(60, new AltAzPoint(60, 0), .25, DeepSkyFixture(), stars).ConfigureAwait(false);
+        Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, v3.SchemaVersion);
+        Assert.IsTrue(v3.ResolvedFootprints!.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject));
+        Assert.HasCount(1, v3.DeepSky!.Outlines);
+
+        var expected = ProjectedSceneAnnotation.CreateObjects(v2, 2.5);
+        var actual = ProjectedSceneAnnotation.CreateObjects(v3, 2.5);
+
+        CollectionAssert.AreEqual(expected.Select(Describe).ToArray(), actual.Select(Describe).ToArray());
+        CollectionAssert.AreEqual(v2.ResolvedFootprints!.Select(static item => item.Id).ToArray(),
+            ProjectedSceneAnnotation.SolarSystemFootprints(v3).Select(static item => item.Id).ToArray());
+
+        static string Describe(ProjectedAnnotationObject item) =>
+            $"{item.Id}|{item.DisplayName}|{item.Pixel}|{item.DrawMark}|{item.DrawLabel}|" +
+            string.Join(';', (item.FootprintParts ?? []).Select(static part =>
+                $"{part.Closed}:{string.Join(',', part.Points)}"));
+    }
+
+    /// <summary>
+    /// A deep-sky collection that places one ellipse and one sourced outline beside the Sun in the 60 degree frame of
+    /// <see cref="SceneAsync(double, AltAzPoint?, double, IDeepSkyCatalog?, (string, string, AltAzPoint, double)[])"/>.
+    /// </summary>
+    internal static DeepSkyCatalog DeepSkyFixture()
+    {
+        var ellipse = J2000(new AltAzPoint(60.8, 1.5));
+        var outlined = J2000(new AltAzPoint(59.2, -1.5));
+        DeepSkyObject[] objects =
+        [
+            new("NGC0001", "NGC 1", "NGC 1", "G", ellipse.RightAscensionHours, ellipse.DeclinationDegrees, "Peg",
+                30, 15, 20, null, 11, null, null, null, null, null, null),
+            new("NGC0002", "NGC 2", "NGC 2", "Neb", outlined.RightAscensionHours, outlined.DeclinationDegrees, "Peg",
+                36, 36, null, null, 11, null, null, null, null, null, null)
+        ];
+        var ra = outlined.RightAscensionHours * 15;
+        var dec = outlined.DeclinationDegrees;
+        var half = .3 / Math.Cos(dec * Math.PI / 180);
+        DeepSkyOutlinePoint[] ring =
+        [
+            new(ra - half, dec - .3), new(ra + half, dec - .3), new(ra + half, dec + .3), new(ra - half, dec + .3),
+            new(ra - half, dec - .3)
+        ];
+        return new DeepSkyCatalog(
+            new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote"),
+            objects, objects.Select(static item => new DeepSkyAlias(item.Designation, item.Id, DeepSkyAliasKinds.Designation)),
+            [], [new DeepSkyOutline("NGC0002", 1, [new DeepSkyOutlineRing(ring)])]);
+    }
+
+    private static EquatorialPoint J2000(AltAzPoint at) =>
+        EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(at, Utc, 0, 0), Utc);
+
+    internal static Task<ProjectedSceneV1> SceneAsync(double boresightAltitude, AltAzPoint? sun, double radius,
+        params (string Id, string Name, AltAzPoint At, double Magnitude)[] stars) =>
+        SceneAsync(boresightAltitude, sun, radius, null, stars);
+
     internal static async Task<ProjectedSceneV1> SceneAsync(double boresightAltitude, AltAzPoint? sun, double radius,
-        params (string Id, string Name, AltAzPoint At, double Magnitude)[] stars)
+        IDeepSkyCatalog? deepSky, params (string Id, string Name, AltAzPoint At, double Magnitude)[] stars)
     {
         var projection = new ProjectionContext(ProjectionModel.Perspective, 200, 150, 4000, 4000, 400, 300,
             ProjectionAperture.Rectangular, BoresightAltitudeDegrees: boresightAltitude, BoresightAzimuthDegrees: 0);
         var catalog = stars.Select(static star =>
         {
-            var j2000 = EquatorialPrecession.PrecessToJ2000(
-                CoordinateTransforms.HorizontalToEquatorial(star.At, Utc, 0, 0), Utc);
+            var j2000 = J2000(star.At);
             return new CelestialCatalogObject(star.Id, star.Name, j2000.RightAscensionHours, j2000.DeclinationDegrees,
                 star.Magnitude);
         }).ToArray();
@@ -128,6 +189,7 @@ public sealed class ProjectedSceneAnnotationTests
         if (sun is { } direction)
             visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, Utc, direction, radius,
                 0, 1, 0, 149600000)]);
+        if (deepSky is not null) visible = visible.WithDeepSky(deepSky, ProjectedSceneDeepSkySelection.Default);
         return ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(400, 300),
             new ProjectedSceneSource(Guid.Parse("11111111-1111-1111-1111-111111111111"),

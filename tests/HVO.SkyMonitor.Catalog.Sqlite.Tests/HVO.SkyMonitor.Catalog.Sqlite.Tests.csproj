@@ -11,5 +11,6 @@
   <ItemGroup>
     <Content Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\catalog\hyg-v44-subset.sqlite" Link="Fixtures\hyg-v44-subset.sqlite" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\catalog\hyg-v44-openngc-subset.sqlite" Link="Fixtures\hyg-v44-openngc-subset.sqlite" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

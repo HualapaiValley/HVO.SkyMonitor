@@ -225,14 +225,20 @@ public sealed class VisibleScene
         IEnumerable<ProjectedCelestialObject> objects,
         IEnumerable<ProjectedConstellationSegment>? segments = null,
         VisibleSceneComputationProvenance? computationProvenance = null,
-        IEnumerable<ProjectedResolvedFootprint>? resolvedFootprints = null)
+        IEnumerable<ProjectedResolvedFootprint>? resolvedFootprints = null,
+        ProjectedSceneDeepSkySelection? deepSkySelection = null,
+        ProjectedDeepSky? deepSky = null)
     {
+        if (deepSkySelection is null != deepSky is null)
+            throw new ArgumentException("A deep-sky collection and its selection are applied together.", nameof(deepSky));
         Request = request;
         Objects = new ReadOnlyCollection<ProjectedCelestialObject>(objects.ToArray());
         Segments = new ReadOnlyCollection<ProjectedConstellationSegment>((segments ?? []).ToArray());
         ComputationProvenance = computationProvenance ?? new("unspecified", null, null, null);
         ResolvedFootprints = new ReadOnlyCollection<ProjectedResolvedFootprint>((resolvedFootprints ?? [])
             .OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray());
+        DeepSkySelection = deepSkySelection;
+        DeepSky = deepSky;
     }
 
     /// <summary>Gets the validated request and provenance for this scene.</summary>
@@ -250,12 +256,49 @@ public sealed class VisibleScene
     /// <summary>Gets clipped outlines of sources with resolved angular size, in ID order.</summary>
     public IReadOnlyList<ProjectedResolvedFootprint> ResolvedFootprints { get; }
 
+    /// <summary>Gets the bounds the deep-sky collection was placed under, or null when no collection was applied.</summary>
+    public ProjectedSceneDeepSkySelection? DeepSkySelection { get; }
+
+    /// <summary>
+    /// Gets the deep-sky collection, or null when none was applied. Deep-sky objects are never stars, solver
+    /// references or association candidates; their ellipses are the deep-sky entries of <see cref="ResolvedFootprints"/>.
+    /// </summary>
+    public ProjectedDeepSky? DeepSky { get; }
+
+    /// <summary>
+    /// Gets the projected-scene schema a snapshot of this scene carries: v3 with a deep-sky collection, v2 with
+    /// resolved footprints only, otherwise v1.
+    /// </summary>
+    public string ProjectedSceneSchemaVersion => DeepSky is not null
+        ? ProjectedSceneV1.DeepSkySchemaVersion
+        : ResolvedFootprints.Count > 0 ? ProjectedSceneV1.ResolvedFootprintSchemaVersion : ProjectedSceneV1.CurrentSchemaVersion;
+
     /// <summary>Filters instantaneous stellar references by a separately evaluated admission set.</summary>
     public VisibleScene WithSelectedStars(IReadOnlySet<string> admittedIds)
     {
         ArgumentNullException.ThrowIfNull(admittedIds);
         return new(Request, Objects.Where(item => item.Kind != CelestialObjectKind.Star || admittedIds.Contains(item.Id)),
-            Segments, ComputationProvenance, ResolvedFootprints);
+            Segments, ComputationProvenance, ResolvedFootprints, DeepSkySelection, DeepSky);
+    }
+
+    /// <summary>
+    /// Places a deep-sky collection after every solar-system footprint, so the shared footprint budget serves the Sun
+    /// and Moon first. Objects are ranked by the deep-sky priority algorithm and take the richest representation their
+    /// geometry and the remaining budgets allow; a stellar row is placed only for its Messier identity. A collection
+    /// that places no object leaves the scene unchanged, so its snapshot stays v1 or v2.
+    /// </summary>
+    public VisibleScene WithDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(selection);
+        selection.Validate();
+        if (DeepSky is not null)
+            throw new InvalidOperationException("A deep-sky collection is applied once.");
+        if (ResolvedFootprints.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject))
+            throw new InvalidOperationException("Deep-sky footprints come only from the deep-sky collection.");
+        var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection);
+        if (section.Objects.Count == 0) return this;
+        return new(Request, Objects, Segments, ComputationProvenance, ResolvedFootprints.Concat(footprints), selection, section);
     }
 
     /// <summary>
@@ -266,6 +309,8 @@ public sealed class VisibleScene
     public VisibleScene WithResolvedBodies(IEnumerable<SolarDiskAppearance> appearances)
     {
         ArgumentNullException.ThrowIfNull(appearances);
+        if (DeepSky is not null)
+            throw new InvalidOperationException("Resolved bodies are attached before the deep-sky collection.");
         var objects = Objects.ToList();
         var footprints = ResolvedFootprints.ToList();
         var resolvedIds = new HashSet<string>(StringComparer.Ordinal);
@@ -530,7 +575,7 @@ public sealed class VisibleSceneBuilder
             Math.Min(180, radiusDegrees + 1e-9));
     }
 
-    private static double OpticalRadiusDegrees(ProjectionContext projection)
+    internal static double OpticalRadiusDegrees(ProjectionContext projection)
     {
         if (projection.Model == ProjectionModel.Perspective)
         {

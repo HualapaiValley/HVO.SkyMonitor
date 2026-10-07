@@ -41,15 +41,39 @@ public static class VisibleSceneReadoutTransform
                 ToPixel = Scale(segment.ToPixel, binX, binY)
             }),
             nativeRoiScene.ComputationProvenance,
-            nativeRoiScene.ResolvedFootprints.Select(footprint => Scale(footprint, binX, binY)));
+            nativeRoiScene.ResolvedFootprints.Select(footprint => Scale(footprint, binX, binY)),
+            nativeRoiScene.DeepSkySelection,
+            nativeRoiScene.DeepSky is { } deepSky ? Scale(deepSky, binX, binY) : null);
     }
 
-    private static ProjectedResolvedFootprint Scale(ProjectedResolvedFootprint value, int binX, int binY)
+    private static ProjectedDeepSky Scale(ProjectedDeepSky value, int binX, int binY)
     {
-        var parts = value.Parts.Select(part => part with
+        // Binning keeps angular size; a non-square bin scales a length by the geometric mean of its factors.
+        var lengthScale = Math.Sqrt((double)binX * binY);
+        return value with
+        {
+            Objects = value.Objects.Select(item => item with
+            {
+                Pixel = item.Pixel is { } pixel ? Scale(pixel, binX, binY) : null,
+                MajorAxisPixels = item.MajorAxisPixels / lengthScale
+            }).ToArray(),
+            Outlines = value.Outlines.Select(outline =>
+            {
+                var parts = Scale(outline.Parts, binX, binY);
+                return outline with { Parts = parts, Bounds = ResolvedFootprintSampler.ComputeBounds(parts) };
+            }).ToArray()
+        };
+    }
+
+    private static ResolvedFootprintPart[] Scale(IReadOnlyList<ResolvedFootprintPart> parts, int binX, int binY) =>
+        parts.Select(part => part with
         {
             Points = part.Points.Select(point => Scale(point, binX, binY)).ToArray()
         }).ToArray();
+
+    private static ProjectedResolvedFootprint Scale(ProjectedResolvedFootprint value, int binX, int binY)
+    {
+        var parts = Scale(value.Parts, binX, binY);
         return value with
         {
             CenterPixel = value.CenterPixel is { } center ? Scale(center, binX, binY) : null,

@@ -182,7 +182,7 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var footprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene).ToDictionary(static item => item.Id, StringComparer.Ordinal);
         // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
         // the same anchor the raster annotation uses.
         var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);

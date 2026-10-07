@@ -12,12 +12,13 @@ public static class ProjectedSceneAnnotation
     /// <summary>
     /// Returns one annotation object per scene object, carrying its resolved outline when one exists, followed by one
     /// per resolved footprint whose centre object the scene omits. A disc whose centre is below the horizon or outside
-    /// the crop is still visible through its limb, so it keeps its outline and label rather than disappearing.
+    /// the crop is still visible through its limb, so it keeps its outline and label rather than disappearing. Deep-sky
+    /// footprints belong to the separate deep-sky layer and are never drawn here.
     /// </summary>
     public static IReadOnlyList<ProjectedAnnotationObject> CreateObjects(ProjectedSceneV1 scene, double maximumLabelMagnitude)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        var footprints = scene.ResolvedFootprints ?? [];
+        var footprints = SolarSystemFootprints(scene);
         var parts = footprints.ToDictionary(static item => item.Id, static item => item.Parts, StringComparer.Ordinal);
         var objects = scene.Objects.Select(item =>
         {
@@ -35,6 +36,18 @@ public static class ProjectedSceneAnnotation
                 FootprintAnchor(footprint, scene.ImageTransform), annotate, annotate, footprint.Parts));
         }
         return objects;
+    }
+
+    /// <summary>
+    /// Returns the scene's solar-system footprints. A projected-scene-v3 scene also carries deep-sky ellipses, which
+    /// only the opt-in deep-sky layer draws, so the star, Sun and Moon annotation of a v3 scene matches its v2 form.
+    /// </summary>
+    public static IReadOnlyList<ProjectedResolvedFootprint> SolarSystemFootprints(ProjectedSceneV1 scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        return scene.ResolvedFootprints is { } footprints
+            ? footprints.Where(static item => item.SourceKind == ResolvedFootprintSourceKind.SolarSystemBody).ToArray()
+            : [];
     }
 
     /// <summary>

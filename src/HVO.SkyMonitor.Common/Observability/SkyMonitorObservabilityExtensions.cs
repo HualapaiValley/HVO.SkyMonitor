@@ -32,7 +32,7 @@ public static class SkyMonitorObservabilityExtensions
     private static readonly HashSet<string> CatalogHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Kind", "CatalogId", "PackageVersion", "CatalogIdentitySource", "CatalogVersion", "SchemaVersion", "PreprocessingVersion",
-        "DatabaseSha256", "RowCount"
+        "DatabaseSha256", "RowCount", "DeepSkyObjectCount", "DeepSkyOutlineObjectCount"
     };
     private static readonly HashSet<string> RawIngressHealthDataKeys = new(StringComparer.Ordinal)
     {
