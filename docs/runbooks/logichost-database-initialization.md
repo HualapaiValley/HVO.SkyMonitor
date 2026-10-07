@@ -159,6 +159,79 @@ with effective DDL authority. Validate health and representative Identity,
 OpenIddict, ingest, claim, retention-reference, network-read, and application
 lock operations before scaling out.
 
+## Canonical Central Graph Seed Supersession
+
+Initialization seeds the canonical central processing graph (`logic-host-basic`)
+and its global-default central assignment from an ordered, append-only chain in
+`CanonicalCentralGraphSeedChain`. This is data convergence inside the current
+migration; it never needs an EF migration.
+
+- The last chain entry is current. The seeder generates its definition from code
+  and requires it to equal the recorded constants and any existing row exactly.
+- Every earlier entry is historical. A retained row is validated against its
+  recorded constants and is never regenerated. A historical row whose content
+  differs fails initialization closed, naming the revision.
+- A database that already holds earlier entries gains only the missing later
+  ones. A fresh database receives only the current entry, because a historical
+  revision has no frames to own there. Reruns are a no-op, and concurrent
+  initializers converge on the same fixed IDs.
+- Each entry has new fixed revision and assignment IDs and a `SeededAtUtc` one
+  tick after its predecessor. Central resolution picks the latest effective
+  global default at the wall-clock scheduling instant, so the newest entry wins
+  for every frame not yet expanded. Operator assignments cannot be backdated, so
+  they still take precedence over every seed entry.
+
+### Changing a built-in recipe ImplementationVersion
+
+Any change to a seeded recipe definition, its normalized option defaults, or the
+graph shape changes the generated definition. Initialization then fails until
+the change appends the next chain entry. Treat it as an upgrade:
+
+1. Append the entry. Do not edit an earlier one.
+2. Before rollout, list the active operator assignments whose revision embeds the
+   earlier recipe version. This binary cannot expand those revisions.
+3. After rollout, startup logs what it found and rewrites nothing:
+   - event `1030` (Warning) counts non-terminal executions frozen on a
+     superseded seed revision, and jobs whose frozen requested recipe identity
+     this binary no longer derives. Each such job fails terminally with
+     `processing.recipe-identity-mismatch` on its first lease, and graph
+     convergence then fails its dependents and the execution;
+   - event `1031` (Error) names each stale assignment, its revision, the
+     rejecting node and the cameras it covers.
+4. While a stale assignment is active:
+   - the processing graph catalog health check reports `Degraded` with
+     `staleAssignmentCount` and `staleAssignmentIds`;
+   - ingest commits the upload and then answers HTTP 500. The edge keeps the
+     record as ordinary `retry` work with reason `http-500`, never quarantined,
+     and holds its local payload from retention;
+   - reconciliation logs `2141` and backs off that artifact only;
+   - retrospective transient scheduling logs `2169` once per assignment and
+     revision.
+5. End the stale assignment or assign a revision published on the current recipe
+   versions. The edge's next attempt probes central status, which reconciles the
+   committed artifact and schedules it on the newly resolved revision. Backed-off
+   reconciliation and retrospective work recovers on its next pass.
+
+Retrospective scheduling excludes a stale camera and re-queries within the same
+pass, at most 8 times. The stale set is per pass and is not persisted. If more
+than 8 consecutive candidate batches contain only distinct newly stale cameras,
+the pass stops with Warning `2177`, the remaining sources wait for a later pass,
+and that pathological ordering is rediscovered on every pass until the operator
+acts. With real interleaved capture times one batch normally discovers many
+cameras at once. Signal: `2177` with `2169`. Action: end or reassign the stale
+assignments.
+
+Rollback hazard: a binary whose chain lacks the newer entry does not fail
+initialization. It validates only the entries it knows and ignores the newer
+rows. The newer global default still has the latest effective instant, so it
+keeps winning resolution, and the older binary cannot expand it. Frames on every
+camera without a camera or observatory assignment then fail ingest with HTTP
+500 and accumulate on the edge. A binary that carries these diagnostics reports
+the newer seed assignment as stale (`1031` and a `Degraded` health check), and an
+earlier binary reports nothing. Seed assignments are immutable, so do not delete
+or edit them to manufacture compatibility. Roll forward, or follow pre-release
+revision rollback below.
+
 ## Failure And Recovery
 
 - Lock acquisition failure: identify the session by application name. Wait for the approved owner or terminate it only through the database incident process; then rerun.

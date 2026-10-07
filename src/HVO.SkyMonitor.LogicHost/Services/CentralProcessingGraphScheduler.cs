@@ -126,7 +126,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 return Return(new(CentralProcessingGraphScheduleOutcome.NotApplicable));
             }
-            var plan = CompileAndVerify(assignment.Revision);
+            var plan = CompileAndVerify(assignment.Revision, assignment.Id);
             var provenance = await LoadSourceProvenanceAsync(
                 artifact.Frame.Artifacts.Select(static item => item.Id), cancellationToken).ConfigureAwait(false);
             if (!plan.Sources.Any(source => source.Outputs.Any(output =>
@@ -207,7 +207,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
         ProcessingGraphExecutionPlan plan;
         try
         {
-            plan = CompileAndVerify(revision);
+            plan = CompileAndVerify(revision, assignmentId: null);
         }
         catch (CentralDerivativeJobStateException)
         {
@@ -1574,21 +1574,12 @@ internal sealed partial class CentralProcessingGraphScheduler(
         job.UpdatedAtUtc = now;
     }
 
-    private ProcessingGraphExecutionPlan CompileAndVerify(CentralProcessingGraphRevision revision)
+    private ProcessingGraphExecutionPlan CompileAndVerify(CentralProcessingGraphRevision revision, Guid? assignmentId)
     {
-        var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(revision.DefinitionJson));
-        if (!parsed.IsValid)
-        {
-            throw new CentralDerivativeJobStateException("The published processing graph definition is invalid.");
-        }
-        var compiled = LogicHostProcessingGraphAdapter.Compile(parsed.Definition!, nodeRegistry.Capabilities);
-        if (!compiled.IsValid || compiled.Plan is not { } plan || !nodeRegistry.Validate(plan) ||
-            !string.Equals(plan.DefinitionIdentitySha256, revision.DefinitionIdentitySha256, StringComparison.Ordinal) ||
-            !string.Equals(plan.PlanIdentitySha256, revision.CentralPlanIdentitySha256, StringComparison.Ordinal))
-        {
-            throw new CentralDerivativeJobStateException("The published processing graph plan identity is invalid.");
-        }
-        return plan;
+        var verification = CentralProcessingGraphPlanVerification.Verify(
+            revision.DefinitionJson, revision.DefinitionIdentitySha256, revision.CentralPlanIdentitySha256, nodeRegistry);
+        return verification.Plan ?? throw CentralProcessingGraphPlanVerification.CreateUnexpandableRevisionException(
+            verification, revision.Id, assignmentId);
     }
 
     private async Task<CentralArtifact> LoadArtifactAsync(Guid id, CancellationToken cancellationToken)

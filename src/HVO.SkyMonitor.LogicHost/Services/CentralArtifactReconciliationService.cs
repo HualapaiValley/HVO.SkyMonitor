@@ -1238,6 +1238,8 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             return RecoveryArtifactResult.None;
         }
+        // Read before verification completes the reservation and resets it.
+        var adoptedRetryCount = artifact.ObjectVerificationRetryCount;
         retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
         var reconciledAtUtc = timeProvider.GetUtcNow();
         var canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
@@ -1431,6 +1433,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         var completed = result.Outcome == "none" ? new RecoveryArtifactResult("matched", artifact.ByteLength) : result;
         await objectLock.DisposeAsync().ConfigureAwait(false);
+        var schedulingDeferred = false;
         if (scheduleDerivatives)
         {
             try
@@ -1443,16 +1446,40 @@ internal sealed partial class CentralArtifactReconciliationService(
                 await RestoreImmediatelyDueSchedulingMarkerAsync(artifact.Id).ConfigureAwait(false);
                 throw;
             }
+            catch (CentralDerivativeJobStateException exception) when (
+                CentralProcessingGraphPlanVerification.IsUnexpandableRevision(exception, out var unexpandable))
+            {
+                // The resolved central graph revision cannot be expanded by this binary (typically an operator
+                // assignment published before a built-in recipe ImplementationVersion change). That is this one
+                // artifact's scheduling failure, not the cycle's: no job was written, so restore the scheduling
+                // marker behind the verification retry backoff and continue with the next artifact. The adopted
+                // reservation's retry count carries over, so a camera that stays stale backs off to the cap.
+                var retryCount = adoptedRetryCount == int.MaxValue ? int.MaxValue : adoptedRetryCount + 1;
+                await RestoreImmediatelyDueSchedulingMarkerAsync(artifact.Id, retryCount).ConfigureAwait(false);
+                LogUnexpandableGraphRevision(
+                    artifact.Id,
+                    unexpandable.AssignmentId,
+                    unexpandable.RevisionId,
+                    unexpandable.UnsupportedNode ?? "(none)",
+                    unexpandable.ReasonCode,
+                    retryCount);
+                schedulingDeferred = true;
+            }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
         }
-        if (recordCompleted)
+        if (recordCompleted && !schedulingDeferred)
         {
             telemetry.RecordReconciled("completed");
         }
         return completed;
     }
 
-    private async Task RestoreImmediatelyDueSchedulingMarkerAsync(Guid artifactId)
+    /// <summary>
+    /// Returns a verified artifact whose derivative scheduling did not finish to a verification reservation, so the
+    /// next cycle schedules it again. Without <paramref name="retryCount"/> the reservation is due immediately;
+    /// with it, it waits <see cref="CalculateVerificationRetryDelay"/> for that attempt.
+    /// </summary>
+    private async Task RestoreImmediatelyDueSchedulingMarkerAsync(Guid artifactId, int? retryCount = null)
     {
         while (true)
         {
@@ -1484,9 +1511,12 @@ internal sealed partial class CentralArtifactReconciliationService(
                         artifact.ObjectState = CentralArtifactObjectState.Pending;
                         artifact.StateReasonCode = "object.derivative-scheduling-interrupted";
                         artifact.ObjectVerificationToken = Guid.NewGuid();
-                        artifact.ObjectVerificationRequestedAtUtc = timeProvider.GetUtcNow();
-                        artifact.ObjectVerificationRetryCount = 0;
-                        artifact.ObjectVerificationRetryAtUtc = null;
+                        var now = timeProvider.GetUtcNow();
+                        artifact.ObjectVerificationRequestedAtUtc = now;
+                        artifact.ObjectVerificationRetryCount = retryCount ?? 0;
+                        artifact.ObjectVerificationRetryAtUtc = retryCount is { } attempt
+                            ? now + CalculateVerificationRetryDelay(attempt)
+                            : null;
                         await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
                     }
                     await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -2129,4 +2159,18 @@ internal sealed partial class CentralArtifactReconciliationService(
     [LoggerMessage(2129, LogLevel.Error,
         "Central artifact recovery failed for one object-store record: FailureCategory={FailureCategory}")]
     private partial void LogObjectStoreRecordFailed(string failureCategory);
+
+    [LoggerMessage(2141, LogLevel.Error,
+        "Central artifact reconciliation deferred derivative scheduling for artifact {CentralArtifactId}: central " +
+        "processing graph assignment {AssignmentId} resolves revision {RevisionId}, which this binary cannot expand " +
+        "(node {NodeAlias}: {ReasonCode}). The artifact is retried with backoff (attempt {RetryCount}), and frames " +
+        "for the same cameras fail ingest with HTTP 500 and accumulate on the edge, until an operator ends this " +
+        "assignment or reassigns a revision published on the current recipe versions.")]
+    private partial void LogUnexpandableGraphRevision(
+        Guid centralArtifactId,
+        Guid? assignmentId,
+        Guid revisionId,
+        string nodeAlias,
+        string reasonCode,
+        int retryCount);
 }
