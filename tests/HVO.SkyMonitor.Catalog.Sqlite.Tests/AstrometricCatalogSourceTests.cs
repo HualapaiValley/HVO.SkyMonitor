@@ -70,8 +70,6 @@ internal sealed class AstrometricCatalogSourceTests
     [TestMethod]
     [DataRow(-1)]
     [DataRow(0)]
-    [DataRow(AstrometricCatalogData.MaterializationCeiling + 1)]
-    [DataRow(int.MaxValue)]
     public async Task UnsupportedEntryBoundIsRejected(int maximumEntries)
     {
         var catalog = DirectFixture();
@@ -81,14 +79,43 @@ internal sealed class AstrometricCatalogSourceTests
 
     [TestMethod]
     [DataRow(AstrometricCatalogData.MaximumEntries + 1)]
-    [DataRow(AstrometricCatalogData.MaterializationCeiling)]
-    public async Task DeepSelectionBoundsUpToTheCeilingAreReadable(int maximumEntries)
+    [DataRow(int.MaxValue)]
+    public async Task OversizedEntryBoundCopiesOnlyTheMatchingSelection(int maximumEntries)
     {
         var catalog = DirectFixture();
         var selection = await catalog.ReadAsync(7, maximumEntries).ConfigureAwait(false);
 
-        Assert.HasCount(catalog.ObjectCount, selection.Stars);
+        // The copy is min(matching, bound): nine matching rows, however large the bound.
+        Assert.AreEqual(9, catalog.ObjectCount);
+        Assert.HasCount(Math.Min(catalog.ObjectCount, maximumEntries), selection.Stars);
         Assert.IsFalse(selection.IsCompleteForRequestedMagnitude, "A direct fixture load never declares complete coverage.");
+    }
+
+    [TestMethod]
+    public async Task SelectionBeyondTheCatalogDataCapacityIsRejected()
+    {
+        // 8,193 rows: one more than the catalog data's internal 8,192-entry capacity.
+        var path = SqliteCelestialCatalogTests.CreateGeneratedFixture("""
+            WITH RECURSIVE generated(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM generated WHERE i < 8191)
+            INSERT INTO celestial_objects
+            SELECT 'g' || i, 'Generated ' || i, (i % 2400) / 100.0, (i % 179) - 89, 1 + i / 4096.0, NULL, NULL FROM generated;
+            """);
+        try
+        {
+            var catalog = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
+                path, SqliteCelestialCatalogTests.Checksum(path), "1", "1", 8193));
+
+            var exception = await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+                await catalog.ReadAsync(7, int.MaxValue).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual("stars", exception.ParamName);
+            var capacity = await catalog.ReadAsync(7, 8192).ConfigureAwait(false);
+            Assert.HasCount(8192, capacity.Stars);
+            Assert.IsFalse(capacity.IsCompleteForRequestedMagnitude, "A bound below the matching rows never declares complete coverage.");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [TestMethod]

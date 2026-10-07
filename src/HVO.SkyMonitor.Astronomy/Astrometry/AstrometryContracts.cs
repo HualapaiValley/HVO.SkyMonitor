@@ -81,12 +81,12 @@ public sealed class AstrometricCatalogData
     public const int MaximumEntries = 2500;
 
     /// <summary>
-    /// Capacity of this container and of catalog reads, independent of any selection profile. It promises no solve: the
-    /// solver and calibration session refuse a selection above <see cref="MaximumEntries"/> with
-    /// <c>catalog-selection-unsupported</c> for any settings public code can construct, because no deep selection is
-    /// qualified (issue #1167).
+    /// Internal evaluation capacity of this container, independent of any selection profile; the constructor rejects a
+    /// larger materialization. It promises no solve: no public settings value requests more than
+    /// <see cref="MaximumEntries"/>, and the solver and calibration session refuse a larger selection with
+    /// <c>catalog-selection-unsupported</c>, because no deep selection is qualified (issue #1167).
     /// </summary>
-    public const int MaterializationCeiling = 8192;
+    internal const int MaterializationCeiling = 8192;
 
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
         bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel,
