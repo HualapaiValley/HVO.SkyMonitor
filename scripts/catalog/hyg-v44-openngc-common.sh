@@ -636,6 +636,8 @@ hygngc_validate_composition() {
                 (SELECT count(*) FROM build_hipparcos WHERE name NOT IN (SELECT name FROM build_live)) FROM build_hipparcos;"
     hygngc_expect "$database" "Messier objects (count, numbers)" "109,109" \
         "SELECT count(*) || ',' || count(DISTINCT messier_number) FROM deep_sky_objects WHERE messier_number IS NOT NULL;"
+    # 15 of the 28 Hipparcos-linked rows give a V magnitude, copied verbatim; the other 13 give none and are checked for
+    # position only.
     result="$(sqlite3 -batch -noheader -readonly "$database" "ATTACH '$quoted_hyg' AS hyg;
         WITH pairs AS (
           SELECT d.v_magnitude, h.id AS hyg_id, h.magnitude,
@@ -649,8 +651,8 @@ hygngc_validate_composition() {
                sum(v_magnitude IS NOT NULL AND abs(v_magnitude - magnitude) > $HYGNGC_HIPPARCOS_MAXIMUM_V_DIFFERENCE + 1e-9) || ',' ||
                sum(v_magnitude IS NOT NULL)
         FROM pairs;")"
-    [[ "$result" == "28,0,0,0,16" ]] || \
-        hyg_fail "OpenNGC Hipparcos stars (count, missing from HYG, beyond the position limit, beyond the V limit, with V) are '$result', expected '28,0,0,0,16'"
+    [[ "$result" == "28,0,0,0,15" ]] || \
+        hyg_fail "OpenNGC Hipparcos stars (count, missing from HYG, beyond the position limit, beyond the V limit, with V) are '$result', expected '28,0,0,0,15'"
 
     hygngc_expect "$database" "outline source rows" "$OPENNGC_OUTLINE_POINT_COUNT" "SELECT count(*) FROM source_outline;"
     hygngc_expect "$database" "outline source files" "$OPENNGC_OUTLINE_FILE_COUNT" "SELECT count(*) FROM (SELECT DISTINCT stem, level FROM source_outline);"
