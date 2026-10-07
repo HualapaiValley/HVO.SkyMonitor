@@ -17,8 +17,10 @@ import re
 import sys
 from collections import Counter
 
+# The test host's VSTest message loop blocks in Socket.Poll with no interop frame, so its native interval ends in
+# SocketPal.Poll itself rather than in Interop+Sys.Poll.
 WAIT = re.compile(r"(Monitor\.Wait|WaitHandle\.Wait|LowLevelLifoSemaphore\.Wait|Thread\.Sleep|Interop\+Sys\.Poll"
-                  r"|WaitForSignal|WaitNative|SpinWait|EventPipe|Interop\+Sys\.Read\(class Microsoft\.Win32\.SafeHandles\.SafePipeHandle)")
+                  r"|System\.Net\.Sockets\.SocketPal\.Poll\(|WaitForSignal|WaitNative|SpinWait|EventPipe|Interop\+Sys\.Read\(class Microsoft\.Win32\.SafeHandles\.SafePipeHandle)")
 # Threads parked for a GC suspension, and the finalizer/Gen2 callbacks that run behind it, sample as running
 # managed code; they are counted separately so allocation pressure is visible without inflating hot frames.
 # The match is against every real frame on the stack, not only the leaf: a Gen2 callback trimming
@@ -77,9 +79,13 @@ def main(argv):
                 stack.pop()
     running = totals["runningMilliseconds"] or 1.0
 
+    # Ties rank by frame name; Counter.most_common keeps insertion order, which follows per-process set hashing.
+    def most_common(counter):
+        return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:top]
+
     def ranked(counter):
         return [{"frame": name, "milliseconds": round(value, 3), "runningShare": round(value / running, 5)}
-                for name, value in counter.most_common(top)]
+                for name, value in most_common(counter)]
 
     result = {
         "schema": "issue1170-oncpu-v1",
@@ -89,7 +95,7 @@ def main(argv):
         "totals": {key: round(value, 3) for key, value in totals.items()},
         "exclusive": ranked(exclusive),
         "inclusive": ranked(inclusive),
-        "ioLeaves": [{"frame": name, "milliseconds": round(value, 3)} for name, value in io_leaf.most_common(top)],
+        "ioLeaves": [{"frame": name, "milliseconds": round(value, 3)} for name, value in most_common(io_leaf)],
     }
     with open(argv[2], "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
