@@ -81,6 +81,37 @@ public sealed class PresentationResolvedFootprintTests
     }
 
     [TestMethod]
+    public async Task ClippedDiscAtTheMarkerThresholdTakesTheSameMarkerAsTheRaster()
+    {
+        // Regression for #518 r1: an open limb 4.2 px wide, anchored at its visible bounds (100, 100). Unpadded half
+        // extent plus padding is 6.1 px, over the 6 px marker, but the outline actually padded from the anchor is only
+        // 5.99 px, so the raster draws the marker; presentation must decide on the same padded outline.
+        var horizon = await ProjectedSceneAnnotationTests.SceneAsync(0, new AltAzPoint(-.2, 0), .5).ConfigureAwait(false);
+        var footprint = horizon.ResolvedFootprints!.Single() with
+        {
+            CenterPixel = null,
+            Clipped = true,
+            Bounds = new ResolvedFootprintBounds(97.9, 99.5, 102.1, 100.5),
+            Parts = [new ResolvedFootprintPart(false, [new PixelPoint(97.9, 100.5), new PixelPoint(100, 99.5),
+                new PixelPoint(102.1, 100.5)])]
+        };
+        var edited = horizon with { ResolvedFootprints = [footprint] };
+        var scene = edited with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(edited) };
+        ProjectedSceneJson.Validate(scene);
+        var sun = ProjectedSceneAnnotation.CreateObjects(scene, 2.5).Single(static item => item.Id == "solar-system:Sun");
+        Assert.AreEqual(new PixelPoint(100, 100), sun.Pixel);
+
+        var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false);
+
+        Assert.AreEqual(new PixelPoint(100, 100), groups.StarAnnotations.Markers.Single().Center);
+        Assert.IsEmpty(groups.StarAnnotations.Segments);
+        var raster = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun], new PreviewTransform(1, 1));
+        var marker = AnnotationRenderer.AnnotateMono8(new byte[400 * 300], 400, 300, [sun with { FootprintParts = null }],
+            new PreviewTransform(1, 1));
+        Assert.IsTrue(raster.Pixels.Span.SequenceEqual(marker.Pixels.Span), "The raster draws the point marker here.");
+    }
+
+    [TestMethod]
     public async Task MarkersOffLeaveNoOutline()
     {
         var scene = await SceneAsync(4000).ConfigureAwait(false);

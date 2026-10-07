@@ -192,9 +192,9 @@ public static class PresentationLayerProducers
             .ToArray();
         // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
         var markers = includeMarkers ? annotatedObjects
-            .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint) <= style.MarkerRadius)
+            .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
             .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
-            .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint) <= style.MarkerRadius)
+            .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
                 .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
         var segments = new List<PresentationSegmentV1>();
         PixelPoint? previousEnd = null;
@@ -216,7 +216,7 @@ public static class PresentationLayerProducers
         if (includeMarkers)
             foreach (var footprint in footprints.Values.OrderBy(static item => item.Id, StringComparer.Ordinal))
             {
-                if (PaddedHalfExtent(footprint) <= style.MarkerRadius && (annotatedObjects.Any(item => item.Id == footprint.Id) ||
+                if (PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius && (annotatedObjects.Any(item => item.Id == footprint.Id) ||
                     footprintOnly.Any(item => item.Footprint.Id == footprint.Id))) continue;
                 var outline = Outline(footprint, scene.ImageTransform, markerColor);
                 // Bounded deterministically: an outline that would exceed the payload budget is omitted whole.
@@ -381,33 +381,43 @@ public static class PresentationLayerProducers
             point.Y >= scene.ImageTransform.CropY &&
             point.Y <= scene.ImageTransform.CropY + scene.ImageTransform.CropHeight;
 
-        static double PaddedHalfExtent(ProjectedResolvedFootprint footprint) =>
-            Math.Max(footprint.Bounds.MaxX - footprint.Bounds.MinX, footprint.Bounds.MaxY - footprint.Bounds.MinY) / 2 +
-            ResolvedFootprintPaddingPixels;
+        // Measured on the padded outline itself, as the raster annotation measures it, so a clipped disc padded from
+        // its visible bounds gets the same marker or outline in both.
+        static double PaddedHalfExtent(ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            var points = Pad(footprint, transform).SelectMany(static part => part.Points).ToArray();
+            return points.Length == 0 ? 0 : Math.Max(points.Max(static point => point.X) - points.Min(static point => point.X),
+                points.Max(static point => point.Y) - points.Min(static point => point.Y)) / 2;
+        }
 
-        // Pushes each limb point outward along its ray from the centre. Sun, Moon and catalogue ellipses are convex,
-        // so the ray is a valid outward direction; clipped parts stay open and keep their frame-edge endpoints.
         static List<PresentationSegmentV1> Outline(
             ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform, PresentationColor color)
         {
-            // Padded from the same anchor as the raster outline, so a cropped disc grows toward its visible centre.
-            var center = ProjectedSceneAnnotation.FootprintAnchor(footprint, transform);
             var result = new List<PresentationSegmentV1>();
-            foreach (var part in footprint.Parts)
+            foreach (var (closed, points) in Pad(footprint, transform))
             {
-                var points = part.Points.Select(point =>
-                {
-                    var dx = point.X - center.X;
-                    var dy = point.Y - center.Y;
-                    var length = Math.Sqrt(dx * dx + dy * dy);
-                    var factor = length > 0 ? (length + ResolvedFootprintPaddingPixels) / length : 1;
-                    return new PixelPoint(center.X + dx * factor, center.Y + dy * factor);
-                }).ToArray();
                 for (var index = 1; index < points.Length; index++)
                     result.Add(new(points[index - 1], points[index], 2, color));
-                if (part.Closed && points.Length > 2) result.Add(new(points[^1], points[0], 2, color));
+                if (closed && points.Length > 2) result.Add(new(points[^1], points[0], 2, color));
             }
             return result;
+        }
+
+        // Pushes each limb point outward along its ray from the centre. Sun, Moon and catalogue ellipses are convex,
+        // so the ray is a valid outward direction; clipped parts stay open and keep their frame-edge endpoints.
+        static IEnumerable<(bool Closed, PixelPoint[] Points)> Pad(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            // Padded from the same anchor as the raster outline, so a cropped disc grows toward its visible centre.
+            var center = ProjectedSceneAnnotation.FootprintAnchor(footprint, transform);
+            return footprint.Parts.Select(part => (part.Closed, part.Points.Select(point =>
+            {
+                var dx = point.X - center.X;
+                var dy = point.Y - center.Y;
+                var length = Math.Sqrt(dx * dx + dy * dy);
+                var factor = length > 0 ? (length + ResolvedFootprintPaddingPixels) / length : 1;
+                return new PixelPoint(center.X + dx * factor, center.Y + dy * factor);
+            }).ToArray()));
         }
 
         static bool IsNamed(string id, string displayName) =>
