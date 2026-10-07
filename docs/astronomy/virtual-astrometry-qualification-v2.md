@@ -298,9 +298,10 @@ coverage value differs. The differences are only:
   estimator-to-frame time ratio, and the measured-stars failure count (the time-ratio miss below)
 
 Only equidistant has a solver-v1 held-out baseline. Equisolid, stereographic and orthographic are new coverage
-with no earlier measurement to compare against. Their claim to the v1-identical solve path rests on the index the
-reports record: at most 260,572 triangles and 120 stars, well under the 2,000,000-triangle bound, so the solver
-indexes every training star exactly as v1 did.
+with no earlier measurement to compare against. Their claim to the v1-identical solve path rests on the index
+selection: for every non-perspective model, v1 and v2 both index the brightest 120 training stars, and the reports
+record at most 120 index stars and 260,572 triangles, well under the 2,000,000-triangle bound. The largest-prefix
+and full-training-set selection applies only to perspective (rectilinear) fields.
 
 ### Measured-stars dispositions
 
