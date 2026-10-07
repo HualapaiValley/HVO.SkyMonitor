@@ -1,5 +1,9 @@
 # Virtual all-sky astrometry qualification — projection families (v2)
 
+> **Long exposures.** This envelope was measured on 1 s frames. Issue
+> [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168) states which longer exposures are supported, for
+> equidistant and rectilinear 6 mm, in [virtual-astrometry-long-exposure-v1](virtual-astrometry-long-exposure-v1.md).
+
 Issue [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126), under epic
 [#520](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520), extends the #1106 virtual envelope
 ([v1](virtual-astrometry-qualification-v1.md)) from equidistant fisheye to the other projection families that the
