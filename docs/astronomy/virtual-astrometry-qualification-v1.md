@@ -1,5 +1,14 @@
 # Virtual all-sky astrometry qualification — final report (v1)
 
+> **Superseded for projection families.** This report remains the record of the #1106 measurement. Issue
+> [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126) publishes the projection-family envelope in
+> [v2](virtual-astrometry-qualification-v2.md), which is the current statement of supported lens projections.
+>
+> **Note, 2026-10-06.** #1126 ran this envelope's tuning partition for the first time and found one fail-closed
+> `ambiguous` blind rejection on the mono ROI+2×2 readout. See
+> [pre-existing finding against the v1 equidistant envelope](virtual-astrometry-qualification-v2.md#pre-existing-finding-against-the-v1-equidistant-envelope).
+> The held-out measurements below are unchanged.
+
 Issue [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) (V7 of epic
 [#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098)) reruns every delivered qualification harness
 at one integrated `development/v1` revision and audits the epic's nine completion criteria against delivered code

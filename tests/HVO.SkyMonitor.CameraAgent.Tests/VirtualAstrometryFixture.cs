@@ -20,8 +20,43 @@ internal sealed record VirtualAstrometryPixels(ReadOnlyMemory<byte> Payload, Fra
 
 internal sealed record VirtualAstrometryProfile(string Name, CameraModuleConfig Config);
 
+/// <summary>
+/// One frozen issue #1126 projection family. Every non-equidistant family is a labelled synthetic substitution on the
+/// ASI174 mono sensor; <see cref="NominalFocalFactor"/> offsets the declared nominal focal from the truth focal.
+/// </summary>
+internal sealed record VirtualProjectionFamily(string Name, ProjectionModel Model, double FieldOfViewDegrees,
+    double FocalLengthMillimeters, double NominalFocalFactor, string CalibrationVersion);
+
 internal static class VirtualAstrometryFixture
 {
+    /// <summary>Per-process family selector; unset selects the unchanged equidistant regression matrix.</summary>
+    internal const string FamilyVariable = "HVO_PROJECTION_FAMILY";
+    private const double Asi174PixelMillimeters = .00586;
+    private static double RectilinearFieldDegrees(double focalMillimeters) =>
+        2 * Math.Atan(1936 * Asi174PixelMillimeters / 2 / focalMillimeters) * 180 / Math.PI;
+
+    /// <summary>Frozen matrix. Orthographic requires a nominal focal at or above the declared image-circle radius, so it is offset upward.</summary>
+    internal static readonly IReadOnlyList<VirtualProjectionFamily> Families =
+    [
+        new("equidistant", ProjectionModel.EquidistantFisheye, 180, 0, 1 / 1.037, "virtual-fisheye-180-equidistant-v1"),
+        new("equisolid", ProjectionModel.EquisolidFisheye, 180, 0, 1 / 1.037, "virtual-asi174-equisolid-180-substitution-v1"),
+        new("stereographic", ProjectionModel.StereographicFisheye, 180, 0, 1 / 1.037, "virtual-asi174-stereographic-180-substitution-v1"),
+        new("orthographic", ProjectionModel.OrthographicFisheye, 160, 0, 1.037, "virtual-asi174-orthographic-160-substitution-v1"),
+        new("rectilinear", ProjectionModel.Perspective, RectilinearFieldDegrees(6), 6, 1 / 1.037, "virtual-asi174-rectilinear-6mm-substitution-v1"),
+        new("rectilinear-8mm", ProjectionModel.Perspective, RectilinearFieldDegrees(8), 8, 1 / 1.037, "virtual-asi174-rectilinear-8mm-substitution-v1")
+    ];
+
+    internal static VirtualProjectionFamily Family
+    {
+        get
+        {
+            var name = Environment.GetEnvironmentVariable(FamilyVariable);
+            return string.IsNullOrWhiteSpace(name) ? Families[0]
+                : Families.SingleOrDefault(f => f.Name == name) ?? throw new InvalidOperationException($"Unknown {FamilyVariable} '{name}'.");
+        }
+    }
+
+
     internal static readonly ObserverLocation Observer = new(35.347, -113.878, 1000);
     internal static readonly AstrometricSolverOptions SolverOptions = new(MaximumCatalogMagnitude: 5);
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -30,7 +65,9 @@ internal static class VirtualAstrometryFixture
         Converters = { new JsonStringEnumConverter() }
     };
 
-    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed)
+    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed) => Profiles(seed, Family);
+
+    internal static IReadOnlyList<VirtualAstrometryProfile> Profiles(int seed, VirtualProjectionFamily family)
     {
         var mono = LoadRig("virtual-asi174.full.json") with
         {
@@ -39,20 +76,42 @@ internal static class VirtualAstrometryFixture
                 CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned,
                 FrameStoredCodeTransform.RightAlignedV1, FrameLevelCodeSpace.NativeSample, 64, 4095)
         };
-        var cfa = LoadRig("virtual-asi178mc.full.json") with { Orientation = new(84, 73, 25) };
+        if (family.Model != ProjectionModel.EquidistantFisheye)
+            mono = mono with { Optics = FamilyOptics(mono.Optics, family) };
         var roi = mono.Readout! with { Roi = new(240, 96, 1440, 1024) };
         var bin = mono.Readout! with { BinX = 2, BinY = 2, BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 };
-        return
+        List<VirtualAstrometryProfile> profiles =
         [
             Profile("mono-native", mono, seed),
             Profile("mono-roi", mono with { Readout = roi }, seed),
             Profile("mono-bin2", mono with { Readout = bin }, seed),
             Profile("mono-roi-bin2", mono with { Readout = roi with { BinX = 2, BinY = 2, BinningAlgorithm = FrameBinningAlgorithm.DigitalAverageV1 } }, seed),
             Profile("mono-mirror", mono with { Optics = mono.Optics with { HorizontalFlip = !mono.Optics.HorizontalFlip } }, seed),
-            Profile("mono-roll", mono with { Orientation = new(82, 137, -57) }, seed),
-            Profile("cfa-native", cfa, seed)
+            Profile("mono-roll", mono with { Orientation = new(82, 137, -57) }, seed)
         ];
+        // CFA is qualified for equidistant only; CFA with every other family is outside the published envelope.
+        if (family.Model == ProjectionModel.EquidistantFisheye)
+            profiles.Add(Profile("cfa-native", LoadRig("virtual-asi178mc.full.json") with { Orientation = new(84, 73, 25) }, seed));
+        return profiles;
     }
+
+    private static OpticsProfile FamilyOptics(OpticsProfile optics, VirtualProjectionFamily family) =>
+        family.Model == ProjectionModel.Perspective
+            ? optics with
+            {
+                ProjectionModel = family.Model.ToString(),
+                LensKind = LensKind.Rectilinear,
+                FocalLengthMillimeters = family.FocalLengthMillimeters,
+                FieldOfViewDegrees = family.FieldOfViewDegrees,
+                ImageCircleRadiusPixels = null,
+                CalibrationVersion = family.CalibrationVersion
+            }
+            : optics with
+            {
+                ProjectionModel = family.Model.ToString(),
+                FieldOfViewDegrees = family.FieldOfViewDegrees,
+                CalibrationVersion = family.CalibrationVersion
+            };
 
     private static CameraRigConfig LoadRig(string filename)
     {
@@ -83,8 +142,12 @@ internal static class VirtualAstrometryFixture
     internal static AstrometricCalibration NominalCalibration(VirtualAstrometryProfile profile)
     {
         // Nominal intrinsics are declared sensor/optics specifications. Capture pose never enters this model.
-        var nominalFocal = profile.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.Mono16
-            ? 595.84 / (Math.PI / 2) / 1.037 : 735.553926 / 1.037;
+        // A substituted family is identified by its frozen calibration version; the equidistant and CFA rigs keep their v1 constants.
+        var family = Families.SingleOrDefault(f => f.CalibrationVersion == profile.Config.Rig.Optics.CalibrationVersion);
+        var nominalFocal = family is { Model: not ProjectionModel.EquidistantFisheye }
+            ? VirtualAstrometryReference.NativeFocal(profile.Config.Rig) * family.NominalFocalFactor
+            : profile.Config.Rig.Sensor.PixelFormat == CameraPixelFormat.Mono16
+                ? 595.84 / (Math.PI / 2) / 1.037 : 735.553926 / 1.037;
         var nominalRig = profile.Config.Rig with
         {
             Orientation = new(52, 290, -41),

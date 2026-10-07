@@ -16,6 +16,8 @@ public sealed class RadialDistortionTests
             RadialDistortionK1: .01),
         new(ProjectionModel.OrthographicFisheye, 256, 256, 240, 240, 512, 512, ProjectionAperture.Circular, 232,
             RadialDistortionK1: -.02),
+        new(ProjectionModel.StereographicFisheye, 254, 258.5, 120, 120, 512, 512, ProjectionAperture.Circular, 232,
+            RadialDistortionK1: -.008),
         new(ProjectionModel.Perspective, 322, 236, 500, 505, 640, 480, ProjectionAperture.Rectangular, null,
             BoresightAltitudeDegrees: 40, BoresightAzimuthDegrees: 120, RollDegrees: 7, RadialDistortionK1: .05)
     ];
@@ -50,7 +52,9 @@ public sealed class RadialDistortionTests
         {
             context.Validate();
             var projector = ProjectorFactory.Create(context);
-            var ideal = ProjectorFactory.Create(context with { RadialDistortionK1 = 0, EnforceSensorBounds = false, ImageCircleRadiusPixels = context.Aperture == ProjectionAperture.Circular ? RadialDistortion.MaximumIdealRadius(context.Model, 0) * context.FocalLengthXPixels : null });
+            // Stereographic has an unbounded ideal domain; a finite circle beyond the distorted edge still covers every tested ray.
+            var idealDomain = Math.Min(RadialDistortion.MaximumIdealRadius(context.Model, 0), 4);
+            var ideal = ProjectorFactory.Create(context with { RadialDistortionK1 = 0, EnforceSensorBounds = false, ImageCircleRadiusPixels = context.Aperture == ProjectionAperture.Circular ? idealDomain * context.FocalLengthXPixels : null });
             var tested = 0;
             for (var y = 1.5; y < context.HeightPixels; y += 17)
             {
