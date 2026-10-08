@@ -37,7 +37,7 @@ of its withheld rows. Each REF :238-244 line is decided from the score's seriali
 when its condition holds and not at all when it does not. A line is matched by its "{id}: <fixed text>" prefix only. A
 REF line for an id the writer did not score is a finding. Association rows preserve SOL A:88/B:97's nondecreasing
 StringComparer.Ordinal catalog-ID order (UTF-16 code units), without a secondary tie-breaker. Hypotheses are a
-nonnegative Int32 solver counter (CORE A:103/B:119, A:142/B:158; AC A:156/B:207), not a Stopwatch reading.
+nonnegative Int32 solver counter (CORE A:102/B:118, A:142/B:158; AC A:156/B:207), not a Stopwatch reading.
 In a "runs" pixels report, A or B, the exact statistics.median capture-0 aggregation must be finite and positive;
 both B1/A1 and B2/A2 ratios must also be finite (issue-1167-evaluate.py:89-91, :103-109). Finite samples alone do not
 guarantee either property, and an alternative overflow-resistant median would mask the frozen evaluator's behavior.
@@ -453,7 +453,7 @@ CONTENT_DECLARATIONS = (  # (source, line at A, line at B, declaration)
     # Solver core: every non-accepted result carries no associations; accepted ones are fit matches then held matches
     ("CORE", "104", "120", 'CoreResult Reject(string reason, CoreQuality? q = null, int candidates = 0) => new(false, "rejected", reason, null, '
                            'null, q, [],'),
-    ("CORE", "103", "119", "var grid = new CoreDetectionGrid(detections); var hypotheses = 0; var triangleCount = 0; var imageCount = 0; "
+    ("CORE", "102", "118", "var grid = new CoreDetectionGrid(detections); var hypotheses = 0; var triangleCount = 0; var imageCount = 0; "
                            "var exhausted = false;"),
     ("CORE", "142", "158", "if (++hypotheses > o.MaximumHypotheses) { exhausted = true; goto SearchFinished; }"),
     ("CORE", "171", "187", 'return new(false, "acquired", "Refined acquisition candidates returned without verification or quality gates", null, '
@@ -1146,7 +1146,7 @@ class Report:
                 self.add("metrics", f"{case}: elapsedMilliseconds {metrics['elapsedMilliseconds']!r} is not a finite nonnegative "
                                     f"Stopwatch reading (INT :32-33; SOL :45, :47, B:86, B:102), or hypotheses "
                                     f"{metrics['hypotheses']!r} is not a nonnegative Int32 solver counter "
-                                    "(CORE A:103/B:119, A:142/B:158; AC A:156/B:207)")
+                                    "(CORE A:102/B:118, A:142/B:158; AC A:156/B:207)")
                 metrics = None
             if same(row["index"], 0):
                 cold_valid = cold_valid and metrics is not None

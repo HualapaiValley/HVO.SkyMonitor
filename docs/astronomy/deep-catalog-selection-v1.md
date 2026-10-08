@@ -565,7 +565,7 @@ versions:
   scores, solve times and non-finite values and is described in
   [Correction after PR-1181-R2](#correction-after-pr-1181-r2). Where that subsection corrects a statement in the R1
   subsection, the statement is corrected in place and says so;
-- the targeted cap-exception e1 check (SHA-256 `a8b2b94d3f64bb0a6ef7aed04291ef185733f69194223654fcc7f10acd4b58a6`),
+- the targeted cap-exception e1 check (SHA-256 `cfd75758ab348b5b9441ca4287160cf20c3029a70e65d4183051701dae7d1eac`),
   described under [Correction after PR-1181-R3](#correction-after-pr-1181-r3), closes derived-number, association-order
   and solver-counter gaps. The frozen evaluator remains unchanged.
 
@@ -1065,7 +1065,7 @@ optical (OPT :177, :184). A REF line for an id the writer did not score is a fin
 
 **Solve times (R2-F2, corrected after R3-F1/F4).** Every pixels row's `metrics.elapsedMilliseconds` must be a finite,
 nonnegative double read from `AstrometricWorkControl`'s Stopwatch (INT :32–33; SOL :45, :47, B:86, B:102).
-`hypotheses` is a separate nonnegative Int32 solver counter: CORE A:103/B:119 initializes it to zero and A:142/B:158
+`hypotheses` is a separate nonnegative Int32 solver counter: CORE A:102/B:118 initializes it to zero and A:142/B:158
 increments it; AC A:156/B:207 declares `int Hypotheses`. The check enforces 0 through 2,147,483,647, excludes booleans
 and floating-point tokens, and retains the warm-search echo rule.
 
