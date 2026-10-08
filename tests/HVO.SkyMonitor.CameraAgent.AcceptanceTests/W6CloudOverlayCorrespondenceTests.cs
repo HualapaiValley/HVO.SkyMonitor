@@ -6,6 +6,8 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
+using CloudFailure = HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.CloudContractFailure;
+
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
 [TestClass]
@@ -36,6 +38,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
             "neighbours" => [(0, 0), (1, 0), (0, 1), (7, 8), (8, 8), (8, 9), (15, 15)],
             _ => throw new ArgumentOutOfRangeException(nameof(geometry))
         };
+        if (geometry == "interior") AssertCompleteLayerComparisonControls();
         var fixture = Create(tiles, nonuniform: true, crossingLayer: true);
         var evidence = Check(fixture);
         Assert.AreEqual(tiles.Length, evidence.CloudyTileCount);
@@ -59,6 +62,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
     {
         var fixture = Create();
         var raster = MaskRaster(fixture);
+        CheckRaster(fixture, raster); // Healthy baseline must pass before the individual mutation.
         switch (fault)
         {
             case "orange-producer":
@@ -92,7 +96,17 @@ public sealed class W6CloudOverlayCorrespondenceTests
         }
         // These faults reach the raster oracle with the expected valid cyan payload. A metadata mismatch or
         // stored-output replay mismatch cannot stand in for the color/paired-profile/no-extra rejection.
-        Assert.ThrowsExactly<AssertFailedException>(() => CheckRaster(fixture, raster), fault);
+        var exception = Assert.ThrowsExactly<AssertFailedException>(() => CheckRaster(fixture, raster), fault);
+        var allowedGuards = fault switch
+        {
+            "orange-producer" or "inset-teal" or "missing-rendered-mask" or "absent-tile" or "half-opacity-raster" =>
+                new[] { CloudFailure.RasterCoverage },
+            "shifted-aa-x" or "shifted-aa-y" => new[] { CloudFailure.RasterSupport, CloudFailure.RasterCoverage },
+            "changed-valid-registration" or "extra-clear-tile-stroke" => new[] { CloudFailure.RasterSupport },
+            _ => throw new ArgumentOutOfRangeException(nameof(fault))
+        };
+        Assert.IsTrue(exception.Data["W6.CloudGuard"] is CloudFailure guard && allowedGuards.Contains(guard),
+            $"{fault}: rejection did not reach the intended independent raster guard.");
     }
 
     [TestMethod]
@@ -118,6 +132,8 @@ public sealed class W6CloudOverlayCorrespondenceTests
     [DataRow("fully-occluded-cloud")]
     public void RetainedStackIndividuallyRejectsPayloadIdentityStyleAndSelectionFaults(string fault)
     {
+        var healthy = Create();
+        Check(healthy); // A blanket early failure cannot count as an individual negative proof.
         var fixture = fault switch
         {
             "missing-layer" => Create(includeMask: false),
@@ -135,7 +151,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
             "disabled-selection" => Create(enabled: false),
             "deselected-output" => Create(selectMask: false),
             "fully-occluded-cloud" => Create(occludingLayer: true),
-            _ => Create()
+            _ => healthy
         };
         fixture = fault switch
         {
@@ -156,7 +172,33 @@ public sealed class W6CloudOverlayCorrespondenceTests
             "stored-output-mismatch" => fixture with { Output = fixture.Output with { Payload = ChangeByte(fixture.Output.Payload) } },
             _ => fixture
         };
-        Assert.ThrowsExactly<AssertFailedException>(() => Check(fixture), fault);
+        var exception = Assert.ThrowsExactly<AssertFailedException>(() => Check(fixture), fault);
+        var expectedGuard = fault switch
+        {
+            "missing-layer" => CloudFailure.MaskLayer,
+            "missing-payload-mask" => CloudFailure.RasterMaskPresent,
+            "payload-mask-mismatch" => CloudFailure.RasterMaskBits,
+            "payload-source-mismatch" => CloudFailure.PayloadSourceIdentity,
+            "assessment-identity-mismatch" => CloudFailure.AssessmentIdentity,
+            "capture-identity-mismatch" => CloudFailure.CaptureIdentity,
+            "layer-content-identity-mismatch" => CloudFailure.LayerContentIdentity,
+            "layer-lineage-mismatch" => CloudFailure.LayerLineage,
+            "wrong-color" => CloudFailure.RasterColor,
+            "wrong-thickness" => CloudFailure.RasterThickness,
+            "wrong-opacity" => CloudFailure.Opacity,
+            "wrong-blend" => CloudFailure.BlendMode,
+            "wrong-style" => CloudFailure.StyleVersion,
+            "wrong-z-order" => CloudFailure.ZOrder,
+            "disabled-selection" => CloudFailure.Selection,
+            "deselected-output" => CloudFailure.OutputArtifactIdentity,
+            "output-lineage-mismatch" => CloudFailure.OutputLineage,
+            "output-identity-mismatch" => CloudFailure.OutputContentIdentity,
+            "stored-output-mismatch" => CloudFailure.StoredOutput,
+            "fully-occluded-cloud" => CloudFailure.FullSelectionVisibility,
+            _ => throw new ArgumentOutOfRangeException(nameof(fault))
+        };
+        Assert.AreEqual(expectedGuard, exception.Data["W6.CloudGuard"],
+            $"{fault}: a different earlier guard cannot count as the intended rejection.");
     }
 
     [TestMethod]
@@ -166,6 +208,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
     public void ExecutorBindingRejectsMismatchedRetainedReferences(string fault)
     {
         var fixture = Create();
+        Check(fixture); // Healthy binding must reach and pass the entire contract before mutation.
         fixture = fault switch
         {
             "base-reference" => fixture with { Base = fixture.Base with { ContentIdentitySha256 = new string('D', 64) } },
@@ -178,6 +221,13 @@ public sealed class W6CloudOverlayCorrespondenceTests
             _ => throw new ArgumentOutOfRangeException(nameof(fault))
         };
         var exception = Assert.ThrowsExactly<ArgumentException>(() => Check(fixture), fault);
+        Assert.AreEqual(fault switch
+        {
+            "base-reference" => "reference",
+            "layer-reference" => "layerProducts",
+            "manifest-identity" => "manifestArtifact",
+            _ => throw new ArgumentOutOfRangeException(nameof(fault))
+        }, exception.ParamName);
         StringAssert.Contains(exception.Message, fault switch
         {
             "base-reference" => "Product reference",
@@ -185,6 +235,96 @@ public sealed class W6CloudOverlayCorrespondenceTests
             "manifest-identity" => "Manifest artifact",
             _ => throw new ArgumentOutOfRangeException(nameof(fault))
         }, StringComparison.Ordinal);
+    }
+
+    private static void AssertCompleteLayerComparisonControls()
+    {
+        var reference = new PresentationProductReference(CaptureId, new string('A', 64),
+            PresentationLayerPayloadJson.MediaType,
+            new(Size, Size, new string('B', 64), new string('C', 64)));
+        var options = JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 1, 2 }, label = "v" } });
+        var layer = LayeredPresentationJson.CreateLayer("comparison-control", reference, null,
+            PresentationCoordinateSpace.ScenePixels, "comparison-renderer", "comparison-style", 10,
+            PresentationBlendMode.Normal, 1_000_000, true, options);
+        var second = LayeredPresentationJson.CreateLayer("comparison-second", reference, null,
+            PresentationCoordinateSpace.ScenePixels, "comparison-renderer", "comparison-style", 11,
+            PresentationBlendMode.Normal, 1_000_000, true, options);
+        var parsed = LayeredPresentationJson.ParseLayer(LayeredPresentationJson.Serialize(layer));
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        var reparsed = parsed.Document!;
+        // Independent JSON ownership is a positive value-equality control. Record/default Options equality
+        // is observed, never asserted as the cause in advance of the authorized runtime counterfactual.
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            scenario = "independent-layer-roundtrip",
+            recordEquals = layer.Equals(reparsed),
+            defaultOptionsEquals = layer.Options.Equals(reparsed.Options),
+            deepOptionsEquals = JsonElement.DeepEquals(layer.Options, reparsed.Options),
+            expectedCanonicalUtf8Hex = Convert.ToHexString(LayeredPresentationJson.Serialize(layer)),
+            actualCanonicalUtf8Hex = Convert.ToHexString(LayeredPresentationJson.Serialize(reparsed))
+        }));
+        StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer], [reparsed]);
+        StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer, second], [reparsed, second]);
+
+        (string Member, PresentationLayerV1 Changed)[] changes =
+        [
+            ("SchemaVersion", layer with { SchemaVersion = "different-schema" }),
+            ("LayerIdentitySha256", layer with { LayerIdentitySha256 = new string('D', 64) }),
+            ("LayerKind", layer with { LayerKind = "different-kind" }),
+            ("SourceProduct.ArtifactId", layer with { SourceProduct = layer.SourceProduct with { ArtifactId = Guid.Empty } }),
+            ("SourceProduct.ProductIdentitySha256", layer with { SourceProduct = layer.SourceProduct with { ProductIdentitySha256 = new string('D', 64) } }),
+            ("SourceProduct.MediaType", layer with { SourceProduct = layer.SourceProduct with { MediaType = "different/media-type" } }),
+            ("SourceProduct.Compatibility.WidthPixels", layer with { SourceProduct = layer.SourceProduct with { Compatibility = layer.SourceProduct.Compatibility with { WidthPixels = Size - 1 } } }),
+            ("SourceProduct.Compatibility.HeightPixels", layer with { SourceProduct = layer.SourceProduct with { Compatibility = layer.SourceProduct.Compatibility with { HeightPixels = Size - 1 } } }),
+            ("SourceProduct.Compatibility.LayoutIdentitySha256", layer with { SourceProduct = layer.SourceProduct with { Compatibility = layer.SourceProduct.Compatibility with { LayoutIdentitySha256 = new string('D', 64) } } }),
+            ("SourceProduct.Compatibility.CoordinateIdentitySha256", layer with { SourceProduct = layer.SourceProduct with { Compatibility = layer.SourceProduct.Compatibility with { CoordinateIdentitySha256 = new string('D', 64) } } }),
+            ("SceneIdentitySha256", layer with { SceneIdentitySha256 = new string('D', 64) }),
+            ("CoordinateSpace", layer with { CoordinateSpace = PresentationCoordinateSpace.NormalizedImage }),
+            ("RendererVersion", layer with { RendererVersion = "different-renderer" }),
+            ("StyleVersion", layer with { StyleVersion = "different-style" }),
+            ("ZOrder", layer with { ZOrder = 11 }),
+            ("BlendMode", layer with { BlendMode = PresentationBlendMode.Lighten }),
+            ("OpacityMillionths", layer with { OpacityMillionths = 500_000 }),
+            ("EnabledByDefault", layer with { EnabledByDefault = false }),
+            ("Options", layer with { Options = JsonSerializer.SerializeToElement(new { flag = false, nested = new { items = new[] { 1, 2 }, label = "v" } }) }),
+        ];
+        foreach (var change in changes)
+        {
+            var exception = Assert.ThrowsExactly<AssertFailedException>(() =>
+                StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer], [change.Changed]));
+            Assert.AreEqual(CloudFailure.LayerField, exception.Data["W6.CloudGuard"]);
+            Assert.AreEqual(0, exception.Data["W6.CloudLayerIndex"]);
+            Assert.AreEqual(change.Member, exception.Data["W6.CloudMember"]);
+        }
+        // Nested value/type/key/array-order changes must remain detectable, not just top-level Options text.
+        var changedOptions = new[]
+        {
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 2, 1 }, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 1, 2 }, label = "changed" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { "1", "2" }, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { Flag = true, nested = new { items = new[] { 1, 2 }, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, extra = true, nested = new { items = new[] { 1, 2 }, label = "v" } })
+        };
+        foreach (var changed in changedOptions)
+        {
+            var exception = Assert.ThrowsExactly<AssertFailedException>(() =>
+                StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer], [layer with { Options = changed }]));
+            Assert.AreEqual(CloudFailure.LayerField, exception.Data["W6.CloudGuard"]);
+            Assert.AreEqual("Options", exception.Data["W6.CloudMember"]);
+        }
+        var missing = Assert.ThrowsExactly<AssertFailedException>(() =>
+            StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer, second], [layer]));
+        Assert.AreEqual(CloudFailure.LayerCount, missing.Data["W6.CloudGuard"]);
+        var swapped = Assert.ThrowsExactly<AssertFailedException>(() =>
+            StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer, second], [second, layer]));
+        Assert.AreEqual(CloudFailure.LayerField, swapped.Data["W6.CloudGuard"]);
+        Assert.AreEqual(0, swapped.Data["W6.CloudLayerIndex"]);
+        Assert.AreEqual("LayerIdentitySha256", swapped.Data["W6.CloudMember"]);
+        var duplicate = Assert.ThrowsExactly<AssertFailedException>(() =>
+            StandaloneW6DockerAcceptanceTests.AssertRetainedCloudLayerOrder([layer, second], [layer, layer]));
+        Assert.AreEqual(CloudFailure.LayerField, duplicate.Data["W6.CloudGuard"]);
+        Assert.AreEqual(1, duplicate.Data["W6.CloudLayerIndex"]);
+        Assert.AreEqual("LayerIdentitySha256", duplicate.Data["W6.CloudMember"]);
     }
 
     private static StandaloneW6DockerAcceptanceTests.CloudOverlayCorrespondenceEvidence Check(Fixture fixture) =>

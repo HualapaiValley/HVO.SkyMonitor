@@ -4081,10 +4081,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var assessment = parsedAssessment.Assessment!;
         Assert.AreEqual(ProcessingProductKind.Metadata, cloud.ProductKind);
         Assert.AreEqual(CloudAssessmentV1.CurrentSchemaVersion, cloud.SchemaVersion);
-        Assert.AreEqual(assessment.AssessmentIdentitySha256, cloud.ContentIdentitySha256);
+        CloudRequire(assessment.AssessmentIdentitySha256 == cloud.ContentIdentitySha256,
+            CloudContractFailure.AssessmentIdentity, "Assessment content identity differs.");
         Assert.IsNotNull(source.CaptureId);
         Assert.AreEqual(source.CaptureId, overlay.CaptureId);
-        Assert.AreEqual(source.CaptureId, cloud.CaptureId);
+        CloudRequire(source.CaptureId == cloud.CaptureId, CloudContractFailure.CaptureIdentity,
+            "Assessment capture identity differs.");
         Assert.AreEqual(source.CaptureId, manifestArtifact.CaptureId);
         Assert.IsTrue(layers.All(input => input.Product.CaptureId == source.CaptureId));
         Assert.AreEqual(FrameArtifactRole.Preview, source.Role);
@@ -4098,36 +4100,51 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var parsedManifest = LayeredPresentationJson.ParseManifest(manifestArtifact.Payload);
         Assert.IsTrue(parsedManifest.IsValid, parsedManifest.ErrorPath);
         var manifest = parsedManifest.Document!;
-        CollectionAssert.AreEqual(manifest.Layers.ToArray(), layers.Select(static input => input.Layer).ToArray());
-        Assert.IsTrue(manifest.Layers.All(static layer => layer.EnabledByDefault), "W6 selects every retained layer.");
+        AssertRetainedCloudLayerOrder(manifest.Layers, layers.Select(static input => input.Layer).ToArray());
+        CloudRequire(manifest.Layers.All(static layer => layer.EnabledByDefault), CloudContractFailure.Selection,
+            "W6 selects every retained layer.");
         var maskLayers = layers.Where(static input => input.Layer.LayerKind == "cloud-mask").ToArray();
-        Assert.HasCount(1, maskLayers, "The selected W6 cloud-mask layer is missing or ambiguous.");
+        CloudRequire(maskLayers.Length == 1, CloudContractFailure.MaskLayer,
+            "The selected W6 cloud-mask layer is missing or ambiguous.");
         var maskLayer = maskLayers[0];
-        Assert.AreEqual(PresentationCoordinateSpace.ScenePixels, maskLayer.Layer.CoordinateSpace);
-        Assert.AreEqual("typed-presentation-compositor-v6-pinned-appearance", maskLayer.Layer.RendererVersion);
-        Assert.AreEqual("cloud-presentation-v4-payload-v3", maskLayer.Layer.StyleVersion);
-        Assert.AreEqual(30, maskLayer.Layer.ZOrder);
-        Assert.AreEqual(PresentationBlendMode.Normal, maskLayer.Layer.BlendMode);
-        Assert.AreEqual(1_000_000, maskLayer.Layer.OpacityMillionths);
+        CloudRequire(maskLayer.Layer.CoordinateSpace == PresentationCoordinateSpace.ScenePixels,
+            CloudContractFailure.CoordinateSpace, "Cloud-mask coordinate space differs.");
+        CloudRequire(maskLayer.Layer.RendererVersion == "typed-presentation-compositor-v6-pinned-appearance",
+            CloudContractFailure.RendererVersion, "Cloud-mask renderer version differs.");
+        CloudRequire(maskLayer.Layer.StyleVersion == "cloud-presentation-v4-payload-v3",
+            CloudContractFailure.StyleVersion, "Cloud-mask style version differs.");
+        CloudRequire(maskLayer.Layer.ZOrder == 30, CloudContractFailure.ZOrder, "Cloud-mask z-order differs.");
+        CloudRequire(maskLayer.Layer.BlendMode == PresentationBlendMode.Normal, CloudContractFailure.BlendMode,
+            "Cloud-mask blend mode differs.");
+        CloudRequire(maskLayer.Layer.OpacityMillionths == 1_000_000, CloudContractFailure.Opacity,
+            "Cloud-mask opacity differs.");
         Assert.AreEqual(ProcessingProductKind.Metadata, maskLayer.Product.ProductKind);
         Assert.AreEqual(PresentationLayerPayloadV1.CurrentSchemaVersion, maskLayer.Product.SchemaVersion);
         var parsedMask = PresentationLayerPayloadJson.Parse(maskLayer.Product.Payload);
         Assert.IsTrue(parsedMask.IsValid, parsedMask.ErrorPath);
         var maskPayload = parsedMask.Payload!;
-        Assert.AreEqual(maskPayload.ContentIdentitySha256, maskLayer.Product.ContentIdentitySha256);
-        Assert.AreEqual(cloud.ContentIdentitySha256, maskPayload.SourceIdentitySha256);
-        CollectionAssert.AreEqual(new[] { cloud.ArtifactId }, maskLayer.Product.SourceArtifactIds!.ToArray());
+        CloudRequire(maskPayload.ContentIdentitySha256 == maskLayer.Product.ContentIdentitySha256,
+            CloudContractFailure.LayerContentIdentity, "Layer payload content identity differs.");
+        CloudRequire(cloud.ContentIdentitySha256 == maskPayload.SourceIdentitySha256,
+            CloudContractFailure.PayloadSourceIdentity, "Layer payload source identity differs.");
+        CloudRequire(new[] { cloud.ArtifactId }.SequenceEqual(maskLayer.Product.SourceArtifactIds!),
+            CloudContractFailure.LayerLineage, "Cloud-mask immediate lineage differs.");
 
         // The executor is the observed-input path, not the geometry/color oracle. Reproduce the whole stored
         // selection first, including order, recipe/output identity and immediate lineage, before isolation.
         var enabled = manifest.Layers.Select(static layer => layer.LayerIdentitySha256).ToArray();
         var full = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
             enabled, overlay.Variant);
-        Assert.AreEqual(overlay.ArtifactId, ProcessingIdentity.CreateArtifactId(full.OutputIdentitySha256));
-        Assert.AreEqual(overlay.ContentIdentitySha256, full.OutputIdentitySha256);
-        Assert.AreEqual(overlay.RecipeIdentitySha256, full.Recipe.IdentitySha256);
-        CollectionAssert.AreEqual(full.SourceArtifactIds.ToArray(), overlay.SourceArtifactIds!.ToArray());
-        Assert.IsTrue(full.Payload.Span.SequenceEqual(overlay.Payload.Span), "Stored presentation differs from its retained stack.");
+        CloudRequire(overlay.ArtifactId == ProcessingIdentity.CreateArtifactId(full.OutputIdentitySha256),
+            CloudContractFailure.OutputArtifactIdentity, "Full-selection output artifact identity differs.");
+        CloudRequire(overlay.ContentIdentitySha256 == full.OutputIdentitySha256,
+            CloudContractFailure.OutputContentIdentity, "Full-selection output content identity differs.");
+        CloudRequire(overlay.RecipeIdentitySha256 == full.Recipe.IdentitySha256,
+            CloudContractFailure.OutputRecipeIdentity, "Full-selection output recipe identity differs.");
+        CloudRequire(full.SourceArtifactIds.SequenceEqual(overlay.SourceArtifactIds!),
+            CloudContractFailure.OutputLineage, "Full-selection output lineage differs.");
+        CloudRequire(full.Payload.Span.SequenceEqual(overlay.Payload.Span), CloudContractFailure.StoredOutput,
+            "Stored presentation differs from its retained stack.");
         var isolated = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
             [maskLayer.Layer.LayerIdentitySha256], overlay.Variant);
         var evidence = AssertCloudBorderRaster(source.Payload.Span, isolated.Payload.Span, layout, assessment, maskPayload);
@@ -4138,15 +4155,95 @@ public sealed class StandaloneW6DockerAcceptanceTests
         for (var pixel = 0; pixel < layout.Width * layout.Height; pixel++)
         {
             if (overlay.Payload.Span.Slice(pixel * 3, 3).SequenceEqual(withoutMask.Payload.Span.Slice(pixel * 3, 3))) continue;
-            Assert.IsTrue(support.ContainsKey(pixel), $"Cloud contribution outside registered support at pixel {pixel}.");
+            CloudRequire(support.ContainsKey(pixel), CloudContractFailure.FullSelectionSupport,
+                $"Cloud contribution outside registered support at pixel {pixel}.");
             visible.Add(pixel);
         }
         foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
         {
-            Assert.IsTrue(CloudTilePixels(layout, region).Any(visible.Contains),
+            CloudRequire(CloudTilePixels(layout, region).Any(visible.Contains), CloudContractFailure.FullSelectionVisibility,
                 $"Cloudy tile ({region.Column}, {region.Row}) has no visible contribution in the stored full selection.");
         }
         return evidence;
+    }
+
+    // Test-only semantic comparison: no sorting, identity-only shortcut, or default JsonElement equality.
+    internal static void AssertRetainedCloudLayerOrder(
+        IReadOnlyList<PresentationLayerV1> expected, IReadOnlyList<PresentationLayerV1> actual)
+    {
+        CloudRequire(expected.Count == actual.Count, CloudContractFailure.LayerCount,
+            "Retained manifest layer count differs.");
+        for (var index = 0; index < expected.Count; index++)
+        {
+            var left = expected[index];
+            var right = actual[index];
+            Equal(left.SchemaVersion, right.SchemaVersion, "SchemaVersion");
+            Equal(left.LayerIdentitySha256, right.LayerIdentitySha256, "LayerIdentitySha256");
+            Equal(left.LayerKind, right.LayerKind, "LayerKind");
+            Equal(left.SourceProduct.ArtifactId, right.SourceProduct.ArtifactId, "SourceProduct.ArtifactId");
+            Equal(left.SourceProduct.ProductIdentitySha256, right.SourceProduct.ProductIdentitySha256, "SourceProduct.ProductIdentitySha256");
+            Equal(left.SourceProduct.MediaType, right.SourceProduct.MediaType, "SourceProduct.MediaType");
+            Equal(left.SourceProduct.Compatibility.WidthPixels, right.SourceProduct.Compatibility.WidthPixels, "SourceProduct.Compatibility.WidthPixels");
+            Equal(left.SourceProduct.Compatibility.HeightPixels, right.SourceProduct.Compatibility.HeightPixels, "SourceProduct.Compatibility.HeightPixels");
+            Equal(left.SourceProduct.Compatibility.LayoutIdentitySha256, right.SourceProduct.Compatibility.LayoutIdentitySha256, "SourceProduct.Compatibility.LayoutIdentitySha256");
+            Equal(left.SourceProduct.Compatibility.CoordinateIdentitySha256, right.SourceProduct.Compatibility.CoordinateIdentitySha256, "SourceProduct.Compatibility.CoordinateIdentitySha256");
+            Equal(left.SceneIdentitySha256, right.SceneIdentitySha256, "SceneIdentitySha256");
+            Equal(left.CoordinateSpace, right.CoordinateSpace, "CoordinateSpace");
+            Equal(left.RendererVersion, right.RendererVersion, "RendererVersion");
+            Equal(left.StyleVersion, right.StyleVersion, "StyleVersion");
+            Equal(left.ZOrder, right.ZOrder, "ZOrder");
+            Equal(left.BlendMode, right.BlendMode, "BlendMode");
+            Equal(left.OpacityMillionths, right.OpacityMillionths, "OpacityMillionths");
+            Equal(left.EnabledByDefault, right.EnabledByDefault, "EnabledByDefault");
+            CloudRequire(JsonElement.DeepEquals(left.Options, right.Options), CloudContractFailure.LayerField,
+                "Layer Options descendants differ.", index, "Options");
+            // Existing canonical writer validates and includes every contract property, including identities
+            // and Options. This compares complete UTF-8 bytes, not a hash or a pretty-printed string.
+            var expectedCanonical = LayeredPresentationJson.Serialize(left);
+            var actualCanonical = LayeredPresentationJson.Serialize(right);
+            CloudRequire(expectedCanonical.AsSpan().SequenceEqual(actualCanonical), CloudContractFailure.LayerCanonical,
+                "Complete canonical layer bytes differ.", index);
+            if (!left.Equals(right))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    scenario = "retained-layer-complete-value-comparison",
+                    layerIndex = index,
+                    recordEquals = left.Equals(right),
+                    defaultOptionsEquals = left.Options.Equals(right.Options),
+                    deepOptionsEquals = JsonElement.DeepEquals(left.Options, right.Options),
+                    expectedCanonicalUtf8Hex = Convert.ToHexString(expectedCanonical),
+                    actualCanonicalUtf8Hex = Convert.ToHexString(actualCanonical)
+                }));
+            }
+
+            void Equal<T>(T expectedValue, T actualValue, string member)
+            {
+                CloudRequire(EqualityComparer<T>.Default.Equals(expectedValue, actualValue),
+                    CloudContractFailure.LayerField, "Retained layer field differs.", index, member);
+            }
+        }
+    }
+
+    internal enum CloudContractFailure
+    {
+        LayerCount, LayerField, LayerCanonical, AssessmentIdentity, CaptureIdentity, Selection,
+        MaskLayer, CoordinateSpace, RendererVersion, StyleVersion, ZOrder, BlendMode, Opacity,
+        LayerContentIdentity, PayloadSourceIdentity, LayerLineage, OutputArtifactIdentity,
+        OutputContentIdentity, OutputRecipeIdentity, OutputLineage, StoredOutput,
+        RasterMaskPresent, RasterColor, RasterThickness, RasterMaskBits, RasterSupport,
+        RasterCoverage, RasterPixelCount, RasterTileCoverage, FullSelectionSupport, FullSelectionVisibility
+    }
+
+    private static void CloudRequire([DoesNotReturnIf(false)] bool condition, CloudContractFailure guard,
+        string detail, int layerIndex = -1, string? member = null)
+    {
+        if (condition) return;
+        var exception = new AssertFailedException(detail);
+        exception.Data["W6.CloudGuard"] = guard;
+        exception.Data["W6.CloudLayerIndex"] = layerIndex;
+        if (member is not null) exception.Data["W6.CloudMember"] = member;
+        throw exception;
     }
 
     internal static CloudOverlayCorrespondenceEvidence AssertCloudBorderRaster(
@@ -4176,9 +4273,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.HasCount(0, payload.Segments);
         Assert.HasCount(0, payload.Ellipses);
         Assert.HasCount(0, payload.TextBlocks);
-        Assert.IsNotNull(payload.TileMask);
-        Assert.AreEqual(ExpectedW6CloudStroke, payload.TileMask.Color);
-        Assert.AreEqual(1, payload.TileMask.LineThickness);
+        CloudRequire(payload.TileMask is not null, CloudContractFailure.RasterMaskPresent, "Cloud-mask payload is missing.");
+        CloudRequire(payload.TileMask.Color == ExpectedW6CloudStroke, CloudContractFailure.RasterColor,
+            "Cloud-mask payload color differs.");
+        CloudRequire(payload.TileMask.LineThickness == 1, CloudContractFailure.RasterThickness,
+            "Cloud-mask line thickness differs.");
         Assert.AreEqual(PresentationTileMaskV1.RowMajorLsbFirst, payload.TileMask.Encoding);
         var mask = assessment.Mask ?? throw new InvalidDataException("The cloud mask is missing.");
         Assert.AreEqual(assessment.Grid.Columns, mask.Width);
@@ -4186,7 +4285,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(CloudAssessmentMaskV1.RowMajorLsbFirst, mask.Encoding);
         Assert.AreEqual(mask.Width, payload.TileMask.Columns);
         Assert.AreEqual(mask.Height, payload.TileMask.Rows);
-        CollectionAssert.AreEqual(mask.Bits.ToArray(), payload.TileMask.Bits.ToArray());
+        CloudRequire(mask.Bits.Span.SequenceEqual(payload.TileMask.Bits.Span), CloudContractFailure.RasterMaskBits,
+            "Cloud-mask payload bits differ from the assessment.");
         var cloudyTiles = 0;
         foreach (var region in assessment.Regions)
         {
@@ -4213,7 +4313,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var changed = !source.Slice(pixel * 3, 3).SequenceEqual(overlay.Slice(pixel * 3, 3));
             if (changed)
             {
-                Assert.IsTrue(expectedSupport.ContainsKey(pixel), $"Cloud stroke outside registered support at pixel {pixel}.");
+                CloudRequire(expectedSupport.ContainsKey(pixel), CloudContractFailure.RasterSupport,
+                    $"Cloud stroke outside registered support at pixel {pixel}.");
                 changedSupport.Add(pixel);
                 matchedBorderPixels++;
             }
@@ -4230,15 +4331,15 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 var offset = pixel * 3 + channel;
                 var expected = source[offset] * (1 - coverage) + color[channel] * coverage;
                 requiredChange |= quarters >= 2 && Math.Abs(source[offset] - expected) > 2;
-                Assert.IsLessThanOrEqualTo(2d, Math.Abs(overlay[offset] - expected),
+                CloudRequire(Math.Abs(overlay[offset] - expected) <= 2d, CloudContractFailure.RasterCoverage,
                     $"Cloud coverage/color mismatch at ({pixel % layout.Width}, {pixel / layout.Width}) channel {channel}.");
             }
             if (requiredChange) requiredChangedPixels++;
         }
-        Assert.IsGreaterThan(0, matchedBorderPixels);
+        CloudRequire(matchedBorderPixels > 0, CloudContractFailure.RasterPixelCount, "No matched cloud border pixels.");
         foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
         {
-            Assert.IsTrue(CloudTilePixels(layout, region).Any(changedSupport.Contains),
+            CloudRequire(CloudTilePixels(layout, region).Any(changedSupport.Contains), CloudContractFailure.RasterTileCoverage,
                 $"Cloudy tile ({region.Column}, {region.Row}) has no rendered border pixels.");
         }
         Assert.IsGreaterThanOrEqualTo(requiredChangedPixels, matchedBorderPixels);
