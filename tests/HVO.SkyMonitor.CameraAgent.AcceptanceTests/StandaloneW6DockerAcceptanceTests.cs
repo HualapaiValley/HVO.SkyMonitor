@@ -4150,7 +4150,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidence = AssertCloudBorderRaster(source.Payload.Span, isolated.Payload.Span, layout, assessment, maskPayload);
         var withoutMask = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
             enabled.Where(identity => identity != maskLayer.Layer.LayerIdentitySha256), overlay.Variant);
-        var support = CloudStrokeSupport(layout, assessment);
+        var support = CloudStrokePasses(layout, assessment);
         var visible = new HashSet<int>();
         for (var pixel = 0; pixel < layout.Width * layout.Height; pixel++)
         {
