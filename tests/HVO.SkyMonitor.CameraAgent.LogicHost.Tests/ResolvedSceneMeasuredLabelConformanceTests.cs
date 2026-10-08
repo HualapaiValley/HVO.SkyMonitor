@@ -63,8 +63,12 @@ public sealed class ResolvedSceneMeasuredLabelConformanceTests
         {
             Layout = baseline.Layout with
             {
-                Width = width, Height = height, StrideBytes = width * 2, ByteLength = bytes.Length,
-                PixelFormat = format, CfaPattern = format == CameraPixelFormat.BayerRggb16
+                Width = width,
+                Height = height,
+                StrideBytes = width * 2,
+                ByteLength = bytes.Length,
+                PixelFormat = format,
+                CfaPattern = format == CameraPixelFormat.BayerRggb16
                     ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None
             },
             Artifact = baseline.Artifact with { ChecksumSha256 = PayloadChecksum.ComputeSha256(bytes) }
