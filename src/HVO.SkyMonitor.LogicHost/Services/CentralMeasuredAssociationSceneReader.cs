@@ -36,7 +36,9 @@ internal sealed class CentralMeasuredAssociationSceneReader(
         return new(
             BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName,
             ProcessingAuxiliaryInputKind.CanonicalJson,
-            SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+            // Only v1 could bind a measured-association lease before schema was recorded. This fallback preserves
+            // its identity; verification must never use it to relabel a legacy v2 annotation reference as v1.
+            SchemaVersion: reference.SchemaVersion ?? ProjectedSceneV1.CurrentSchemaVersion,
             IdentitySha256: reference.ContentIdentitySha256);
     }
 
@@ -108,9 +110,11 @@ internal sealed class CentralMeasuredAssociationSceneReader(
         var scene = ProjectedSceneJson.Parse(payload).Scene;
         var identity = scene is null ? null : ProjectedSceneJson.ComputeIdentity(scene);
         if (scene is null || identity is null ||
-            !string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
+            !ProjectedSceneV1.IsSupportedSchemaVersion(scene.SchemaVersion) ||
+            !string.Equals(scene.SchemaVersion, reference.SchemaVersion ?? ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
             !string.Equals(scene.SceneIdentitySha256, identity, StringComparison.Ordinal) ||
             !string.Equals(identity, reference.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+            scene.Source.CaptureId != reference.CaptureId ||
             scene.Source != reference.Source)
         {
             return new(null, IdentityMismatchReasonCode);

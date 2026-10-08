@@ -166,6 +166,77 @@ public sealed class MeasuredStellarAssociationRecipeTests
         Assert.AreEqual(ProcessingReasonCodes.UnsupportedMeasurementInput, opaque.ReasonCode);
     }
 
+    [TestMethod]
+    [DataRow(false, "unknown-schema", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(true, "unknown-schema", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(false, "schema-mismatch", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(true, "schema-mismatch", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(false, "checksum", ProcessingReasonCodes.InvalidInput)]
+    [DataRow(true, "checksum", ProcessingReasonCodes.InvalidInput)]
+    [DataRow(false, "identity", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(true, "identity", ProcessingReasonCodes.InvalidProjectedScene)]
+    [DataRow(false, "capture", ProcessingReasonCodes.ProjectedSceneSourceMismatch)]
+    [DataRow(true, "capture", ProcessingReasonCodes.ProjectedSceneSourceMismatch)]
+    [DataRow(false, "artifact", ProcessingReasonCodes.ProjectedSceneSourceMismatch)]
+    [DataRow(true, "artifact", ProcessingReasonCodes.ProjectedSceneSourceMismatch)]
+    [DataRow(false, "descriptor", ProcessingReasonCodes.ProjectedSceneDescriptorMismatch)]
+    [DataRow(true, "descriptor", ProcessingReasonCodes.ProjectedSceneDescriptorMismatch)]
+    [DataRow(false, "dimensions", ProcessingReasonCodes.ProjectedSceneDimensionMismatch)]
+    [DataRow(true, "dimensions", ProcessingReasonCodes.ProjectedSceneDimensionMismatch)]
+    public async Task SupportedScenesIndividuallyRejectMismatchedBindings(bool resolvedSun, string fault, string reason)
+    {
+        const int width = 400, height = 300;
+        var original = await ProjectedSceneAnnotationTests.SceneAsync(60,
+            resolvedSun ? new AltAzPoint(60, 0) : null, .25, ("star:vega", "Vega", new AltAzPoint(61, 0), 1))
+            .ConfigureAwait(false);
+        var scene = original with { Source = new ProjectedSceneSource(CaptureId, ArtifactId, DescriptorIdentity) };
+        scene = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
+        var pixels = Field(width, height);
+        AddGaussian(pixels, scene.Objects.Single(static item => item.Id == "star:vega").Pixel, 1.2, 4000, width);
+        AddNoise(pixels, 526, 6);
+        var source = RawArtifact(pixels, width: width, height: height);
+        var request = Request(source, scene);
+        var executor = new ProcessingRecipeExecutor();
+        var healthy = await executor.ExecuteAsync(request).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, healthy.Status, healthy.ReasonCode);
+        var auxiliary = request.AuxiliaryInputs!.Single();
+        switch (fault)
+        {
+            case "unknown-schema":
+                auxiliary = auxiliary with { SchemaVersion = "projected-scene-v99" };
+                break;
+            case "schema-mismatch":
+                auxiliary = auxiliary with { SchemaVersion = resolvedSun ? ProjectedSceneV1.CurrentSchemaVersion : ProjectedSceneV1.ResolvedFootprintSchemaVersion };
+                break;
+            case "checksum":
+                auxiliary = auxiliary with { ChecksumSha256 = new string('0', 64) };
+                break;
+            case "identity":
+                auxiliary = auxiliary with { IdentitySha256 = new string('E', 64) };
+                break;
+            case "capture":
+                source = source with { CaptureId = Guid.NewGuid() };
+                break;
+            case "artifact":
+                source = source with { ArtifactId = Guid.NewGuid() };
+                break;
+            case "descriptor":
+                source = source with { DescriptorIdentitySha256 = new string('E', 64) };
+                break;
+            case "dimensions":
+                source = source with { Layout = source.Layout! with { Width = width - 1 } };
+                break;
+            default:
+                Assert.Fail("Unknown fault.");
+                break;
+        }
+        var rejected = await executor.ExecuteAsync(request with { Inputs = [source], AuxiliaryInputs = [auxiliary] })
+            .ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, rejected.Status, fault);
+        Assert.AreEqual(reason, rejected.ReasonCode, fault);
+        Assert.IsEmpty(rejected.Products);
+    }
+
     /// <summary>Renders each projected star as a Gaussian, optionally displaced east of its prediction.</summary>
     private static double[] Render(ProjectedSceneV1 scene, double offsetX)
     {

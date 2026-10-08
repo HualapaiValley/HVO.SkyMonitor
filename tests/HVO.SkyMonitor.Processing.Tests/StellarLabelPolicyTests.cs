@@ -46,8 +46,10 @@ public sealed class StellarLabelPolicyTests
         var gated = StellarLabelPolicy.Apply(Objects, await ProductAsync().ConfigureAwait(false),
             expectedPositionDiagnostics: true);
 
-        string[] names = ["Moon", "ELIGIBLE", "INELIGIBLE (expected)", "UNASSOCIATED (expected)", "UNLABELLED"];
+        string[] names = ["Moon", "ELIGIBLE", "INELIGIBLE", "UNASSOCIATED", "UNLABELLED"];
         CollectionAssert.AreEqual(names, gated.Select(static item => item.DisplayName).ToArray());
+        bool[] expected = [false, false, true, true, false];
+        CollectionAssert.AreEqual(expected, gated.Select(static item => item.ExpectedPosition).ToArray());
         bool[] drawn = [true, true, true, true, false];
         CollectionAssert.AreEqual(drawn, gated.Select(static item => item.DrawLabel).ToArray());
     }

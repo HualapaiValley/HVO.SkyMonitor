@@ -424,7 +424,7 @@ internal static class BuiltInProcessingProductContracts
             identity.Descriptor.Options.GetProperty("parameters"));
         var algorithms = CreateDisplayAlgorithms(primary, out var exactLayout);
         algorithms.Add(new("annotation-renderer", request.Annotation is { } annotation
-            ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay)
+            ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay, options.ExpectedPositionDiagnostics)
             : AnnotationRenderer.AlgorithmVersion));
         algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);

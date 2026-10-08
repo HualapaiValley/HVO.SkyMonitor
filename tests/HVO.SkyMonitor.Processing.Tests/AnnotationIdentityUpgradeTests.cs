@@ -58,6 +58,31 @@ public sealed class AnnotationIdentityUpgradeTests
     private static readonly ProcessingInputSelector Selector =
         ProcessingInputSelector.RecipeResult(FrameArtifactRole.Preview, "preview", new string('B', 64));
 
+    [TestMethod]
+    public void OnlyDiagnosticNormalizationBindsTheNewFormatterVersion()
+    {
+        var off = BuiltInProcessingRecipes.NormalizeOptions(BuiltInProcessingRecipes.Annotation,
+            JsonSerializer.SerializeToElement(new AnnotationRecipeOptions()));
+        Assert.IsFalse(off.TryGetProperty("expectedPositionLabelFormatVersion", out _));
+        var on = BuiltInProcessingRecipes.CreateExecutionIdentity(BuiltInProcessingRecipes.Annotation,
+            JsonSerializer.SerializeToElement(new AnnotationRecipeOptions(ExpectedPositionDiagnostics: true)), Selector, Annotation);
+        var parameters = on.Descriptor.Options.GetProperty("parameters");
+        Assert.AreEqual(AnnotationLabelFormatter.Version, parameters.GetProperty("expectedPositionLabelFormatVersion").GetString());
+        var legacyParameters = parameters.EnumerateObject().Where(static item => item.Name != "expectedPositionLabelFormatVersion")
+            .ToDictionary(static item => item.Name, static item => item.Value.Clone(), StringComparer.Ordinal);
+        var legacyOptions = on.Descriptor.Options.EnumerateObject()
+            .ToDictionary(static item => item.Name, static item => item.Value.Clone(), StringComparer.Ordinal);
+        legacyOptions["parameters"] = JsonSerializer.SerializeToElement(legacyParameters);
+        var legacy = ProcessingIdentity.CreateRecipeIdentity(HVO.SkyMonitor.AgentCore.RecipeIdentityDescriptor.Create(
+            on.Descriptor.Name, on.Descriptor.SemanticVersion, on.Descriptor.ImplementationVersion,
+            JsonSerializer.SerializeToElement(legacyOptions)));
+        Assert.AreNotEqual(legacy.IdentitySha256, on.IdentitySha256, "changed diagnostic bytes cannot reuse the old identity");
+        var forged = BuiltInProcessingRecipes.NormalizeOptions(BuiltInProcessingRecipes.Annotation,
+            JsonSerializer.SerializeToElement(new AnnotationRecipeOptions(ExpectedPositionDiagnostics: true)
+            { ExpectedPositionLabelFormatVersion = "caller-algorithm" }));
+        Assert.AreEqual(AnnotationLabelFormatter.Version, forged.GetProperty("expectedPositionLabelFormatVersion").GetString());
+    }
+
     private static readonly ProcessingAnnotationInput Annotation = new(
         [new ProjectedAnnotationObject("planet:moon", "Moon", new PixelPoint(35, 30)),
             new ProjectedAnnotationObject("star:1", "STAR", new PixelPoint(12.5, 8), DrawLabel: false)],

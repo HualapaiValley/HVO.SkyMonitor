@@ -28,7 +28,7 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
-            new HashSet<string>(StringComparer.Ordinal) { ProjectedSceneV1.CurrentSchemaVersion })
+            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal))
     ];
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -40,7 +40,7 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
         }
         var sceneProduct = context.GetDependencyProducts().SingleOrDefault(static product =>
             product.Kind == ProcessingProductKind.Metadata &&
-            string.Equals(product.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
         if (sceneProduct is null)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingProjectedScene));
@@ -57,7 +57,7 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
         var auxiliary = new ProcessingAuxiliaryInput(
             "scene",
             ProcessingAuxiliaryInputKind.CanonicalJson,
-            SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+            SchemaVersion: sceneProduct.SchemaVersion,
             IdentitySha256: sceneProduct.ContentIdentitySha256,
             Payload: payload)
         {

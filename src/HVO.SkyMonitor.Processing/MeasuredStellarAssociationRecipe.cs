@@ -64,11 +64,12 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
         if (scenes.Length == 0)
             return ValueTask.FromResult(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingProjectedScene, nameof(request.AuxiliaryInputs)));
         if (scenes.Length != 1 || scenes[0].Kind != ProcessingAuxiliaryInputKind.CanonicalJson ||
-            !string.Equals(scenes[0].SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            !ProjectedSceneV1.IsSupportedSchemaVersion(scenes[0].SchemaVersion))
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene, nameof(request.AuxiliaryInputs)));
         var auxiliary = scenes[0];
         var parsed = ProjectedSceneJson.Parse(auxiliary.Payload);
         if (!parsed.IsValid || parsed.Scene is not { } scene ||
+            !string.Equals(scene.SchemaVersion, auxiliary.SchemaVersion, StringComparison.Ordinal) ||
             !string.Equals(scene.SceneIdentitySha256, auxiliary.IdentitySha256, StringComparison.OrdinalIgnoreCase))
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidProjectedScene, parsed.ErrorPath ?? nameof(auxiliary.IdentitySha256)));

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -16,7 +17,9 @@ internal sealed record CentralProjectedSceneReference(
     string ContentIdentitySha256,
     ProjectedSceneSource Source,
     string SceneId,
-    string AnnotationIdentitySha256);
+    string AnnotationIdentitySha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SchemaVersion = null);
 
 internal sealed record CentralProjectedSceneSelection(
     CentralArtifact Artifact,
@@ -81,7 +84,8 @@ internal sealed class CentralProjectedSceneResolver(
         ValidateSource(artifact, scene, frame.FrameId, provenance);
         var annotation = CreateAnnotation(scene, provenance.SceneId);
         return new(artifact, new(artifact.Id, artifact.ArtifactId, frame.FrameId, artifact.ChecksumSha256,
-            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256), annotation);
+            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256,
+            scene.SchemaVersion), annotation);
     }
 
     internal async Task ValidateInlineGeometryAsync(
@@ -146,7 +150,10 @@ internal sealed class CentralProjectedSceneResolver(
         // The frozen descriptor hash authenticates the source after raw retention. Geometry execution
         // needs the held scene artifact; it does not reread or acquire an undeclared raw pixel input.
         ValidateSource(artifact, scene, reference.CaptureId);
-        if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256)
+        // Historical annotation references omitted schema, including resolved-footprint scenes. Their existing
+        // checksum/content identity still authenticates the payload; new references also freeze its actual schema.
+        if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256 ||
+            reference.SchemaVersion is not null && !string.Equals(scene.SchemaVersion, reference.SchemaVersion, StringComparison.Ordinal))
             throw new CentralArtifactIntegrityException("projected-scene.identity-mismatch");
         var annotation = CreateAnnotation(scene, reference.SceneId);
         if (annotation.ProvenanceSha256 != reference.AnnotationIdentitySha256)
@@ -199,7 +206,8 @@ internal sealed class CentralProjectedSceneResolver(
             ?? throw new CentralArtifactIntegrityException("projected-scene.descriptor-missing");
         var descriptor = StructuredProcessingProductManifestJson.ParseDescriptor(product.DescriptorJson);
         var raw = descriptor.SourceCapture;
-        if (scene.Source.CaptureId != captureId || raw.Capture.CaptureId != captureId ||
+        if (!string.Equals(scene.SchemaVersion, descriptor.ProductSchemaVersion, StringComparison.Ordinal) ||
+            scene.Source.CaptureId != captureId || raw.Capture.CaptureId != captureId ||
             scene.Source.ArtifactId != raw.Artifact.ArtifactId ||
             scene.Source.ArtifactIdentitySha256 != CaptureContractJson.ComputeDescriptorSha256(raw) ||
             scene.SceneIdentitySha256 != product.ContentIdentitySha256 ||
@@ -285,6 +293,8 @@ internal sealed class CentralProjectedSceneResolver(
         if (requirement is null) return null;
         var reference = JsonSerializer.Deserialize<CentralProjectedSceneReference>(requirement.SelectorJson, JsonOptions)
             ?? throw new CentralDerivativeJobStateException("The frozen projected-scene reference is invalid.");
+        if (reference.SchemaVersion is not null && !ProjectedSceneV1.IsSupportedSchemaVersion(reference.SchemaVersion))
+            throw new CentralDerivativeJobStateException("The frozen projected-scene schema is unsupported.");
         if (reference.CentralArtifactId != requirement.ExpectedCentralArtifactId)
             throw new CentralDerivativeJobStateException("The frozen projected-scene source is inconsistent.");
         var input = job.Inputs.SingleOrDefault(item => item.CentralDerivativeJobInputRequirementId == requirement.Id);

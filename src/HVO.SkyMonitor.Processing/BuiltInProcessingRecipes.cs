@@ -657,7 +657,12 @@ public sealed record AnnotationRecipeOptions(
     double WhitePercentile = 0.9999,
     double AsinhStrength = 4,
     string OutputEncoding = "Jpeg",
-    bool ExpectedPositionDiagnostics = false);
+    bool ExpectedPositionDiagnostics = false)
+{
+    /// <summary>Normalized by the recipe only for diagnostic output; omitted for released ordinary label identities.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpectedPositionLabelFormatVersion { get; init; }
+}
 
 internal sealed class AnnotationRecipe : IProcessingRecipe
 {
@@ -671,6 +676,10 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
     public JsonElement NormalizeOptions(JsonElement options)
     {
         var parsed = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(options);
+        parsed = parsed with
+        {
+            ExpectedPositionLabelFormatVersion = parsed.ExpectedPositionDiagnostics ? AnnotationLabelFormatter.Version : null
+        };
         CreateAnnotationOptions(parsed).ValidateForProcessing();
         _ = CreateStretch(parsed);
         if (parsed.JpegQuality is < 1 or > 100 ||
@@ -744,7 +753,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
-            request.Annotation.Objects, request.Annotation.ProjectionOverlay)));
+            request.Annotation.Objects, request.Annotation.ProjectionOverlay, options.ExpectedPositionDiagnostics)));
         algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         ReadOnlyMemory<byte> output;
         string mediaType;

@@ -781,7 +781,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 AddDependencies(execution, node, jobs, sourceRows, plan, frame, now);
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
                 if (projectedScene is not null && (node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation ||
-                        IsMeasuredStellarAssociations(node.Definition.StepAlias) && IsCurrentScene(projectedScene)))
+                        IsMeasuredStellarAssociations(node.Definition.StepAlias) && IsSupportedAssociationScene(projectedScene)))
                     CentralProjectedSceneResolver.AddRequirement(jobs[node.Definition.Id], projectedScene, now);
             }
             // Selection ran without holds, so retention may have expired a source since. Immediately before the rows
@@ -1988,23 +1988,22 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 ? ProcessingInputSelector.Raw(variant)
                 : null;
 
-    private static bool IsCurrentScene(CentralProjectedSceneSelection scene)
-        => string.Equals(
-            scene.Artifact.StructuredProduct?.ProductSchemaVersion,
-            ProjectedSceneV1.CurrentSchemaVersion,
-            StringComparison.Ordinal);
+    internal static bool IsSupportedAssociationScene(CentralProjectedSceneSelection scene)
+        => scene.Artifact.StructuredProduct is { ProductSchemaVersion: { } schema } &&
+            ProjectedSceneV1.IsSupportedSchemaVersion(schema) && string.Equals(schema,
+                scene.Reference.SchemaVersion ?? ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal);
 
     /// <summary>
     /// The measured-association node's <c>scene</c> auxiliary, bound as the edge step binds it: canonical JSON of the
-    /// current projected-scene schema identified by the scene's content identity. The payload and its checksum are
+    /// supported projected-scene schema identified by the scene's content identity. The payload and its checksum are
     /// bound at lease by <see cref="CentralMeasuredAssociationSceneReader"/> and never enter the identity. A frame
-    /// without a current scene binds nothing, and the recipe skips with
+    /// without a supported scene binds nothing, and the recipe skips with
     /// <see cref="ProcessingReasonCodes.MissingProjectedScene"/> exactly as the edge step does.
     /// </summary>
     private static IEnumerable<ProcessingAuxiliaryInput> CreateMeasuredAssociationSceneAuxiliaries(
         ProcessingGraphPlanNode node,
         CentralProjectedSceneSelection? scene)
-        => IsMeasuredStellarAssociations(node.Definition.StepAlias) && scene is not null && IsCurrentScene(scene)
+        => IsMeasuredStellarAssociations(node.Definition.StepAlias) && scene is not null && IsSupportedAssociationScene(scene)
             ? [CentralMeasuredAssociationSceneReader.CreateIdentityInput(scene.Reference)]
             : [];
 

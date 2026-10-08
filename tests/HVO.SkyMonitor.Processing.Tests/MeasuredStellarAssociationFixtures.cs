@@ -145,7 +145,7 @@ internal static class MeasuredStellarAssociationFixtures
     {
         var payload = ProjectedSceneJson.Serialize(scene);
         return new ProcessingAuxiliaryInput("scene", ProcessingAuxiliaryInputKind.CanonicalJson,
-            SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)
+            SchemaVersion: scene.SchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)
         {
             ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
         };

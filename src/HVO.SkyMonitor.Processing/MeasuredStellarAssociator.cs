@@ -398,8 +398,8 @@ public static class StellarLabelPolicy
     /// <summary>
     /// Gates host-selected annotation objects. Marks stay at their expected projected pixels, so the overlay remains
     /// expected geometry; a star label is kept only for a policy-eligible measured association. Every other star label
-    /// is suppressed or, only when expected-position diagnostics are requested, kept with a distinct "(expected)"
-    /// suffix so it can never be mistaken for a measured identification. A missing product suppresses every star label.
+    /// is suppressed or, only when expected-position diagnostics are requested, explicitly marked as expected. Final
+    /// consumers preserve the complete diagnostic marker within their bound or suppress the label.
     /// </summary>
     public static IReadOnlyList<ProjectedAnnotationObject> Apply(
         IReadOnlyList<ProjectedAnnotationObject> objects,
@@ -415,12 +415,12 @@ public static class StellarLabelPolicy
             if (!item.DrawLabel || IsOutsidePolicy(item.Id) || eligible.Contains(item.Id))
                 gated.Add(item);
             else if (expectedPositionDiagnostics)
-                gated.Add(item with { DisplayName = item.DisplayName + ExpectedSuffix });
+                gated.Add(item with { ExpectedPosition = true });
             else
                 gated.Add(item with { DrawLabel = false });
         }
         return gated.AsReadOnly();
     }
 
-    public const string ExpectedSuffix = " (expected)";
+    public const string ExpectedSuffix = AnnotationLabelFormatter.ExpectedSuffix;
 }

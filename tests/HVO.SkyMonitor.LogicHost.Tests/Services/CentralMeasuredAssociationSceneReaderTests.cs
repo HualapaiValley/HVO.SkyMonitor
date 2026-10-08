@@ -11,9 +11,11 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class CentralMeasuredAssociationSceneReaderTests
 {
     [TestMethod]
-    public async Task VerifiedSceneCarriesTheFrozenIdentityAndThePayloadChecksum()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task VerifiedSceneCarriesTheFrozenIdentityAndThePayloadChecksum(bool resolvedSun)
     {
-        var (scene, payload, reference) = await CreateAsync(resolvedSun: false).ConfigureAwait(false);
+        var (scene, payload, reference) = await CreateAsync(resolvedSun).ConfigureAwait(false);
 
         var verified = CentralMeasuredAssociationSceneReader.Verify(reference, payload);
 
@@ -21,7 +23,7 @@ public sealed class CentralMeasuredAssociationSceneReaderTests
         var input = verified.Input!;
         Assert.AreEqual(BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName, input.Name);
         Assert.AreEqual(ProcessingAuxiliaryInputKind.CanonicalJson, input.Kind);
-        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, input.SchemaVersion);
+        Assert.AreEqual(scene.SchemaVersion, input.SchemaVersion);
         Assert.AreEqual(scene.SceneIdentitySha256, input.IdentitySha256);
         Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(payload), input.ChecksumSha256);
         CollectionAssert.AreEqual(payload, input.Payload.ToArray());
@@ -31,9 +33,11 @@ public sealed class CentralMeasuredAssociationSceneReaderTests
     }
 
     [TestMethod]
-    public async Task PayloadThatDoesNotMatchTheFrozenChecksumFailsWithTheChecksumReason()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PayloadThatDoesNotMatchTheFrozenChecksumFailsWithTheChecksumReason(bool resolvedSun)
     {
-        var (_, payload, reference) = await CreateAsync(resolvedSun: false).ConfigureAwait(false);
+        var (_, payload, reference) = await CreateAsync(resolvedSun).ConfigureAwait(false);
 
         var verified = CentralMeasuredAssociationSceneReader.Verify(
             reference with { ChecksumSha256 = new string('0', 64) }, payload);
@@ -43,10 +47,12 @@ public sealed class CentralMeasuredAssociationSceneReaderTests
     }
 
     [TestMethod]
-    public async Task SceneWhoseRecomputedIdentityDiffersFromTheFrozenIdentityFailsWithTheIdentityReason()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SceneWhoseRecomputedIdentityDiffersFromTheFrozenIdentityFailsWithTheIdentityReason(bool resolvedSun)
     {
-        var (scene, payload, reference) = await CreateAsync(resolvedSun: false).ConfigureAwait(false);
-        var (_, otherPayload, _) = await CreateAsync(resolvedSun: false, calibrationVersion: "calibration-v2")
+        var (scene, payload, reference) = await CreateAsync(resolvedSun).ConfigureAwait(false);
+        var (_, otherPayload, _) = await CreateAsync(resolvedSun, calibrationVersion: "calibration-v2")
             .ConfigureAwait(false);
         var otherChecksum = ProcessingIdentity.ComputePayloadSha256(otherPayload);
 
@@ -74,14 +80,34 @@ public sealed class CentralMeasuredAssociationSceneReaderTests
     }
 
     [TestMethod]
-    public async Task ResolvedFootprintSceneIsNotTheCurrentSchemaTheAssociationNodeBinds()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FrozenSchemaMustMatchPayloadAndLegacyMeasuredReferencesImplyOnlyV1(bool resolvedSun)
     {
-        var (_, payload, reference) = await CreateAsync(resolvedSun: true).ConfigureAwait(false);
-
-        var verified = CentralMeasuredAssociationSceneReader.Verify(reference, payload);
-
-        Assert.IsNull(verified.Input);
-        Assert.AreEqual(CentralMeasuredAssociationSceneReader.IdentityMismatchReasonCode, verified.FailureReasonCode);
+        var (scene, payload, reference) = await CreateAsync(resolvedSun).ConfigureAwait(false);
+        var legacy = reference with { SchemaVersion = null };
+        var legacyBytes = System.Text.Json.JsonSerializer.Serialize(legacy, System.Text.Json.JsonSerializerOptions.Web);
+        Assert.IsFalse(legacyBytes.Contains("schemaVersion", StringComparison.Ordinal));
+        var restored = System.Text.Json.JsonSerializer.Deserialize<CentralProjectedSceneReference>(
+            legacyBytes, System.Text.Json.JsonSerializerOptions.Web)!;
+        Assert.AreEqual(legacy, restored);
+        var legacyResult = CentralMeasuredAssociationSceneReader.Verify(restored, payload);
+        if (resolvedSun)
+            Assert.AreEqual(CentralMeasuredAssociationSceneReader.IdentityMismatchReasonCode, legacyResult.FailureReasonCode);
+        else
+            Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, legacyResult.Input!.SchemaVersion);
+        foreach (var invalid in new[]
+        {
+            reference with { SchemaVersion = resolvedSun ? ProjectedSceneV1.CurrentSchemaVersion : ProjectedSceneV1.ResolvedFootprintSchemaVersion },
+            reference with { SchemaVersion = "projected-scene-v99" },
+            reference with { CaptureId = Guid.NewGuid() },
+            reference with { Source = scene.Source with { ArtifactIdentitySha256 = new string('E', 64) } }
+        })
+        {
+            var rejected = CentralMeasuredAssociationSceneReader.Verify(invalid, payload);
+            Assert.IsNull(rejected.Input);
+            Assert.AreEqual(CentralMeasuredAssociationSceneReader.IdentityMismatchReasonCode, rejected.FailureReasonCode);
+        }
     }
 
     private static async Task<(ProjectedSceneV1 Scene, byte[] Payload, CentralProjectedSceneReference Reference)>
@@ -113,7 +139,7 @@ public sealed class CentralMeasuredAssociationSceneReaderTests
         var reference = new CentralProjectedSceneReference(
             Guid.NewGuid(), Guid.NewGuid(), raw.Descriptor.Capture.CaptureId,
             ProcessingIdentity.ComputePayloadSha256(payload), scene.SceneIdentitySha256, scene.Source, "scene",
-            new string('D', 64));
+            new string('D', 64), scene.SchemaVersion);
         return (scene, payload, reference);
     }
 }

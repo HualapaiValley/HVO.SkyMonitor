@@ -96,7 +96,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v11-measured-associations";
+    public const string SceneProducerVersion = "projected-scene-presentation-v12-bounded-expected-labels";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
@@ -322,15 +322,16 @@ public static class PresentationLayerProducers
                 .Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)).ToArray(),
                 associations, expectedPositionDiagnostics)
                 .Where(static item => item.DrawLabel)
-                .ToDictionary(static item => item.Id, static item => item.DisplayName, StringComparer.Ordinal);
+                .ToDictionary(static item => item.Id, StringComparer.Ordinal);
             foreach (var item in labelled.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
                 if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
-                if (!labeled.TryGetValue(item.Id, out var displayName)) continue;
-                var name = displayName[..Math.Min(displayName.Length, style.MaximumLabelCharacters)];
+                if (!labeled.TryGetValue(item.Id, out var label)) continue;
+                var name = AnnotationLabelFormatter.Format(label, style.MaximumLabelCharacters);
+                if (name is null) continue;
                 var clearance = footprints.TryGetValue(item.Id, out var footprint)
                     ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
                     : style.MarkerRadius;
