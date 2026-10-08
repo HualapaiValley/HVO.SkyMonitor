@@ -74,8 +74,19 @@ public sealed record AstrometricCatalogProvenance(
 /// <summary>A bounded complete-for-request catalog result. Incomplete results must never become accepted fits.</summary>
 public sealed class AstrometricCatalogData
 {
-    /// <summary>Maximum materialized star count accepted by the bounded solver.</summary>
+    /// <summary>
+    /// Request bound of every public settings value: the solver reads and solves at most this many stars, exactly as solver
+    /// v2 always has.
+    /// </summary>
     public const int MaximumEntries = 2500;
+
+    /// <summary>
+    /// Internal evaluation capacity of this container, independent of any selection profile; the constructor rejects a
+    /// larger materialization. It promises no solve: no public settings value requests more than
+    /// <see cref="MaximumEntries"/>, and the solver and calibration session refuse a larger selection with
+    /// <c>catalog-selection-unsupported</c>, because no deep selection is qualified (issue #1167).
+    /// </summary>
+    internal const int MaterializationCeiling = 8192;
 
     public AstrometricCatalogData(CatalogMetadata metadata, IEnumerable<CelestialCatalogObject> stars,
         bool isCompleteForRequestedMagnitude, double completenessMagnitudeLimit, string coordinateModel = AstrometricConventions.CoordinateModel,
@@ -87,8 +98,8 @@ public sealed class AstrometricCatalogData
         if (!double.IsFinite(completenessMagnitudeLimit)) throw new ArgumentException("Catalog completeness magnitude limit must be finite.", nameof(completenessMagnitudeLimit));
         if (string.IsNullOrWhiteSpace(metadata.Name) || string.IsNullOrWhiteSpace(metadata.Version) || string.IsNullOrWhiteSpace(metadata.License) || string.IsNullOrWhiteSpace(metadata.SchemaVersion) || metadata.SourceUrl is null || !metadata.SourceUrl.IsAbsoluteUri || metadata.Name.Length > 256 || metadata.Version.Length > 256 || metadata.SourceUrl.AbsoluteUri.Length > 2048 || metadata.License.Length > 2048 || metadata.SchemaVersion.Length > 256)
             throw new ArgumentException("Catalog metadata must identify an immutable source.", nameof(metadata));
-        var values = stars.Take(MaximumEntries + 1).ToArray();
-        if (values.Length > MaximumEntries) throw new ArgumentException("Catalog materialization exceeds2500 entries.", nameof(stars));
+        var values = stars.Take(MaterializationCeiling + 1).ToArray();
+        if (values.Length > MaterializationCeiling) throw new ArgumentException($"Catalog materialization exceeds {MaterializationCeiling} entries.", nameof(stars));
         foreach (var star in values)
             if (star is null || string.IsNullOrWhiteSpace(star.Id) || star.Id.Length > 256 || star.DisplayName is null || star.DisplayName.Length > 512 || star.HipparcosId?.Length > 128 || !double.IsFinite(star.RightAscensionHours) || star.RightAscensionHours is < 0 or >= 24 ||
                 !double.IsFinite(star.DeclinationDegrees) || star.DeclinationDegrees is < -90 or > 90 || !double.IsFinite(star.Magnitude)) throw new ArgumentException("Invalid catalog entry.", nameof(stars));
@@ -120,6 +131,44 @@ public interface IAstrometricCatalogSource
     ValueTask<AstrometricCatalogData> ReadAsync(double maximumMagnitude, int maximumEntries, CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// An immutable catalog selection envelope: the request bound a solve may materialize and the faintest magnitude its
+/// measurement covered. A name never changes meaning; a different bound or magnitude needs a new name.
+/// </summary>
+internal sealed class AstrometricCatalogSelectionProfile
+{
+    /// <summary>
+    /// The deep HYG selection measured under issue #1167. It is not qualified, so the name is burned: it is never declared,
+    /// and any later attempt uses a new name.
+    /// </summary>
+    internal const string HygDeepSelectionV1Name = "hyg-deep-selection-v1";
+
+    internal const int HygDeepSelectionV1MaximumEntries = 8192;
+
+    private AstrometricCatalogSelectionProfile(string name, int maximumEntries, double qualifiedMaximumMagnitude) =>
+        (Name, MaximumEntries, QualifiedMaximumMagnitude) = (name, maximumEntries, qualifiedMaximumMagnitude);
+
+    internal static AstrometricCatalogSelectionProfile HygDeepSelectionV1 { get; } = new(HygDeepSelectionV1Name, HygDeepSelectionV1MaximumEntries, 6.0);
+
+    /// <summary>Every qualified profile. None is: no deep selection is shown to meet the issue #1167 acceptance minimum.</summary>
+    internal static IReadOnlyList<AstrometricCatalogSelectionProfile> Declared { get; } = [];
+
+    /// <summary>Profiles kept only so their evaluation harnesses stay runnable; never declared, never configurable.</summary>
+    internal static IReadOnlyList<AstrometricCatalogSelectionProfile> Measured { get; } = [HygDeepSelectionV1];
+
+    internal string Name { get; }
+
+    /// <summary>Request bound passed to the catalog source, and the largest selection a solve under this profile accepts.</summary>
+    internal int MaximumEntries { get; }
+
+    /// <summary>Faintest requested magnitude qualified, or for a measured profile measured; settings asking for more fail validation.</summary>
+    internal double QualifiedMaximumMagnitude { get; }
+
+    /// <summary>The declared or measured profile with this exact name, or null when there is none.</summary>
+    internal static AstrometricCatalogSelectionProfile? Find(string? name) =>
+        name is null ? null : Declared.Concat(Measured).FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
+}
+
 /// <summary>Versioned finite work bounds. Quality thresholds remain declared geometric engineering gates.</summary>
 public sealed record AstrometricSolverOptions(
     double MinimumFocalScale = .90, double MaximumFocalScale = 1.10, double FocalScaleStep = .01,
@@ -127,10 +176,36 @@ public sealed record AstrometricSolverOptions(
     int HypothesisLimit = 200000, int CandidateLimit = 32, double ColdBudgetMilliseconds = 15000,
     double WarmBudgetMilliseconds = 500, double MaximumWarmAgeSeconds = 600)
 {
+    private string? _catalogSelectionProfile;
+
     [JsonIgnore]
     public string IdentitySha256 => AstrometricIdentity.Hash(this with { });
+
+    /// <summary>
+    /// Evaluation-only selection envelope by name, set only through <see cref="WithCatalogSelectionProfile"/>. It has no
+    /// setter, so neither configuration nor deserialized settings can select one. Null keeps the 2,500-entry bound and is
+    /// omitted from the settings identity; a measured profile serializes last, as the issue #1167 evidence pins.
+    /// </summary>
+    [JsonInclude, JsonPropertyOrder(1), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal string? CatalogSelectionProfile => _catalogSelectionProfile;
+
+    /// <summary>A copy of these settings under the named selection profile, or the legacy bound when null.</summary>
+    internal AstrometricSolverOptions WithCatalogSelectionProfile(string? name)
+    {
+        var copy = this with { };
+        copy._catalogSelectionProfile = name;
+        return copy;
+    }
+
+    /// <summary>Largest catalog selection these settings read and solve. Derived from the profile, never part of the identity.</summary>
+    [JsonIgnore]
+    internal int CatalogEntryBound => AstrometricCatalogSelectionProfile.Find(CatalogSelectionProfile)?.MaximumEntries ?? AstrometricCatalogData.MaximumEntries;
+
     public void Validate()
     {
+        if (CatalogSelectionProfile is not null && (AstrometricCatalogSelectionProfile.Find(CatalogSelectionProfile) is not { } profile ||
+            MaximumCatalogMagnitude > profile.QualifiedMaximumMagnitude))
+            throw new ArgumentException("Catalog selection profile is undeclared, or the requested magnitude exceeds its qualified maximum.");
         if (!double.IsFinite(MinimumFocalScale) || MinimumFocalScale <= 0 || !double.IsFinite(MaximumFocalScale) || MaximumFocalScale < MinimumFocalScale ||
             !double.IsFinite(FocalScaleStep) || FocalScaleStep <= 0 || (MaximumFocalScale - MinimumFocalScale) / FocalScaleStep > 100 ||
             !double.IsFinite(MaximumCatalogMagnitude) || TriangleDetectionCount is < 3 or > 60 || ImageTriangleLimit is < 1 or > 5000 ||

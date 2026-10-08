@@ -438,10 +438,10 @@ public sealed class VirtualAstrometryQualificationTests
         CollectionAssert.AreEqual(AstrometricEvidenceJson.Serialize(expected.Assessment), AstrometricEvidenceJson.Serialize(actual.Assessment));
     }
 
-    private sealed record MapCase(string Id, CameraRigConfig Truth, DateTimeOffset SceneUtc,
+    internal sealed record MapCase(string Id, CameraRigConfig Truth, DateTimeOffset SceneUtc,
         AstrometricCalibration Nominal, AstrometricFrameAssessment Assessment);
 
-    private sealed record MappingEvidence(List<object> Grids, List<object> SourceGeometry,
+    internal sealed record MappingEvidence(List<object> Grids, List<object> SourceGeometry,
         List<object> SourceCoverage, List<object> MappingCoverage, List<object> RoundTrips);
 
     /// <summary>
@@ -452,7 +452,7 @@ public sealed class VirtualAstrometryQualificationTests
     /// </summary>
     internal const double RoundTripTolerancePixels = 1e-4;
 
-    private static MappingEvidence ScoreMappings(List<MapCase> cases, List<string> failures)
+    internal static MappingEvidence ScoreMappings(List<MapCase> cases, List<string> failures)
     {
         var rows = new List<object>();
         var geometry = new List<object>();

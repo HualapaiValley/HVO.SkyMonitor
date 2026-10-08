@@ -175,13 +175,21 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     /// validated production installation can declare complete sky coverage; fixtures and direct
     /// database loads remain explicitly incomplete even when every stored row fits the bound.
     /// </summary>
+    /// <remarks>
+    /// The bound is the caller's already validated request, and the copy is the smaller of the
+    /// matching rows and that bound, so no allocation scales with the bound itself. A bound larger
+    /// than the catalog data's capacity is read when the selection fits; when the copied selection
+    /// exceeds that capacity, <see cref="AstrometricCatalogData"/> rejects it with an
+    /// <see cref="ArgumentException"/> for its <c>stars</c> parameter.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The magnitude is not finite or the bound is below 1.</exception>
+    /// <exception cref="ArgumentException">The copied selection exceeds the catalog data's capacity.</exception>
     public ValueTask<AstrometricCatalogData> ReadAsync(double maximumMagnitude, int maximumEntries,
         CancellationToken cancellationToken = default)
     {
         if (!double.IsFinite(maximumMagnitude))
             throw new ArgumentOutOfRangeException(nameof(maximumMagnitude));
-        if (maximumEntries is < 1 or > AstrometricCatalogData.MaximumEntries)
-            throw new ArgumentOutOfRangeException(nameof(maximumEntries));
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumEntries, 1);
         cancellationToken.ThrowIfCancellationRequested();
 
         var matchingCount = FindUpperBound(maximumMagnitude);

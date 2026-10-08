@@ -69,11 +69,27 @@ internal static class AstrometricSolverCore
     private sealed record Star(CelestialCatalogObject Catalog, EnuVector Ray);
     private readonly record struct Triangle(int A, int B, int C, double X, double Y, double Z);
     private const int MaximumIndexTriangles = 2000000;
+    private const int MaximumIndexStars = 1500;
+    /// <summary>Largest selection the evaluation overload accepts: the whole installed HYG sky with headroom, never a production bound.</summary>
+    internal const int MaximumEvaluationCatalogEntries = 131072;
     private sealed record Pair(Star Star, CoreDetection CoreDetection, PixelPoint Predicted, double Distance);
     private sealed record Candidate(AstrometricRotation Rotation, double Scale, List<Pair> Matches);
     public static CoreResult Solve(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
         SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options = null, AstrometricWorkControl? control = null)
-        => Run(detections, catalog, configuration, site, utc, options, control, null);
+        => Run(detections, catalog, configuration, site, utc, options, control, null, AstrometricCatalogData.MaterializationCeiling);
+
+    /// <summary>
+    /// Evaluation-only blind solve of a selection deeper than any declared profile, such as the complete magnitude-7 HYG sky.
+    /// It runs the identical bounded search; only the catalog-size guard is the caller's. Production solves never use it.
+    /// </summary>
+    internal static CoreResult Solve(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
+        SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options, AstrometricWorkControl? control,
+        int maximumCatalogEntries)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumCatalogEntries, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumCatalogEntries, MaximumEvaluationCatalogEntries);
+        return Run(detections, catalog, configuration, site, utc, options, control, null, maximumCatalogEntries);
+    }
 
     /// <summary>
     /// Runs the identical bounded blind search and per-candidate refinement, then returns every distinct refined
@@ -83,17 +99,17 @@ internal static class AstrometricSolverCore
     internal static CoreResult Acquire(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
         SolverOptics configuration, CoreSite site, DateTimeOffset utc, List<CoreCandidate> candidates, CoreSolverOptions? options = null,
         AstrometricWorkControl? control = null)
-        => Run(detections, catalog, configuration, site, utc, options, control, candidates);
+        => Run(detections, catalog, configuration, site, utc, options, control, candidates, AstrometricCatalogData.MaterializationCeiling);
 
     private static CoreResult Run(IReadOnlyList<CoreDetection> detections, IReadOnlyList<CelestialCatalogObject> catalog,
         SolverOptics configuration, CoreSite site, DateTimeOffset utc, CoreSolverOptions? options, AstrometricWorkControl? control,
-        List<CoreCandidate>? acquisition)
+        List<CoreCandidate>? acquisition, int maximumCatalogEntries)
     {
         control?.Check();
         var watch = Stopwatch.StartNew(); var o = options ?? new(); configuration.Context();
         if (!double.IsFinite(o.MaximumCatalogMagnitude) || o.MinimumScale <= 0 || !double.IsFinite(o.MinimumScale) || !double.IsFinite(o.MaximumScale) || o.MaximumScale < o.MinimumScale ||
             !double.IsFinite(o.ScaleStep) || o.ScaleStep <= 0 || (o.MaximumScale - o.MinimumScale) / o.ScaleStep > 100 ||
-            o.DetectionTriangleStars is < 3 or > 60 || o.SampledTriangles is < 1 or > 5000 || o.MaximumHypotheses is < 1 or > 200000 || o.MaximumCandidates is < 2 or > 100 || catalog.Count > 2500 || detections.Count > 10000)
+            o.DetectionTriangleStars is < 3 or > 60 || o.SampledTriangles is < 1 or > 5000 || o.MaximumHypotheses is < 1 or > 200000 || o.MaximumCandidates is < 2 or > 100 || catalog.Count > maximumCatalogEntries || detections.Count > 10000)
             throw new ArgumentException("Invalid or excessive bounded blind-search request");
         if (catalog.Select(s => s.Id).Distinct().Count() != catalog.Count || detections.Select(d => d.Index).Distinct().Count() != detections.Count ||
             detections.Any(d => !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Flux) || d.Flux < 0)) throw new ArgumentException("Invalid or duplicate input identities");
@@ -111,9 +127,9 @@ internal static class AstrometricSolverCore
         // A narrow field indexes every training star, in training order exactly as solver v1 did, whenever that index fits
         // the triangle bound; a field too wide for that indexes the largest magnitude-ordered prefix that fits (IndexPrefix).
         var brightest = narrow ? training.OrderBy(s => s.Catalog.Magnitude).ToList() : [];
-        var admitted = narrow ? IndexPrefix(brightest.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, MaximumIndexTriangles, control) : 0;
+        var admitted = narrow ? IndexPrefix(brightest.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, MaximumIndexTriangles, control, MaximumIndexStars) : 0;
         var indexed = (!narrow ? training.OrderBy(s => s.Catalog.Magnitude).Take(120) : admitted == training.Count ? training : brightest.Take(admitted)).ToList();
-        if (indexed.Count > 1500) return Reject("Catalog exceeds the bounded1500-star in-memory index limit");
+        if (indexed.Count > MaximumIndexStars) return Reject("Catalog exceeds the bounded1500-star in-memory index limit");
         var index = new Dictionary<(int, int, int), List<Triangle>>();
         foreach (var t in Triangles(indexed.Select(s => s.Ray).ToArray(), maxSpan, tolerance * .5, control))
         { var k = Key(t, tolerance); if (!index.TryGetValue(k, out var bucket)) index[k] = bucket = []; bucket.Add(t); triangleCount++; if (triangleCount > MaximumIndexTriangles) return Reject("Catalog triangle index exceeds its2million-entry bound"); }
@@ -189,7 +205,7 @@ internal static class AstrometricSolverCore
         if (!double.IsFinite(budgetMilliseconds) || budgetMilliseconds <= 0 || !double.IsFinite(maximumCatalogMagnitude)) throw new ArgumentException("Invalid warm budget/magnitude limit");
         if (!double.IsFinite(priorAbsoluteScale) || priorAbsoluteScale <= 0 || !double.IsFinite(minimumAbsoluteScale) || minimumAbsoluteScale <= 0 || !double.IsFinite(maximumAbsoluteScale) || maximumAbsoluteScale < minimumAbsoluteScale) throw new ArgumentException("Invalid absolute warm focal-scale interval");
         config.Context();
-        if (catalog.Count > 2500 || detections.Count > 10000 || catalog.Select(s => s.Id).Distinct().Count() != catalog.Count || detections.Select(d => d.Index).Distinct().Count() != detections.Count || detections.Any(d => !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Flux) || d.Flux < 0)) throw new ArgumentException("Invalid warm inputs");
+        if (catalog.Count > AstrometricCatalogData.MaterializationCeiling || detections.Count > 10000 || catalog.Select(s => s.Id).Distinct().Count() != catalog.Count || detections.Select(d => d.Index).Distinct().Count() != detections.Count || detections.Any(d => !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Flux) || d.Flux < 0)) throw new ArgumentException("Invalid warm inputs");
         var watch = Stopwatch.StartNew();
         const string domain = "Warm local refinement from prior accepted configuration; no global uniqueness search;500ms default cooperative budget";
         CoreResult Rejected(string reason, CoreQuality? quality = null, bool timeout = false) => new(false, "rejected", reason, null, null, quality, [], 0, 0, 0, 0, 1, timeout, watch.Elapsed.TotalMilliseconds, domain);
@@ -216,20 +232,26 @@ internal static class AstrometricSolverCore
     /// Number of leading rays whose index triangles fit <paramref name="maximumTriangles"/>, or every ray when they all
     /// do. Rays are admitted in order, counting the triangles each closes with the rays before it under the same
     /// acceptance rule as <see cref="Triangles"/>, so the enumeration stops as soon as the bound is passed rather than
-    /// growing with the number of rays above the horizon.
+    /// growing with the number of rays above the horizon. Once more than <paramref name="maximumStars"/> rays are admitted
+    /// the result is <paramref name="maximumStars"/> + 1: the caller rejects any such index whatever its true length, so
+    /// only the rows of an index it could accept are ever held.
     /// </summary>
-    internal static int IndexPrefix(EnuVector[] rays, double maxSpan, double minimumSide, long maximumTriangles, AstrometricWorkControl? control = null)
+    internal static int IndexPrefix(EnuVector[] rays, double maxSpan, double minimumSide, long maximumTriangles, AstrometricWorkControl? control = null,
+        int maximumStars = int.MaxValue)
     {
-        var distances = new double[rays.Length * rays.Length]; var count = 0L;
+        // Row c holds the angles from ray c to every earlier ray, so admitting c rays holds c(c-1)/2 angles.
+        var rows = new double[rays.Length][]; var count = 0L;
         for (var c = 0; c < rays.Length; c++)
         {
-            for (var a = 0; a < c; a++) distances[a * rays.Length + c] = distances[c * rays.Length + a] = Angle(rays[a], rays[c]);
+            if (c > maximumStars) return c;
+            var row = rows[c] = new double[c];
+            for (var a = 0; a < c; a++) row[a] = Angle(rays[a], rays[c]);
             for (var a = 0; a < c; a++)
             {
                 control?.Check();
-                var ac = distances[a * rays.Length + c]; if (ac < minimumSide || ac > maxSpan) continue;
+                var ac = row[a]; if (ac < minimumSide || ac > maxSpan) continue;
                 for (var b = a + 1; b < c; b++)
-                    if (IsIndexTriangle(rays[a], rays[b], rays[c], distances[a * rays.Length + b], ac, distances[b * rays.Length + c], maxSpan, minimumSide) &&
+                    if (IsIndexTriangle(rays[a], rays[b], rays[c], rows[b][a], ac, row[b], maxSpan, minimumSide) &&
                         ++count > maximumTriangles) return c;
             }
         }
@@ -294,7 +316,7 @@ internal static class AstrometricSolverCore
             }
         }
     }
-    private static bool IsIndexTriangle(EnuVector a, EnuVector b, EnuVector c, double ab, double ac, double bc, double maxSpan, double minimumSide)
+    internal static bool IsIndexTriangle(EnuVector a, EnuVector b, EnuVector c, double ab, double ac, double bc, double maxSpan, double minimumSide)
     {
         if (ab < minimumSide || ac < minimumSide || bc < minimumSide || ab > maxSpan || ac > maxSpan || bc > maxSpan) return false;
         double low = Math.Min(ab, Math.Min(ac, bc)), high = Math.Max(ab, Math.Max(ac, bc)), middle = Math.Max(Math.Min(ab, ac), Math.Min(Math.Max(ab, ac), bc));

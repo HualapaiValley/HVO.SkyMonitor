@@ -101,6 +101,7 @@ each.
 | Convergence | within 40 iterations | `not-converged` |
 | Cooperative budget | 120 s | `time-budget` (`BudgetExceeded`) |
 | Catalog completeness or coordinate model | declared | `catalog-incomplete`, `coordinate-model-unsupported` (`Unavailable`) |
+| Catalog selection size | ≤ the solver settings' entry bound (2,500 for every public settings value) | `catalog-selection-unsupported` (`Unavailable`) |
 
 **What the gates mean.**
 - The marginal covariance is the Schur complement of the shared optics after every per-frame pose is
