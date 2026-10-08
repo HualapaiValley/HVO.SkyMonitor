@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
@@ -81,11 +82,18 @@ internal sealed partial class CentralProcessingGraphScheduler(
     private const int MaximumConvergenceAttempts = 3;
     private const int SqlServerDeadlockVictim = 1205;
     internal const string SourceRetentionExpiredReasonCode = "source-retention-expired";
+    internal const string MeasuredAssociationRawVariantReasonCode = "measured-associations.raw-variant-unavailable";
+    internal const string AnnotationRederivationFailedReasonCode = "processing.graph.annotation-identity-rederivation-failed";
+    internal const string AnnotationRederivationUnsupportedSchemaReasonCode =
+        "processing.graph.annotation-identity-rederivation-unsupported-schema";
+    internal const string AnnotationRederivationUnverifiableSchemaReasonCode =
+        "processing.graph.annotation-identity-rederivation-schema-unverifiable";
     private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
         Enum.GetValues<EnvironmentalObservationSourceKind>();
     private static readonly EnvironmentalObservationQuality[] EnvironmentalQualities =
         Enum.GetValues<EnvironmentalObservationQuality>();
     private static readonly JsonSerializerOptions CycleEvidenceSerializerOptions = CreateCycleEvidenceSerializerOptions();
+    private static readonly JsonSerializerOptions FrozenSelectorSerializerOptions = CreateCycleEvidenceSerializerOptions();
     private static readonly JsonSerializerOptions SourceProvenanceSerializerOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<CentralProcessingGraphScheduleResult> ScheduleLiveAsync(
@@ -576,7 +584,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
             var frame = anchor.Frame!;
             CentralProjectedSceneSelection? projectedScene = null;
-            if (plan.Nodes.Any(static node => node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation) &&
+            if (plan.Nodes.Any(static node => node.Definition.StepAlias is BuiltInProcessingRecipes.Annotation or
+                    BuiltInProcessingRecipes.MeasuredStellarAssociations) &&
                 CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson)?.RequiresProjectedScene == true)
             {
                 projectedScene = await new CentralProjectedSceneResolver(dbContext, objectReader)
@@ -665,7 +674,13 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     binding.BindingKind == ProcessingGraphInputBindingKind.PrimaryArtifact);
                 var primarySelector = primaryBinding is null
                     ? handler.Recipe.InputSelector
-                    : CreateSelector(primaryBinding, plan, jobs);
+                    : IsMeasuredStellarAssociations(node.Definition.StepAlias)
+                        ? CreateMeasuredAssociationSelector(primaryBinding, sourceRows)
+                        : CreateSelector(primaryBinding, plan, jobs);
+                if (primarySelector is null)
+                {
+                    return await RejectAsync("invalid", MeasuredAssociationRawVariantReasonCode).ConfigureAwait(false);
+                }
                 var requestedIdentity = handler.Kind == CentralProcessingGraphNodeHandlerKind.TransientValidation
                     ? handler.Recipe.RequestedRecipeIdentitySha256
                     : BuiltInProcessingRecipes.CreateRequestedIdentity(
@@ -679,6 +694,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                         CreateSelector(binding, plan, jobs),
                         ArtifactId: ResolveBindingArtifactId(binding, sourceRows, projectedArtifacts)))
                     .Concat(CreateExternalAuxiliaries(node, environmentalInputs))
+                    .Concat(CreateMeasuredAssociationSceneAuxiliaries(node, projectedScene))
                     .ToArray();
                 var expectedIdentity = CreateExpectedRecipeIdentity(
                     handler.Kind,
@@ -764,7 +780,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 AddDependencies(execution, node, jobs, sourceRows, plan, frame, now);
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
-                if (projectedScene is not null && node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation)
+                if (projectedScene is not null && (node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation ||
+                        IsMeasuredStellarAssociations(node.Definition.StepAlias) && IsCurrentScene(projectedScene)))
                     CentralProjectedSceneResolver.AddRequirement(jobs[node.Definition.Id], projectedScene, now);
             }
             // Selection ran without holds, so retention may have expired a source since. Immediately before the rows
@@ -1073,6 +1090,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 }
                 var waiting = false;
                 var failed = false;
+                string? rederivationFailure = null;
                 foreach (var dependency in job.Dependencies.OrderBy(static item => item.Ordinal))
                 {
                     if (dependency.Kind is ProcessingGraphDependencyKind.Outcome or ProcessingGraphDependencyKind.Ordering)
@@ -1127,14 +1145,52 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     }
                     else
                     {
-                        foreach (var requirement in requirements.Where(static requirement =>
-                                     requirement.ResolutionState == CentralDerivativeInputResolutionState.Waiting))
+                        var omitted = requirements.Where(static requirement =>
+                            requirement.ResolutionState == CentralDerivativeInputResolutionState.Waiting).ToArray();
+                        foreach (var requirement in omitted)
                         {
                             requirement.ResolutionState = CentralDerivativeInputResolutionState.Missing;
                             requirement.ResolutionReasonCode = "processing.graph.optional-dependency-omitted";
                             requirement.ResolvedAtUtc = now;
                         }
+                        if (omitted.SingleOrDefault(requirement => IsMeasuredAssociationsAuxiliary(job, requirement)) is
+                            { } omittedAssociations)
+                        {
+                            var rederived = await RederiveWithoutMeasuredAssociationsAsync(
+                                execution, job, omittedAssociations, cancellationToken).ConfigureAwait(false);
+                            if (rederived is null)
+                            {
+                                rederivationFailure = AnnotationRederivationFailedReasonCode;
+                            }
+                            // An identity equal to the frozen one needs no write: the pass is idempotent.
+                            else if (!string.Equals(rederived, job.ExpectedRecipeIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
+                                await ProbeExpectedIdentityRederivationAsync(cancellationToken).ConfigureAwait(false) is
+                                { } unsupported)
+                            {
+                                // A database created from an earlier baseline keeps the trigger without the exemption.
+                                // Its THROW would doom this transaction and roll the whole execution back on every
+                                // pass; terminalize the leaf with a named reason instead, so the graph still converges.
+                                rederivationFailure = unsupported;
+                            }
+                            else if (!string.Equals(rederived, job.ExpectedRecipeIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                // TR_CentralDerivativeJobs_GraphIdentityImmutable admits this one change only while
+                                // the job is still Waiting and its Missing measured-association requirement is
+                                // durable. Persist the omission first and the identity alone in its own statement,
+                                // before any later transition this pass makes, so acceptance never depends on the
+                                // order EF Core chooses within one SaveChanges batch.
+                                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                                job.ExpectedRecipeIdentitySha256 = rederived;
+                                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                            }
+                        }
                     }
+                }
+                if (rederivationFailure is not null)
+                {
+                    SetTerminal(job, CentralDerivativeJobStatus.TerminalFailure, rederivationFailure, now);
+                    changed = true;
+                    continue;
                 }
                 if (failed)
                 {
@@ -1912,6 +1968,171 @@ internal sealed partial class CentralProcessingGraphScheduler(
         };
     }
 
+    private static bool IsMeasuredStellarAssociations(string recipeName)
+        => string.Equals(recipeName, BuiltInProcessingRecipes.MeasuredStellarAssociations, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The measured-association node binds its raw primary with the bound raw row's variant, exactly as the edge step
+    /// binds <c>ProcessingInputSelector.Raw(source.Variant)</c>, so the central expected identity equals the edge
+    /// identity. Every other node keeps <see cref="CreateSelector"/>'s <c>Raw()</c>; the variant-bound clear-reference
+    /// selector is the precedent. The variant is frozen into the job's selector here and never re-read. A raw row
+    /// without a variant fails the expansion closed rather than defaulting one: central ingest only reconstructs raw
+    /// artifacts that carry a descriptor, so the edge's <c>"source"</c> fallback for descriptor-less frames never applies.
+    /// </summary>
+    internal static ProcessingInputSelector? CreateMeasuredAssociationSelector(
+        ProcessingGraphInputBinding binding,
+        IReadOnlyDictionary<string, CentralProcessingGraphExecutionSource> sources)
+        => sources.TryGetValue(binding.ProducerId, out var source) &&
+            source.Artifact is { Role: FrameArtifactRole.Raw, Variant: { } variant } &&
+            !string.IsNullOrWhiteSpace(variant)
+                ? ProcessingInputSelector.Raw(variant)
+                : null;
+
+    private static bool IsCurrentScene(CentralProjectedSceneSelection scene)
+        => string.Equals(
+            scene.Artifact.StructuredProduct?.ProductSchemaVersion,
+            ProjectedSceneV1.CurrentSchemaVersion,
+            StringComparison.Ordinal);
+
+    /// <summary>
+    /// The measured-association node's <c>scene</c> auxiliary, bound as the edge step binds it: canonical JSON of the
+    /// current projected-scene schema identified by the scene's content identity. The payload and its checksum are
+    /// bound at lease by <see cref="CentralMeasuredAssociationSceneReader"/> and never enter the identity. A frame
+    /// without a current scene binds nothing, and the recipe skips with
+    /// <see cref="ProcessingReasonCodes.MissingProjectedScene"/> exactly as the edge step does.
+    /// </summary>
+    private static IEnumerable<ProcessingAuxiliaryInput> CreateMeasuredAssociationSceneAuxiliaries(
+        ProcessingGraphPlanNode node,
+        CentralProjectedSceneSelection? scene)
+        => IsMeasuredStellarAssociations(node.Definition.StepAlias) && scene is not null && IsCurrentScene(scene)
+            ? [CentralMeasuredAssociationSceneReader.CreateIdentityInput(scene.Reference)]
+            : [];
+
+    /// <summary>
+    /// The one optional auxiliary pair <see cref="CentralProcessingGraphNodeRegistry"/> admits on central graphs: a
+    /// leaf annotation's optional measured-association metadata.
+    /// </summary>
+    internal static bool IsMeasuredAssociationsAuxiliary(
+        CentralDerivativeJob job,
+        CentralDerivativeJobInputRequirement requirement)
+        => string.Equals(job.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal) &&
+            requirement.GraphInputBindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact &&
+            !requirement.IsRequired &&
+            string.Equals(
+                requirement.BindingName,
+                BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+                StringComparison.Ordinal);
+
+    /// <summary>
+    /// Ruling (Z): an annotation whose optional measured-association auxiliary was omitted executes without it, so its
+    /// frozen expectation is re-derived once, while the job is still Waiting and inside the convergence transaction
+    /// that records the omission. The annotation decision frozen at expansion is recovered by proof, never read from
+    /// live state: the frozen projected-scene reference (re-validated against its frozen annotation identity), the
+    /// frame's inline provenance, or no annotation, whichever reproduces the frozen expected identity with the omitted
+    /// auxiliary bound. Only <see cref="CentralDerivativeJob.ExpectedRecipeIdentitySha256"/> changes; the requested and
+    /// request identities stay frozen. The annotation is a graph leaf, so no dependent selector or projected artifact
+    /// identity derives from the replaced value. When no candidate reproduces the frozen identity the node fails closed.
+    /// A repeated pass over an already re-derived job is a no-op. Returns the identity the job must carry, or
+    /// <see langword="null"/> when the frozen decision cannot be proved. <see cref="CentralDerivativeJob.RequestIdentitySha256"/>
+    /// was hashed over the original expectation and is deliberately left stale: it only keys the request's unique
+    /// index, which stays unique, and no reader compares it with the expected identity.
+    /// </summary>
+    private async Task<string?> RederiveWithoutMeasuredAssociationsAsync(
+        CentralProcessingGraphExecution execution,
+        CentralDerivativeJob job,
+        CentralDerivativeJobInputRequirement omitted,
+        CancellationToken cancellationToken)
+    {
+        var handler = nodeRegistry.GetRequired(job.RecipeName);
+        using var options = JsonDocument.Parse(job.RecipeOptionsJson);
+        var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(
+            job.InputSelectorJson, FrozenSelectorSerializerOptions);
+        var omittedSelector = JsonSerializer.Deserialize<ProcessingInputSelector>(
+            omitted.SelectorJson, FrozenSelectorSerializerOptions);
+        if (selector is null || omittedSelector is null)
+        {
+            return null;
+        }
+        ProcessingAnnotationInput? frozen;
+        try
+        {
+            frozen = CentralProjectedSceneResolver.ReadReference(job) is { } reference
+                ? await new CentralProjectedSceneResolver(dbContext, objectReader)
+                    .ResolveAsync(reference, cancellationToken).ConfigureAwait(false)
+                : CentralDerivativeJobExecutor.CreateAnnotation(execution.Sources
+                    .FirstOrDefault(source => source.CentralArtifactId == job.SourceCentralArtifactId)?
+                    .Artifact?.Frame?.SceneProvenanceJson);
+        }
+        catch (Exception exception) when (exception is CentralArtifactMissingException or
+            CentralArtifactIntegrityException or CentralDerivativeJobStateException)
+        {
+            return null;
+        }
+        ProcessingAuxiliaryInput[] bound =
+            [new(omitted.BindingName, ProcessingAuxiliaryInputKind.Artifact, omittedSelector)];
+        ProcessingAnnotationInput?[] candidates = frozen is null ? [null] : [frozen, null];
+        foreach (var candidate in candidates)
+        {
+            var withoutAuxiliary = CreateExpectedRecipeIdentity(
+                handler.Kind, job.RecipeName, options.RootElement, selector, job.RequestedRecipeIdentitySha256,
+                [], sceneProvenanceJson: null, candidate);
+            if (string.Equals(withoutAuxiliary, job.ExpectedRecipeIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return job.ExpectedRecipeIdentitySha256;
+            }
+            var withAuxiliary = CreateExpectedRecipeIdentity(
+                handler.Kind, job.RecipeName, options.RootElement, selector, job.RequestedRecipeIdentitySha256,
+                bound, sceneProvenanceJson: null, candidate);
+            if (string.Equals(withAuxiliary, job.ExpectedRecipeIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return withoutAuxiliary;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Null when the live graph-identity trigger carries the measured-association exemption, otherwise the reason the
+    /// re-derivation cannot be written. Checked only when a re-derivation must be written, before the statement is
+    /// issued, because a trigger THROW cannot be recovered inside the convergence transaction. Providers without the
+    /// trigger have nothing to reject.
+    /// </summary>
+    private async Task<string?> ProbeExpectedIdentityRederivationAsync(CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsSqlServer())
+        {
+            return null;
+        }
+        // The name is literal: an interpolated value would become a parameter inside the quoted object name.
+        var definition = await dbContext.Database.SqlQuery<string?>($"""
+            SELECT OBJECT_DEFINITION(OBJECT_ID(N'[TR_CentralDerivativeJobs_GraphIdentityImmutable]')) AS [Value]
+            """).SingleAsync(cancellationToken).ConfigureAwait(false);
+        var reason = ClassifyGraphIdentityTriggerDefinition(definition);
+        if (reason == AnnotationRederivationUnverifiableSchemaReasonCode && logger is not null)
+        {
+            Log.GraphIdentityTriggerUnverifiable(logger, GraphIdentityTriggerName);
+        }
+        return reason;
+    }
+
+    /// <summary>
+    /// A definition that lacks the marker comes from an earlier baseline. A null definition proves nothing:
+    /// <c>OBJECT_DEFINITION</c> also returns null when the login lacks VIEW DEFINITION, so it fails closed under its
+    /// own reason rather than passing as an earlier baseline.
+    /// </summary>
+    internal static string? ClassifyGraphIdentityTriggerDefinition(string? definition)
+        => definition is null
+            ? AnnotationRederivationUnverifiableSchemaReasonCode
+            : definition.Contains(ExpectedIdentityRederivationTriggerMarker, StringComparison.Ordinal)
+                ? null
+                : AnnotationRederivationUnsupportedSchemaReasonCode;
+
+    internal const string GraphIdentityTriggerName = "TR_CentralDerivativeJobs_GraphIdentityImmutable";
+
+    /// <summary>The exemption's binding test, present only in a trigger that admits the re-derivation.</summary>
+    internal const string ExpectedIdentityRederivationTriggerMarker =
+        "requirement.[BindingName] = N'" + BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName + "'";
+
     internal static ImmutableArray<int> CreateWindowOffsets(ProcessingGraphWindowRequirement window)
     {
         if (window.Kind == ProcessingGraphWindowKind.Centered)
@@ -2162,5 +2383,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2155, LogLevel.Warning,
             "Processing graph convergence was chosen as a deadlock victim and is retried. ExecutionId={ExecutionId}, Attempt={Attempt}")]
         public static partial void ConvergenceDeadlockRetried(ILogger logger, Exception exception, Guid executionId, int attempt);
+
+        [LoggerMessage(2156, LogLevel.Error,
+            "The graph identity trigger definition could not be read, so the measured-association annotation re-derivation fails closed. Grant VIEW DEFINITION or recreate the database. Trigger={TriggerName}")]
+        public static partial void GraphIdentityTriggerUnverifiable(ILogger logger, string triggerName);
     }
 }

@@ -26,7 +26,8 @@ internal static class BuiltInProcessingProductContracts
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
-            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene => FrameArtifactRole.Metadata,
+            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene or MeasuredStellarAssociations =>
+                FrameArtifactRole.Metadata,
             _ => throw new InvalidOperationException("The built-in recipe output contract is unavailable.")
         };
         IReadOnlyList<ProcessingArtifact> sources = request.RecipeName switch
@@ -194,6 +195,18 @@ internal static class BuiltInProcessingProductContracts
                 return false;
             }
         }
+        if (string.Equals(request.RecipeName, MeasuredStellarAssociations, StringComparison.Ordinal))
+        {
+            var parsed = MeasuredStellarAssociationJson.Parse(payload);
+            if (!parsed.Validation.IsValid || parsed.Associations is not { } associations ||
+                !string.Equals(associations.AssociationIdentitySha256, contentIdentitySha256, StringComparison.Ordinal) ||
+                !string.Equals(associations.Source.RecipeIdentitySha256,
+                    ProcessingRecipeSupport.ResolveSingle(request, out _)?.RecipeIdentitySha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -324,6 +337,7 @@ internal static class BuiltInProcessingProductContracts
             WeatherCloudOverlay => CreateWeatherCloudOverlayDetails(identity, primary),
             ReferenceCalibration => CreateReferenceCalibrationDetails(request, primary),
             ProjectedScene => CreateProjectedSceneDetails(request, primary),
+            MeasuredStellarAssociations => CreateMeasuredStellarAssociationDetails(primary),
             _ => throw new InvalidOperationException("The built-in recipe output details are unavailable.")
         };
 
@@ -412,6 +426,7 @@ internal static class BuiltInProcessingProductContracts
         algorithms.Add(new("annotation-renderer", request.Annotation is { } annotation
             ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay)
             : AnnotationRenderer.AlgorithmVersion));
+        algorithms.Add(new("stellar-label-policy", StellarLabelPolicy.Version));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);
         if (!packed)
         {
@@ -523,6 +538,19 @@ internal static class BuiltInProcessingProductContracts
             null,
             ProcessingIdentity.ComputePayloadSha256(scene.Payload));
     }
+
+    private static ProductDetails CreateMeasuredStellarAssociationDetails(ProcessingArtifact primary) => new(
+        StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType,
+        false,
+        null,
+        MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+        true,
+        null,
+        MeasuredStellarAssociationRecipe.Algorithms(primary.Layout?.PixelFormat == CameraPixelFormat.BayerRggb16),
+        primary.Integration,
+        primary.Compatibility,
+        null,
+        null);
 
     private static ProductDetails MetadataDetails(
         string mediaType,
