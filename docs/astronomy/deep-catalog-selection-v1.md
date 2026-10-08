@@ -292,7 +292,9 @@ session below held both hosts' heavy locks.
 
 **Records.** Some of this section rests on no retained record:
 
-- The `rsync` overlap and its times are the #1167 owner's account.
+- The whole `rsync` description is the #1167 owner's account: the overlap and its times, the copy's priority (nice 19,
+  idle I/O class) and volume (about 121 MB), its being stopped, and its being the only other load on the host. No
+  retained process or load record shows any of it.
 - So is the shared physical host, which is an inference. The A/B arms' `index.json` host blocks record the CPU model
   and 8 logical processors but no host name, and nothing records the hypervisor.
 - #1168's times are as its owner's ledger records them.
@@ -552,13 +554,17 @@ Review PR-1181-R0 found three ways the frozen evaluator can pass incomplete evid
 - G4 accepts a bare p95, and G8 skips a missing `indexPrefix`.
 
 The frozen manifest and evaluator stay unchanged, and they still decide. A separate script,
-`docs/validation/issue-1167-evidence-check.py`, checks that the evidence they decided on is complete. It has two
+`docs/validation/issue-1167-evidence-check.py`, checks that the evidence they decided on is complete. It has three
 versions:
 
 - `3cb05cf9` (SHA-256 `aa1524c202059829fd17605906d45860091f68cbe9ef8805fc07e9b45c812040`), described from here to
   [Correction after PR-1181-R1](#correction-after-pr-1181-r1);
 - `a8f09a0a` (SHA-256 `4da7f452d4a05fe4ec0efc351444bf7b23e15274f411ebc3b18b941eee471a8d`), which also checks each A/B
-  report's revision and content and is described in that subsection.
+  report's revision and content and is described in that subsection;
+- `a7a58b43` (SHA-256 `902e3343aa905961af8c7711c3999c29fecb0f8930f6effb4b2b10dd37586665`), which also checks reference
+  scores, solve times and non-finite values and is described in
+  [Correction after PR-1181-R2](#correction-after-pr-1181-r2). Where that subsection corrects a statement in the R1
+  subsection, the statement is corrected in place and says so.
 
 Its expected inventory comes only from committed sources, and the script quotes each source line at `d3b78737`:
 
@@ -716,7 +722,38 @@ reports to their revision. The check now quotes 20 A/B declarations, up from 17.
   - the echo sites and early-return forms. These include `OpticalCalibrationSession`'s `Diagnostics` class, which is
     identical at A :440 and B :442.
 - **Inventory.** Case ids, views, captures, UTCs, readouts and realizations appear in writer order.
-- **Keys.** Every object the writer serializes has exactly the writer's keys.
+- **Keys.** Corrected after PR-1181-R2 (R2-F3). Only the objects listed here must hold exactly their writer's keys.
+  `a8f09a0a` did not check `fit.validations[]`; `a7a58b43` adds it and the withheld rows of a score.
+  - every report's top level;
+  - pixels: each row, its `metrics` (AC B:207), `nominal` (PIX :108) and `score` (REF :245–256), each association row
+    (REF :206–213) and withheld row (REF :223–229) of a score, and each `sourceGeometry[]` entry;
+  - optical: each report, its `truth` (OPT :43), `omittedDistortion` (OPT :216), `fit`, `fit.frames[]` (OC :86),
+    `fit.validations[]` (OC :95), `errors` and `withheldScores[]` (OPT :179–185), each score as in pixels, and, in a
+    SESS B:95–96 fit, `fit.parameters[]` (OC :82) and `fit.diagnostics` (OC :99);
+  - uncertainty: each `frames[]` entry (UNC :62), each `sessions[]` entry in its full (UNC :325) or short (UNC :280)
+    form, and each `sessions[].rows[]` entry (UNC :310, or UNC :298 when unavailable);
+  - measured stars: each report, its `diagnostics`, `v1` and `v2` (MEAS :121, :129–140), and their `baseline` and
+    `candidate` scores;
+  - resources: each row;
+  - `deep`: each `indexPrefix` (harness :504).
+
+  Twelve of these key sets are hand lists transcribed from writers the check does not quote whole: the top levels,
+  pixels rows, `sourceGeometry[]`, optical reports, `fit`, `errors`, measured-stars reports, `v1`, `v2`, measured
+  `diagnostics`, measured scores and resources rows. Every other set is derived from its quoted declaration, with
+  each member name camel-cased as the writer's JSON options serialize it.
+
+  **Not checked.** No other object's keys are checked. That includes:
+  - the pixels `assessment` and its `frame`, `parameters` and `quality`;
+  - `grids`, `sourceCoverage` and `mappingCoverage` entries;
+  - an optical fit's `parameters`, `diagnostics`, `resources` and `singleFrameColdSolveBaseline`, outside the SESS
+    B:95–96 early form;
+  - uncertainty covariance and the contents of `sharedCalibration`, `total`, `conditionalFit` and `validity`;
+  - measured-stars diagnostics sub-objects and the reason-count maps;
+  - resources samples.
+
+  Several of these are maps keyed by data, where "the writer's keys" is not defined. The content rules have their
+  own Not-checked list under [Correction after PR-1181-R2](#correction-after-pr-1181-r2). A fabricated value that
+  satisfies every rule is not detected.
 - **Echoes.** Every unaccepted or missing item has its writer's failure line (PIX :68, :74; OPT :145, :178; UNC :203,
   :282, :295, :298; MEAS :84).
 
@@ -758,6 +795,18 @@ identity only in its producer's form.
 - **Lists.** A pixels `score.associationRows` list or an optical `withheldScores[].score.associationRows` list must be
   non-empty. An empty list is a finding. Every row has the REF :208 shape. A list has at least 12 fitting and 4
   withheld rows, the solver's acceptance minimum (CORE B:419, `if (fit.Count < 12)` and `if (held.Count < 4)`).
+  Corrected after PR-1181-R2 (R2-F1): the minimum counts each `detectionIndex` once, so repeated rows add nothing. An
+  index that occurs as both a fitting and a withheld row counts as fitting only.
+- **Precision (R2-F3).** A score's `precision` must equal the share of **all** its association rows, repeats included,
+  whose `catalogId` is its `expectedNearestId` (REF :215). Only the 12/4 minimum counts an index once. With no rows,
+  the scorer computes 0/0 = NaN:
+  - the pixels writer cannot serialize NaN (see [Non-finite values](#correction-after-pr-1181-r2)), so a pixels score
+    with no rows is a finding;
+  - the optical writer writes it as the string `"NaN"` (OPT :33–35), and its REF :238 line then applies. Any other
+    zero-row optical precision is a finding.
+
+  Either way the empty list is also a finding under the rule above. The rule reports a finding rather than raising;
+  kit v3's zero-row probes exercise both writers.
 - **Measured counts.** `v1.associations` must equal `v1.baseline.associations`, and `v2.associations` must equal
   `v2.candidate.associations`. A count is 0 if and only if its solve is not `Accepted`. An accepted count is at least
   16, the same minimum, 12 plus 4.
@@ -775,9 +824,18 @@ must be found at B and absent at A:
 The check derives the code, both texts, the 2,500 bound and the 12/4 minimum from these quoted literals and CORE
 B:419 only.
 
-Any other A/B difference would be a finding. The over-bound narrow index needs no allowance either. `IndexPrefix`
-returns `maximumStars + 1` entries, so a B-arm over-bound narrow index holds 1,501. The core `Reject` serializes
-`training.Count`, and `triangleCount` is 0 there, so no serialized value differs.
+Corrected after PR-1181-R2 (R2-F3). This replaces "Any other A/B difference would be a finding":
+
+- The check never compares an A report with a B report. Only the frozen evaluator does that, over identity leaves and
+  association lists.
+- The check's A/B rules are exactly these: every quoted declaration is found at both revisions; the B-only
+  declarations are found at B and are absent at A; and a producer marker is a finding in A, and in B outside its
+  producer's shape and writer sites.
+- A value that differs between A and B is a finding only when it breaks a content rule in its own report.
+
+The over-bound narrow index needs no B-only allowance. `IndexPrefix` returns `maximumStars + 1` entries, so a B-arm
+over-bound narrow index holds 1,501. The core `Reject` serializes `training.Count`, and `triangleCount` is 0 there, so
+no serialized value differs.
 
 **Marker rule.** A marker is any string that contains `catalog-selection-unsupported`, `Catalog selection exceeds the `
 or `Accepted evidence exceeds the `:
@@ -941,3 +999,156 @@ manifests and link lists exactly.
 - **Lock-line header.** The run logs carry a host and lock header. The first four of them piped `grep` into `sed`, so
   their `heavy-lock line: none` could never print. In those logs, the absence of any `heavy-lock line:` means `grep`
   matched no `/proc/locks` line for the lock's inode. Later headers print `none` explicitly.
+
+#### Correction after PR-1181-R2
+
+Review PR-1181-R2 covered `17264cef`. It verified F2, R1-F1 and R1-F3, left R1-F2 partly fixed and raised five new
+findings:
+
+- **R2-F1 (High).** Repeated association rows met the 12/4 minimum. Twelve copies of one fitting row and four of one
+  withheld row, in both arms' stereographic optical reports, with no `non-unique measured associations` line, passed
+  the check and the frozen `ab()`.
+- **R2-F2 (High).** Non-finite cold solve times passed. With every cold `elapsedMilliseconds` of both rectilinear pixel
+  reports set to `NaN`, the evaluator's medians and ratios are `NaN`, its `> 1.10` comparisons are false, and it
+  reports "regression none". `1e309`, which parses as an infinity, also passed.
+- **R2-F3 (Low).** Two claims were wider than the check: that every object holds exactly its writer's keys, and that
+  any other A/B difference is a finding. Validations reduced to their identity, and a precision changed from 1 to 0,
+  both passed.
+- **R2-F4 (Medium).** The `rsync` priority, volume and "only other load" statements had no record and no attribution.
+- **R2-F5 (Low).** The PR body still showed the completed `17264cef` gate as pending.
+
+R2-F4 is corrected in [Measurement-host disclosure](#measurement-host-disclosure), and R2-F5 in the PR body. The R2-F3
+claims are corrected in place in the subsection above, under Keys, Precision and the A/B rules that follow the B-only
+producers.
+
+The corrected check is `a7a58b43` (SHA-256 `902e3343aa905961af8c7711c3999c29fecb0f8930f6effb4b2b10dd37586665`). It
+quotes 238 content declarations, up from 218, and 34 `deep` declarations, up from 22. The 20 A/B declarations and the
+four B-only declarations are unchanged. Each added content declaration is found at both A and B, and each added
+`deep` declaration in the sources the final pack records.
+
+**Reference scores (R2-F1, R2-F3).** The pixels and optical writers score a mapped solve with
+`VirtualAstrometryReference.Score` (PIX :72–73, OPT :179–185). Every pixels `score` and every optical
+`withheldScores[].score` must hold:
+
+- exactly the scorer's members (REF :245–256), and withheld rows with exactly REF :223–229's keys;
+- the precision and the once-per-index minimum under [Associations](#correction-after-pr-1181-r1) above;
+- a `withheldCount` equal to its withheld rows, a `missingMappings` equal to its rows without a mapping, and a
+  `withheldP95Pixels` that is null exactly when every row lacks a mapping (REF :231–234). A row's `residualPixels` is
+  null exactly when its `measuredMapping` is.
+
+Each REF :238–244 failure line is decided from the score's serialized values, and it must appear exactly as many times
+as the writer adds it: once when its condition holds and not at all when it does not. A line present when its
+condition does not hold is a finding. The conditions are:
+
+| Line | Text | Condition |
+| --- | --- | --- |
+| REF :238 | `{id}: association precision …` | precision is not 1, including the optical zero-row `"NaN"` |
+| REF :239–240 | `{id}: independent withheld mapping …` | fewer than 4 withheld rows, any without a mapping, RMS over 0.5, or p95 null or over 0.75 |
+| REF :241 | `{id}: pose …` | pose error over 0.06° or focal error over 0.001 |
+| REF :242 | `{id}: warm search ran hypotheses` | a warm solve with hypotheses not 0; pixels only |
+| REF :243–244 | `{id}: non-unique measured associations` | a repeated `detectionIndex` |
+
+The thresholds come from the quoted REF :239 and :241 literals. A line is matched by its `{id}: <fixed text>` prefix,
+never by its formatted remainder. `{id}` is the case id in pixels (PIX :73) and `{case}-{readout}-withheld` in
+optical (OPT :177, :184). A REF line for an id the writer did not score is a finding.
+
+**Solve times (R2-F2).** Every pixels row's `metrics.elapsedMilliseconds` must be a finite, nonnegative double, and
+`hypotheses` a count. The solver reads both from `AstrometricWorkControl`'s `Stopwatch` (INT :32–33; SOL :45, :47,
+B:86, B:102). The frozen evaluator divides each B capture-0 median by its A median (`issue-1167-evaluate.py` :89–91,
+:107). In every `runs` pixels report, A or B, the capture-0 median must therefore be positive. With finite times and
+positive medians, every ratio is finite.
+
+In `deep` mode, every row's solve time must be finite and nonnegative. `coldSolves` must equal the number of capture-0
+rows, and `coldP95Ms` must equal the nearest-rank p95 of their solve times exactly (harness :199, :243–244, :519).
+`coldP95Ms` must be null when there are none.
+
+**Non-finite values (R2-F2).** The pixels and resources writers and the `deep` harness serialize with `JsonOptions`
+(FIX :62; PIX :140, RES :146, harness :251–253). Those are the Web defaults with an enum converter and no named
+floating-point literals. Under them, System.Text.Json throws rather than write `NaN` or an infinity. That is framework
+behaviour and is not verified in this repository. Anywhere in such a report, the check therefore treats each of these
+as a finding:
+
+- a bare `NaN`, `Infinity` or `-Infinity`;
+- a number beyond the double range, such as `1e309` or `-1e309`, which Python reads as an infinity;
+- a string equal to `"NaN"`, `"Infinity"` or `"-Infinity"`.
+
+The string rule covers every string, not only members the writer declares as doubles. The optical, uncertainty and
+measured-stars writers set `AllowNamedFloatingPointLiterals` (OPT :33–35, UNC :54–56, MEAS :32–34), so the rule does not
+apply to them. Only an optical score's doubles are checked there, as finite numbers or the three strings.
+
+**Not checked.** The content rules do not check:
+
+- REF :242 in an optical withheld score, because that solve (OPT :176) is not serialized beside the score;
+- a score for an optical withheld frame without a mapping, which has none (OPT :178), only its failure line;
+- the withheld RMS and p95 values against the withheld rows, beyond the nullness and REF :240 line they decide;
+- the `expected` and `measuredMapping` pixels of a withheld row;
+- any formatted `{…:R}` text in a failure line;
+- failure lines no rule names, such as PIX :70's time-budget line, and lines for ids outside the declared inventory;
+- a `deep` row's score (harness :144) and failure lines;
+- finiteness in optical, uncertainty and measured-stars reports, outside an optical score's doubles.
+
+The R1 list of objects whose keys are not checked stands, as corrected under Keys above. A fabricated value that
+satisfies every rule is still not detected.
+
+**Declaration order.**
+
+1. `a7a58b43` was committed at 2026-10-08T01:56:12Z, before it was run on any pack.
+2. The expected outcome of every run below was written to `expected.md` and `expected.py` and hashed at 02:42:59Z,
+   before either check ran on a kit v3 probe, a re-run case, a discrimination case or a posted pack. An earlier
+   version hashed at 02:39:58Z was replaced then, also before any run. The replacement fixed a bug in the
+   count-message filter, removed an unused pattern and added the source-probe expectation. Both versions' hashes
+   are kept.
+3. The run began at 2026-10-08T02:48:08Z with the posted packs. It ended at 03:20:51Z with every comparison matching
+   its expectation: 223 of 223.
+
+**Results** (**SYNTHETIC except the posted packs: discrimination only, not performance evidence**). Each run
+compares `a7a58b43` with `4da7f452`, the `a8f09a0a` check:
+
+| Input | `4da7f452` | `a7a58b43` |
+| --- | --- | --- |
+| Posted `final/` (deep) | rc 0, 0 findings | rc 0, 0 findings |
+| Posted `ab/` | rc 1, the 10 pair-2 findings | rc 1, the same 10 findings |
+| Kit v3 good pack, `deep` and `ab` | rc 0, 0 findings | rc 0, 0 findings |
+| 105 kit v2 probes | rc 1 each | rc 1 each, every `4da7f452` finding kept, plus the predicted extras |
+| 76 kit v3 probes | rc 0, except the three zero-row optical probes | rc 1, except the two scope probes |
+| Source probes | rc 0 | rc 0, output byte-identical to the `a8f09a0a` record |
+
+The 32 condition-5 cases were rebuilt with the frozen trigger tool. In each, `4da7f452` reproduces its recorded rc
+and findings exactly. `a7a58b43` keeps every finding and adds only two sets: in
+`r1f2-empty-association-rows-both`, one "no association rows, so the writer's precision is 0/0 = NaN" per
+equidistant pixels report; and in `r1f2-association-row-shape-both`, one non-finite `residualPixels` per equisolid
+pixels report. Four each. Both baselines give rc 0 and 0 findings under both checks.
+
+Each R2 trigger was built on a symlink copy of the posted `ab/` pack. In every case the frozen evaluator reports
+"identity identical over 45 reports; regression none; verdict pass", and `4da7f452` gives rc 0 and 0 findings:
+
+| Case | `a7a58b43` |
+| --- | --- |
+| `r2f1-optical-repeats-both`: R2-F1, 12 copies of one fitting row and 4 of one withheld row in both arms' held-out stereographic optical reports, no failure line | rc 1, 4: per arm, the once-per-index count and the missing REF :244 line |
+| `r2f2-cold-nan-both`: R2-F2, every capture-0 `elapsedMilliseconds` of both rectilinear pixel reports set to `NaN` | rc 1, 8: a non-finite value and the Stopwatch rule, ×18, in a1-final, b1-final, a2 and b2 |
+| `r2f2-cold-1e309-both`: the same with `1e309` | rc 1, 8, the same |
+| `r2f3-t1-validations-identity-only-both`: R2-F3 trigger 1, every `fit.validations[]` cut to its identity in both arms | rc 1, 2: the validation keys, ×9 per arm |
+| `r2f3-t2-precision-zero`: R2-F3 trigger 2, one B score's precision set from 1 to 0 | rc 1, 2: "precision 0 is not 1.0", in b1-final and b2 |
+
+The Stopwatch rule's message names both values it checks, as in "elapsedMilliseconds nan is not a finite
+nonnegative Stopwatch reading (…), or hypotheses 3988 is not a count". Only one need be at fault; in the R2-F2 cases
+it is the elapsed time.
+
+After the run, a reproduction check that was not declared beforehand compared each rebuilt condition-5 case's file
+manifest and link list with the `a8f09a0a` archive's. All 32 match byte for byte.
+
+**Archive.** The run, the kit v3 tools and good pack, every case's outputs and the reproduction record are kept at
+`evidence/1167/a7a58b43/` (`SHA256SUMS` sha256 `bc9c0c99409d81328c7fc8189c0d362f6332bb792691eb9da9e3b355a6e8a962`).
+As before, the scratch packs are not kept.
+
+**Disclosures.**
+
+- **Lock-line header.** The run driver's header reused the defective form described under the R1 correction, so its
+  `heavy-lock line: none` could not print. Its log has no heavy-lock line: no `/proc/locks` line named the lock's
+  inode when it started. The reproduction and archive scripts print `none` explicitly.
+- **Another holder of the lock.** The reproduction header records the heavy lock held by pid 3180644. The script
+  neither took nor waited for the lock. By my account of `ps` at 03:21:10Z, which is not retained, that pid was a
+  `flock -n -o /tmp/hvo-520-heavy.lock ./pins.sh cf55033a… pinned` started at 03:21:00Z, not part of this run.
+- **Archive staged three times.** The first two copies, made at 03:22:30Z and 03:23:20Z and cited nowhere, were
+  removed and staged again to correct the README's account of that lock holder. The cited copy was staged at
+  03:23:35Z. Each staging ran the same script on the same run outputs; only the README differed.
