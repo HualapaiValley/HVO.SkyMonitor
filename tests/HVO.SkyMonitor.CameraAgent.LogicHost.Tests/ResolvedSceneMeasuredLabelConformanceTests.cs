@@ -55,7 +55,7 @@ public sealed class ResolvedSceneMeasuredLabelConformanceTests
             var dx = (index % width + .5 - star.Pixel.X) / 1.2;
             var dy = (index / width + .5 - star.Pixel.Y) / 1.2;
             var diskRate = diskPixels?.ElectronRate(index % width, index / width) ?? 0;
-            var sample = (ushort)Math.Round(1000 + diskRate + 4000 * Math.Exp(-.5 * (dx * dx + dy * dy)) + index * 7919 % 13 - 6);
+            var sample = (ushort)Math.Round(1000 + diskRate + 4000 * Math.Exp(-.5 * (dx * dx + dy * dy)) + FixtureNoise(index));
             bytes[index * 2] = (byte)sample;
             bytes[index * 2 + 1] = (byte)(sample >> 8);
         }
@@ -197,5 +197,17 @@ public sealed class ResolvedSceneMeasuredLabelConformanceTests
             if (!bindMeasured) withoutMeasured = rendered.Payload.ToArray();
             else Assert.IsFalse(rendered.Payload.Span.SequenceEqual(withoutMeasured), "both final host recipes retain the measured label");
         }
+    }
+
+    // Declared deterministic counter-hash noise, rather than a periodic ramp with constant adjacent differences.
+    private static int FixtureNoise(int index)
+    {
+        var bits = (uint)index + 526u;
+        bits ^= bits >> 16;
+        bits = unchecked(bits * 0x7FEB352Du);
+        bits ^= bits >> 15;
+        bits = unchecked(bits * 0x846CA68Bu);
+        bits ^= bits >> 16;
+        return (int)(bits % 13) - 6;
     }
 }
