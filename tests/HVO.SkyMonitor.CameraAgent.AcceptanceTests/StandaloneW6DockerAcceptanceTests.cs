@@ -611,7 +611,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromMinutes(3),
             ExpectedMonoAgentId,
             ExpectedMonoRoles,
-            4).ConfigureAwait(false);
+            5).ConfigureAwait(false);
         Assert.HasCount(1, warmup.Captures);
         using var sampler = new DockerResourceSampler(container, runtimeRoot, session);
         var measuredWindow = await CaptureExactWindowAsync(
@@ -622,7 +622,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromMinutes(3),
             ExpectedMonoAgentId,
             ExpectedMonoRoles,
-            4,
+            5,
             sampler).ConfigureAwait(false);
         sampler.WriteCsv(Path.Combine(evidenceRoot, "process.csv"));
         sampler.WriteQueueCsv(Path.Combine(evidenceRoot, "durable-queues.csv"));
@@ -3714,6 +3714,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 .SelectMany(static segment => new[] { segment.FromObjectId, segment.ToObjectId })
                 .ToHashSet(StringComparer.Ordinal);
             var nonEndpointObjects = sceneObjects.Where(item => !segmentEndpointIds.Contains(item.Id)).ToArray();
+            // 300 is no longer a cap check. Since 9183f9b8 the module queries up to maximumResults 32768
+            // (cameraagent.standalone-w6.json:10) below the best-case stellar magnitude ceiling
+            // (VirtualSkyCameraModule.cs:290-292), and the projected-scene step's maximumResults 300 (w6.json:234) is
+            // inert because VirtualSky supplies its own scene (CaptureProjectedSceneStager.cs:36). The bound holds only
+            // because the ceiling limits the selection.
             Assert.IsLessThanOrEqualTo(300, nonEndpointObjects.Length);
             Assert.IsTrue(sceneObjects.All(static item => item.Magnitude <= 6.5));
             Assert.IsLessThanOrEqualTo(300 + segmentEndpointIds.Count, sceneObjects.Count);
@@ -5059,6 +5064,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(TimeSpan.FromSeconds(1), raw.Descriptor.Controls.EffectiveExposure);
             Assert.AreEqual(150d, raw.Descriptor.Controls.EffectiveGain);
             var sceneObjects = ReadRetainedProjectedScene(root, raw, productManifests.Values).Objects;
+            // 300 is no longer a cap check. Since 9183f9b8 the module queries up to maximumResults 32768
+            // (cameraagent.standalone-w6-mono8.json:9) below the best-case stellar magnitude ceiling
+            // (VirtualSkyCameraModule.cs:290-292), and VirtualSky supplies its own scene (CaptureProjectedSceneStager.cs:36).
+            // The bound holds only because the ceiling limits the selection. 6.5 is only the configured
+            // maximumMagnitude, not the effective limit.
             Assert.IsLessThanOrEqualTo(300, sceneObjects.Count);
             Assert.IsTrue(sceneObjects.All(static item => item.Magnitude <= 6.5));
             var admission = raw.Descriptor.CycleEvidence?.ScheduleAdmission
