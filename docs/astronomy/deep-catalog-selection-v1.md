@@ -554,7 +554,7 @@ Review PR-1181-R0 found three ways the frozen evaluator can pass incomplete evid
 - G4 accepts a bare p95, and G8 skips a missing `indexPrefix`.
 
 The frozen manifest and evaluator stay unchanged, and they still decide. A separate script,
-`docs/validation/issue-1167-evidence-check.py`, checks that the evidence they decided on is complete. It has three
+`docs/validation/issue-1167-evidence-check.py`, checks that the evidence they decided on is complete. It has four
 versions:
 
 - `3cb05cf9` (SHA-256 `aa1524c202059829fd17605906d45860091f68cbe9ef8805fc07e9b45c812040`), described from here to
@@ -564,7 +564,10 @@ versions:
 - `a7a58b43` (SHA-256 `902e3343aa905961af8c7711c3999c29fecb0f8930f6effb4b2b10dd37586665`), which also checks reference
   scores, solve times and non-finite values and is described in
   [Correction after PR-1181-R2](#correction-after-pr-1181-r2). Where that subsection corrects a statement in the R1
-  subsection, the statement is corrected in place and says so.
+  subsection, the statement is corrected in place and says so;
+- the targeted cap-exception e1 check (SHA-256 `a8b2b94d3f64bb0a6ef7aed04291ef185733f69194223654fcc7f10acd4b58a6`),
+  described under [Correction after PR-1181-R3](#correction-after-pr-1181-r3), closes derived-number, association-order
+  and solver-counter gaps. The frozen evaluator remains unchanged.
 
 Its expected inventory comes only from committed sources, and the script quotes each source line at `d3b78737`:
 
@@ -1060,11 +1063,17 @@ The thresholds come from the quoted REF :239 and :241 literals. A line is matche
 never by its formatted remainder. `{id}` is the case id in pixels (PIX :73) and `{case}-{readout}-withheld` in
 optical (OPT :177, :184). A REF line for an id the writer did not score is a finding.
 
-**Solve times (R2-F2).** Every pixels row's `metrics.elapsedMilliseconds` must be a finite, nonnegative double, and
-`hypotheses` a count. The solver reads both from `AstrometricWorkControl`'s `Stopwatch` (INT :32–33; SOL :45, :47,
-B:86, B:102). The frozen evaluator divides each B capture-0 median by its A median (`issue-1167-evaluate.py` :89–91,
-:107). In every `runs` pixels report, A or B, the capture-0 median must therefore be positive. With finite times and
-positive medians, every ratio is finite.
+**Solve times (R2-F2, corrected after R3-F1/F4).** Every pixels row's `metrics.elapsedMilliseconds` must be a finite,
+nonnegative double read from `AstrometricWorkControl`'s Stopwatch (INT :32–33; SOL :45, :47, B:86, B:102).
+`hypotheses` is a separate nonnegative Int32 solver counter: CORE A:103/B:119 initializes it to zero and A:142/B:158
+increments it; AC A:156/B:207 declares `int Hypotheses`. The check enforces 0 through 2,147,483,647, excludes booleans
+and floating-point tokens, and retains the warm-search echo rule.
+
+The frozen evaluator computes each capture-0 median with `statistics.median` and divides B1/A1 and B2/A2
+(`issue-1167-evaluate.py` :89–91, :103–109). Finite samples can overflow the even-length median, and finite positive
+medians can overflow division. Each `runs` pixels median must be finite and positive; both ratios must separately be
+finite. The check uses the frozen aggregation and direction, without changing that evaluator or substituting a stable
+median. The former claim that finite inputs and positive medians guarantee finite ratios was false.
 
 In `deep` mode, every row's solve time must be finite and nonnegative. `coldSolves` must equal the number of capture-0
 rows, and `coldP95Ms` must equal the nearest-rank p95 of their solve times exactly (harness :199, :243–244, :519).
@@ -1077,7 +1086,8 @@ behaviour and is not verified in this repository. Anywhere in such a report, the
 as a finding:
 
 - a bare `NaN`, `Infinity` or `-Infinity`;
-- a number beyond the double range, such as `1e309` or `-1e309`, which Python reads as an infinity;
+- a number beyond the double range, such as `1e309` or `-1e309`, which Python reads as an infinity, or an integer-form
+  token such as `10**400` (corrected after R3-F5; Python parses the serialized 401-digit number as `int`);
 - a string equal to `"NaN"`, `"Infinity"` or `"-Infinity"`.
 
 The string rule covers every string, not only members the writer declares as doubles. The optical, uncertainty and
@@ -1160,3 +1170,40 @@ As before, the scratch packs are not kept.
 - **Archive staged three times.** The first two copies, made at 03:22:30Z and 03:23:20Z and cited nowhere, were
   removed and staged again to correct the README's account of that lock holder. The cited copy was staged at
   03:23:35Z. Each staging ran the same script on the same run outputs; only the README differed.
+
+### Correction after PR-1181-R3
+
+[Independent r3](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1181#pullrequestreview-5451420585) reviewed
+`17264cef..473c6a29` and returned **CHANGES_REQUIRED**. Its High blocking findings were finite cold samples that
+overflow the frozen aggregation (R3-F1) and symmetrically reordered association arrays that violate the declared
+writer order (R3-F2). It also found incomplete rsync attribution in the PR body (R3-F3, Medium), negative hypothesis
+counts with incorrect provenance (R3-F4, Low), and integer-form tokens beyond the double range (R3-F5, Low).
+Those last three were non-blocking in the actual review. The separate coordinator disposition makes F4/F5
+merge-blocking because impossible evidence passes the declared checker contract; the review's ratings remain intact.
+
+The targeted cap-exception e1 correction covers these five findings together. Ordinary correction reviews remain
+3/3. R2-F2, R2-F4 and R1-F2 remain partial until independent verification; R2-F1, R2-F3 and R2-F5 were independently
+verified. No historical measurement, frozen evaluator, manifest, threshold or outcome changes. Outcome three still
+advertises no deeper selection.
+
+The source-derived rules are:
+
+- finite and positive `statistics.median` capture-0 values for A1, B1, B2 and A2, plus separately finite B1/A1 and
+  B2/A2 ratios using the frozen evaluator's exact aggregation and direction;
+- nondecreasing association-row `catalogId` order equivalent to `StringComparer.Ordinal` (SOL A:88/B:97;
+  REF :201–208), for both pixels and optical scores. UTF-16 code units decide ordering, including supplementary
+  characters and unpaired surrogates. Equal IDs have no secondary order or new uniqueness requirement;
+- nonnegative Int32 `metrics.hypotheses`, grounded in the quoted CORE counter and AC declaration, with elapsed time
+  provenance kept separate;
+- a finite double-range check for integer-form numeric tokens as well as floats. Comparing arbitrary-size integers
+  with the finite double bound avoids an uncaught `OverflowError`; booleans remain excluded from numeric fields.
+  The existing named-string scope and optical exceptions remain as described above.
+
+The live PR body separately attributes the entire historical rsync description to the owner account, including
+priority and volume; it supplies no new historical host or load-state proof. The quoted solver and reference
+declarations, existing distinct-index minima, precision computation and failure echoes remain authoritative.
+
+The check is committed before its first run on measured or synthetic packs. Focused expected outcomes are declared
+and hashed before execution. The e1 request carries the exact new proofs, ordinary finite and ordered controls,
+original partial-finding scenarios, meaningful regression controls, full r3 report and separate severity disposition.
+New finding counts are recorded as observed; no unchanged-count claim is made for a corrected checker.

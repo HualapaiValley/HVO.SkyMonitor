@@ -4,7 +4,7 @@ Usage (standard library only; run with python3 -I inside a clone that holds the 
   issue-1167-evidence-check.py deep <#1167 manifest> <final pack> <measured revision> <output json>
   issue-1167-evidence-check.py ab <#1167 manifest> <#1126 manifest> <A/B pack> <measured revision> <output json>
 
-Added after review PR-1181-R0 (F1-F3) and corrected after PR-1181-R1 (R1-F1-R1-F3) and PR-1181-R2 (R2-F1-R2-F3). The
+Added after review PR-1181-R0 (F1-F3) and corrected after PR-1181-R1, PR-1181-R2 and PR-1181-R3. The
 frozen manifest and evaluator are unchanged and still decide; this check only establishes that the evidence they decided
 on is the complete declared inventory with the content its declared writers produce. Each version was committed before
 it was run on any measured or synthetic pack. Its expected inventory and content rules come only from committed sources:
@@ -35,13 +35,18 @@ no rows is a finding; the optical writer writes "NaN" with its REF :238 line. Se
 (CORE B:419) counts each detection index once. A score's withheld count, missing count and p95 nullness must be those
 of its withheld rows. Each REF :238-244 line is decided from the score's serialized values: it must appear exactly once
 when its condition holds and not at all when it does not. A line is matched by its "{id}: <fixed text>" prefix only. A
-REF line for an id the writer did not score is a finding. In a "runs" pixels report, A or B, the capture-0 solve times
-must have a positive median, because issue-1167-evaluate.py:89-91 takes that median and divides by the A arm's (:107).
+REF line for an id the writer did not score is a finding. Association rows preserve SOL A:88/B:97's nondecreasing
+StringComparer.Ordinal catalog-ID order (UTF-16 code units), without a secondary tie-breaker. Hypotheses are a
+nonnegative Int32 solver counter (CORE A:103/B:119, A:142/B:158; AC A:156/B:207), not a Stopwatch reading.
+In a "runs" pixels report, A or B, the exact statistics.median capture-0 aggregation must be finite and positive;
+both B1/A1 and B2/A2 ratios must also be finite (issue-1167-evaluate.py:89-91, :103-109). Finite samples alone do not
+guarantee either property, and an alternative overflow-resistant median would mask the frozen evaluator's behavior.
 
 Non-finite doubles (PR-1181-R2). The pixels and resources writers and the deep harness serialize with JsonOptions (FIX
 :62), which cannot write NaN or an infinity: System.Text.Json throws instead (framework behaviour, not verified in this
 repository). A bare NaN, Infinity or -Infinity, a number beyond the double range such as 1e309 (which Python reads as
-an infinity), or a string equal to "NaN", "Infinity" or "-Infinity" anywhere in such a report is a finding. The string
+an infinity), an integer-form token outside the double range, or a string equal to "NaN", "Infinity" or "-Infinity"
+anywhere in such a report is a finding. The string
 rule is a superset of numeric positions: it is not derived from which members are strings. The optical, uncertainty
 and measured writers serialize with EvidenceJsonOptions (OPT :33-35, UNC :54-56, MEAS :32-34), which writes those
 values as the three strings, so there the rule does not apply; only the optical score's doubles are checked (score()).
@@ -448,6 +453,9 @@ CONTENT_DECLARATIONS = (  # (source, line at A, line at B, declaration)
     # Solver core: every non-accepted result carries no associations; accepted ones are fit matches then held matches
     ("CORE", "104", "120", 'CoreResult Reject(string reason, CoreQuality? q = null, int candidates = 0) => new(false, "rejected", reason, null, '
                            'null, q, [],'),
+    ("CORE", "103", "119", "var grid = new CoreDetectionGrid(detections); var hypotheses = 0; var triangleCount = 0; var imageCount = 0; "
+                           "var exhausted = false;"),
+    ("CORE", "142", "158", "if (++hypotheses > o.MaximumHypotheses) { exhausted = true; goto SearchFinished; }"),
     ("CORE", "171", "187", 'return new(false, "acquired", "Refined acquisition candidates returned without verification or quality gates", null, '
                            'null, null, [],'),
     ("CORE", "175", "191", 'var accepted = evaluated.Where(c => c.Quality.Status == "accepted").ToArray();'),
@@ -772,7 +780,14 @@ def integer(value):
 
 
 def number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    # Comparing an arbitrary-size JSON integer with the double bound avoids math.isfinite/float's OverflowError.
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and -sys.float_info.max <= value <= sys.float_info.max)
+
+
+def ordinal(value):
+    """StringComparer.Ordinal compares UTF-16 code units, including unpaired surrogates, not Unicode code points."""
+    return value.encode("utf-16-be", errors="surrogatepass")
 
 
 def same(left, right):
@@ -798,14 +813,16 @@ def percentile95(values):
 
 def non_finite(data):
     """Each path holding a non-finite double (a bare NaN or infinity, or a number beyond the double range such as 1e309,
-    which json reads as an infinity) or a string equal to a named literal, with its count. Applied only to reports
+    which json reads as an infinity, or an integer-form token outside the double range) or a string equal to a named
+    literal, with its count. Applied only to reports
     written with JsonOptions (FIX :62); the string rule is not limited to members the writer declares as doubles."""
     found, stack = {}, [(data, "$")] if isinstance(data, (dict, list)) else []
     while stack:
         node, path = stack.pop()
         for key, value in node.items() if isinstance(node, dict) else enumerate(node):
             child = f"{path}.{key}" if isinstance(node, dict) else f"{path}[]"
-            if isinstance(value, float) and not math.isfinite(value) or isinstance(value, str) and value in NAMED:
+            if (isinstance(value, (int, float)) and not isinstance(value, bool) and not number(value)
+                    or isinstance(value, str) and value in NAMED):
                 found[child] = found.get(child, 0) + 1
             elif isinstance(value, (dict, list)):
                 stack.append((value, child))
@@ -862,6 +879,7 @@ class Report:
         self.label, self.data, self.kind, self.family, self.section, self.role, self.d = (
             label, data, kind, family, section, role, derived)
         self.findings, self.markers, self.echoes, self.observations = {}, {}, [], {}
+        self.cold_median = None
         failures = data.get("failures") if isinstance(data, dict) else None
         valid = isinstance(failures, list) and all(isinstance(line, str) for line in failures)
         self.failures = failures if valid else []
@@ -983,6 +1001,10 @@ class Report:
                        and isinstance(row["expectedNearestId"], str) and number(row["residualPixels"]) for row in value):
                 self.add(f"shape {path}", f"{path}: an association row is not the writer's shape (REF :208)")
                 return
+            ids = [ordinal(row["catalogId"]) for row in value]
+            if any(left > right for left, right in zip(ids, ids[1:])):
+                self.add(f"order {path}", f"{path}: catalogId rows are not in nondecreasing StringComparer.Ordinal order "
+                                         "(SOL A:88/B:97; REF :201-208); equal IDs have no additional ordering rule")
             # The minimum counts each detection once: a repeated index adds no star (and draws REF :244, score()).
             fitting = {row["detectionIndex"] for row in value if not row["verification"]}
             withheld = {row["detectionIndex"] for row in value if row["verification"]} - fitting
@@ -1120,10 +1142,11 @@ class Report:
                 self.add("row identity", f"{case}: view {row['name']!r}, capture {row['index']!r}, utc {row['utc']!r}")
             metrics = row["metrics"] if self.exact(row["metrics"], METRIC_KEYS, "$.reports[].metrics", case) else None
             if metrics is not None and (not number(metrics["elapsedMilliseconds"]) or metrics["elapsedMilliseconds"] < 0
-                                        or not integer(metrics["hypotheses"])):
+                                        or not integer(metrics["hypotheses"]) or not 0 <= metrics["hypotheses"] <= 2 ** 31 - 1):
                 self.add("metrics", f"{case}: elapsedMilliseconds {metrics['elapsedMilliseconds']!r} is not a finite nonnegative "
                                     f"Stopwatch reading (INT :32-33; SOL :45, :47, B:86, B:102), or hypotheses "
-                                    f"{metrics['hypotheses']!r} is not a count")
+                                    f"{metrics['hypotheses']!r} is not a nonnegative Int32 solver counter "
+                                    "(CORE A:103/B:119, A:142/B:158; AC A:156/B:207)")
                 metrics = None
             if same(row["index"], 0):
                 cold_valid = cold_valid and metrics is not None
@@ -1147,11 +1170,14 @@ class Report:
             if row["score"] is not None or not isinstance(assessment.get("reason"), str) or echo is None:
                 self.add("PIX:74", f"{case}: unmapped row with a score or without its PIX :74 failure")
             self.orphans(case, echo)
-        # issue-1167-evaluate.py:89-91 takes the capture-0 median of a1/b1 and b2/a2 and divides by the A one (:107): a
-        # median that is not positive cannot be a Stopwatch median of real solves, in either arm.
-        if self.section == "runs" and cold_valid and cold and statistics.median(cold) <= 0:
-            self.add("cold median", f"$.reports: the median capture-0 solve time {statistics.median(cold)!r} of {len(cold)} rows "
-                                    "is not positive (issue-1167-evaluate.py:89-91, :107)")
+        # Match the frozen Python aggregation exactly; its addition of two finite middle samples can overflow.
+        if self.section == "runs" and cold_valid and cold:
+            median = statistics.median(cold)
+            if not number(median) or median <= 0:
+                self.add("cold median", f"$.reports: the median capture-0 solve time {median!r} of {len(cold)} rows "
+                                        "is not finite and positive (issue-1167-evaluate.py:89-91, :107)")
+            else:
+                self.cold_median = median
         geometry = self.data["sourceGeometry"]
         if not isinstance(geometry, list) or len(geometry) != GRID_POINTS * len(mapped):
             self.add("geometry", f"$.sourceGeometry: {len(geometry) if isinstance(geometry, list) else geometry!r} entries, "
@@ -1500,7 +1526,8 @@ def check_content(label, path, family, section, role, revision, derived, finding
     report = Report(label, data, kind, family, section, role, derived).check(revision)
     findings.extend(report.messages())
     return {"report": label, "kind": kind, "revision": data.get("revision") if isinstance(data, dict) else None,
-            "findings": len(report.findings), "producers": report.observations}
+            "findings": len(report.findings), "producers": report.observations,
+            **({"coldMedianMs": report.cold_median} if kind == "pixels" and section == "runs" else {})}
 
 
 def source_declarations(revisions, families, derived, findings):
@@ -1819,10 +1846,28 @@ def ab(manifest_path, manifest_1126_path, pack, revision, output):
             else:
                 findings.append(f"{arm}/{family}: pixel report missing, declared at {revisions[role]}")
             pairs.append({"arm": arm, "family": family, "present": path.is_file()})
+    # The frozen evaluator divides B1/A1 and B2/A2. Positive finite medians can still produce an infinite ratio.
+    medians = {item["report"]: item.get("coldMedianMs") for item in contents if "coldMedianMs" in item}
+    timing_pairs = []
+    for family in families:
+        for name, numerator, denominator in (
+                ("B1/A1", f"b1-final/actual-pixels-blind-warm-readouts-{family}",
+                 f"a1-final/actual-pixels-blind-warm-readouts-{family}"),
+                ("B2/A2", f"b2/{family}", f"a2/{family}")):
+            b, a = medians.get(numerator), medians.get(denominator)
+            ratio = None
+            # Missing or invalid medians already have report/inventory findings; do not mask those with a division.
+            if a is not None and b is not None:
+                ratio = b / a
+                if not number(ratio):
+                    findings.append(f"{family} {name}: ratio {ratio!r} of finite positive medians {b!r}/{a!r} is not finite "
+                                    "(issue-1167-evaluate.py:103-109)")
+                    ratio = None
+            timing_pairs.append({"family": family, "pair": name, "aMedianMs": a, "bMedianMs": b, "ratio": ratio})
     return finish(output, "ab", findings, {"manifestSha256": sha256(manifest_path), "manifest1126Sha256": sha256(manifest_1126_path),
                                            "revisions": revisions, "derived": derived, "declarations": declarations,
                                            "contentDeclarations": content, "bOnlyDeclarations": b_only, "arms": arms,
-                                           "pixelPairs": pairs, "reports": contents})
+                                           "pixelPairs": pairs, "timingPairs": timing_pairs, "reports": contents})
 
 
 def finish(output, mode, findings, details):
