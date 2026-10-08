@@ -141,10 +141,16 @@ public sealed class W6CloudOverlayCorrespondenceTests
         {
             "assessment-identity-mismatch" => fixture with { Cloud = fixture.Cloud with { ContentIdentitySha256 = new string('D', 64) } },
             "capture-identity-mismatch" => fixture with { Cloud = fixture.Cloud with { CaptureId = Guid.Parse("52600000-0000-0000-0000-000000000099") } },
-            "layer-content-identity-mismatch" => fixture with { Layers = fixture.Layers.Select(input =>
-                input.Layer.LayerKind == "cloud-mask" ? input with { Product = input.Product with { ContentIdentitySha256 = new string('D', 64) } } : input).ToArray() },
-            "layer-lineage-mismatch" => fixture with { Layers = fixture.Layers.Select(input =>
-                input.Layer.LayerKind == "cloud-mask" ? input with { Product = input.Product with { SourceArtifactIds = [fixture.Base.ArtifactId] } } : input).ToArray() },
+            "layer-content-identity-mismatch" => fixture with
+            {
+                Layers = fixture.Layers.Select(input =>
+                input.Layer.LayerKind == "cloud-mask" ? input with { Product = input.Product with { ContentIdentitySha256 = new string('D', 64) } } : input).ToArray()
+            },
+            "layer-lineage-mismatch" => fixture with
+            {
+                Layers = fixture.Layers.Select(input =>
+                input.Layer.LayerKind == "cloud-mask" ? input with { Product = input.Product with { SourceArtifactIds = [fixture.Base.ArtifactId] } } : input).ToArray()
+            },
             "output-lineage-mismatch" => fixture with { Output = fixture.Output with { SourceArtifactIds = [fixture.Base.ArtifactId] } },
             "output-identity-mismatch" => fixture with { Output = fixture.Output with { ContentIdentitySha256 = new string('D', 64) } },
             "stored-output-mismatch" => fixture with { Output = fixture.Output with { Payload = ChangeByte(fixture.Output.Payload) } },
@@ -163,8 +169,11 @@ public sealed class W6CloudOverlayCorrespondenceTests
         fixture = fault switch
         {
             "base-reference" => fixture with { Base = fixture.Base with { ContentIdentitySha256 = new string('D', 64) } },
-            "layer-reference" => fixture with { Layers = fixture.Layers.Select(input =>
-                input.Layer.LayerKind == "cloud-labels" ? input with { Product = input.Product with { ContentIdentitySha256 = new string('D', 64) } } : input).ToArray() },
+            "layer-reference" => fixture with
+            {
+                Layers = fixture.Layers.Select(input =>
+                input.Layer.LayerKind == "cloud-labels" ? input with { Product = input.Product with { ContentIdentitySha256 = new string('D', 64) } } : input).ToArray()
+            },
             "manifest-identity" => fixture with { ManifestArtifact = fixture.ManifestArtifact with { ContentIdentitySha256 = new string('D', 64) } },
             _ => throw new ArgumentOutOfRangeException(nameof(fault))
         };
@@ -209,14 +218,20 @@ public sealed class W6CloudOverlayCorrespondenceTests
         else Array.Fill(bytes, (byte)12);
         var baseArtifact = new ProcessingArtifact(Guid.Parse("52600000-0000-0000-0000-000000000002"),
             FrameArtifactRole.Preview, "combined-preview", new string('0', 64), "application/x-hvo-packed-image", Layout,
-            bytes, FixedUtc, TimeSpan.FromSeconds(1), Compatibility) { CaptureId = CaptureId };
+            bytes, FixedUtc, TimeSpan.FromSeconds(1), Compatibility)
+        { CaptureId = CaptureId };
         var assessment = Assessment(tiles ?? DefaultTiles);
         var cloud = baseArtifact with
         {
-            ArtifactId = Guid.Parse("52600000-0000-0000-0000-000000000003"), Role = FrameArtifactRole.Metadata,
-            Variant = "cloud-assessment-v1", MediaType = "application/json", Layout = null,
-            Payload = CloudAssessmentJson.Serialize(assessment), ProductKind = ProcessingProductKind.Metadata,
-            SchemaVersion = CloudAssessmentV1.CurrentSchemaVersion, ContentIdentitySha256 = assessment.AssessmentIdentitySha256
+            ArtifactId = Guid.Parse("52600000-0000-0000-0000-000000000003"),
+            Role = FrameArtifactRole.Metadata,
+            Variant = "cloud-assessment-v1",
+            MediaType = "application/json",
+            Layout = null,
+            Payload = CloudAssessmentJson.Serialize(assessment),
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = CloudAssessmentV1.CurrentSchemaVersion,
+            ContentIdentitySha256 = assessment.AssessmentIdentitySha256
         };
         var reference = PresentationProcessingProducts.CreateReference(baseArtifact, new string('E', 64));
         // Observed input: actual producer, no replacement renderer or reference raster.
@@ -267,8 +282,10 @@ public sealed class W6CloudOverlayCorrespondenceTests
         product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload, FixedUtc,
         product.TotalIntegration, product.Compatibility, SourceArtifactIds: product.SourceArtifactIds)
     {
-        ProductKind = product.Kind, SchemaVersion = product.SchemaVersion,
-        ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256, CaptureId = CaptureId
+        ProductKind = product.Kind,
+        SchemaVersion = product.SchemaVersion,
+        ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256,
+        CaptureId = CaptureId
     };
 
     private static CloudAssessmentV1 Assessment((int Column, int Row)[] tiles)

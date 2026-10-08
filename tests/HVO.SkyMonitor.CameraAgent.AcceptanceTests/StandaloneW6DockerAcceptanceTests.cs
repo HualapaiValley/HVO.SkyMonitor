@@ -4053,7 +4053,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromTicks(manifest.TotalIntegrationTicks), manifest.Compatibility,
             manifest.Capture.CaptureSequence, manifest.Artifact.SourceArtifactIds)
         {
-            ProductKind = manifest.Kind, SchemaVersion = manifest.ProductSchemaVersion,
+            ProductKind = manifest.Kind,
+            SchemaVersion = manifest.ProductSchemaVersion,
             ContentIdentitySha256 = manifest.ContentIdentitySha256 ?? manifest.OutputIdentitySha256,
             CaptureId = manifest.Capture.CaptureId
         };
