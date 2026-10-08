@@ -113,46 +113,46 @@ internal sealed class DeepSkyReferenceTests
         switch (kind)
         {
             case "footprint":
-            {
-                Assert.AreEqual(DeepSkyRepresentation.Footprint, placed.Representation, name);
-                var footprint = scene.ResolvedFootprints.Single(candidate => candidate.Id == placed.Id);
-                Assert.AreEqual(ResolvedFootprintSourceKind.DeepSkyObject, footprint.SourceKind);
-                var circle = item.GetProperty("shape").GetString() == "circle";
-                Assert.AreEqual(circle ? ResolvedFootprintShape.Circle : ResolvedFootprintShape.Ellipse,
-                    footprint.Extent.Shape, name);
-                Assert.AreEqual(item.GetProperty("semiMajorAxisDegrees").GetDouble(), footprint.Extent.SemiMajorAxisDegrees,
-                    1e-12, name);
-                Assert.AreEqual(item.GetProperty("semiMinorAxisDegrees").GetDouble(), footprint.Extent.SemiMinorAxisDegrees,
-                    1e-12, name);
-                AssertCurvesAgree(name, footprint.Clipped, footprint.Parts, Rings(item), maximumSag);
-                break;
-            }
+                {
+                    Assert.AreEqual(DeepSkyRepresentation.Footprint, placed.Representation, name);
+                    var footprint = scene.ResolvedFootprints.Single(candidate => candidate.Id == placed.Id);
+                    Assert.AreEqual(ResolvedFootprintSourceKind.DeepSkyObject, footprint.SourceKind);
+                    var circle = item.GetProperty("shape").GetString() == "circle";
+                    Assert.AreEqual(circle ? ResolvedFootprintShape.Circle : ResolvedFootprintShape.Ellipse,
+                        footprint.Extent.Shape, name);
+                    Assert.AreEqual(item.GetProperty("semiMajorAxisDegrees").GetDouble(), footprint.Extent.SemiMajorAxisDegrees,
+                        1e-12, name);
+                    Assert.AreEqual(item.GetProperty("semiMinorAxisDegrees").GetDouble(), footprint.Extent.SemiMinorAxisDegrees,
+                        1e-12, name);
+                    AssertCurvesAgree(name, footprint.Clipped, footprint.Parts, Rings(item), maximumSag);
+                    break;
+                }
             case "outline":
-            {
-                var level = item.GetProperty("level").GetInt32();
-                Assert.AreEqual(DeepSkyRepresentation.Outline, placed.Representation, name);
-                Assert.AreEqual(level, placed.OutlineLevel, name);
-                var outline = scene.DeepSky.Outlines.Single(candidate => candidate.Id == placed.Id);
-                Assert.AreEqual(level, outline.Level, name);
-                var rings = Rings(item);
-                Assert.AreEqual(item.GetProperty("ringVertexCounts").GetArrayLength(), rings.Length, name);
-                Assert.AreEqual(rings.Length, outline.RingCount, name);
-                AssertCurvesAgree(name, outline.Clipped, outline.Parts, rings, maximumSag);
-                break;
-            }
+                {
+                    var level = item.GetProperty("level").GetInt32();
+                    Assert.AreEqual(DeepSkyRepresentation.Outline, placed.Representation, name);
+                    Assert.AreEqual(level, placed.OutlineLevel, name);
+                    var outline = scene.DeepSky.Outlines.Single(candidate => candidate.Id == placed.Id);
+                    Assert.AreEqual(level, outline.Level, name);
+                    var rings = Rings(item);
+                    Assert.AreEqual(item.GetProperty("ringVertexCounts").GetArrayLength(), rings.Length, name);
+                    Assert.AreEqual(rings.Length, outline.RingCount, name);
+                    AssertCurvesAgree(name, outline.Clipped, outline.Parts, rings, maximumSag);
+                    break;
+                }
             case "glyph":
-            {
-                Assert.AreEqual(DeepSkyRepresentation.SizedGlyph, placed.Representation, name);
-                Assert.IsEmpty(Rings(item));
-                var minimum = item.GetProperty("majorAxisPixelsMinimum").GetDouble();
-                var maximum = item.GetProperty("majorAxisPixelsMaximum").GetDouble();
-                Assert.IsNotNull(placed.MajorAxisPixels, name);
-                var majorAxis = placed.MajorAxisPixels!.Value;
-                Assert.IsTrue(
-                    majorAxis >= minimum - GlyphPixels && majorAxis <= maximum + GlyphPixels,
-                    $"{name}: the glyph's major axis {majorAxis} px is outside the reference [{minimum}, {maximum}].");
-                break;
-            }
+                {
+                    Assert.AreEqual(DeepSkyRepresentation.SizedGlyph, placed.Representation, name);
+                    Assert.IsEmpty(Rings(item));
+                    var minimum = item.GetProperty("majorAxisPixelsMinimum").GetDouble();
+                    var maximum = item.GetProperty("majorAxisPixelsMaximum").GetDouble();
+                    Assert.IsNotNull(placed.MajorAxisPixels, name);
+                    var majorAxis = placed.MajorAxisPixels!.Value;
+                    Assert.IsTrue(
+                        majorAxis >= minimum - GlyphPixels && majorAxis <= maximum + GlyphPixels,
+                        $"{name}: the glyph's major axis {majorAxis} px is outside the reference [{minimum}, {maximum}].");
+                    break;
+                }
             default:
                 Assert.Fail($"{name}: unknown kind {kind}.");
                 break;

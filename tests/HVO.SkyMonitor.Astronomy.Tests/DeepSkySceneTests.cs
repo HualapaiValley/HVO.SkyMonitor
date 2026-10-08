@@ -377,7 +377,10 @@ public sealed class DeepSkySceneTests
             "fisheye-zenith" => Fisheye(),
             "fisheye-narrow" => Fisheye() with
             {
-                ImageCircleRadiusPixels = 1200, BoresightAltitudeDegrees = 35, BoresightAzimuthDegrees = 250, RollDegrees = 10
+                ImageCircleRadiusPixels = 1200,
+                BoresightAltitudeDegrees = 35,
+                BoresightAzimuthDegrees = 250,
+                RollDegrees = 10
             },
             "fisheye-distorted" => new ProjectionContext(ProjectionModel.EquidistantFisheye, 259.5, 253, 150, 150, 512, 512,
                 ProjectionAperture.Circular, 232, BoresightAltitudeDegrees: 25, BoresightAzimuthDegrees: 250, RollDegrees: 10,
