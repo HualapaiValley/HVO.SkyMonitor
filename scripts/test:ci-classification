@@ -189,7 +189,7 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Components/Account/Login.r
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Components/Account/Login.razor"    full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/site.css"                full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Imaging/Filter.cs"        full false false false true  false false false
-verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false false false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Gallery/Thumbnail.cs"      full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
@@ -522,14 +522,14 @@ base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/Mixed.cs"
 commit_file "src/HVO.SkyMonitor.LogicHost/Components/Mixed.razor"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
-expect_components false false true true false false pull_request "$base_sha" "$head_sha"
+expect_components false false true true true false pull_request "$base_sha" "$head_sha"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "docs/mixed.md"
 commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/DocsMixed.cs"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_plan full false pull_request "$base_sha" "$head_sha"
-expect_components false false true false false false pull_request "$base_sha" "$head_sha"
+expect_components false false true false true false pull_request "$base_sha" "$head_sha"
 
 deployment_paths=(
   ".env.template"
