@@ -141,7 +141,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
                         if (!solved.Assessment.HasMeasuredMapping) caseFailures.Add($"{caseId}: {solved.Assessment.ReasonCode}: {solved.Assessment.Reason}");
                         else
                         {
-                            score = VirtualAstrometryReference.Score(view.Config.Rig, sceneUtc, nominal, catalog, detections, solved, caseFailures, caseId);
+                            score = VirtualAstrometryReference.Score(view.Config.Rig, sceneUtc, capturedFrame.Metadata.Exposure, nominal, catalog, detections, solved, caseFailures, caseId);
                             falseAssociations = FalseAssociations(view.Config.Rig, sceneUtc, catalog, detections, solved);
                             if (falseAssociations > .01 * solved.Associations.Count)
                                 caseFailures.Add($"{caseId}: {falseAssociations} of {solved.Associations.Count} associations are more than 1.5 px from their truth pixel");
