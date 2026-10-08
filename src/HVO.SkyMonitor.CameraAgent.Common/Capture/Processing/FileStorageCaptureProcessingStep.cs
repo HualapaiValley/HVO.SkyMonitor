@@ -230,7 +230,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     queueForUpload = false;
                 }
-                var isCanonicalScene = product.SchemaVersion == SceneProvenance.RetainedProjectedSceneSchemaVersion;
+                var isCanonicalScene = SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion);
                 if (isCanonicalScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
                 {
                     continue;
@@ -305,7 +305,7 @@ internal sealed class FileStorageCaptureProcessingStep(
     {
         if (!allowAutomaticPublication || !_centralIntegrationEnabled) return;
         var scenes = products.Where(static product =>
-            product.SchemaVersion == SceneProvenance.RetainedProjectedSceneSchemaVersion).ToArray();
+            SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion)).ToArray();
         if (needsSceneUpload && scenes.Length != 1)
             throw new InvalidDataException("Compact image upload requires one declared canonical scene dependency.");
         foreach (var product in scenes)

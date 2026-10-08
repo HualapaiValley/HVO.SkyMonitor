@@ -36,7 +36,7 @@ public sealed record ArtifactManifestV2(
             return descriptorValidation;
         }
         if (Scene is { RequiresProjectedScene: true } compact &&
-            (compact.ProjectedSceneSchemaVersion != SceneProvenance.RetainedProjectedSceneSchemaVersion ||
+            (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(compact.ProjectedSceneSchemaVersion) ||
              compact.Objects is not null || compact.Segments is not null || compact.SceneUtc is null ||
              !IsSha256(compact.SceneId) ||
              compact.ProjectedSceneStageSchemaVersion != "projected-scene-stage-v1" ||

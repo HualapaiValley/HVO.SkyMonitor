@@ -261,6 +261,22 @@ rows hold no 5.5 selection.
 
 The merge-head harness no longer times isolation. Against a later report the evaluator's grid section finds no rows.
 
+**Carry-over to the merged code.** The qualification evidence was produced at `d3b78737`, whose `Evaluate` used the
+grid `IsolatedIds`. The merged code restores the `0639e27d` pairwise isolation rule. Carry-over rests on:
+
+- (a) zero disagreements between the two rules over 512 cold truth-projected rows (378 held-out, 134 tuning, six
+  families) at `d3b78737`;
+- (c) the pairwise-oracle unit tests (seeded 0–8,192-star skies, boundary, coincident, non-finite and integer-extreme
+  cases), a Debug run on the tree committed 15 s later as `67d39352`; no durable trx exists at `d3b78737`;
+- (d) a predeclared merge-head run at `b01d6b4a` of the frozen runner's 36 held-out runs, whose 21,520 deterministic
+  identity leaves and 1,645 association arrays over 34 reports (required: 16,340 and 1,177 over 26) are identical to
+  `d3b78737`; the two runs without a report fail identically on both sides; the only other differing leaves are the
+  isolation-timing block (5 kinds × 378) that `6d3726ca` removed from the harness, which the predeclared comparison
+  excludes as non-deciding.
+
+(d) ran at `b01d6b4a`, the PR head before the base sync; the sync delta's effect on the qualification path is recorded
+in #1181's base-sync review.
+
 ### Measurement-host disclosure
 
 From 06:58:22Z to about 07:00:34Z on 7 October 2026, an evidence copy (`rsync`, nice 19, idle I/O class, about 121 MB)

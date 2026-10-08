@@ -19,7 +19,12 @@ public enum CaptureLaneHandlerOutcome
     Completed,
     Deferred,
     RetryableFailure,
-    TerminalFailure
+    TerminalFailure,
+    /// <summary>
+    /// The work can never run under the current code or deadline, so it is finished without a result. Unlike
+    /// <see cref="TerminalFailure"/> it does not quarantine the row or block an ordered lane.
+    /// </summary>
+    Abandoned
 }
 
 internal sealed record CaptureLaneDefinition(
@@ -59,6 +64,9 @@ public readonly record struct CaptureLaneHandlerResult(
 
     public static CaptureLaneHandlerResult Terminal(string reason)
         => new(CaptureLaneHandlerOutcome.TerminalFailure, reason);
+
+    public static CaptureLaneHandlerResult Abandon(string reason)
+        => new(CaptureLaneHandlerOutcome.Abandoned, reason);
 }
 
 internal sealed record CaptureLaneLease(
