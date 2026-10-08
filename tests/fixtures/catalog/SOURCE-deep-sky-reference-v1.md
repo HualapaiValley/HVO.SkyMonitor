@@ -52,13 +52,23 @@ dependency:
 
 ## Command
 
-From the repository root, with the output written outside the repository:
+From the repository root, using the pinned environment above and a fresh
+directory outside the repository. The generator records its basename, so execute
+the byte-identical copy named `deep_sky_reference.py` used by the original run:
 
 ```bash
-python -I docs/validation/issue-525-deep-sky-reference.py \
+issue525_ref_scratch=$(mktemp -d /tmp/issue525-reference.XXXXXX)
+cp docs/validation/issue-525-deep-sky-reference.py "$issue525_ref_scratch/deep_sky_reference.py"
+cmp docs/validation/issue-525-deep-sky-reference.py "$issue525_ref_scratch/deep_sky_reference.py"
+printf '%s  %s\n' \
+  79746dc29bfe9de623ff9ddf5e8e970e31167787899ee59fb15d0dc6f800fea3 \
+  "$issue525_ref_scratch/deep_sky_reference.py" | sha256sum -c -
+/path/to/pinned/venv/bin/python -I "$issue525_ref_scratch/deep_sky_reference.py" \
   tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-objects.csv \
   tests/fixtures/catalog/hyg-v44-openngc-subset-deep-sky-outline-points.csv \
-  <output>/deep-sky-reference-v1.json
+  "$issue525_ref_scratch/deep-sky-reference-v1.json"
+cmp tests/fixtures/catalog/deep-sky-reference-v1.json "$issue525_ref_scratch/deep-sky-reference-v1.json"
+sha256sum "$issue525_ref_scratch/deep-sky-reference-v1.json"
 ```
 
 The generator refuses to run without `-I`. It records only the base names of its

@@ -56,6 +56,9 @@ CLASS=HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.CatalogPerformanceTests
 [[ -f "$OUTPUT_DIR/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.dll" ]] ||
   fail "The Release output is missing; build the head first: $OUTPUT_DIR"
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || fail "The worktree must be clean."
+[[ -x /usr/bin/time ]] || fail "GNU /usr/bin/time is required for terminal maximum-RSS evidence."
+CLK_TCK=$(getconf CLK_TCK)
+[[ "$CLK_TCK" =~ ^[1-9][0-9]*$ ]] || fail "Cannot record Linux process-CPU counter granularity."
 
 LOCK_INODE=$(stat -c %i -- "$LOCK")
 LOCK_LINE=
@@ -85,7 +88,7 @@ HEAD_SHA=$(git rev-parse HEAD)
 log "START mode=$MODE hostname=$(hostname) head=$HEAD_SHA tree=$(git rev-parse 'HEAD^{tree}') pid=$$"
 log "LOCK $LOCK inode=$LOCK_INODE holder=$holder $LOCK_LINE"
 log "DF -B1 / $(df -B1 / | tail -n 1)"
-log "HOST nproc=$(nproc) loadavg=$(cat /proc/loadavg) kernel=$(uname -r) sdk=$(dotnet --version)"
+log "HOST nproc=$(nproc) loadavg=$(cat /proc/loadavg) kernel=$(uname -r) sdk=$(dotnet --version) cpuTicksPerSecond=$CLK_TCK"
 log "SCRIPT sha256=$(sha256sum -- "$0" | cut -c1-64)"
 (cd "$OUTPUT_DIR" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$EVIDENCE_DIR/release-output.sha256"
 log "RELEASE-OUTPUT files=$(wc -l < "$EVIDENCE_DIR/release-output.sha256") sha256=$(sha256sum < "$EVIDENCE_DIR/release-output.sha256" | cut -c1-64)"
@@ -115,8 +118,10 @@ for arm in "${PLAN[@]}"; do
   started=$(date +%s%N)
   code=0
   HVO_CATALOG_DSO_ROOT=$root HVO_CATALOG_DSO_VERSION=$version HVO_PERF_REVISION=$HEAD_SHA HVO_PERF_TRIAL=$trial \
+    HVO_ISSUE525_CLK_TCK=$CLK_TCK \
     HVO_PERF_OUTPUT="$EVIDENCE_DIR/results" \
-    "${NICE[@]}" dotnet test "$PROJECT" --no-build --configuration Release \
+    "${NICE[@]}" /usr/bin/time -v -o "$EVIDENCE_DIR/trials/$trial-resources.txt" \
+    dotnet test "$PROJECT" --no-build --configuration Release \
     -nodeReuse:false -p:UseSharedCompilation=false -p:UseRazorBuildServer=false \
     --filter "FullyQualifiedName=$CLASS.$method" \
     --logger "trx;LogFileName=$trial.trx" --results-directory "$EVIDENCE_DIR/trials/$trial" \
@@ -124,8 +129,15 @@ for arm in "${PLAN[@]}"; do
   log "TRIAL-END $trial exit=$code wallMilliseconds=$((($(date +%s%N) - started) / 1000000))"
   [[ "$code" -eq 0 ]] || fail "Trial $trial failed; see trials/$trial.log."
   [[ -f "$EVIDENCE_DIR/results/catalog-dso-$name-$trial.json" ]] || fail "Trial $trial wrote no evidence."
+  python3 docs/validation/issue-525-evidence-check.py "$EVIDENCE_DIR/results/catalog-dso-$name-$trial.json" \
+    --pins "$OUTPUT_DIR/issue-525-query-pins.json" --revision "$HEAD_SHA" --trial "$trial" \
+    > "$EVIDENCE_DIR/trials/$trial-validation.log" 2>&1 || fail "Trial $trial evidence contract failed."
+  log "EVIDENCE-VALID $trial schema=hvo-catalog-performance-v2"
 done
 
+python3 docs/validation/issue-525-evidence-check.py "$EVIDENCE_DIR/results" \
+  --pins "$OUTPUT_DIR/issue-525-query-pins.json" --revision "$HEAD_SHA" --campaign "$MODE" \
+  > "$EVIDENCE_DIR/campaign-validation.log" 2>&1 || fail "Campaign output equivalence failed."
 kill "$VMSTAT_PID"
 wait "$VMSTAT_PID" 2> /dev/null || true
 VMSTAT_PID=

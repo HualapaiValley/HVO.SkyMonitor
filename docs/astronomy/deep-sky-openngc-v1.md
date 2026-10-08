@@ -22,6 +22,14 @@ the measured label path that #526 gates on detections.
 - deep-sky content from the physical stager, which stays on scene schema v1
   until physical qualification (#1166)
 
+## Measurement status
+
+M1/AC8 acceptance remains pending. The corrected harness and its prospective
+query, CPU, full-resolution resource and cache interpretation are described in
+[the measurement contract](../validation/issue-525-measurement.md). Smoke proves
+functional output and bounds; it does not replace the allocated ABBA campaign
+or the other explicit acceptance evidence.
+
 ## Ownership
 
 - **`HVO.SkyMonitor.Astronomy`** owns the catalogue and scene contracts:

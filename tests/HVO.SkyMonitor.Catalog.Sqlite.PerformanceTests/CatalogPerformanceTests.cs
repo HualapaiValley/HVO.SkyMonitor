@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests;
 [TestCategory("Manual")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class CatalogPerformanceTests
+public sealed partial class CatalogPerformanceTests
 {
     private const int WarmupOperations = 5;
     private const int MeasuredOperations = 100;
@@ -230,12 +230,13 @@ public sealed class CatalogPerformanceTests
 
         var starAllSky = await MeasureLatencyAsync("stars-all-sky", MeasuredOperations,
             async _ => await snapshot.Catalog.QueryCandidatesAsync(new CatalogCandidateQuery(6.5)).ConfigureAwait(false),
-            static (_, result) => (string.Empty, ComputeResultChecksum(result))).ConfigureAwait(false);
+            static (_, result) => (string.Empty, CheckStarQueryChecksum(result))).ConfigureAwait(false);
         var starBoundedCap = await MeasureLatencyAsync("stars-bounded-cap", MeasuredOperations,
             async _ => await snapshot.Catalog.QueryCandidatesAsync(
                 new CatalogCandidateQuery(6.5, new J2000SphericalCap(6.752477, -16.716116, 20))).ConfigureAwait(false),
-            static (_, result) => (string.Empty, ComputeResultChecksum(result))).ConfigureAwait(false);
+            static (_, result) => (string.Empty, CheckStarQueryChecksum(result))).ConfigureAwait(false);
         object? deepSkyRegion = null;
+        object? deepSkyWorkloads = null;
         if (deepSky is not null)
         {
             var pointings = CreateDeepSkyPointings();
@@ -256,6 +257,7 @@ public sealed class CatalogPerformanceTests
                 maximumMatches = matches.Max(),
                 totalMatches = matches.Sum()
             };
+            deepSkyWorkloads = await MeasurePinnedDeepSkyQueriesAsync(snapshot, deepSky).ConfigureAwait(false);
         }
 
         var builder = new VisibleSceneBuilder(snapshot.Catalog, StandardConstellationTopology.CreateD3Celestial(),
@@ -263,12 +265,13 @@ public sealed class CatalogPerformanceTests
         var style = new PresentationDeepSkyStyleV1(MaximumLabels: 24, MaximumLabelCharacters: 24, LabelScale: 2);
         var layout = new ImageLayout(W6Size, W6Size, CameraPixelFormat.Rgb24, W6Size * 3);
         var basePixels = CreateW6Base();
+        var baseChecksum = ComputeBytesChecksum(basePixels);
         object? baseComposite = null;
         if (deepSky is not null)
         {
             baseComposite = await MeasureLatencyAsync("composite-base-only", DeepSkySceneRepetitions,
                 _ => ValueTask.FromResult(PresentationLayerCompositor.CompositeDisplay(layout, basePixels, [])),
-                static (_, result) => (string.Empty, ComputeBytesChecksum(result.Pixels))).ConfigureAwait(false);
+                (_, result) => (string.Empty, CheckCompositePixels(layout, basePixels, result))).ConfigureAwait(false);
         }
 
         var scenes = new List<object>();
@@ -304,6 +307,7 @@ public sealed class CatalogPerformanceTests
             });
         }
 
+        Assert.AreEqual(baseChecksum, ComputeBytesChecksum(basePixels), "Composition must preserve the borrowed base.");
         await WriteEvidenceAsync($"dso-{arm}", new
         {
             arm,
@@ -311,7 +315,28 @@ public sealed class CatalogPerformanceTests
             snapshot.SnapshotVersion,
             snapshot.DatabaseSha256,
             startup,
-            queries = new { starAllSky, starBoundedCap, deepSkyRegion },
+            queries = new { starAllSky, starBoundedCap, deepSkyRegion, deepSkyWorkloads },
+            measurementContract = "hvo-issue525-measurement-v2",
+            cpu = new
+            {
+                counter = "Process.TotalProcessorTime",
+                scope = "process CPU between operation counter reads; verification is separate",
+                ticksPerSecond = Environment.GetEnvironmentVariable("HVO_ISSUE525_CLK_TCK"),
+                limits = "Platform counter granularity, counter-read overhead, GC and other process threads; zero is below resolution, not free work."
+            },
+            fullResolutionBuffers = new
+            {
+                borrowedBaseCount = 1,
+                borrowedBaseBytes = basePixels.Length,
+                borrowedBaseChecksumSha256 = baseChecksum,
+                ownedOutputCountPerOperation = 1,
+                ownedOutputBytes = layout.RequiredByteLength,
+                maximumNativeTileBytes = 1024 * 1024 * 4,
+                fullFrameLayerBuffers = 0,
+                source = "PresentationLayerPayload.cs CompositeCore/DrawSemanticLayer; native geometry and GC retention are covered by process high-water evidence",
+                processPeakLimitBytes = 2L * 1024 * 1024 * 1024,
+                baseUnchanged = true
+            },
             geometry = new
             {
                 workload = "W6",
@@ -370,7 +395,7 @@ public sealed class CatalogPerformanceTests
                 [new PresentationCompositorLayer(layer.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)];
             var composite = await MeasureLatencyAsync($"composite-deep-sky-{route}", DeepSkySceneRepetitions,
                 _ => ValueTask.FromResult(PresentationLayerCompositor.CompositeDisplay(layout, basePixels, layers)),
-                static (_, result) => (string.Empty, ComputeBytesChecksum(result.Pixels))).ConfigureAwait(false);
+                (_, result) => (string.Empty, CheckCompositePixels(layout, basePixels, result))).ConfigureAwait(false);
             // The compositor refuses a layer over its primitive or work budget, so a completed composite is the bound
             // check.
             var payload = layer.Payload;
@@ -380,6 +405,7 @@ public sealed class CatalogPerformanceTests
                 composite,
                 payloadBytes = PresentationLayerPayloadJson.Serialize(payload).Length,
                 payloadContentIdentitySha256 = payload.ContentIdentitySha256,
+                layerBounds = MeasureLayerBounds(payload),
                 markers = payload.Markers.Count,
                 segments = payload.Segments.Count,
                 ellipses = payload.Ellipses.Count,
@@ -569,6 +595,7 @@ public sealed class CatalogPerformanceTests
         var first = await operation(0).ConfigureAwait(false);
         var firstOperationMilliseconds = Stopwatch.GetElapsedTime(firstStarted).TotalMilliseconds;
         Check(0, first);
+        first = default!;
         for (var warmup = 1; warmup <= WarmupOperations; warmup++)
         {
             Check(warmup, await operation(warmup).ConfigureAwait(false));
@@ -577,18 +604,26 @@ public sealed class CatalogPerformanceTests
         using var process = Process.GetCurrentProcess();
         var elapsed = new double[repetitions];
         long allocated = 0;
-        var cpuBefore = process.TotalProcessorTime;
+        double cpuMilliseconds = 0;
+        double verificationCpuMilliseconds = 0;
+        var memoryBefore = ReadProcessMemory(process);
         for (var iteration = 0; iteration < repetitions; iteration++)
         {
             var index = WarmupOperations + 1 + iteration;
+            var cpuBefore = process.TotalProcessorTime;
             var allocationBefore = GC.GetTotalAllocatedBytes(precise: true);
             var started = Stopwatch.GetTimestamp();
             var result = await operation(index).ConfigureAwait(false);
             elapsed[iteration] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             allocated += GC.GetTotalAllocatedBytes(precise: true) - allocationBefore;
+            cpuMilliseconds += (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+            var verificationCpuBefore = process.TotalProcessorTime;
             Check(index, result);
+            verificationCpuMilliseconds += (process.TotalProcessorTime - verificationCpuBefore).TotalMilliseconds;
+            // The async state machine must not retain a previous full-frame result across the next operation.
+            result = default!;
         }
-        var cpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        var memoryAfter = ReadProcessMemory(process);
 
         Array.Sort(elapsed);
         return new LatencyMeasurement(
@@ -601,12 +636,22 @@ public sealed class CatalogPerformanceTests
             elapsed[(int)Math.Ceiling(repetitions * 0.95) - 1],
             elapsed[^1],
             cpuMilliseconds / repetitions,
+            verificationCpuMilliseconds / repetitions,
             allocated / repetitions,
+            repetitions / TimeSpan.FromMilliseconds(elapsed.Sum()).TotalSeconds,
+            memoryBefore,
+            memoryAfter,
             ComputeTextChecksum(string.Join('\n', checksums.Select(static pair => $"{pair.Key}:{pair.Value}"))));
     }
 
     private static string ComputeDeepSkyResultChecksum(DeepSkyQueryResult result) => ComputeTextChecksum(
         $"{result.MatchCount}\n{string.Join('\n', result.Objects.Select(static item => item.Id))}");
+
+    private static string CheckStarQueryChecksum(IReadOnlyList<CelestialCatalogObject> result)
+    {
+        Assert.IsGreaterThan(0, result.Count, "A production star workload must not be empty.");
+        return ComputeResultChecksum(result);
+    }
 
     private static string ComputeDeepSkySceneChecksum(VisibleScene scene) => ComputeTextChecksum(string.Join('\n',
         (scene.DeepSky?.Objects ?? []).Select(static item => $"{item.Id}:{item.Representation}")));
@@ -615,6 +660,51 @@ public sealed class CatalogPerformanceTests
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
     private static string ComputeBytesChecksum(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+
+    private static string CheckCompositePixels(ImageLayout layout, byte[] immutableBase,
+        (ImageLayout Layout, byte[] Pixels) result)
+    {
+        Assert.AreEqual(layout, result.Layout);
+        Assert.AreEqual(layout.RequiredByteLength, result.Pixels.Length);
+        Assert.AreNotSame(immutableBase, result.Pixels, "The compositor must own its output.");
+        return ComputeBytesChecksum(result.Pixels);
+    }
+
+    private static ProcessMemoryMeasurement ReadProcessMemory(Process process)
+    {
+        process.Refresh();
+        Assert.IsLessThanOrEqualTo(2L * 1024 * 1024 * 1024, process.PeakWorkingSet64,
+            "W3-CAT-DSO cumulative process high-water must remain within its declared 2 GiB bound.");
+        return new ProcessMemoryMeasurement(process.WorkingSet64, process.PeakWorkingSet64,
+            GC.GetTotalMemory(forceFullCollection: false));
+    }
+
+    private static object MeasureLayerBounds(PresentationLayerPayloadV1 payload)
+    {
+        Assert.AreNotEqual(PresentationLayerPayloadV1.PreviousSchemaVersion, payload.SchemaVersion,
+            "The declared 4 MiB tile bound applies to semantic-layer rendering.");
+        var primitives = payload.Markers.Count + payload.Segments.Count + payload.Ellipses.Count +
+            payload.TextBlocks.Sum(static block => block.Lines.Count + (block.Backplate is null ? 0 : 2) +
+                (block.Backplate?.Style?.HeadingRule == true && block.Lines.Count > 1 ? 1 : 0));
+        var textCharacters = payload.TextBlocks.Sum(static block => block.Lines.Sum(static line => line.Length));
+        var geometryWork = payload.Segments.Sum(static segment =>
+            (Math.Abs(segment.From.X - segment.To.X) + Math.Abs(segment.From.Y - segment.To.Y) + 1) * segment.Thickness) +
+            payload.Ellipses.Sum(static ellipse => 4 * (ellipse.RadiusX + ellipse.RadiusY)) +
+            payload.Markers.Sum(static marker => 16 * (marker.Radius + 4)) +
+            payload.TextBlocks.Sum(static block => block.Lines.Sum(line => (long)line.Length * 49 * block.Scale * block.Scale));
+        Assert.IsNull(payload.TileMask, "Deep-sky layers have no tile-mask buffer.");
+        Assert.IsLessThanOrEqualTo(PresentationDeepSkyLayerProducer.MaximumPrimitives, primitives);
+        Assert.IsLessThanOrEqualTo(PresentationDeepSkyLayerProducer.MaximumWork, geometryWork);
+        return new
+        {
+            primitives,
+            textCharacters,
+            geometryWork,
+            maximumPrimitives = PresentationDeepSkyLayerProducer.MaximumPrimitives,
+            maximumGeometryWork = PresentationDeepSkyLayerProducer.MaximumWork,
+            semanticLayerSchema = payload.SchemaVersion
+        };
+    }
 
     private static SortedDictionary<string, int> CountBy(IEnumerable<string> values)
     {
@@ -652,7 +742,8 @@ public sealed class CatalogPerformanceTests
     {
         var evidence = new
         {
-            schema = "hvo-catalog-performance-v1",
+            schema = workload.StartsWith("dso-", StringComparison.Ordinal)
+                ? "hvo-catalog-performance-v2" : "hvo-catalog-performance-v1",
             revision = Environment.GetEnvironmentVariable("HVO_PERF_REVISION") ?? "working-tree",
             trial = Environment.GetEnvironmentVariable("HVO_PERF_TRIAL") ?? "local",
             workload,
@@ -666,7 +757,8 @@ public sealed class CatalogPerformanceTests
                 concurrency = 1,
                 initialBacklog = 0,
                 serverGarbageCollection = GCSettings.IsServerGC,
-                externalIo = false
+                externalIo = workload.StartsWith("dso-", StringComparison.Ordinal),
+                externalIoDescription = "DSO trials include local catalog/evidence filesystem I/O; no measured network I/O."
             },
             results
         };
@@ -702,8 +794,15 @@ public sealed class CatalogPerformanceTests
         double P95Milliseconds,
         double MaximumMilliseconds,
         double CpuMillisecondsPerOperation,
+        double VerificationCpuMillisecondsPerOperation,
         long AllocatedBytesPerOperation,
+        double OperationsPerSecond,
+        ProcessMemoryMeasurement MemoryBefore,
+        ProcessMemoryMeasurement MemoryAfter,
         string ResultChecksumSha256);
+
+    // PeakWorkingSetBytes is the process-lifetime high-water, not a separately reset per-stage native allocation.
+    private sealed record ProcessMemoryMeasurement(long WorkingSetBytes, long PeakWorkingSetBytes, long ManagedBytes);
 
     private sealed class UncappedCatalog(SqliteCelestialCatalog inner) : ICelestialCatalog, IHipparcosCatalog
     {
