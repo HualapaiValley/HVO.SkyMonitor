@@ -78,6 +78,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
     private const string LiveActor = "logic-host";
     internal const string RevisionRetiredReasonCode = "revision-retired";
     private const int MaximumLiveExpansionAttempts = 2;
+    private const int MaximumConvergenceAttempts = 3;
+    private const int SqlServerDeadlockVictim = 1205;
     internal const string SourceRetentionExpiredReasonCode = "source-retention-expired";
     private static readonly EnvironmentalObservationSourceKind[] EnvironmentalSourcePriority =
         Enum.GetValues<EnvironmentalObservationSourceKind>();
@@ -126,7 +128,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 return Return(new(CentralProcessingGraphScheduleOutcome.NotApplicable));
             }
-            var plan = CompileAndVerify(assignment.Revision);
+            var plan = CompileAndVerify(assignment.Revision, assignment.Id);
             var provenance = await LoadSourceProvenanceAsync(
                 artifact.Frame.Artifacts.Select(static item => item.Id), cancellationToken).ConfigureAwait(false);
             if (!plan.Sources.Any(source => source.Outputs.Any(output =>
@@ -207,7 +209,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
         ProcessingGraphExecutionPlan plan;
         try
         {
-            plan = CompileAndVerify(revision);
+            plan = CompileAndVerify(revision, assignmentId: null);
         }
         catch (CentralDerivativeJobStateException)
         {
@@ -259,6 +261,39 @@ internal sealed partial class CentralProcessingGraphScheduler(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // A deadlock victim's transaction is rolled back whole, so convergence reruns it whole, but only when it began the
+        // transaction itself; a caller's transaction holds the caller's own work and is the caller's to retry. The retry
+        // is immediate: the session that won the deadlock already holds the locks it needed, and the rerun waits for it.
+        var ownsTransaction = dbContext.Database.CurrentTransaction is null;
+        for (var attempt = 1; ; attempt++)
+        {
+            var deadlock = await ConvergeOnceAsync(
+                executionId,
+                now,
+                absorbDeadlock: ownsTransaction && attempt < MaximumConvergenceAttempts,
+                cancellationToken).ConfigureAwait(false);
+            if (deadlock is null)
+            {
+                return;
+            }
+            if (logger is not null)
+            {
+                Log.ConvergenceDeadlockRetried(logger, deadlock, executionId, attempt);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Converges the execution in one transaction. Returns null once it has converged, or the deadlock that rolled the
+    /// transaction back when <paramref name="absorbDeadlock"/> allows it to be retried; any other failure is recorded
+    /// and thrown.
+    /// </summary>
+    private async Task<Exception?> ConvergeOnceAsync(
+        Guid executionId,
+        DateTimeOffset now,
+        bool absorbDeadlock,
+        CancellationToken cancellationToken)
+    {
         var started = timeProvider.GetTimestamp();
         var executionClass = "other";
         IDbContextTransaction? transaction = null;
@@ -285,7 +320,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 {
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 }
-                return;
+                return null;
             }
             executionClass = execution.ExecutionClass.ToString();
             await ConvergeCoreAsync(execution, now, cancellationToken).ConfigureAwait(false);
@@ -296,6 +331,16 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
             telemetry.RecordGraphConvergence(
                 executionClass, execution.Status.ToString(), timeProvider.GetElapsedTime(started));
+            return null;
+        }
+        catch (Exception exception) when (
+            absorbDeadlock && !cancellationToken.IsCancellationRequested && IsDeadlock(exception))
+        {
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            return exception;
         }
         catch
         {
@@ -530,6 +575,20 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 throw new CentralDerivativeJobStateException("Processing graph sources must belong to one frame.");
             }
             var frame = anchor.Frame!;
+            CentralProjectedSceneSelection? projectedScene = null;
+            if (plan.Nodes.Any(static node => node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation) &&
+                CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson)?.RequiresProjectedScene == true)
+            {
+                projectedScene = await new CentralProjectedSceneResolver(dbContext, objectReader)
+                    .SelectAsync(frame, cancellationToken).ConfigureAwait(false);
+                if (projectedScene is null)
+                {
+                    rolledBack = true;
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    return new(CentralProcessingGraphScheduleOutcome.AwaitingSources,
+                        ReasonCode: "projected-scene.awaiting-product");
+                }
+            }
             var installation = frame.LogicalCameraInstallation
                 ?? throw new CentralDerivativeJobStateException("The graph source installation is unavailable.");
             var environmentalInputs = await FreezeEnvironmentalInputsAsync(plan, frame, cancellationToken)
@@ -628,7 +687,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
                     primarySelector,
                     requestedIdentity,
                     auxiliaries,
-                    frame.SceneProvenanceJson);
+                    frame.SceneProvenanceJson,
+                    projectedScene?.Annotation);
                 var firstOutput = node.Definition.Outputs.FirstOrDefault();
                 var job = new CentralDerivativeJob
                 {
@@ -704,18 +764,22 @@ internal sealed partial class CentralProcessingGraphScheduler(
             {
                 AddDependencies(execution, node, jobs, sourceRows, plan, frame, now);
                 AddExternalInputRequirements(jobs[node.Definition.Id], node, frame, now);
+                if (projectedScene is not null && node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation)
+                    CentralProjectedSceneResolver.AddRequirement(jobs[node.Definition.Id], projectedScene, now);
             }
             // Selection ran without holds, so retention may have expired a source since. Immediately before the rows
             // are persisted, fence every source on the row lock retention reserves under and revalidate the durable
             // state read under that lock. Retention's reservation runs after this lock and sees the sealed execution
             // reference; an expansion that loses the race fails here explicitly instead of sealing an execution whose
             // source is gone. The lock is taken this late so it is held only across persistence and the seal.
+            var retainedSources = orderedSources.Select(item => item.Artifact)
+                .Concat(projectedScene is null ? [] : new[] { projectedScene.Artifact }).ToArray();
             var fencedSources = await CentralArtifactRetentionLock.FenceAsync(
-                dbContext, orderedSources.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
-            if (orderedSources.Any(item => !fencedSources.TryGetValue(item.Artifact.Id, out var fenced) ||
+                dbContext, retainedSources.Select(item => item.Id), cancellationToken).ConfigureAwait(false);
+            if (retainedSources.Any(item => !fencedSources.TryGetValue(item.Id, out var fenced) ||
                     !IsUsable(fenced) ||
-                    !string.Equals(fenced.ChecksumSha256, item.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
-                    fenced.ByteLength != item.Artifact.ByteLength))
+                    !string.Equals(fenced.ChecksumSha256, item.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+                    fenced.ByteLength != item.ByteLength))
             {
                 if (logger is not null)
                 {
@@ -993,6 +1057,11 @@ internal sealed partial class CentralProcessingGraphScheduler(
             await MaterializeTransientOptionsAsync(transientJob, now, cancellationToken).ConfigureAwait(false);
         }
         var changed = true;
+        foreach (var job in execution.Jobs.Where(static job => job.Status == CentralDerivativeJobStatus.Waiting))
+        {
+            if (CentralProjectedSceneResolver.MaterializeReference(job, now) is { } sceneInput)
+                dbContext.CentralDerivativeJobInputs.Add(sceneInput);
+        }
         while (changed)
         {
             changed = false;
@@ -1550,21 +1619,12 @@ internal sealed partial class CentralProcessingGraphScheduler(
         job.UpdatedAtUtc = now;
     }
 
-    private ProcessingGraphExecutionPlan CompileAndVerify(CentralProcessingGraphRevision revision)
+    private ProcessingGraphExecutionPlan CompileAndVerify(CentralProcessingGraphRevision revision, Guid? assignmentId)
     {
-        var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(revision.DefinitionJson));
-        if (!parsed.IsValid)
-        {
-            throw new CentralDerivativeJobStateException("The published processing graph definition is invalid.");
-        }
-        var compiled = LogicHostProcessingGraphAdapter.Compile(parsed.Definition!, nodeRegistry.Capabilities);
-        if (!compiled.IsValid || compiled.Plan is not { } plan || !nodeRegistry.Validate(plan) ||
-            !string.Equals(plan.DefinitionIdentitySha256, revision.DefinitionIdentitySha256, StringComparison.Ordinal) ||
-            !string.Equals(plan.PlanIdentitySha256, revision.CentralPlanIdentitySha256, StringComparison.Ordinal))
-        {
-            throw new CentralDerivativeJobStateException("The published processing graph plan identity is invalid.");
-        }
-        return plan;
+        var verification = CentralProcessingGraphPlanVerification.Verify(
+            revision.DefinitionJson, revision.DefinitionIdentitySha256, revision.CentralPlanIdentitySha256, nodeRegistry);
+        return verification.Plan ?? throw CentralProcessingGraphPlanVerification.CreateUnexpandableRevisionException(
+            verification, revision.Id, assignmentId);
     }
 
     private async Task<CentralArtifact> LoadArtifactAsync(Guid id, CancellationToken cancellationToken)
@@ -1576,13 +1636,31 @@ internal sealed partial class CentralProcessingGraphScheduler(
             .AsSplitQuery()
             .SingleAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
 
+    /// <summary>
+    /// Whether SQL Server chose this session as a deadlock victim, however the provider or EF Core wrapped the error.
+    /// </summary>
+    internal static bool IsDeadlock(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.SqlClient.SqlException sql
+                && (sql.Number == SqlServerDeadlockVictim
+                    || sql.Errors.Cast<Microsoft.Data.SqlClient.SqlError>().Any(error => error.Number == SqlServerDeadlockVictim)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private async Task<CentralProcessingGraphExecution?> LoadExecutionAsync(
         Guid id,
         CancellationToken cancellationToken)
-        => await dbContext.CentralProcessingGraphExecutions
+    {
+        var execution = await dbContext.CentralProcessingGraphExecutions
             .Include(item => item.Sources).ThenInclude(source => source.Artifact)!.ThenInclude(artifact => artifact!.Frame)
-            .Include(item => item.Jobs).ThenInclude(job => job.InputRequirements)
-            .Include(item => item.Jobs).ThenInclude(job => job.Attempts)
+            .Include(item => item.Jobs).ThenInclude(job => job.InputRequirements).ThenInclude(requirement => requirement.ExpectedArtifact)!
+                .ThenInclude(artifact => artifact!.Frame)
             .Include(item => item.Jobs).ThenInclude(job => job.Inputs)
             .Include(item => item.Jobs).ThenInclude(job => job.CanonicalInputs)
             .Include(item => item.Jobs).ThenInclude(job => job.Outputs).ThenInclude(output => output.ResultArtifact)!
@@ -1593,6 +1671,25 @@ internal sealed partial class CentralProcessingGraphScheduler(
                 .ThenInclude(job => job!.Outputs).ThenInclude(output => output.ResultArtifact)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken).ConfigureAwait(false);
+        if (execution is null || execution.Jobs.Count == 0)
+        {
+            return execution;
+        }
+        // Attempts are read under read-committed locking, not the caller's serializable range locks. A serializable
+        // attempt read range-locks the gaps beside this execution's attempt keys, which belong to other executions'
+        // jobs. A claim of such a job updates its job row and then inserts the attempt, while convergence held this
+        // range first and then needed the job row for the terminal-node trigger's read, so the two deadlocked. An
+        // ordinary claim of one of this execution's own jobs still blocks at its job update, because convergence holds
+        // serializable shared locks on every job row above, so it cannot add an attempt that this read misses.
+        var jobIds = execution.Jobs.Select(job => job.Id).ToArray();
+        var attempts = dbContext.Database.IsSqlServer()
+            ? dbContext.CentralDerivativeJobAttempts.FromSql(
+                $"SELECT * FROM [CentralDerivativeJobAttempts] WITH (READCOMMITTEDLOCK)")
+            : dbContext.CentralDerivativeJobAttempts;
+        await attempts.Where(attempt => jobIds.Contains(attempt.CentralDerivativeJobId))
+            .LoadAsync(cancellationToken).ConfigureAwait(false);
+        return execution;
+    }
 
     private async Task<IReadOnlyDictionary<Guid, CentralSourceProvenance>> LoadSourceProvenanceAsync(
         IEnumerable<Guid> centralArtifactIds,
@@ -1736,7 +1833,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
             }
         }
         if (contract.SchemaVersion is { } schemaVersion &&
-            !string.Equals(schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion, StringComparison.Ordinal))
+            !StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+                schemaVersion, artifact.StructuredProduct?.ProductSchemaVersion))
         {
             return false;
         }
@@ -1757,8 +1855,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
     /// <summary>
     /// The recipe identity a node's runtime product must carry, frozen at expansion. Auxiliary inputs are bound
     /// here from the frozen plan and the anchor frame's environment. An annotation-bearing node also executes with
-    /// the anchor frame's scene provenance as a runtime <see cref="ProcessingAnnotationInput"/>: that provenance is
-    /// write-once ingest state on the frame (never rewritten once present), so when it is available at expansion the
+    /// the source-bound retained scene or legacy inline provenance as a runtime <see cref="ProcessingAnnotationInput"/>.
+    /// A compact capture waits for its retained product, which is pinned as an immutable input. At expansion the
     /// node's actual identity is known exactly and every dependent selector and projected output identity derives
     /// from it instead of the requested identity. Without provenance the expectation stays the requested identity,
     /// which durably freezes "no annotation" for the execution: <see
@@ -1773,7 +1871,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
         ProcessingInputSelector primarySelector,
         string requestedIdentity,
         IReadOnlyList<ProcessingAuxiliaryInput> auxiliaries,
-        string? sceneProvenanceJson)
+        string? sceneProvenanceJson,
+        ProcessingAnnotationInput? projectedAnnotation = null)
     {
         ArgumentNullException.ThrowIfNull(primarySelector);
         ArgumentNullException.ThrowIfNull(auxiliaries);
@@ -1782,7 +1881,7 @@ internal sealed partial class CentralProcessingGraphScheduler(
             return requestedIdentity;
         }
         var annotation = string.Equals(stepAlias, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson)
+            ? projectedAnnotation ?? CentralDerivativeJobExecutor.CreateAnnotation(sceneProvenanceJson)
             : null;
         return annotation is null && auxiliaries.Count == 0
             ? requestedIdentity
@@ -2059,5 +2158,9 @@ internal sealed partial class CentralProcessingGraphScheduler(
         [LoggerMessage(2154, LogLevel.Warning,
             "Replay window resolution deferred to the worker after the seal committed. ExecutionId={ExecutionId}, JobId={JobId}")]
         public static partial void ReplayWindowResolutionDeferred(ILogger logger, Exception exception, Guid executionId, Guid jobId);
+
+        [LoggerMessage(2155, LogLevel.Warning,
+            "Processing graph convergence was chosen as a deadlock victim and is retried. ExecutionId={ExecutionId}, Attempt={Attempt}")]
+        public static partial void ConvergenceDeadlockRetried(ILogger logger, Exception exception, Guid executionId, int attempt);
     }
 }

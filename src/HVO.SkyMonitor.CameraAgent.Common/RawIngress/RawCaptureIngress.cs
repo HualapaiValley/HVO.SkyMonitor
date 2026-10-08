@@ -168,6 +168,7 @@ internal sealed class RawCaptureIngress :
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
+                _state.RecordReconciliation(reconciliation);
                 _logger.RawIngressSqliteResult("checkpoint", "success");
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
@@ -248,7 +249,7 @@ internal sealed class RawCaptureIngress :
         CancellationToken cancellationToken)
     {
         var owned = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in await _journal.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!string.Equals(entry.State, "committed", StringComparison.Ordinal)) continue;
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
@@ -374,6 +375,11 @@ internal sealed class RawCaptureIngress :
             }
             else
             {
+                // Old immutable evidence is adopted above. Every newly published scene-bearing capture must
+                // have staged its canonical product before this boundary; a cache cannot recover after restart.
+                if (frame.Metadata.Scene is { RequiresProjectedScene: false })
+                    throw new InvalidOperationException(
+                        "Scene-bearing raw capture requires an enabled ProjectedScene node and durable scene staging.");
                 var previewDescriptor = RawCaptureDescriptorFactory.Create(
                     configuration,
                     submission,
@@ -650,14 +656,14 @@ internal sealed class RawCaptureIngress :
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var entry in await _journal.ReadUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var entry in _journal.EnumerateUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
             {
                 var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
                 if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)
                     throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
-                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
                     (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,
@@ -848,6 +854,12 @@ internal sealed class RawCaptureIngress :
                 lease.Lane,
                 actualOutcome == CaptureLaneHandlerOutcome.Deferred ? lease.Attempt : lease.Attempt + 1,
                 reason);
+        }
+        else if (actualOutcome == CaptureLaneHandlerOutcome.Abandoned)
+        {
+            // Abandonment can repeat for every frame while a superseded plan stays active; the condition itself is
+            // reported once through processing health, so the per-frame record stays at Debug.
+            _logger.CaptureLaneAbandoned(lease.Lane, reason);
         }
         else
         {

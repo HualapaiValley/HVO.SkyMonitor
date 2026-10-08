@@ -63,6 +63,25 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Why the configured camera cannot run a virtual reference acquisition, or null when it can. Measured
+    /// reference capture on a physical camera is not implemented, so the operator sees that instead of a
+    /// synthetic success.
+    /// </summary>
+    public async ValueTask<string?> GetAcquisitionUnavailableReasonAsync(CancellationToken cancellationToken)
+    {
+        var configuration = _scheduleRuntimeCoordinator?.Snapshot?.Configuration;
+        if (configuration is null)
+        {
+            if (!_configurationAccessor.IsConfigured)
+            {
+                return "The camera configuration has not loaded yet.";
+            }
+            configuration = await _configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        }
+        return AcquisitionUnavailableReason(configuration);
+    }
+
     public async Task<CalibrationAcquisitionJobSnapshot?> ResumePendingAsync(CancellationToken cancellationToken)
     {
         var pending = await _store.ReadPendingAcquisitionJobAsync(cancellationToken).ConfigureAwait(false);
@@ -438,30 +457,42 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         }
     }
 
+    private static string? AcquisitionUnavailableReason(CameraModuleConfig configuration)
+    {
+        if (!string.Equals(configuration.Module?.Type, "VirtualSky", StringComparison.Ordinal))
+        {
+            return "Reference acquisition runs only on the VirtualSky camera. Measured bias, dark, flat and defect capture on a physical camera is not implemented.";
+        }
+        return string.IsNullOrWhiteSpace(configuration.AgentId) || configuration.Rig?.Readout is null
+            ? "The VirtualSky camera needs an agent ID and an explicit native readout before references can be acquired."
+            : null;
+    }
+
     private VirtualCalibrationAcquisitionPlanV1 CreatePlan(
         CameraModuleConfig configuration,
         VirtualCalibrationAcquisitionRequestV1 request,
         string requestIdentity)
     {
-        if (!string.Equals(configuration.ModuleType, "VirtualSky", StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(configuration.AgentId) || configuration.Rig?.Readout is null)
+        if (AcquisitionUnavailableReason(configuration) is not null)
         {
             throw new InvalidOperationException(
                 "Virtual calibration acquisition requires a configured VirtualSky agent with an explicit native readout.");
         }
-        var input = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout).Layout;
+        // AcquisitionUnavailableReason returned null, so both are present.
+        var agentId = configuration.AgentId!;
+        var input = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
         var rigIdentity = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
         var sensorIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(
             JsonSerializer.SerializeToElement(configuration.Rig.Sensor));
         var rigId = $"rig-{rigIdentity[..16].ToUpperInvariant()}";
-        var jobMaterial = string.Join('\n', requestIdentity, configuration.AgentId, rigId,
+        var jobMaterial = string.Join('\n', requestIdentity, agentId, rigId,
             CaptureContractJson.ComputeCanonicalJsonSha256(input));
         var jobIdentity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(jobMaterial)));
         var plan = new VirtualCalibrationAcquisitionPlanV1(
             VirtualCalibrationAcquisitionPlanV1.CurrentSchemaVersion,
             $"virtual-{jobIdentity[..32]}",
             configuration.ModuleType,
-            configuration.AgentId,
+            agentId,
             rigId,
             new ProfileIdentityDescriptor("rig", configuration.Rig.ProfileVersion, rigIdentity),
             new ProfileIdentityDescriptor(

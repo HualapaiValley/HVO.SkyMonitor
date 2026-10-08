@@ -14,6 +14,7 @@ public sealed class ArchitectureBoundaryTests
     private const string Imaging = "HVO.SkyMonitor.Imaging";
     private const string FleetContracts = "HVO.SkyMonitor.Fleet.Contracts";
     private const string Processing = "HVO.SkyMonitor.Processing";
+    private const string VideoFFmpeg = "HVO.SkyMonitor.Video.FFmpeg";
     private const string Catalog = "HVO.SkyMonitor.Catalog.Sqlite";
     private const string Common = "HVO.SkyMonitor.Common";
     private const string CameraAgentCommon = "HVO.SkyMonitor.CameraAgent.Common";
@@ -62,17 +63,18 @@ public sealed class ArchitectureBoundaryTests
             [Imaging] = Set(AgentCore, Astronomy),
             [FleetContracts] = Set(),
             [Processing] = Set(AgentCore, Astronomy, Imaging),
+            [VideoFFmpeg] = Set(Processing, StorageFileSystem),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
             [StorageFileSystem] = Set(),
-            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, CameraAgentReplay),
+            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, StorageFileSystem),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [DeploymentDistribution] = Set(DeploymentContracts),
             [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
@@ -173,7 +175,7 @@ public sealed class ArchitectureBoundaryTests
             .Select(candidate => candidate.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        var permittedConsumers = new[] { CameraAgentCommon, LogicHost };
+        var permittedConsumers = new[] { CameraAgentCommon, LogicHost, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
             $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
     }
@@ -315,6 +317,67 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void LogicHostLogEventIdsAreUniqueAcrossProductionSources()
         => AssertHostOwnedLogEventIdsAreUnique("LogicHost", "HVO.SkyMonitor.LogicHost");
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CameraAgentAccountFormsReachTheirHandlers()
+        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.CameraAgent");
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void LogicHostAccountFormsReachTheirHandlers()
+        => AssertAccountFormsReachTheirHandlers("HVO.SkyMonitor.LogicHost");
+
+    // The account pages render statically, so only a form post reaches them. A posted input
+    // reaches the page only through a [SupplyParameterFromForm] property, and Blazor names each
+    // input after its binding expression: an input bound through any other member (such as a
+    // lazily created wrapper over the supplied property) posts a name nothing maps back, and the
+    // form silently submits empty. A browser event handler other than a form's @onsubmit never
+    // runs, so a control wired through one does nothing.
+    private static void AssertAccountFormsReachTheirHandlers(string projectDirectoryName)
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var accountRoot = Path.Combine(root, "src", projectDirectoryName, "Components", "Account");
+        var suppliedPattern = new System.Text.RegularExpressions.Regex(
+            """\[SupplyParameterFromForm[^\]]*\]\s*(?:(?:public|private|protected|internal)\s+)?[\w<>?.,]+\s+(?<name>\w+)\s*\{""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var bindPattern = new System.Text.RegularExpressions.Regex(
+            @"@bind-Value(?::get)?=""(?<expression>[^""]+)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var eventPattern = new System.Text.RegularExpressions.Regex(
+            @"@on(?<event>[a-z]+)\b",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var violations = new List<string>();
+        var bindings = 0;
+
+        foreach (var page in Directory.EnumerateFiles(accountRoot, "*.razor", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            var markup = File.ReadAllText(page);
+            var codeBehind = page + ".cs";
+            var code = markup + (File.Exists(codeBehind) ? File.ReadAllText(codeBehind) : string.Empty);
+            var supplied = suppliedPattern.Matches(code).Select(match => match.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
+            foreach (System.Text.RegularExpressions.Match match in bindPattern.Matches(markup))
+            {
+                bindings++;
+                var expression = match.Groups["expression"].Value.Trim();
+                if (!supplied.Contains(expression.Split('.')[0]))
+                {
+                    violations.Add($"{Path.GetRelativePath(root, page)} binds {expression}; form-supplied: [{string.Join(", ", supplied.Order(StringComparer.Ordinal))}]");
+                }
+            }
+
+            foreach (System.Text.RegularExpressions.Match match in eventPattern.Matches(markup))
+            {
+                if (match.Groups["event"].Value != "submit")
+                {
+                    violations.Add($"{Path.GetRelativePath(root, page)} handles @on{match.Groups["event"].Value}, which a static page never receives");
+                }
+            }
+        }
+
+        Assert.IsGreaterThan(0, bindings, $"No account form bindings were found under {Path.GetRelativePath(root, accountRoot)}.");
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
+    }
 
     private static System.Text.RegularExpressions.Regex LogEventIdDeclarationPattern()
         => new(

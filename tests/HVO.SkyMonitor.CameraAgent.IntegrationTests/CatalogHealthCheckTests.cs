@@ -30,5 +30,8 @@ public sealed class CatalogHealthCheckTests
         Assert.AreEqual("explicit-manifest-v2", identity.GetProperty("CatalogIdentitySource").GetString());
         Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
         Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
+        Assert.AreEqual("hyg-v42-fixture-1", identity.GetProperty("PackageVersion").GetString());
+        Assert.AreEqual(64, identity.GetProperty("DatabaseSha256").GetString()!.Length);
+        Assert.AreEqual(9, identity.EnumerateObject().Count());
     }
 }

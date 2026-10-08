@@ -41,4 +41,22 @@ internal sealed record InstallationPaths(
             Path.Combine(operationsRoot, "backups", "cameraagents", id),
             Path.Combine(operationsRoot, "catalog-references", catalogId));
     }
+
+    /// <summary>
+    /// The same instance paths bound to another approved catalog's side-by-side root (issue #521). Each catalog ID
+    /// owns its own installed versions, lineage binding and historical reference pins.
+    /// </summary>
+    public InstallationPaths WithCatalog(string catalogId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogId);
+        return this with
+        {
+            CatalogRoot = Path.Combine(ProductRoot, "catalogs", catalogId),
+            CatalogReferencesRoot = Path.Combine(OperationsRoot, "catalog-references", catalogId)
+        };
+    }
+
+    /// <summary>The installed catalog root of every approved specification under this product root.</summary>
+    public IReadOnlyList<InstallationPaths> ForEveryApprovedCatalog()
+        => ProductionCatalog.Specifications.All.Select(item => WithCatalog(item.CatalogId)).ToArray();
 }

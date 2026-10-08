@@ -132,6 +132,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision)
+        => CreateGraph(config, definitionName, definitionRevision, requireCanonicalScene: true);
+
+    public CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config)
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, requireCanonicalScene: false);
+
+    private CaptureProcessingGraph CreateGraph(
+        CameraModuleConfig config,
+        string definitionName,
+        string definitionRevision,
+        bool requireCanonicalScene)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
@@ -253,6 +263,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
+            if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
                 ? CompileSharedPlan(
                     config.Pipeline, configuredSteps, configured, nodesById, definitionName, definitionRevision)
@@ -275,6 +286,47 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
             activity?.SetStatus(ActivityStatusCode.Error);
             throw;
+        }
+    }
+
+    private static void ValidateProjectedSceneDependencies(
+        CameraModuleConfig config,
+        IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
+    {
+        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep).ToArray();
+        var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
+        var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
+            annotations.Any(static item =>
+                ((AnnotationCaptureProcessingStep)item.Step).ConfiguredOptions is
+                { DrawConstellationLines: true, ConstellationIds.Count: > 0 });
+        if (scenes.Length > 1 || sceneBearing && scenes.Length != 1)
+            throw new InvalidOperationException(
+                "Scene-bearing captures require exactly one explicitly configured, enabled ProjectedScene node.");
+        if (scenes.Length == 0) return;
+        if (scenes[0].Config.DependsOn?.Any(IsRawDependency) != true ||
+            scenes[0].Config.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly)
+            throw new InvalidOperationException("The canonical ProjectedScene node must explicitly depend on '$raw' and persist durably.");
+        var sceneId = scenes[0].Step.Name;
+        foreach (var annotation in annotations)
+        {
+            if (!((AnnotationCaptureProcessingStep)annotation.Step).ConfiguredOptions.RequireProjectedSceneDependency ||
+                annotation.Config.DependsOn?.Contains(sceneId, StringComparer.OrdinalIgnoreCase) != true)
+                throw new InvalidOperationException(
+                    $"Annotation step '{annotation.Step.Name}' must require and explicitly depend on ProjectedScene step '{sceneId}'.");
+        }
+        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
+        {
+            var step = (FileStorageCaptureProcessingStep)storage.Step;
+            var dependencies = storage.Config.DependsOn ?? [];
+            var uploadsImages = dependencies.Any(IsRawDependency) && step.QueuesUpload(null, FrameArtifactRole.Raw, null, null) ||
+                configured.Where(item => item.Step is ICaptureProcessingGraphStep &&
+                        dependencies.Contains(item.Step.Name, StringComparer.OrdinalIgnoreCase))
+                    .Any(item => GetOutputs((ICaptureProcessingGraphStep)item.Step).Any(output =>
+                        output.Role != FrameArtifactRole.Metadata &&
+                        step.QueuesUpload(item.Step.Name, output.Role, output.Variant, output.RecipeName)));
+            if (uploadsImages && !dependencies.Contains(sceneId, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Storage step '{step.Name}' uploading scene-bearing images must explicitly depend on ProjectedScene step '{sceneId}'.");
         }
     }
 
@@ -391,7 +443,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
             }
             foreach (var target in producerOutputs.Where(target =>
-                         target.Output.Role == FrameArtifactRole.Metadata ||
+                         target.Output.Role == FrameArtifactRole.Metadata && target.Step is not ProjectedSceneCaptureProcessingStep ||
                          target.Step is JpegEncodingCaptureProcessingStep))
             {
                 var policy = (options.Policies ?? [])

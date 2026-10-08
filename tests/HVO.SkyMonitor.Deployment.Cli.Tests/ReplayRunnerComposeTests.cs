@@ -283,7 +283,7 @@ public sealed class ReplayRunnerComposeTests
         NativeLinux.getuid(),
         NativeLinux.getgid(),
         $"sha256:{new string('a', 64)}",
-        "test-catalog-v1",
+        HygV42.PackageVersion,
         Path.Combine(paths.ConfigRoot, "owner-password"),
         "verification-token",
         "lifecycle-token",
@@ -302,7 +302,7 @@ public sealed class ReplayRunnerComposeTests
             CatalogBundle = Path.Combine(root, "catalog.bundle"),
             ReplayProfile = replayProfile
         };
-        return (request, InstallationPaths.Create(root, Guid.NewGuid(), "test-catalog"));
+        return (request, InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId));
     }
 
     private static Guid InstanceIdOf(InstallationPaths paths) => Guid.Parse(Path.GetFileName(paths.InstanceRoot));

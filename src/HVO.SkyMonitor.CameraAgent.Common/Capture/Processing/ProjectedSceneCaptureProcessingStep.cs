@@ -24,6 +24,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
+    // The plan-level contract names the projected-scene family root, so existing plan identities are unchanged.
+    // A product carries its own schema: projected-scene-v2 exactly when the scene has resolved footprints.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.ProjectedSceneMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -50,15 +52,18 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
         {
             // Archived replay never consults, recreates, or recomputes the transient stage: it consumes the committed
             // projected-scene product that submission pinned, or fails closed without dispatching the recipe.
-            if (TryReadFrozenScene(context, source, out scene, out var failureReason))
-            {
-                context.RecordCanonicalInput(FrozenInputName, ProjectedSceneV1.CurrentSchemaVersion, scene.SceneIdentitySha256);
-            }
-            else
+            if (!TryReadFrozenScene(context, source, out scene, out var failureReason))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failureReason));
                 return;
             }
+            if (provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
+                !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
+                return;
+            }
+            context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
         }
         else if (provenance is
         {
@@ -87,6 +92,9 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                     ? ProjectedSceneKind.VirtualRenderAuthoritative
                     : ProjectedSceneKind.Predicted);
             scene = staged.Bind(source, kind);
+            if (provenance.ProjectedSceneSchemaVersion is { } declaredSchema &&
+                !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
+                throw new InvalidDataException("Projected-scene stage schema does not match capture scene evidence.");
             context.RecordCanonicalInput(StageInputName, StagedProjectedSceneDocument.CurrentSchemaVersion,
                 staged.StageIdentitySha256);
         }
@@ -111,7 +119,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             DescriptorIdentitySha256 = descriptorSha256
         };
         var auxiliary = new ProcessingAuxiliaryInput(
-            "scene", ProcessingAuxiliaryInputKind.CanonicalJson, SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+            "scene", ProcessingAuxiliaryInputKind.CanonicalJson, SchemaVersion: scene.SchemaVersion,
             IdentitySha256: scene.SceneIdentitySha256, Payload: payload)
         {
             ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
@@ -121,10 +129,18 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
             ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
             AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
+        if (context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
+            outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
+                input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
+        {
+            // Compact captures have one immutable geometry artifact, including across replay/configuration changes.
+            context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
+            return;
+        }
         context.AddProcessingOutcome(outcome);
     }
 
-    private static bool TryReadFrozenScene(
+    private bool TryReadFrozenScene(
         CaptureDescriptorProcessingContext context,
         ProjectedSceneSource source,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ProjectedSceneV1? scene,
@@ -142,7 +158,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
         var candidates = context.FrozenAuxiliaryInputs.Where(static input =>
             input.Role == FrameArtifactRole.Metadata &&
             input.ProductKind == ProcessingProductKind.Metadata &&
-            string.Equals(input.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            ProjectedSceneV1.IsSupportedSchemaVersion(input.SchemaVersion) &&
             string.Equals(input.MediaType, StructuredProcessingProductContracts.ProjectedSceneMediaType, StringComparison.Ordinal)).ToArray();
         if (candidates.Length == 0)
         {
@@ -155,8 +171,15 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             return false;
         }
         var frozen = candidates[0];
+        if (context.SceneProvenance?.RequiresProjectedScene == true &&
+            !string.Equals(frozen.Variant, Options.OutputVariant, StringComparison.Ordinal))
+        {
+            failureReason = ProcessingReasonCodes.InvalidProjectedScene;
+            return false;
+        }
         var parsed = ProjectedSceneJson.Parse(frozen.Payload);
-        if (!parsed.IsValid || parsed.Scene is not { } candidate)
+        if (!parsed.IsValid || parsed.Scene is not { } candidate ||
+            !string.Equals(candidate.SchemaVersion, frozen.SchemaVersion, StringComparison.Ordinal))
         {
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;
             return false;

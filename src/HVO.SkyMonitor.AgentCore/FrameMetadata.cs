@@ -49,7 +49,32 @@ public sealed record SceneProvenance(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? SceneUtc = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageSchemaVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageKey = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageIdentitySha256 = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageIdentitySha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] VirtualExposureProvenance? VirtualExposure = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneSchemaVersion = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogPackageVersion = null)
+{
+    public const string RetainedProjectedSceneSchemaVersion = "projected-scene-v1";
+    /// <summary>Retained scene schema emitted only when the scene carries resolved footprints.</summary>
+    public const string ResolvedFootprintProjectedSceneSchemaVersion = "projected-scene-v2";
+
+    /// <summary>Returns whether a retained projected-scene schema version is one this release reads.</summary>
+    public static bool IsRetainedProjectedSceneSchemaVersion(string? schemaVersion) =>
+        string.Equals(schemaVersion, RetainedProjectedSceneSchemaVersion, StringComparison.Ordinal) ||
+        string.Equals(schemaVersion, ResolvedFootprintProjectedSceneSchemaVersion, StringComparison.Ordinal);
+
+    /// <summary>New capture evidence resolves geometry from its source-bound retained metadata product.</summary>
+    [JsonIgnore]
+    public bool RequiresProjectedScene => ProjectedSceneSchemaVersion is not null;
+
+    public SceneProvenance WithoutProjectedGeometry() => this with
+    {
+        Objects = null,
+        Segments = null,
+        ProjectedSceneSchemaVersion = RetainedProjectedSceneSchemaVersion
+    };
+}
 
 /// <summary>Versioned cloud inputs and logical interval needed to reproduce a simulated frame.</summary>
 public sealed record CloudScenarioProvenance(

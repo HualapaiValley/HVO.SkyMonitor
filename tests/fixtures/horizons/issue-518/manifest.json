@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "issue-518-horizons-solar-lunar-disks-v1",
+  "source": "NASA/JPL Horizons API 1.2 (https://ssd.jpl.nasa.gov/api/horizons.api), target and centre ephemeris DE441",
+  "retrievedUtc": "2026-10-06T23:11:00Z",
+  "retrievedBy": "t3code:claude:home-dev-02:d5fbe3b7 for issue #518",
+  "license": "U.S. Government work produced by NASA/JPL; public domain reference values",
+  "sharedQuery": {
+    "format": "text",
+    "OBJ_DATA": "NO",
+    "MAKE_EPHEM": "YES",
+    "EPHEM_TYPE": "OBSERVER",
+    "CENTER": "coord@399",
+    "COORD_TYPE": "GEODETIC",
+    "STEP_SIZE": "1m",
+    "QUANTITIES": "4,10,13,20",
+    "ANG_FORMAT": "DEG",
+    "RANGE_UNITS": "KM",
+    "EXTRA_PREC": "YES",
+    "CSV_FORMAT": "YES"
+  },
+  "columns": "First $$SOE row: date, solar-presence, lunar-presence, azimuth (deg), elevation (deg), illuminated percent, angular diameter (arcsec), topocentric range (km), range rate (km/s)",
+  "notes": "AIRLESS rows are apparent topocentric positions without refraction; REFRACTED rows add the Horizons Earth refraction model. Tests read these files offline and verify each SHA-256 before use.",
+  "cases": [
+    {
+      "id": "sun-perihelion-hvo",
+      "body": "Sun",
+      "utc": "2026-01-03T17:15:00Z",
+      "site": "hvo",
+      "latitudeDegrees": 35.347,
+      "longitudeDegrees": -113.878,
+      "elevationMeters": 0,
+      "reason": "Earth perihelion 2026-01-03",
+      "files": {
+        "airless": {
+          "file": "sun-perihelion-hvo-airless.txt",
+          "sha256": "968C7A6962D385C01B195A02F91DD7B7EBF806D9C9EA4CDC30C13823F1893DF6",
+          "query": {
+            "COMMAND": "10",
+            "START_TIME": "2026-01-03 17:15",
+            "STOP_TIME": "2026-01-03 17:16",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "sun-perihelion-hvo-refracted.txt",
+          "sha256": "12DC02C619D66F0BD131A119D041C74183F561567BCF788D5B93A91C10EF1F4C",
+          "query": {
+            "COMMAND": "10",
+            "START_TIME": "2026-01-03 17:15",
+            "STOP_TIME": "2026-01-03 17:16",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    },
+    {
+      "id": "sun-aphelion-hvo",
+      "body": "Sun",
+      "utc": "2026-07-06T17:31:00Z",
+      "site": "hvo",
+      "latitudeDegrees": 35.347,
+      "longitudeDegrees": -113.878,
+      "elevationMeters": 0,
+      "reason": "Earth aphelion 2026-07-06",
+      "files": {
+        "airless": {
+          "file": "sun-aphelion-hvo-airless.txt",
+          "sha256": "064559552B07BE1966E9BA8AB1C5D7223DBCE2481F0BA52D87FF239119BC9136",
+          "query": {
+            "COMMAND": "10",
+            "START_TIME": "2026-07-06 17:31",
+            "STOP_TIME": "2026-07-06 17:32",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "sun-aphelion-hvo-refracted.txt",
+          "sha256": "1421DC3202E2B590AB976C0739C504B3E027FEA93BEE689FC39C35DAED010191",
+          "query": {
+            "COMMAND": "10",
+            "START_TIME": "2026-07-06 17:31",
+            "STOP_TIME": "2026-07-06 17:32",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    },
+    {
+      "id": "moon-perigee-lapalma",
+      "body": "Moon",
+      "utc": "2026-01-01T22:00:00Z",
+      "site": "la-palma",
+      "latitudeDegrees": 28.76,
+      "longitudeDegrees": -17.88,
+      "elevationMeters": 0,
+      "reason": "Lunar perigee 2026-01-01 (geocentric minimum of the hourly range series)",
+      "files": {
+        "airless": {
+          "file": "moon-perigee-lapalma-airless.txt",
+          "sha256": "5C95DEFBFA00D14F8E1229FAC4079637F99528B4B6CBC7234E489D79D9ABA474",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-01 22:00",
+            "STOP_TIME": "2026-01-01 22:01",
+            "SITE_COORD": "-17.88,28.76,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "moon-perigee-lapalma-refracted.txt",
+          "sha256": "5B801947D6748370DDC7C28F3404D64419BDF32486E774CDF026B7E675B7D6F8",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-01 22:00",
+            "STOP_TIME": "2026-01-01 22:01",
+            "SITE_COORD": "-17.88,28.76,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    },
+    {
+      "id": "moon-perigee-sutherland",
+      "body": "Moon",
+      "utc": "2026-01-01T22:00:00Z",
+      "site": "sutherland",
+      "latitudeDegrees": -32.38,
+      "longitudeDegrees": 20.81,
+      "elevationMeters": 0,
+      "reason": "Lunar perigee 2026-01-01 (geocentric minimum of the hourly range series)",
+      "files": {
+        "airless": {
+          "file": "moon-perigee-sutherland-airless.txt",
+          "sha256": "F3330FDDC18A9612276B6C209474E95BA61C5C5D95428C02CF4BEF63749BAF0A",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-01 22:00",
+            "STOP_TIME": "2026-01-01 22:01",
+            "SITE_COORD": "20.81,-32.38,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "moon-perigee-sutherland-refracted.txt",
+          "sha256": "05022FF132F2F2C300B1BF325D2910A5B4DC3F7FD8D118103F5D65AFF5D81EBD",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-01 22:00",
+            "STOP_TIME": "2026-01-01 22:01",
+            "SITE_COORD": "20.81,-32.38,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    },
+    {
+      "id": "moon-apogee-hvo",
+      "body": "Moon",
+      "utc": "2026-01-13T16:00:00Z",
+      "site": "hvo",
+      "latitudeDegrees": 35.347,
+      "longitudeDegrees": -113.878,
+      "elevationMeters": 0,
+      "reason": "Lunar apogee 2026-01-13 (geocentric maximum at 21:00Z; 16:00Z is within 3.3 km and above both horizons)",
+      "files": {
+        "airless": {
+          "file": "moon-apogee-hvo-airless.txt",
+          "sha256": "AA9B247BA9A95F19F771B5486F6407473695C0BAEAF3D45EE93957183FB7F627",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-13 16:00",
+            "STOP_TIME": "2026-01-13 16:01",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "moon-apogee-hvo-refracted.txt",
+          "sha256": "428213D38954379594FA8F0219019EC702AE5A139D4E2F134C567E40575C3068",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-13 16:00",
+            "STOP_TIME": "2026-01-13 16:01",
+            "SITE_COORD": "-113.878,35.347,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    },
+    {
+      "id": "moon-apogee-tololo",
+      "body": "Moon",
+      "utc": "2026-01-13T16:00:00Z",
+      "site": "cerro-tololo",
+      "latitudeDegrees": -30.17,
+      "longitudeDegrees": -70.81,
+      "elevationMeters": 0,
+      "reason": "Lunar apogee 2026-01-13 (geocentric maximum at 21:00Z; 16:00Z is within 3.3 km and above both horizons)",
+      "files": {
+        "airless": {
+          "file": "moon-apogee-tololo-airless.txt",
+          "sha256": "57F12877BCC2F87A9A0382AEB30E6DCECA3A9968B387A1E84E0709E960CBB23E",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-13 16:00",
+            "STOP_TIME": "2026-01-13 16:01",
+            "SITE_COORD": "-70.81,-30.17,0",
+            "APPARENT": "AIRLESS"
+          }
+        },
+        "refracted": {
+          "file": "moon-apogee-tololo-refracted.txt",
+          "sha256": "E885DE66D36FB054B1A53F662DD827B754ED7486C05842A807320CB479FE2B6D",
+          "query": {
+            "COMMAND": "301",
+            "START_TIME": "2026-01-13 16:00",
+            "STOP_TIME": "2026-01-13 16:01",
+            "SITE_COORD": "-70.81,-30.17,0",
+            "APPARENT": "REFRACTED"
+          }
+        }
+      }
+    }
+  ]
+}

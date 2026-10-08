@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 [DoNotParallelize]
 internal sealed class CatalogSnapshotResolverTests
 {
@@ -63,6 +64,33 @@ internal sealed class CatalogSnapshotResolverTests
 
             var refused = Assert.ThrowsExactly<Win32Exception>(() => CatalogSnapshotResolver.OpenFileNoFollow(link));
             Assert.AreEqual(40, refused.NativeErrorCode, "ELOOP: the symlink must not be followed");
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [Timeout(60_000)]
+    public void AuthenticateFileRefusesAFifoWithoutWaitingForAWriter()
+    {
+        // Without O_NONBLOCK the open of a FIFO blocks until a writer appears, so a FIFO planted under a retained or
+        // bundle file name hung the caller instead of failing type validation (issue #521).
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Native FIFO creation is verified on Linux.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-catalog-fifo-");
+        try
+        {
+            var fifo = Path.Combine(root.FullName, "retained.sqlite");
+            Assert.AreEqual(0, MkFifo(fifo, 0x180), $"mkfifo failed with errno {Marshal.GetLastPInvokeError()}.");
+
+            var refused = Assert.ThrowsExactly<InvalidDataException>(
+                () => CatalogSnapshotResolver.AuthenticateFile(fifo, "Catalog database"));
+            StringAssert.Contains(refused.Message, "must be a regular file", StringComparison.Ordinal);
         }
         finally
         {
@@ -951,10 +979,14 @@ internal sealed class CatalogSnapshotResolverTests
 
     private sealed record FileFingerprint(long Length, string Sha256);
 
-#pragma warning disable SYSLIB1054 // Test-only Unix hardlink setup does not warrant enabling unsafe interop generation.
+#pragma warning disable SYSLIB1054 // Test-only Unix hardlink and FIFO setup does not warrant enabling unsafe interop generation.
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int Link(string source, string destination);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "mkfifo", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int MkFifo(string path, uint mode);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]

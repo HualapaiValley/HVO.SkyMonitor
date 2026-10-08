@@ -59,7 +59,7 @@ public sealed class NetworkRouteTests
 
         cut.WaitForAssertion(() =>
             cut.FindAll(".nav-badge").Select(link => link.TextContent.Trim()).Should()
-                .Equal("Dashboard", "Observatories", "Captures", "Processing", "Events"));
+                .Equal("Dashboard", "Observatories", "Captures", "Time-lapses", "Processing", "Events"));
         cut.Markup.Should().Contain("Network Operations").And.NotContain("Open Operations");
     }
 }

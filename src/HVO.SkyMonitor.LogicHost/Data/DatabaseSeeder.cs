@@ -23,11 +23,10 @@ namespace HVO.SkyMonitor.LogicHost.Data;
 /// </summary>
 internal static class DatabaseSeeder
 {
-    internal static readonly Guid BasicCentralProcessingGraphRevisionId =
-        Guid.Parse("8d8f8df2-fd82-4dbf-8679-4ce21f6d637e");
+    /// <summary>The current canonical central graph revision; see <see cref="CanonicalCentralGraphSeedChain"/>.</summary>
+    internal static Guid BasicCentralProcessingGraphRevisionId => CanonicalCentralGraphSeedChain.Current.RevisionId;
 
-    internal static readonly Guid BasicCentralProcessingGraphAssignmentId =
-        Guid.Parse("4ea2c2cb-6c92-4386-9ce2-2798c544b61f");
+    internal static Guid BasicCentralProcessingGraphAssignmentId => CanonicalCentralGraphSeedChain.Current.AssignmentId;
 
     /// <summary>
     /// Seeds the database with default accounts, scopes, and OAuth2 clients.
@@ -56,97 +55,178 @@ internal static class DatabaseSeeder
         // Seed OpenIddict scopes and clients
         await SeedOpenIddictDataAsync(serviceProvider, options, bootstrapClient, logger);
 
-        await SeedBasicProcessingGraphAsync(
+        _ = await ConvergeCanonicalCentralGraphChainAsync(
             dbContext,
-            serviceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>());
-
-        await dbContext.SaveChangesAsync();
+            serviceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>(),
+            CanonicalCentralGraphSeedChain.Revisions,
+            CreateBasicCentralProcessingGraph(),
+            (serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(),
+            logger);
     }
 
-    private static async Task SeedBasicProcessingGraphAsync(
+    /// <summary>
+    /// Stages the canonical chain, persists it together with every other pending seed row in one
+    /// <c>SaveChangesAsync</c>, and only then reports what the persisted catalog leaves behind, so the report resolves
+    /// against the seed entry this startup just made current.
+    /// </summary>
+    internal static async Task<CanonicalCentralGraphSeedReport> ConvergeCanonicalCentralGraphChainAsync(
         ApplicationDbContext dbContext,
-        ICentralProcessingGraphNodeRegistry nodeRegistry)
+        ICentralProcessingGraphNodeRegistry nodeRegistry,
+        IReadOnlyList<CanonicalCentralGraphSeedRevision> chain,
+        ProcessingGraphDefinition currentDefinition,
+        DateTimeOffset now,
+        ILogger logger)
+    {
+        await SeedCanonicalCentralGraphChainAsync(dbContext, nodeRegistry, chain, currentDefinition);
+        await dbContext.SaveChangesAsync();
+        return await CanonicalCentralGraphSeedDiagnostics.ReportAsync(dbContext, chain, nodeRegistry, now, logger);
+    }
+
+    /// <summary>
+    /// Converges the canonical central graph rows on <paramref name="chain"/>. Historical entries are validated
+    /// against their recorded constants and never inserted; the current entry is inserted when absent and otherwise
+    /// compared exactly. Every pending row is staged on <paramref name="dbContext"/> and persisted by the caller's
+    /// single <c>SaveChangesAsync</c>, inside the exclusive initialization application lock held by
+    /// <see cref="DatabaseInitializer"/>, so concurrent startups cannot interleave.
+    /// </summary>
+    private static async Task SeedCanonicalCentralGraphChainAsync(
+        ApplicationDbContext dbContext,
+        ICentralProcessingGraphNodeRegistry nodeRegistry,
+        IReadOnlyList<CanonicalCentralGraphSeedRevision> chain,
+        ProcessingGraphDefinition currentDefinition)
     {
         ArgumentNullException.ThrowIfNull(nodeRegistry);
-        var definition = CreateBasicCentralProcessingGraph();
-        var portable = ProcessingGraphCompiler.Compile(definition);
-        var central = ProcessingGraphCompiler.Compile(
-            definition,
-            new(ProcessingGraphHosts.LogicHost, ImmutableArray<string>.Empty));
+        ArgumentNullException.ThrowIfNull(currentDefinition);
+        CanonicalCentralGraphSeedChain.Validate(chain);
+        var current = chain[^1];
+        var (definitionJson, definitionJsonSha256, portable, central) =
+            CanonicalCentralGraphSeedChain.Compile(currentDefinition);
         if (!portable.IsValid || !central.IsValid || !nodeRegistry.Validate(central.Plan!))
         {
             throw new InvalidOperationException("The canonical basic central processing graph is invalid.");
         }
-        var createdAt = DateTimeOffset.UnixEpoch;
-        var revisionId = BasicCentralProcessingGraphRevisionId;
-        var assignmentId = BasicCentralProcessingGraphAssignmentId;
-        var definitionJson = System.Text.Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition));
-        var revision = await dbContext.CentralProcessingGraphRevisions.SingleOrDefaultAsync(item => item.Id == revisionId);
+        if (currentDefinition.Name != CanonicalCentralGraphSeedChain.GraphName ||
+            currentDefinition.Revision != current.Revision ||
+            definitionJsonSha256 != current.DefinitionJsonSha256 ||
+            portable.Plan!.DefinitionIdentitySha256 != current.DefinitionIdentitySha256 ||
+            portable.Plan.PlanIdentitySha256 != current.PortablePlanIdentitySha256 ||
+            central.Plan!.PlanIdentitySha256 != current.CentralPlanIdentitySha256)
+        {
+            throw new InvalidOperationException(
+                "The canonical central graph generated from code does not match the current seed chain entry. " +
+                "Append a new CanonicalCentralGraphSeedChain entry instead of changing a recorded one.");
+        }
+
+        for (var index = 0; index < chain.Count - 1; index++)
+        {
+            await ValidateHistoricalSeedRevisionAsync(dbContext, chain[index]);
+        }
+
+        var revision = await dbContext.CentralProcessingGraphRevisions.SingleOrDefaultAsync(
+            item => item.Id == current.RevisionId);
         if (revision is null)
         {
             if (await dbContext.CentralProcessingGraphRevisions.AnyAsync(item =>
-                    item.Name == definition.Name && item.Revision == definition.Revision ||
-                    item.DefinitionIdentitySha256 == portable.Plan!.DefinitionIdentitySha256))
+                    item.Name == currentDefinition.Name && item.Revision == currentDefinition.Revision ||
+                    item.DefinitionIdentitySha256 == current.DefinitionIdentitySha256))
             {
                 throw new InvalidOperationException("The canonical central graph seed identity conflicts with another row.");
             }
             revision = new CentralProcessingGraphRevision
             {
-                Id = revisionId,
-                Name = definition.Name,
-                Revision = definition.Revision,
+                Id = current.RevisionId,
+                Name = currentDefinition.Name,
+                Revision = currentDefinition.Revision,
                 DefinitionJson = definitionJson,
-                DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
-                PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
-                CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
-                CreatedAtUtc = createdAt,
-                CreatedByUserId = "database-seed",
-                PublishedAtUtc = createdAt,
-                PublishedByUserId = "database-seed"
+                DefinitionIdentitySha256 = current.DefinitionIdentitySha256,
+                PortablePlanIdentitySha256 = current.PortablePlanIdentitySha256,
+                CentralPlanIdentitySha256 = current.CentralPlanIdentitySha256,
+                CreatedAtUtc = current.SeededAtUtc,
+                CreatedByUserId = CanonicalCentralGraphSeedChain.SeedActorUserId,
+                PublishedAtUtc = current.SeededAtUtc,
+                PublishedByUserId = CanonicalCentralGraphSeedChain.SeedActorUserId
             };
             dbContext.CentralProcessingGraphRevisions.Add(revision);
         }
-        else if (revision.Name != definition.Name || revision.Revision != definition.Revision ||
-                 revision.DefinitionJson != definitionJson ||
-                 revision.DefinitionIdentitySha256 != portable.Plan!.DefinitionIdentitySha256 ||
-                 revision.PortablePlanIdentitySha256 != portable.Plan.PlanIdentitySha256 ||
-                 revision.EdgePlanIdentitySha256 is not null ||
-                 revision.CentralPlanIdentitySha256 != central.Plan!.PlanIdentitySha256 ||
-                 revision.CreatedAtUtc != createdAt || revision.CreatedByUserId != "database-seed" ||
-                 revision.PublishedAtUtc != createdAt || revision.PublishedByUserId != "database-seed" ||
-                 revision.RetiredAtUtc is not null || revision.RetiredByUserId is not null ||
-                 revision.RetirementReasonCode is not null)
+        else if (!MatchesSeedRevision(revision, current) || revision.DefinitionJson != definitionJson)
         {
             throw new InvalidOperationException("The canonical central graph seed row has conflicting content.");
         }
 
         var assignment = await dbContext.CentralProcessingGraphAssignments.SingleOrDefaultAsync(
-            item => item.Id == assignmentId);
+            item => item.Id == current.AssignmentId);
         if (assignment is null)
         {
             dbContext.CentralProcessingGraphAssignments.Add(new CentralProcessingGraphAssignment
             {
-                Id = assignmentId,
+                Id = current.AssignmentId,
                 RevisionId = revision.Id,
                 TargetHost = CentralProcessingGraphTargetHost.Central,
                 Scope = CentralProcessingGraphAssignmentScope.GlobalDefault,
-                EffectiveFromUtc = createdAt,
-                CreatedAtUtc = createdAt,
-                ActorUserId = "database-seed",
-                ReasonCode = "canonical-basic-central"
+                EffectiveFromUtc = current.SeededAtUtc,
+                CreatedAtUtc = current.SeededAtUtc,
+                ActorUserId = CanonicalCentralGraphSeedChain.SeedActorUserId,
+                ReasonCode = CanonicalCentralGraphSeedChain.AssignmentReasonCode
             });
         }
-        else if (assignment.RevisionId != revision.Id ||
-                 assignment.TargetHost != CentralProcessingGraphTargetHost.Central ||
-                 assignment.Scope != CentralProcessingGraphAssignmentScope.GlobalDefault ||
-                 assignment.ObservatoryId is not null || assignment.LogicalCameraId is not null ||
-                 assignment.EffectiveFromUtc != createdAt || assignment.EffectiveUntilUtc is not null ||
-                 assignment.CreatedAtUtc != createdAt || assignment.ActorUserId != "database-seed" ||
-                 assignment.ReasonCode != "canonical-basic-central")
+        else if (!MatchesSeedAssignment(assignment, current))
         {
             throw new InvalidOperationException("The canonical central graph assignment seed row has conflicting content.");
         }
     }
+
+    /// <summary>
+    /// A historical revision is optional (a database initialized after it was superseded never receives it), but a
+    /// retained row and its assignment must both still match the constants recorded when it shipped.
+    /// </summary>
+    private static async Task ValidateHistoricalSeedRevisionAsync(
+        ApplicationDbContext dbContext,
+        CanonicalCentralGraphSeedRevision entry)
+    {
+        var revision = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == entry.RevisionId);
+        var assignment = await dbContext.CentralProcessingGraphAssignments.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == entry.AssignmentId);
+        if (revision is null && assignment is null)
+        {
+            return;
+        }
+        if (revision is null || assignment is null || !MatchesSeedRevision(revision, entry) ||
+            CanonicalCentralGraphSeedChain.ComputeDefinitionJsonSha256(revision.DefinitionJson) !=
+                entry.DefinitionJsonSha256 ||
+            !MatchesSeedAssignment(assignment, entry))
+        {
+            throw new InvalidOperationException(
+                $"The historical canonical central graph seed revision {entry.Revision} has conflicting content.");
+        }
+    }
+
+    private static bool MatchesSeedRevision(
+        CentralProcessingGraphRevision revision,
+        CanonicalCentralGraphSeedRevision entry)
+        => revision.Name == CanonicalCentralGraphSeedChain.GraphName && revision.Revision == entry.Revision &&
+           revision.DefinitionIdentitySha256 == entry.DefinitionIdentitySha256 &&
+           revision.PortablePlanIdentitySha256 == entry.PortablePlanIdentitySha256 &&
+           revision.EdgePlanIdentitySha256 is null &&
+           revision.CentralPlanIdentitySha256 == entry.CentralPlanIdentitySha256 &&
+           revision.CreatedAtUtc == entry.SeededAtUtc &&
+           revision.CreatedByUserId == CanonicalCentralGraphSeedChain.SeedActorUserId &&
+           revision.PublishedAtUtc == entry.SeededAtUtc &&
+           revision.PublishedByUserId == CanonicalCentralGraphSeedChain.SeedActorUserId &&
+           revision.RetiredAtUtc is null && revision.RetiredByUserId is null &&
+           revision.RetirementReasonCode is null;
+
+    private static bool MatchesSeedAssignment(
+        CentralProcessingGraphAssignment assignment,
+        CanonicalCentralGraphSeedRevision entry)
+        => assignment.RevisionId == entry.RevisionId &&
+           assignment.TargetHost == CentralProcessingGraphTargetHost.Central &&
+           assignment.Scope == CentralProcessingGraphAssignmentScope.GlobalDefault &&
+           assignment.ObservatoryId is null && assignment.LogicalCameraId is null &&
+           assignment.EffectiveFromUtc == entry.SeededAtUtc && assignment.EffectiveUntilUtc is null &&
+           assignment.CreatedAtUtc == entry.SeededAtUtc &&
+           assignment.ActorUserId == CanonicalCentralGraphSeedChain.SeedActorUserId &&
+           assignment.ReasonCode == CanonicalCentralGraphSeedChain.AssignmentReasonCode;
 
     internal static ProcessingGraphDefinition CreateBasicCentralProcessingGraph()
     {
@@ -205,8 +285,8 @@ internal static class DatabaseSeeder
             .ToArray();
         return new(
             ProcessingGraphSchemaVersions.Current,
-            "logic-host-basic",
-            "1",
+            CanonicalCentralGraphSeedChain.GraphName,
+            CanonicalCentralGraphSeedChain.Current.Revision,
             sourceRoles.Select(role => new ProcessingGraphSourceDefinition(
                 SourceId(role),
                 [new ProcessingGraphProductContract(role, "source", ProcessingProductKind.PixelData)]))

@@ -11,6 +11,84 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 public sealed class ReconstructableCaptureContractTests
 {
     [TestMethod]
+    public void ManifestV2_CompactScenePreservesIdentifiersAndRawIdentityWhileLegacyGeometryRoundTrips()
+    {
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var scene = new SceneProvenance(
+            new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
+            "astronomy-v1", "sensor-v1",
+            Objects: Enumerable.Range(0, 2000).Select(index =>
+                new ProjectedObjectProvenance($"star:{index}", $"Star {index}", index / 1000d, 1, 2)).ToArray(),
+            Segments: [new("ORI", "star:1", "star:2", 0, 0, 1, 1)],
+            EphemerisModelVersion: "ephemeris-v1", ConstellationTopologyVersion: "topology-v1",
+            ConstellationIds: ["ORI"], RigProfileHashSha256: new string('B', 64),
+            ProjectionCalibrationVersion: "calibration-v1", SceneUtc: DateTimeOffset.UnixEpoch,
+            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64));
+        var legacy = original with { Scene = scene };
+        var compact = original with { Scene = scene.WithoutProjectedGeometry() };
+        var oldBytes = CaptureContractJson.Serialize(legacy);
+        var newBytes = CaptureContractJson.Serialize(compact);
+        var oldParsed = CaptureContractJson.ParseManifest(oldBytes);
+        var newParsed = CaptureContractJson.ParseManifest(newBytes);
+
+        Assert.IsTrue(oldParsed.IsValid);
+        Assert.IsTrue(newParsed.IsValid);
+        CollectionAssert.AreEqual(oldBytes, CaptureContractJson.Serialize(oldParsed.Document!.Manifest));
+        Assert.AreEqual(legacy.IdempotencyKey, compact.IdempotencyKey);
+        Assert.IsTrue(newBytes.Length < oldBytes.Length / 10);
+        var retained = newParsed.Document!.Manifest.Scene!;
+        Assert.IsTrue(retained.RequiresProjectedScene);
+        Assert.IsNull(retained.Objects);
+        Assert.IsNull(retained.Segments);
+        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(scene with { Objects = null, Segments = null }),
+            CaptureContractJson.ComputeCanonicalJsonSha256(retained with { ProjectedSceneSchemaVersion = null }));
+        Assert.IsFalse((compact with { Scene = retained with { Objects = scene.Objects } }).Validate().IsValid);
+        Assert.IsFalse((compact with { Scene = retained with { SceneId = new string('A', 2048) } }).Validate().IsValid);
+        Assert.IsFalse((compact with { Scene = retained with { ProjectedSceneStageKey = new string('Z', 64) } }).Validate().IsValid);
+    }
+
+    [TestMethod]
+    [DataRow("unsupported-product-schema")]
+    [DataRow("inline-segments")]
+    [DataRow("missing-scene-utc")]
+    [DataRow("unsupported-stage-schema")]
+    [DataRow("missing-stage-key")]
+    [DataRow("missing-rig-hash")]
+    [DataRow("invalid-rig-hash")]
+    public void ManifestV2_RejectsCompactSceneWithoutSupportedSourceBinding(string invalidField)
+    {
+        var scene = new SceneProvenance(
+            new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
+            "astronomy-v1", "sensor-v1", RigProfileHashSha256: new string('B', 64),
+            SceneUtc: DateTimeOffset.UnixEpoch, ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1",
+            ProjectedSceneStageKey: new string('C', 64)).WithoutProjectedGeometry();
+        var valid = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
+        Assert.IsTrue(valid.Validate().IsValid);
+        var invalid = valid with
+        {
+            Scene = invalidField switch
+            {
+                "unsupported-product-schema" => scene with { ProjectedSceneSchemaVersion = "projected-scene-v999" },
+                "inline-segments" => scene with { Segments = [] },
+                "missing-scene-utc" => scene with { SceneUtc = null },
+                "unsupported-stage-schema" => scene with { ProjectedSceneStageSchemaVersion = "projected-scene-stage-v999" },
+                "missing-stage-key" => scene with { ProjectedSceneStageKey = null },
+                "missing-rig-hash" => scene with { RigProfileHashSha256 = null },
+                "invalid-rig-hash" => scene with { RigProfileHashSha256 = new string('Z', 64) },
+                _ => throw new ArgumentOutOfRangeException(nameof(invalidField))
+            }
+        };
+        var expected = CaptureContractValidationResult.Failure(
+            CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
+        Assert.AreEqual(expected, invalid.Validate());
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(invalid));
+        Assert.IsFalse(parsed.IsValid);
+        Assert.AreEqual(expected, parsed.Validation);
+        Assert.AreEqual(valid.IdempotencyKey, invalid.IdempotencyKey,
+            "scene validation must not rewrite the immutable raw descriptor identity");
+    }
+
+    [TestMethod]
     public void SensorReadoutResolver_DerivesAsi174RoiAndRejectsImpossibleGeometry()
     {
         var sensor = new SensorProfile(

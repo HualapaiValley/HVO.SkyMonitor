@@ -97,7 +97,8 @@ public sealed record CameraAgentSkyMapGeometry(
     string ProjectionCalibrationVersion,
     string ProjectionAlgorithmVersion,
     IReadOnlyList<CameraAgentSkyMapCardinal> Cardinals,
-    IReadOnlyList<CameraAgentSkyMapAltitudeRing> AltitudeRings);
+    IReadOnlyList<CameraAgentSkyMapAltitudeRing> AltitudeRings,
+    double RadialDistortionK1 = 0);
 
 /// <summary>One visible object with its horizontal direction and projected pixel.</summary>
 /// <param name="Kind">

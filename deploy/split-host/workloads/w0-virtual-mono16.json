@@ -73,6 +73,7 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
       {
         "id": "Preview",
         "type": "Preview",

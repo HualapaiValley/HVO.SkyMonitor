@@ -82,15 +82,45 @@ internal sealed class TransientDetectorRuntime(
                 horizonPolicy: HorizonPolicy.GeometricHorizon,
                 projectionVersion: configuration.Rig.Optics.CalibrationVersion,
                 algorithmVersion: "visible-scene-iau1976-constellation-v2");
-            var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
-                .BuildAsync(request, cancellationToken).ConfigureAwait(false);
             var transform = input.Descriptor.SourceToDetectorTransform;
-            var radius = Math.Max(0.5, options.StarSupportRadiusSourcePixels * Math.Max(transform.ScaleX, transform.ScaleY));
-            var starRegions = scene.Objects.Select(item => new Linear16CircularMaskRegion(
-                item.Pixel.X * transform.ScaleX + transform.OffsetX,
-                item.Pixel.Y * transform.ScaleY + transform.OffsetY,
-                radius)).ToArray();
-            var star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
+            Linear16PixelMask star;
+            if (options.ExposureIntegratedStarMask)
+            {
+                try
+                {
+                    var descriptor = pair.Value.Manifest.Descriptor;
+                    var startUtc = VirtualExposureProvenance.ResolveCelestialStartUtc(
+                        descriptor, pair.Value.Manifest.Scene?.VirtualExposure);
+                    request = new VisibleSceneRequest(startUtc.AddTicks(descriptor.Controls.EffectiveExposure.Ticks / 2),
+                        request.Observer, projection, request.CatalogQuery, metadata,
+                        horizonPolicy: HorizonPolicy.GeometricHorizon,
+                        projectionVersion: configuration.Rig.Optics.CalibrationVersion);
+                    var geometry = await new StellarExposureGeometryBuilder(catalog).BuildAsync(request,
+                        startUtc, descriptor.Controls.EffectiveExposure,
+                        new(MaximumCandidates: options.StarMaximumResults,
+                            PsfSupportRadiusPixels: options.StarSupportRadiusSourcePixels), cancellationToken)
+                        .ConfigureAwait(false);
+                    star = StellarExposureMask.Create(geometry, width, height, transform.ScaleX, transform.ScaleY,
+                        transform.OffsetX, transform.OffsetY, new(options.StarSupportRadiusSourcePixels),
+                        cancellationToken).Mask;
+                }
+                catch (Exception exception) when (exception is ArgumentException or OverflowException or NotSupportedException ||
+                    exception is InvalidOperationException && exception.Message.StartsWith("stellar-", StringComparison.Ordinal))
+                {
+                    throw new TransientWorkerExecutionException("transient-runtime.exposure-star-mask-unsupported", retryable: false);
+                }
+            }
+            else
+            {
+                var scene = await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
+                    .BuildAsync(request, cancellationToken).ConfigureAwait(false);
+                var radius = Math.Max(0.5, options.StarSupportRadiusSourcePixels * Math.Max(transform.ScaleX, transform.ScaleY));
+                var starRegions = scene.Objects.Select(item => new Linear16CircularMaskRegion(
+                    item.Pixel.X * transform.ScaleX + transform.OffsetX,
+                    item.Pixel.Y * transform.ScaleY + transform.OffsetY,
+                    radius)).ToArray();
+                star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
+            }
             var masks = new[]
             {
                 TransientDetectorMask.Create(TransientDetectorMaskKind.Sky,
@@ -104,7 +134,8 @@ internal sealed class TransientDetectorRuntime(
                 TransientDetectorMask.Create(TransientDetectorMaskKind.BadPixel,
                     new ProcessingAlgorithmIdentity("configured-bad-pixel-mask", "v1"), empty),
                 TransientDetectorMask.Create(TransientDetectorMaskKind.Star,
-                    new ProcessingAlgorithmIdentity("catalog-projected-star-mask", "v1"), star)
+                    new ProcessingAlgorithmIdentity(options.ExposureIntegratedStarMask
+                        ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", "v1"), star)
             };
             output.Add(pair.Key, new TransientTemporalSource(
                 ToPosition(pair.Key), input.CaptureSequence!.Value, input,

@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/graphs/{RevisionId}"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -44,10 +45,10 @@
                 <div><dt>Local plan SHA-256</dt><dd><code>@_detail.State.LocalPlanIdentitySha256</code></dd></div>
                 <div><dt>Schema</dt><dd>@_detail.Pipeline.SchemaVersion</dd></div>
                 <div><dt>Dependency policy</dt><dd>@_detail.Pipeline.DependencyPolicy</dd></div>
-                <div><dt>Created</dt><dd>@_detail.State.CreatedUtc.ToString("u")</dd></div>
-                <div><dt>Validated</dt><dd>@(_detail.State.ValidatedUtc?.ToString("u") ?? "-")</dd></div>
-                <div><dt>Activated</dt><dd>@(_detail.State.ActivatedUtc?.ToString("u") ?? "-")</dd></div>
-                <div><dt>Retired</dt><dd>@(_detail.State.RetiredUtc?.ToString("u") ?? "-")</dd></div>
+                <div><dt>Created</dt><dd>@SiteTime.Format(_detail.State.CreatedUtc)</dd></div>
+                <div><dt>Validated</dt><dd>@SiteTime.Format(_detail.State.ValidatedUtc, unavailable: "-")</dd></div>
+                <div><dt>Activated</dt><dd>@SiteTime.Format(_detail.State.ActivatedUtc, unavailable: "-")</dd></div>
+                <div><dt>Retired</dt><dd>@SiteTime.Format(_detail.State.RetiredUtc, unavailable: "-")</dd></div>
             </dl>
         </section>
 

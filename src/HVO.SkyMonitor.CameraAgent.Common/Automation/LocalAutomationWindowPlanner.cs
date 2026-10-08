@@ -1,0 +1,168 @@
+using HVO.SkyMonitor.Astronomy;
+using System.Collections.Immutable;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+
+namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
+
+public sealed record LocalAutomationWindowPlan(
+    LocalAutomationOccurrence? DueOccurrence,
+    LocalAutomationOccurrence? NextOccurrence,
+    int MissedOccurrencesInLookback,
+    bool EarlierOccurrencesOutsideLookback,
+    string? UnavailableReasonCode,
+    IReadOnlyList<SunriseReportingPeriodResolution> UnavailableDates)
+{
+    /// <summary>Potentially missed windows; the runner reconciles their exact identities with retained runs.</summary>
+    public IReadOnlyList<LocalAutomationSourceWindow> EarlierDueWindows { get; init; } = [];
+}
+
+/// <summary>Shared preview/runner arithmetic over the configured site's delivered sunrise calendar.</summary>
+public sealed class LocalAutomationWindowPlanner(IObservingDayCalendarProvider calendarProvider)
+{
+    public const int MaximumLookbackDays = 7;
+    // Retain the supported 32-definition lookback, settle and civil-date boundary working set
+    // without rebuilding every hourly partition on each sweep.
+    public const int MaximumCachedWindowSets = 512;
+    private readonly object _sync = new();
+    private readonly Dictionary<string, ImmutableArray<LocalAutomationSourceWindow>> _cache = [];
+    private readonly Queue<string> _cacheOrder = new();
+
+    public LocalAutomationWindowPlan Resolve(LocalAutomationRunnerEntry entry, DateTimeOffset nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var policy = entry.Definition.SourceWindow;
+        if (policy is null || !policy.IsValid() ||
+            entry.Definition.TriggerKind != LocalAutomationTriggerKind.SourceWindowClosed)
+        {
+            return new(null, null, 0, false, "automation.source-window-policy-invalid", []);
+        }
+        var calendar = calendarProvider.Current;
+        if (!calendar.UsesSunrise)
+        {
+            return new(null, null, 0, false, "automation.sunrise-calendar-required", []);
+        }
+        var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(nowUtc, calendar.TimeZone).DateTime);
+        var cursor = entry.LastOccurrenceUtc ?? entry.Definition.TriggerEpochUtc;
+        var lookback = LookbackStart(nowUtc);
+        var earliestFinalUtc = cursor > lookback ? cursor : lookback;
+        var earliestSourceEndUtc = new DateTimeOffset(Math.Max(DateTimeOffset.MinValue.UtcTicks,
+            earliestFinalUtc.UtcTicks - policy.ProcessingSettleAllowance.Ticks), TimeSpan.Zero);
+        var earliestEndDate = DateOnly.FromDateTime(
+            TimeZoneInfo.ConvertTime(earliestSourceEndUtc, calendar.TimeZone).DateTime);
+        // A qualifying end can precede its final run by the settle allowance, and its sunrise
+        // report date can precede the end's civil date. Convert the UTC bound with its own offset.
+        var earliestDate = DateOnly.FromDayNumber(Math.Max(DateOnly.MinValue.DayNumber,
+            earliestEndDate.DayNumber - 2));
+        var latestDate = DateOnly.FromDayNumber(Math.Min(DateOnly.MaxValue.DayNumber, localDate.DayNumber + 2));
+        var windows = new List<LocalAutomationSourceWindow>();
+        var unavailable = new List<SunriseReportingPeriodResolution>();
+        for (var dayNumber = earliestDate.DayNumber; dayNumber <= latestDate.DayNumber; dayNumber++)
+        {
+            var date = DateOnly.FromDayNumber(dayNumber);
+            try
+            {
+                var reporting = calendar.Resolve(date).SunrisePeriod;
+                if (reporting is null)
+                {
+                    return new(null, null, 0, false, ObservingDayCalendar.SiteUnavailable, unavailable);
+                }
+                windows.AddRange(ResolveWindows(reporting, policy));
+            }
+            catch (ReportingPeriodUnavailableException exception)
+            {
+                unavailable.Add(new(date, null, exception.ReasonCode));
+            }
+        }
+        var due = windows.Where(window => window.EarliestFinalUtc > cursor && window.EarliestFinalUtc <= nowUtc &&
+            window.EarliestFinalUtc >= lookback)
+            .OrderBy(static window => window.EarliestFinalUtc).ToArray();
+        var next = windows.Where(window => window.EarliestFinalUtc > nowUtc && window.EarliestFinalUtc > cursor)
+            .MinBy(static window => window.EarliestFinalUtc);
+        return new(due.Length > 0 ? CreateOccurrence(entry, due[^1]) : null,
+            next is not null ? CreateOccurrence(entry, next) : null, Math.Max(0, due.Length - 1),
+            cursor < lookback,
+            next is null ? unavailable.LastOrDefault()?.UnavailableReasonCode ?? ObservingDayCalendar.SiteUnavailable : null,
+            unavailable)
+        {
+            EarlierDueWindows = due.Take(Math.Max(0, due.Length - 1)).ToArray()
+        };
+    }
+
+    /// <summary>Explicit bounded backfill resolves a named reporting date; it never infers a sliding period.</summary>
+    public IReadOnlyList<LocalAutomationSourceWindow> ResolveWindows(
+        DateOnly reportDate, LocalAutomationSourceWindowPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        var reporting = calendarProvider.Current.Resolve(reportDate).SunrisePeriod
+            ?? throw new ReportingPeriodUnavailableException(reportDate, "automation.sunrise-calendar-required");
+        return ResolveWindows(reporting, policy);
+    }
+
+    public IReadOnlyList<LocalAutomationSourceWindow> ResolveWindows(
+        SunriseReportingPeriod reporting, LocalAutomationSourceWindowPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(reporting);
+        ArgumentNullException.ThrowIfNull(policy);
+        if (!reporting.IsValid() || !policy.IsValid())
+        {
+            throw new ArgumentException("Source-window planning requires a valid period and policy.");
+        }
+        var key = CaptureContractJson.ComputeCanonicalJsonSha256(new { reporting.IdentitySha256, policy });
+        lock (_sync)
+        {
+            if (_cache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+            var result = policy.Kind == LocalAutomationSourceWindowKind.SunriseDay
+                ? ImmutableArray.Create(LocalAutomationSourceWindow.Create(policy, reporting, reporting.StartUtc, reporting.EndUtc))
+                : ResolveCivilHours(reporting, policy);
+            if (_cache.Count == MaximumCachedWindowSets)
+            {
+                _cache.Remove(_cacheOrder.Dequeue());
+            }
+            _cache.Add(key, result);
+            _cacheOrder.Enqueue(key);
+            return result;
+        }
+    }
+
+    internal static LocalAutomationOccurrence CreateOccurrence(
+        LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
+        => LocalAutomationOccurrence.Create(entry, CreateRunKey(entry, window), window.EarliestFinalUtc, window);
+
+    internal static string CreateOccurrenceIdentity(
+        LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
+        => LocalAutomationOccurrence.ComputeIdentity(entry, CreateRunKey(entry, window), window.EarliestFinalUtc, window);
+
+    private static string CreateRunKey(LocalAutomationRunnerEntry entry, LocalAutomationSourceWindow window)
+    {
+        var runIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            entry.Definition.DefinitionId,
+            entry.Version,
+            entry.RevisionSha256,
+            SourceWindowIdentity = window.IdentitySha256
+        });
+        return "w:" + runIdentity;
+    }
+
+    internal static DateTimeOffset LookbackStart(DateTimeOffset nowUtc)
+        => new(Math.Max(DateTimeOffset.MinValue.UtcTicks, nowUtc.UtcTicks - TimeSpan.FromDays(MaximumLookbackDays).Ticks), TimeSpan.Zero);
+
+    private static ImmutableArray<LocalAutomationSourceWindow> ResolveCivilHours(
+        SunriseReportingPeriod reporting, LocalAutomationSourceWindowPolicy policy)
+    {
+        try
+        {
+            return SunriseReportingCalendar.PartitionCivilHours(reporting)
+                .Select(hour => LocalAutomationSourceWindow.Create(policy, reporting, hour.StartUtc, hour.EndUtc)).ToImmutableArray();
+        }
+        catch (InvalidOperationException)
+        {
+            throw new ReportingPeriodUnavailableException(reporting.ReportDate, "automation.time-zone-rules-changed");
+        }
+    }
+}

@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "exposure-swept-star-mask-regression-v2",
+  "description": "Deterministic regression pins for independent catalog-only swept masks and actual configured VirtualSky pixels. Physical acceptance remains >=99% suppression, <=20% area, no unassociated residuals or star-only candidates. These pins are not an independent physical oracle.",
+  "rendererCommit": "e2949f63a488589b01deebf545511b0faedff205",
+  "historicalInstantaneousReferences": [
+    {
+      "id": "W1",
+      "width": 1936,
+      "height": 1216,
+      "format": 1,
+      "imageCircleRadius": 595.84,
+      "focalLengthPixels": null,
+      "maximumResults": 2000,
+      "detectorScale": 1,
+      "maskRadius": 5,
+      "expectedThreshold": 48,
+      "expectedBaselineCount": 2968,
+      "expectedBaselineEnergy": 420380,
+      "expectedMaskedPixels": 206512,
+      "expectedMaskChecksum": "51CA89BCEB8158942FC93160E307B2C0A1CFF847753003A1E99D2F253642B769",
+      "expectedCausalThreshold": 48,
+      "expectedCausalMaskedPixels": 181794,
+      "expectedCausalMaskChecksum": "925E475280923EA287135EDAE4E460EA220C5FB1AE50817C2E4BFE4999976915",
+      "sourceBytes": 4708352
+    },
+    {
+      "id": "W2",
+      "width": 3096,
+      "height": 2080,
+      "format": 3,
+      "imageCircleRadius": 1187.5,
+      "focalLengthPixels": 735.553926,
+      "maximumResults": 300,
+      "detectorScale": 0.5,
+      "maskRadius": 3,
+      "expectedThreshold": 677,
+      "expectedBaselineCount": 1365,
+      "expectedBaselineEnergy": 15837168,
+      "expectedMaskedPixels": 12494,
+      "expectedMaskChecksum": "7A1FFC2770C85D02B4F719ED17D03C43A426C624AAF644A6CCCDA7BFE8BDC243",
+      "expectedCausalThreshold": 736,
+      "expectedCausalMaskedPixels": 10425,
+      "expectedCausalMaskChecksum": "14A1FDC821467AE2F74846B09524B67574974CE2096434DB613BE85265827AB4",
+      "sourceBytes": 12879360
+    }
+  ],
+  "workloads": {
+    "W1": {
+      "threshold": 48,
+      "baselineCount": 2944,
+      "baselineEnergy": 411040,
+      "maskedPixels": 220630,
+      "maskChecksum": "BBB18731B2555CE1F5F161B770C29E536E3B26F7AC7C804DE146E2B6ADDFFE45",
+      "causalThreshold": 48,
+      "causalMaskedPixels": 195664,
+      "causalMaskChecksum": "78C3F58D4C4AC970C8AF1604D9B55FEA72BEDFA4CA4740F925DFF8AE1FEADEFB"
+    },
+    "W2": {
+      "threshold": 677,
+      "baselineCount": 1360,
+      "baselineEnergy": 15467390,
+      "maskedPixels": 13563,
+      "maskChecksum": "77F1868BEDC1725A37C4990C09C2977B16B6663F0153736572018689A2DE57E4",
+      "causalThreshold": 736,
+      "causalMaskedPixels": 11429,
+      "causalMaskChecksum": "AB2CAF008A4ED36F35811B5741D6C100D31708301FDFEFA65BAFCC863ED272CB"
+    }
+  }
+}

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Primitives;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 internal sealed class InstalledCelestialCatalogTests
 {
     [TestMethod]
@@ -41,6 +42,7 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreSame(snapshot.Catalog, concrete);
         Assert.AreSame(concrete, provider.GetRequiredService<ICelestialCatalog>());
         Assert.AreSame(concrete, provider.GetRequiredService<IHipparcosCatalog>());
+        Assert.AreSame(concrete, provider.GetRequiredService<IAstrometricCatalogSource>());
         Assert.AreSame(concrete, provider.GetRequiredService<ICelestialCatalogMetadataSource>());
         Assert.AreSame(snapshot, provider.GetRequiredService<CatalogSnapshotResult>());
 
@@ -130,9 +132,10 @@ internal sealed class InstalledCelestialCatalogTests
             fixture.Description);
         Assert.AreEqual(HealthStatus.Healthy, production.Status);
         Assert.AreEqual("Production celestial catalog snapshot is installed.", production.Description);
-        Assert.HasCount(8, fixture.Data);
+        Assert.HasCount(9, fixture.Data);
         Assert.AreEqual("Fixture", fixture.Data["Kind"]);
         Assert.AreEqual("hyg-v42-fixture", fixture.Data["CatalogId"]);
+        Assert.AreEqual(snapshot.SnapshotVersion, fixture.Data["PackageVersion"]);
         Assert.AreEqual("explicit-manifest-v2", fixture.Data["CatalogIdentitySource"]);
         Assert.AreEqual(snapshot.DatabaseSha256, fixture.Data["DatabaseSha256"]);
         Assert.AreEqual(snapshot.RowCount, fixture.Data["RowCount"]);

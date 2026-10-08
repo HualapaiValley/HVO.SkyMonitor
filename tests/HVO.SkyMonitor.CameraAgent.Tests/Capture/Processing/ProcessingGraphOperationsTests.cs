@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using HVO.SkyMonitor.Processing;
@@ -1991,7 +1992,7 @@ public sealed class ProcessingGraphOperationsTests
             command.Parameters.AddWithValue("$work", lease.WorkId);
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual("quarantined", reader.GetString(0));
+            Assert.AreEqual("abandoned", reader.GetString(0));
             Assert.AreEqual(0L, reader.GetInt64(1));
         }
         finally
@@ -2180,23 +2181,89 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    public async Task OldUnboundVirtualEnvelopeRecoversWithoutImposingNewCaptureScenePolicy()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-old-scene-recovery");
+        try
+        {
+            var retained = CreateConfiguration() with { Module = new CameraModuleDescriptor("VirtualSky") };
+            RawCaptureReceipt receipt;
+            using (var provider = CreateProvider(root, configureServices:
+                       services => services.RemoveAll<ProcessingGraphOperationsCoordinator>()))
+            {
+                // Seed the pre-binding protocol: immutable raw evidence plus its old envelope, no live execution.
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                receipt = (await ingress.AcceptAsync(retained, CreateSubmission(), CancellationToken.None)
+                    .ConfigureAwait(false))!;
+                Assert.IsNotNull(receipt);
+            }
+            var sidecar = Path.ChangeExtension(Path.Combine(root, receipt.Manifest.RelativeArtifactPath), ".json");
+            var original = await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+            using (var provider = CreateProvider(root))
+            {
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var current = retained with
+                {
+                    Pipeline = new CapturePipelineConfig(
+                    [new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+                };
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = await operations.EnsureConfiguredBasicAsync(CreateConfiguration(), CancellationToken.None).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => operations.EnsureConfiguredBasicAsync(
+                    retained, CancellationToken.None).AsTask()).ConfigureAwait(false);
+                _ = await operations.EnsureConfiguredBasicAsync(current, CancellationToken.None).ConfigureAwait(false);
+                await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);
+                await ingress.BindRecoveredLiveExecutionsAsync(current, CancellationToken.None).ConfigureAwait(false);
+                var executions = await operations.ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(1, executions);
+                Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, executions[0].CaptureId);
+                var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(item => item.Name == "standard");
+                var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+                await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+                var lease = await laneStore.ClaimAsync(lane, "old-envelope", current, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                Assert.IsEmpty(lease.Context.Configuration.Pipeline.Steps);
+                Assert.AreEqual("VirtualSky", lease.Context.Configuration.ModuleType);
+                Assert.IsNotNull(lease.Context.Execution);
+                Assert.AreEqual(executions[0].ExecutionId, lease.Context.Execution.ExecutionId);
+                CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false));
+                // The retained-validation cache must never authorize new capture configuration with the same hash.
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => operations.EnsureConfiguredBasicAsync(
+                    retained, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ReconciledRawEvidenceIsBoundToFrozenLiveExecutionBeforeClaim()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-recovery");
         try
         {
             var configuration = CreateConfiguration();
-            Guid captureId;
+            var captureIds = new List<Guid>();
             using (var provider = CreateProvider(root))
             {
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 _ = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
                     .EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-                var receipt = await ingress.AcceptAsync(
-                    configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(receipt);
-                captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                for (var index = 0; index < 3; index++)
+                {
+                    var receipt = await ingress.AcceptAsync(
+                        configuration, CreateSubmission(sequenceOffset: index), CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(receipt);
+                    captureIds.Add(receipt.Manifest.Descriptor.Capture.CaptureId);
+                }
             }
             SqliteConnection.ClearAllPools();
             using (var connection = new SqliteConnection(
@@ -2205,7 +2272,7 @@ public sealed class ProcessingGraphOperationsTests
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var removeExecution = connection.CreateCommand();
                 removeExecution.CommandText = "DELETE FROM processing_executions WHERE execution_class = 'Live';";
-                Assert.AreEqual(1, await removeExecution.ExecuteNonQueryAsync().ConfigureAwait(false));
+                Assert.AreEqual(3, await removeExecution.ExecuteNonQueryAsync().ConfigureAwait(false));
             }
 
             using (var provider = CreateProvider(root))
@@ -2218,8 +2285,11 @@ public sealed class ProcessingGraphOperationsTests
 
                 var executions = await operations.ReadExecutionsAsync(
                     ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false);
-                Assert.HasCount(1, executions);
-                Assert.AreEqual(captureId, executions[0].CaptureId);
+                Assert.HasCount(3, executions);
+                CollectionAssert.AreEquivalent(captureIds, executions.Select(execution => execution.CaptureId).ToArray());
+                await ingress.BindRecoveredLiveExecutionsAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(3, await operations.ReadExecutionsAsync(
+                    ProcessingGraphExecutionClass.Live, 10, CancellationToken.None).ConfigureAwait(false));
                 var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
                 await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
                 var lease = await laneStore.ClaimAsync(
@@ -2230,7 +2300,8 @@ public sealed class ProcessingGraphOperationsTests
                     CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(lease);
                 Assert.IsNotNull(lease.Context.Execution);
-                Assert.AreEqual(executions[0].ExecutionId, lease.Context.Execution.ExecutionId);
+                Assert.AreEqual(executions.Single(execution => execution.CaptureId == lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId).ExecutionId,
+                    lease.Context.Execution.ExecutionId);
             }
         }
         finally
@@ -3223,8 +3294,11 @@ public sealed class ProcessingGraphOperationsTests
         var provenance = new SceneProvenance(
             sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
             "projection-v1", "astronomy-v1", "sensor-v1",
+            RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(CreateProjectedSceneConfiguration().Rig),
+            SceneUtc: DateTimeOffset.UnixEpoch,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-            ProjectedSceneStageKey: stageKey);
+            ProjectedSceneStageKey: stageKey,
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
         return submission with
         {
             Result = submission.Result with
@@ -3375,7 +3449,7 @@ public sealed class ProcessingGraphOperationsTests
     private static CameraModuleConfig CreateConfiguration()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"),
             new CameraRigConfig(
                 new SensorProfile("Test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
                 new OpticsProfile("Test", 1, 1, 0),

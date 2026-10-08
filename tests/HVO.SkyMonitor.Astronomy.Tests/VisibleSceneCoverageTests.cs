@@ -12,6 +12,26 @@ public sealed class VisibleSceneCoverageTests
         "Test catalog", "2025.1", new Uri("https://example.test/catalog"), "sha256:fixture", "CC0", "1");
 
     [TestMethod]
+    public void SelectedStarsPreserveNonstellarGeometryTopologyAndComputationIdentity()
+    {
+        var star = new ProjectedCelestialObject("kept", "star", CelestialObjectKind.Star,
+            default, default, default, default, default, new(50, 50), 1, null, "catalog", "projection", "algorithm");
+        var other = star with { Id = "omitted", Pixel = new(51, 51) };
+        var body = star with { Id = "body", Kind = CelestialObjectKind.SolarSystemBody };
+        ProjectedConstellationSegment[] topology = [new("line", "kept", "omitted", star.Pixel, other.Pixel)];
+        var identity = new VisibleSceneComputationProvenance("catalog-query", null, null, null);
+        var original = new VisibleScene(CreateRequest(), [star, other, body], topology, identity);
+        var selected = original.WithSelectedStars(new HashSet<string>(StringComparer.Ordinal) { "kept" });
+        CollectionAssert.AreEqual(new[] { star, body }, selected.Objects.ToArray());
+        CollectionAssert.AreEqual(topology, selected.Segments.ToArray());
+        Assert.AreSame(original.Request, selected.Request);
+        Assert.AreSame(identity, selected.ComputationProvenance);
+        Assert.HasCount(3, original.Objects);
+        CollectionAssert.AreEqual(new[] { body }, original.WithSelectedStars(new HashSet<string>()).Objects.ToArray());
+        Assert.Throws<ArgumentNullException>(() => original.WithSelectedStars(null!));
+    }
+
+    [TestMethod]
     public void ObserverLocation_RejectsEveryInvalidFiniteRange()
     {
         ObserverLocation[] invalid =
@@ -62,6 +82,12 @@ public sealed class VisibleSceneCoverageTests
         Assert.Throws<ArgumentOutOfRangeException>(() => CreateRequest(horizonPolicy: (HorizonPolicy)99));
         Assert.Throws<ArgumentException>(() => CreateRequest(projectionVersion: " "));
         Assert.Throws<ArgumentNullException>(() => CreateRequest(algorithmVersion: null));
+        Assert.Throws<ArgumentException>(() => new VisibleSceneRequest(
+            Utc, Observer, new EquidistantProjectionContext(0, 0, 100, 100), new CatalogQuery(6, 100), Metadata,
+            constellationIds: [" "]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VisibleSceneRequest(
+            Utc, Observer, new EquidistantProjectionContext(0, 0, 100, 100), new CatalogQuery(6, 100), Metadata,
+            solarSystemBodies: [(SolarSystemBody)999]));
     }
 
     [TestMethod]
@@ -169,6 +195,29 @@ public sealed class VisibleSceneCoverageTests
 
         Assert.IsNotNull(filteredCatalog.LastQuery?.J2000Region);
         Assert.AreEqual(48.1896851042, filteredCatalog.LastQuery.J2000Region.Value.RadiusDegrees, 2e-9);
+        Assert.IsTrue(filteredCatalog.ReturnedCandidateCount < unfilteredCatalog.ReturnedCandidateCount);
+        CollectionAssert.AreEqual(unfiltered.Objects.Select(item => item.Id).ToArray(),
+            filtered.Objects.Select(item => item.Id).ToArray());
+        CollectionAssert.AreEqual(unfiltered.Objects.Select(item => item.Pixel).ToArray(),
+            filtered.Objects.Select(item => item.Pixel).ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(ProjectionModel.Perspective)]
+    [DataRow(ProjectionModel.EquidistantFisheye)]
+    public async Task BuildAsync_DistortedProjectionPreservesUnfilteredVisibleObjects(ProjectionModel model)
+    {
+        var objects = CreateBoresightCatalog();
+        var filteredCatalog = new RecordingCatalog(objects, honorRegion: true);
+        var unfilteredCatalog = new RecordingCatalog(objects, honorRegion: false);
+        var projection = new ProjectionContext(model, 100, 100, 100, 100, 200, 200,
+            model == ProjectionModel.Perspective ? ProjectionAperture.Rectangular : ProjectionAperture.Circular,
+            model == ProjectionModel.Perspective ? null : 100, RadialDistortionK1: .1);
+        var request = CreateModelRequest(projection, HorizonPolicy.ProjectionOnly);
+        var filtered = await new VisibleSceneBuilder(filteredCatalog).BuildAsync(request).ConfigureAwait(false);
+        var unfiltered = await new VisibleSceneBuilder(unfilteredCatalog).BuildAsync(request).ConfigureAwait(false);
+        Assert.IsNotNull(filteredCatalog.LastQuery?.J2000Region);
+        Assert.IsTrue(filtered.Objects.Count > 0);
         Assert.IsTrue(filteredCatalog.ReturnedCandidateCount < unfilteredCatalog.ReturnedCandidateCount);
         CollectionAssert.AreEqual(unfiltered.Objects.Select(item => item.Id).ToArray(),
             filtered.Objects.Select(item => item.Id).ToArray());

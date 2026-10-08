@@ -464,7 +464,7 @@ internal sealed partial class ArtifactIngestService(
         {
             return null;
         }
-        EnsureManifestMatches(existing, manifest);
+        await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
         dbContext.ChangeTracker.Clear();
         return await ReconcileExistingAsync(
             manifest, timeProvider.GetUtcNow(), ExistingArtifactReconciliationMode.StatusAcknowledgement, cancellationToken)
@@ -566,7 +566,7 @@ internal sealed partial class ArtifactIngestService(
             .ConfigureAwait(false);
         if (existing is not null)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             if (existing.ObjectState == CentralArtifactObjectState.Available)
             {
                 dbContext.ChangeTracker.Clear();
@@ -612,7 +612,7 @@ internal sealed partial class ArtifactIngestService(
             cancellationToken).ConfigureAwait(false);
         if (existingFrame is not null)
         {
-            EnsureFrameMatches(existingFrame, registration, manifest);
+            await EnsureFrameMatchesAsync(existingFrame, registration, manifest, cancellationToken).ConfigureAwait(false);
             await EnsureNoLogicalArtifactConflictAsync(existingFrame, manifest, cancellationToken)
                 .ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
@@ -812,7 +812,7 @@ internal sealed partial class ArtifactIngestService(
                 cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             if (existing.ObjectState == CentralArtifactObjectState.Quarantined)
             {
                 existing.ObjectState = CentralArtifactObjectState.Pending;
@@ -854,7 +854,7 @@ internal sealed partial class ArtifactIngestService(
         }
         else
         {
-            EnsureFrameMatches(frame, registration, manifest);
+            await EnsureFrameMatchesAsync(frame, registration, manifest, cancellationToken).ConfigureAwait(false);
             await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
         }
 
@@ -1118,7 +1118,7 @@ internal sealed partial class ArtifactIngestService(
                 throw new ArtifactIntegrityException("Stored artifact object is quarantined.");
             }
 
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             EnsureStructuredProductMatches(existing, manifest);
             EnrichSceneProvenance(existing.Frame!, manifest);
             await TryResolvePendingReferenceAsync(
@@ -1221,7 +1221,7 @@ internal sealed partial class ArtifactIngestService(
             {
                 throw new ExistingArtifactVerificationStaleException("retired");
             }
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             existing.ObjectVerifiedAtUtc = timeProvider.GetUtcNow();
             existing.ReconciledAtUtc = receivedAtUtc;
             existing.ObjectVerificationToken = null;
@@ -1368,7 +1368,7 @@ internal sealed partial class ArtifactIngestService(
                     .ConfigureAwait(false);
                 if (existing is not null)
                 {
-                    EnsureManifestMatches(existing, manifest);
+                    await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
                     EnsureStructuredProductMatches(existing, manifest);
                     if (!string.Equals(existing.StorageReference, storageReference, StringComparison.Ordinal))
                     {
@@ -1442,7 +1442,7 @@ internal sealed partial class ArtifactIngestService(
                 }
                 else
                 {
-                    EnsureFrameMatches(frame, registration, manifest);
+                    await EnsureFrameMatchesAsync(frame, registration, manifest, cancellationToken).ConfigureAwait(false);
                     await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -1474,7 +1474,7 @@ internal sealed partial class ArtifactIngestService(
                             || item.IngestIdentities.Any(identity => identity.IdempotencyKey == manifest.IdempotencyKey), cancellationToken).ConfigureAwait(false);
                     if (concurrent is not null)
                     {
-                        EnsureManifestMatches(concurrent, manifest);
+                        await EnsureManifestMatchesAsync(concurrent, manifest, cancellationToken).ConfigureAwait(false);
                         throw new ExistingArtifactRequiresCurrentObjectLockException(
                             concurrent.Id,
                             ExistingArtifactReconciliationMode.MultipartDuplicate,
@@ -1568,16 +1568,10 @@ internal sealed partial class ArtifactIngestService(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var shouldSchedule = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
-            artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId &&
-            artifact.ReconstructionState == CentralReconstructionState.Complete &&
-            (artifact.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion ||
-                artifact.Role == FrameArtifactRole.Raw), cancellationToken).ConfigureAwait(false);
-        if (shouldSchedule)
-        {
-            await derivativeJobScheduler.EnsureRequiredJobsAsync(
-                devicePublicId, artifactId, now, cancellationToken).ConfigureAwait(false);
-        }
+        var id = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.DevicePublicId == devicePublicId && artifact.ArtifactId == artifactId)
+            .Select(artifact => artifact.Id).SingleAsync(cancellationToken).ConfigureAwait(false);
+        await ScheduleDerivativesAfterObjectLockAsync(id, now, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ScheduleDerivativesAfterObjectLockAsync(
@@ -1589,15 +1583,31 @@ internal sealed partial class ArtifactIngestService(
             .Where(artifact => artifact.Id == centralArtifactId &&
                 artifact.ReconstructionState == CentralReconstructionState.Complete &&
                 (artifact.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion ||
-                    artifact.Role == FrameArtifactRole.Raw))
+                    artifact.Role == FrameArtifactRole.Raw ||
+                    artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType))
             .Select(artifact => new
             {
                 artifact.DevicePublicId,
-                artifact.ArtifactId
+                artifact.ArtifactId,
+                artifact.CentralFrameId,
+                artifact.MediaType
             })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (identity is not null)
         {
+            if (identity.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            {
+                var sources = await dbContext.CentralArtifacts.AsNoTracking()
+                    .Where(item => item.CentralFrameId == identity.CentralFrameId &&
+                        item.ObjectState == CentralArtifactObjectState.Available &&
+                        item.ReconstructionState == CentralReconstructionState.Complete &&
+                        (item.Role == FrameArtifactRole.Raw || item.Role == FrameArtifactRole.Calibrated))
+                    .Select(item => item.ArtifactId).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var sourceId in sources)
+                    await derivativeJobScheduler.EnsureRequiredJobsAsync(
+                        identity.DevicePublicId, sourceId, now, cancellationToken).ConfigureAwait(false);
+                return;
+            }
             await derivativeJobScheduler.EnsureRequiredJobsAsync(
                 identity.DevicePublicId, identity.ArtifactId, now, cancellationToken).ConfigureAwait(false);
         }
@@ -1743,6 +1753,7 @@ internal sealed partial class ArtifactIngestService(
             var expected = manifest.StructuredSourceFacts?.ElementAtOrDefault(ordinal);
             var requiresSameFrame = RequiresSameFrameSource(artifact, ordinal);
             var resolved = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
                 .Include(candidate => candidate.Layout)
@@ -1750,9 +1761,7 @@ internal sealed partial class ArtifactIngestService(
                 .FirstOrDefaultAsync(candidate =>
                         candidate.ArtifactId == sourceArtifactId
                         && candidate.DevicePublicId == devicePublicId
-                        && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                        && candidate.ObjectState == CentralArtifactObjectState.Available
-                        && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                        && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                     cancellationToken).ConfigureAwait(false);
             artifact.Sources.Add(new CentralArtifactSource
             {
@@ -2111,11 +2120,11 @@ internal sealed partial class ArtifactIngestService(
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId != null))
         {
             var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
-            var usable = await dbContext.CentralArtifacts.AnyAsync(candidate =>
+            var usable = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
+                .AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (!usable)
             {
@@ -2128,6 +2137,7 @@ internal sealed partial class ArtifactIngestService(
         {
             var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
             var resolved = await dbContext.CentralArtifacts
+                .Where(CentralProjectedSceneResolver.SourceEligibility(CentralProjectedSceneResolver.IsProjectedScene(artifact)))
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
                 .Include(candidate => candidate.Layout)
@@ -2135,9 +2145,7 @@ internal sealed partial class ArtifactIngestService(
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
-                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
-                && candidate.ObjectState == CentralArtifactObjectState.Available
-                && candidate.ReconstructionState == CentralReconstructionState.Complete,
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId),
                 cancellationToken).ConfigureAwait(false);
             if (resolved is not null)
             {
@@ -2340,7 +2348,7 @@ internal sealed partial class ArtifactIngestService(
         {
             return source.Ordinal > 0 &&
                 string.Equals(resolved.MediaType, PresentationLayerPayloadJson.MediaType, StringComparison.OrdinalIgnoreCase) &&
-                structured.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion &&
+                PresentationLayerPayloadV1.SupportsSchema(structured.ProductSchemaVersion) &&
                 string.Equals(structured.ContentIdentitySha256, expectedIdentity, StringComparison.Ordinal) &&
                 structured.PresentationWidthPixels == source.ExpectedWidthPixels &&
                 structured.PresentationHeightPixels == source.ExpectedHeightPixels &&
@@ -2737,7 +2745,8 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
-    private static void EnsureManifestMatches(CentralArtifact existing, ArtifactIngestManifest manifest)
+    private async Task EnsureManifestMatchesAsync(
+        CentralArtifact existing, ArtifactIngestManifest manifest, CancellationToken cancellationToken)
     {
         var frame = existing.Frame ?? throw new InvalidOperationException("The central artifact frame was not loaded.");
         if (existing.ArtifactId != manifest.ArtifactId
@@ -2753,7 +2762,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIngestConflictException("The idempotency key is already associated with different artifact metadata.");
         }
-        EnsureSceneProvenanceMatches(frame, manifest);
+        await EnsureSceneProvenanceMatchesAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
     }
 
     private static void EnsureStructuredProductMatches(
@@ -2812,10 +2821,11 @@ internal sealed partial class ArtifactIngestService(
         => CanonicalizeStructuredDescriptor(
             StructuredProcessingProductManifestJson.ParseDescriptor(descriptorJson));
 
-    private static void EnsureFrameMatches(
+    private async Task EnsureFrameMatchesAsync(
         CentralFrame frame,
         DeviceRegistration registration,
-        ArtifactIngestManifest manifest)
+        ArtifactIngestManifest manifest,
+        CancellationToken cancellationToken)
     {
         if (frame.RegistrationId != registration.Id
             || frame.DevicePublicId != registration.DevicePublicId
@@ -2825,7 +2835,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIngestConflictException("The frame identity is already associated with different capture metadata.");
         }
-        EnsureSceneProvenanceMatches(frame, manifest);
+        await EnsureSceneProvenanceMatchesAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
         EnrichSceneProvenance(frame, manifest);
     }
 
@@ -2851,7 +2861,7 @@ internal sealed partial class ArtifactIngestService(
         }
         if (existing.ArtifactId == manifest.ArtifactId)
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
             EnsureStructuredProductMatches(existing, manifest);
             if (frame.CaptureSequence.HasValue && manifest.CaptureDescriptor is { } descriptor)
             {
@@ -2863,22 +2873,47 @@ internal sealed partial class ArtifactIngestService(
         }
         else
         {
-            EnsureManifestMatches(existing, manifest);
+            await EnsureManifestMatchesAsync(existing, manifest, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private static void EnsureSceneProvenanceMatches(CentralFrame frame, ArtifactIngestManifest manifest)
+    private async Task EnsureSceneProvenanceMatchesAsync(
+        CentralFrame frame, ArtifactIngestManifest manifest, CancellationToken cancellationToken)
     {
-        var scene = SerializeScene(manifest);
-        if (frame.SceneProvenanceJson is not null && scene is not null
-            && !string.Equals(frame.SceneProvenanceJson, scene, StringComparison.Ordinal))
+        var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
+        if (existing is not null && manifest.Scene is { } incoming && !SceneProvenanceMatches(existing, incoming))
         {
             throw new ArtifactIngestConflictException("The frame identity is already associated with different scene provenance.");
         }
+        if (existing is not null && manifest.Scene is { } submitted &&
+            existing.RequiresProjectedScene != submitted.RequiresProjectedScene)
+        {
+            var inline = existing.RequiresProjectedScene ? submitted : existing;
+            await new CentralProjectedSceneResolver(dbContext, objectReader)
+                .ValidateInlineGeometryAsync(frame, inline, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal static bool SceneProvenanceMatches(SceneProvenance existing, SceneProvenance incoming)
+    {
+        static string Identity(SceneProvenance value) => CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(value with { Objects = null, Segments = null, ProjectedSceneSchemaVersion = null }));
+        if (Identity(existing) != Identity(incoming)) return false;
+        // Mixed representation is authenticated separately; two reported inline geometries must agree.
+        if ((existing.Objects is not null || existing.Segments is not null) &&
+            (incoming.Objects is not null || incoming.Segments is not null))
+            return CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new { existing.Objects, existing.Segments })) ==
+                CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new { incoming.Objects, incoming.Segments }));
+        return true;
     }
 
     private static void EnrichSceneProvenance(CentralFrame frame, ArtifactIngestManifest manifest)
-        => frame.SceneProvenanceJson ??= SerializeScene(manifest);
+    {
+        var existing = CentralProjectedSceneResolver.ReadProvenance(frame.SceneProvenanceJson);
+        if (existing is null || !existing.RequiresProjectedScene && existing.Objects is null && existing.Segments is null &&
+            manifest.Scene is { } incoming && (incoming.Objects is not null || incoming.Segments is not null))
+            frame.SceneProvenanceJson = SerializeScene(manifest);
+    }
 
     private static string? SerializeScene(ArtifactIngestManifest manifest)
         => manifest.Scene is null ? null : JsonSerializer.Serialize(manifest.Scene);
@@ -3135,4 +3170,11 @@ internal sealed class ArtifactIngestConflictException : Exception
     public ArtifactIngestConflictException(string message, Exception innerException) : base(message, innerException)
     {
     }
+}
+
+internal sealed class ArtifactSceneReferencePendingException : Exception
+{
+    public ArtifactSceneReferencePendingException() { }
+    public ArtifactSceneReferencePendingException(string message) : base(message) { }
+    public ArtifactSceneReferencePendingException(string message, Exception innerException) : base(message, innerException) { }
 }

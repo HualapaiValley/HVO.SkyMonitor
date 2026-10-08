@@ -1,6 +1,6 @@
 {
   "agentId": "replace-with-registered-device-id",
-  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 2000, "magnitudeZeroElectronsPerSecond": 300.0, "bortleClass": 3, "asi174Sensor": { "enabled": true, "blackLevelAdu": 64.0 } } },
+  "module": { "type": "VirtualSky", "options": { "seed": 2025, "maximumMagnitude": 6.5, "maximumResults": 32768, "magnitudeZeroElectronsPerSecond": 300.0, "bortleClass": 3, "asi174Sensor": { "enabled": true, "blackLevelAdu": 64.0 } } },
   "rig": {
     "sensor": {
       "name": "VirtualAsi174Mm",
@@ -44,9 +44,10 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
       { "id": "RollingCombination", "type": "RollingCombination", "order": 25, "dependsOn": ["$raw"] },
       { "id": "Preview", "type": "Preview", "order": 50, "dependsOn": ["RollingCombination"] },
-      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview"] }
+      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview", "ProjectedScene"], "options": { "requireProjectedSceneDependency": true } }
     ]
   },
   "schedule": {

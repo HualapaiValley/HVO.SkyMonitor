@@ -202,8 +202,11 @@ internal sealed class CentralPresentationMaterializer(
                 }, layer.OpacityMillionths));
             }
 
-            var output = PresentationLayerCompositor.Composite(
+            var composed = PresentationLayerCompositor.CompositeDisplay(
                 baseImage.Layout, baseImage.PixelData, compositorLayers, cancellationToken);
+            var output = composed.Pixels;
+            var compositorVersion = PresentationLayerCompositor.SelectAlgorithmVersion(
+                manifest.Layers.Select(static layer => layer.RendererVersion));
             if (output.Length > MaximumOutputBytes)
             {
                 return new(CentralPresentationMaterializationStatus.Invalid);
@@ -216,20 +219,20 @@ internal sealed class CentralPresentationMaterializer(
             var request = LayeredPresentationJson.CreateMaterializationRequest(
                 manifest,
                 enabled,
-                PresentationLayerCompositor.AlgorithmVersion,
+                compositorVersion,
                 PresentationMaterializationExecutor.PackedEncoderName,
                 PresentationMaterializationExecutor.PackedEncoderVersion,
                 JsonSerializer.SerializeToElement(new
                 {
                     format = "packed",
-                    pixelFormat = baseImage.Layout.PixelFormat.ToString()
+                    pixelFormat = composed.Layout.PixelFormat.ToString()
                 }),
                 sourceIds);
             var recipeOptions = JsonSerializer.SerializeToElement(new
             {
                 request.MaterializationIdentitySha256,
                 decoder = baseImage.DecoderVersion,
-                pixelFormat = baseImage.Layout.PixelFormat.ToString()
+                pixelFormat = composed.Layout.PixelFormat.ToString()
             });
             var recipe = RecipeIdentityDescriptor.Create(
                 PresentationProcessingProducts.MaterializationRecipeName,
@@ -258,8 +261,8 @@ internal sealed class CentralPresentationMaterializer(
                 {
                     Width = baseImage.Layout.Width,
                     Height = baseImage.Layout.Height,
-                    StrideBytes = baseImage.Layout.StrideBytes,
-                    PixelFormat = baseImage.Layout.PixelFormat,
+                    StrideBytes = composed.Layout.StrideBytes,
+                    PixelFormat = composed.Layout.PixelFormat,
                     ByteOrder = FrameByteOrder.NotApplicable,
                     SampleDepthBits = 8,
                     ContainerDepthBits = 8,

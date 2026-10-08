@@ -7,7 +7,7 @@
       "fixedSceneUtc": "2026-01-15T08:00:00Z",
       "rigProfileVersion": "virtual-asi174mm-full-standalone-synthetic-v1",
       "maximumMagnitude": 6.5,
-      "maximumResults": 2000,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 300.0,
       "bortleClass": 3,
       "shotNoiseEnabled": false,
@@ -114,7 +114,8 @@
   "pipeline": {
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
-    "steps": [{
+    "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },{
       "id": "Calibration",
       "type": "Calibration",
       "order": 10,
@@ -187,8 +188,9 @@
       "id": "Annotation",
       "type": "Annotation",
       "order": 75,
-      "dependsOn": [ "Preview" ],
+      "dependsOn": ["Preview", "ProjectedScene"],
       "options": {
+          "requireProjectedSceneDependency": true,
         "markRadius": 6,
         "markerValue": 144,
         "drawLabels": true,
@@ -215,7 +217,7 @@
       "id": "LocalStorage",
       "type": "Storage",
       "order": 100,
-      "dependsOn": [ "$raw", "RollingCombination", "Annotation", "CalibratedPreview" ],
+      "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene"],
       "options": {
         "storageRoot": "/var/lib/hvo/data/agent",
         "retentionDays": 7,

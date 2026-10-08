@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// browser-loaded map, the local site profile, the LogicHost assignment, the active catalog and rig, and a
 /// paged preview of the sky the active rig sees at one instant.
 /// </summary>
-public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDisposable
+public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncDisposable
 {
     internal const string LocationTriggerId = "site-create-draft";
     internal const string ProfileTriggerId = "site-edit-profile";
@@ -189,9 +189,13 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _invalid = false;
         try
         {
-            var atUtc = _instantInput is { } local
-                ? new DateTimeOffset(DateTime.SpecifyKind(local, DateTimeKind.Utc))
-                : (DateTimeOffset?)null;
+            if (!SiteTime.TryInput(_instantInput?.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+                out var atUtc, out var timeError))
+            {
+                _message = timeError;
+                _invalid = true;
+                return;
+            }
             var projection = await SkyMapService.GetSkyMapAsync(atUtc, CancellationToken.None).ConfigureAwait(false);
             var manual = await SkyMapService.GetManualLocationAsync(CancellationToken.None).ConfigureAwait(false);
             var site = await SkyMapService.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
@@ -741,7 +745,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
         _ => "Read-only view of what LogicHost has told this camera."
     };
 
-    private static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
+    internal static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
     {
         DeploymentLocationResolutionStatus.Acknowledged => "Acknowledged by LogicHost",
         DeploymentLocationResolutionStatus.Rejected => "Rejected by LogicHost",
@@ -957,8 +961,7 @@ public sealed partial class ObservatoryLocationPage : ComponentBase, IAsyncDispo
 
     private static string NewKey() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
 
-    private static string Timestamp(DateTimeOffset value)
-        => value.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+    private string Timestamp(DateTimeOffset value) => SiteTime.Format(value);
 
     private static string Latitude(double degrees)
         => string.Create(CultureInfo.InvariantCulture, $"{Math.Abs(degrees):F6}° {(degrees < 0 ? "S" : "N")}");

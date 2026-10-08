@@ -5,7 +5,7 @@
     "options": {
       "seed": 2025,
       "maximumMagnitude": 6.5,
-      "maximumResults": 2000,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 300.0,
       "bortleClass": 3
     }
@@ -97,8 +97,9 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
       { "id": "Preview", "type": "Preview", "order": 50, "dependsOn": ["$raw"] },
-      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview"] }
+      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview", "ProjectedScene"], "options": { "requireProjectedSceneDependency": true } }
     ]
   },
   "schedule": {

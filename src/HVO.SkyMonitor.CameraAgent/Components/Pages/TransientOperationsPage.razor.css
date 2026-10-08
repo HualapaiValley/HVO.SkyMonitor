@@ -1,0 +1,37 @@
+/* Transients layout. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css. Table overrides carry the wrapper and both table classes to outrank
+   .operations-layout ::deep .ops-table. */
+
+.transients-state small a { margin-left: .35rem; color: #9bcaff; }
+section.ops-profile-banner.transients-state dl { flex-wrap: wrap; row-gap: .55rem; }
+section.ops-profile-banner.transients-state dd { white-space: nowrap; }
+.transients-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+.transients-evaluated { margin: .2rem 0 0; color: var(--muted); font-size: .55rem; text-align: right; }
+.transients-latest dd a { color: #9bcaff; overflow-wrap: anywhere; }
+.transients-candidates .ops-panel-heading .button { align-self: flex-start; }
+
+.ops-table-wrap .ops-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
+.ops-table-wrap .ops-table td small.failure { color: #ff9b95; }
+.ops-table-wrap .ops-table td a { color: #9bcaff; }
+.ops-table-wrap .ops-table.transients-outcome-table td, .ops-table-wrap .ops-table.transients-candidate-table td { white-space: normal; }
+.ops-table-wrap .ops-table.transients-outcome-table td:first-child, .ops-table-wrap .ops-table.transients-candidate-table td:first-child { white-space: nowrap; }
+
+.transients-stages { display: flex; flex-wrap: wrap; gap: .25rem; margin: 0; padding: 0; list-style: none; }
+.transients-stages li { padding: .12rem .38rem; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: .52rem; }
+.transients-stages li.available { border-color: rgba(63, 185, 80, .45); color: #7ee2a8; }
+.transients-stages li.pending { border-color: rgba(88, 166, 255, .4); color: #9bcaff; }
+.transients-stages li.absent { opacity: .6; text-decoration: line-through; }
+
+.transients-handoff .ops-note-banner { margin-bottom: .7rem; }
+
+dialog.action-dialog.transients-dialog { width: min(calc(100% - 2rem), 40rem); }
+.transients-dialog-body { max-height: min(60vh, 34rem); padding: 0 1.1rem; overflow-y: auto; }
+.transients-dialog-body h3 { margin: 1rem 0 .45rem; color: var(--muted-strong); font-size: .6rem; letter-spacing: .04em; text-transform: uppercase; }
+.transients-dialog-body h3:first-child { margin-top: 0; }
+.transients-dialog-body dd { overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+    dialog.action-dialog.transients-dialog { width: calc(100% - 1rem); }
+    .ops-table-wrap .ops-table.transients-outcome-table th, .ops-table-wrap .ops-table.transients-candidate-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
+    .ops-table-wrap .ops-table.transients-outcome-table td, .ops-table-wrap .ops-table.transients-candidate-table td { padding-inline: .3rem; }
+}

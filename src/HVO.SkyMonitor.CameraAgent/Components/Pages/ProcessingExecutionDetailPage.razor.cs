@@ -2,13 +2,17 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, IAsyncDisposable
 {
     private CameraAgentProcessingExecutionDetailView? _view;
     private string? _message;
@@ -25,6 +29,11 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private bool _transientUnavailable;
     private CancellationTokenSource? _loadCancellation;
     private long _generation;
+    private CameraAgentGalleryCapture? _capture;
+    private TransientStageEvent? _selectedTransient;
+    private ElementReference _stageTab;
+    private ElementReference _artifactsTab;
+    private ElementReference _attemptsTab;
 
     [Parameter] public Guid ExecutionId { get; set; }
 
@@ -40,9 +49,16 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
 
     private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
     private string LogicHostState => HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled
-        ? "Disabled"
+        ? "Disabled now / no receipt"
         : "No acknowledgement recorded for this execution";
     private long? _captureSequence;
+    private string TriggerLabel => _view?.Execution is { } execution
+        ? $"{(execution.TriggerReference is { } reference ? reference : "Recorded capture trigger")} at {SiteTime.Format(execution.AcceptedUtc)}"
+        : "Unavailable";
+    private string ScheduleLabel => _capture?.Detail?.Schedule is { } schedule
+        ? $"schedule {ShortIdentity(schedule.RevisionId)} / {schedule.SetpointProfileId} / {schedule.Reason}"
+        : "schedule identity unavailable";
+    private static string ShortIdentity(string identity) => identity.Length <= 12 ? identity : identity[..12];
 
     private CameraAgentProcessingNodeView? SelectedNode => _view?.Nodes.FirstOrDefault(node => node.NodeId == _selectedNodeId);
     private string RunCaptureLabel(Guid captureId) => _recentSequences.TryGetValue(captureId, out var sequence)
@@ -59,15 +75,6 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                         .Contains(_runSearch, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(static run => run.AcceptedUtc).ToArray();
 
-    private static string StatusGlyph(string status) => status switch
-    {
-        "Completed" => "✓",
-        "Running" => "●",
-        "Skipped" => "○",
-        "Failed" or "TerminalFailure" => "!",
-        _ => "·"
-    };
-
     private string TitleStatusClass => _view?.Execution.Status switch
     {
         ProcessingGraphExecutionStatus.Completed => "run-title__glyph--completed",
@@ -79,6 +86,51 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
     private void SelectStageTab() => _tab = "stage";
     private void SelectArtifactsTab() => _tab = "artifacts";
     private void SelectAttemptsTab() => _tab = "attempts";
+    private void SelectNode(string id) { _selectedNodeId = id; _selectedTransient = null; }
+    private void SelectTransient(TransientStageEvent stage) { _selectedTransient = stage; _selectedNodeId = null; }
+
+    private static string FormatBytes(long bytes) => bytes >= 1_048_576
+        ? $"{(bytes / 1_048_576d).ToString("0.##", CultureInfo.InvariantCulture)} MiB"
+        : $"{bytes.ToString("N0", CultureInfo.InvariantCulture)} B";
+
+    /// <summary>The recorded retention state of one artifact, distinct from its content availability.</summary>
+    private string RetentionLabel(Guid artifactId) =>
+        _capture?.Detail?.ArtifactStates.FirstOrDefault(state => state.ArtifactId == artifactId)?.RetentionState ?? "Not recorded";
+
+    private static StageFact[] StageFacts(CameraAgentProcessingNodeView node)
+    {
+        var facts = new List<StageFact>();
+        if (node.StartedUtc is { } start) facts.Add(new(start, "Started", "running", "Stage start recorded in the execution journal."));
+        foreach (var attempt in node.Attempts)
+        {
+            facts.Add(new(attempt.StartedUtc, $"Attempt {attempt.AttemptNumber}", "running", $"Recorded {attempt.ExecutionRoute} attempt start."));
+            if (attempt.CompletedUtc is { } completed)
+                facts.Add(new(completed, PipelineRunPresentation.StatusLabel(attempt.Status), PipelineRunPresentation.StatusClass(attempt.Status),
+                    attempt.Reason ?? attempt.Outcome ?? "Attempt completion recorded; no detailed outcome retained."));
+        }
+        if (node.CompletedUtc is { } end) facts.Add(new(end, PipelineRunPresentation.StatusLabel(node.Status), PipelineRunPresentation.StatusClass(node.Status), $"Recorded node state: {node.Status}."));
+        if (node.Reason is { } reason) facts.Add(new(node.CompletedUtc, "Reason", "warning", reason));
+        if (facts.Count == 0) facts.Add(new(null, "Unavailable", "pending", "No start, attempt or completion facts recorded."));
+        return facts.OrderBy(static fact => fact.Time).ToArray();
+    }
+
+    private async Task TabKeyAsync(KeyboardEventArgs args, int index)
+    {
+        var next = args.Key switch { "ArrowRight" => (index + 1) % 3, "ArrowLeft" => (index + 2) % 3, "Home" => 0, "End" => 2, _ => -1 };
+        if (next < 0) return;
+        _tab = new[] { "stage", "artifacts", "attempts" }[next];
+        await InvokeAsync(StateHasChanged);
+        // Focus the newly selected tab directly. A lazily imported interop module made this depend
+        // on import timing, which let an arrow key change the selection without moving focus.
+        await TabReference(_tab).FocusAsync();
+    }
+
+    private ElementReference TabReference(string tab) => tab switch
+    {
+        "artifacts" => _artifactsTab,
+        "attempts" => _attemptsTab,
+        _ => _stageTab
+    };
 
     protected override async Task OnParametersSetAsync() => await RefreshAsync().ConfigureAwait(false);
 
@@ -100,16 +152,19 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         _recentSequences = [];
         _transient = null;
         _captureSequence = null;
+        _capture = null;
+        _selectedTransient = null;
+        _transientUnavailable = false;
         try
         {
             var result = await GraphService.GetExecutionDetailAsync(requestedExecution, cancellation.Token).ConfigureAwait(false);
-            if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
+            if (!IsCurrent(generation, requestedExecution, cancellation)) return;
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                NavigationManager.NavigateTo("/Account/AccessDenied");
+                RevokeAccess();
                 return;
             }
-            if (result.IsSuccess && result.Value is not null)
+            if (result.IsSuccess && result.Value is not null && result.Value.Execution.ExecutionId == requestedExecution)
             {
                 var detail = result.Value;
                 _view = detail;
@@ -121,25 +176,24 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
                 TransientCaptureStageView? transient = null;
                 var transientUnavailable = false;
-                if (TransientEnabled)
+                // Recorded milestones remain inspectable after a later configuration disables acquisition.
+                try
                 {
-                    try
+                    var stages = await TransientService.GetCaptureStagesAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
+                    if (!IsCurrent(generation, requestedExecution, cancellation)) return;
+                    if (stages.Kind == OperatorUiResultKind.Unauthorized)
                     {
-                        var stages = await TransientService.GetCaptureStagesAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
-                        if (stages.Kind == OperatorUiResultKind.Unauthorized)
-                        {
-                            NavigationManager.NavigateTo("/Account/AccessDenied");
-                            return;
-                        }
-                        transient = stages.IsSuccess ? stages.Value : null;
-                        transientUnavailable = !stages.IsSuccess;
+                        RevokeAccess();
+                        return;
                     }
-                    catch (Exception) when (!cancellation.IsCancellationRequested)
-                    {
-                        transientUnavailable = true;
-                    }
+                    transient = stages.IsSuccess && stages.Value?.CaptureId == detail.Execution.CaptureId ? stages.Value : null;
+                    transientUnavailable = !stages.IsSuccess || stages.Value?.CaptureId != detail.Execution.CaptureId;
                 }
-                if (generation != Volatile.Read(ref _generation)) return;
+                catch (Exception) when (!cancellation.IsCancellationRequested)
+                {
+                    transientUnavailable = true;
+                }
+                if (!IsCurrent(generation, requestedExecution, cancellation)) return;
                 _transient = transient;
                 _transientUnavailable = transientUnavailable;
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
@@ -147,7 +201,8 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 try
                 {
                     var recent = await GraphService.GetExecutionsAsync(10, cancellation.Token).ConfigureAwait(false);
-                    if (generation != Volatile.Read(ref _generation)) return;
+                    if (!IsCurrent(generation, requestedExecution, cancellation)) return;
+                    if (recent.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                     recentView = recent.IsSuccess ? recent.Value : null;
                 }
                 catch (Exception) when (!cancellation.IsCancellationRequested)
@@ -158,14 +213,16 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                 try
                 {
                     var capture = await OperatorService.GetGalleryCaptureAsync(detail.Execution.CaptureId, cancellation.Token).ConfigureAwait(false);
-                    if (generation != Volatile.Read(ref _generation)) return;
-                    sequence = capture.IsSuccess ? capture.Value?.CaptureSequence : null;
+                    if (!IsCurrent(generation, requestedExecution, cancellation)) return;
+                    if (capture.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                    sequence = capture.IsSuccess && capture.Value?.CaptureId == detail.Execution.CaptureId ? capture.Value.CaptureSequence : null;
+                    _capture = capture.IsSuccess && capture.Value?.CaptureId == detail.Execution.CaptureId ? capture.Value : null;
                 }
                 catch (Exception) when (!cancellation.IsCancellationRequested)
                 {
                     sequence = null;
                 }
-                if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
+                if (!IsCurrent(generation, requestedExecution, cancellation)) return;
                 _recent = recentView;
                 _captureSequence = sequence;
                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
@@ -177,8 +234,9 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
                         try
                         {
                             var item = await OperatorService.GetGalleryCaptureAsync(run, cancellation.Token).ConfigureAwait(false);
-                            if (generation != Volatile.Read(ref _generation) || requestedExecution != ExecutionId) return;
-                            if (item.IsSuccess && item.Value is { } capture)
+                            if (!IsCurrent(generation, requestedExecution, cancellation)) return;
+                            if (item.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                            if (item.IsSuccess && item.Value is { } capture && capture.CaptureId == run)
                             {
                                 _recentSequences[run] = capture.CaptureSequence;
                                 await InvokeAsync(StateHasChanged).ConfigureAwait(false);
@@ -207,6 +265,20 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         }
     }
 
+    private bool IsCurrent(long generation, Guid executionId, CancellationTokenSource cancellation) =>
+        generation == Volatile.Read(ref _generation) && executionId == ExecutionId && !cancellation.IsCancellationRequested;
+
+    private void RevokeAccess()
+    {
+        _view = null;
+        _capture = null;
+        _transient = null;
+        _recent = null;
+        _recentSequences = [];
+        _selectedTransient = null;
+        NavigationManager.NavigateTo("/Account/AccessDenied");
+    }
+
     public async ValueTask DisposeAsync()
     {
         Interlocked.Increment(ref _generation);
@@ -226,4 +298,5 @@ public sealed partial class ProcessingExecutionDetailPage : ComponentBase, IAsyn
         "Skipped" => "state-chip--pending",
         _ => "state-chip--failed"
     };
+    private sealed record StageFact(DateTimeOffset? Time, string Label, string Tone, string Message);
 }

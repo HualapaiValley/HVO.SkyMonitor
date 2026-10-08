@@ -26,6 +26,8 @@ internal sealed class AnnotationCaptureProcessingStep(
 {
     public bool Enabled => Options.Enabled;
 
+    internal AnnotationProcessingStepOptions ConfiguredOptions => Options;
+
     public string RecipeName => BuiltInProcessingRecipes.Annotation;
 
     public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
@@ -74,7 +76,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         ProjectionContext? projectionOnly = null;
         var projectedSceneProduct = context.GetDependencyProducts().SingleOrDefault(static product =>
             product.Kind == ProcessingProductKind.Metadata &&
-            string.Equals(product.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
         ProjectedSceneV1? projectedScene = null;
         if (projectedSceneProduct is not null)
         {
@@ -83,7 +85,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 $"The declared projected-scene dependency is invalid at '{parsed.ErrorPath}'.");
             ValidateProjectedScene(context, artifacts.Raw.Frame, projectedSceneProduct, projectedScene);
         }
-        else if (Options.RequireProjectedSceneDependency)
+        else if (Options.RequireProjectedSceneDependency || provenance?.RequiresProjectedScene == true)
         {
             throw new InvalidOperationException("The declared projected-scene dependency is unavailable.");
         }
@@ -111,18 +113,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         ProjectedAnnotationOverlay? projectionOverlay;
         if (projectedScene is not null)
         {
-            objects = projectedScene.Objects.Select(item =>
-            {
-                var annotate = IsNamed(item.Id, item.DisplayName) &&
-                    (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= Options.MaximumLabelMagnitude);
-                return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate);
-            }).ToArray();
-            segments = Options.DrawConstellationLines
-                ? projectedScene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
-                    .Select(static item => new ProjectedAnnotationSegment(
-                        item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray()
-                : [];
-            projectionOverlay = CreateProjectionOverlay(projectedScene.Projection);
+            (objects, segments, projectionOverlay) = CreateProjectedSceneInputs(projectedScene);
         }
         else if (projectionOnly is { } projection)
         {
@@ -380,6 +371,67 @@ internal sealed class AnnotationCaptureProcessingStep(
                 landmarks.West);
     }
 
+    /// <summary>Maps a canonical projected scene to annotation inputs, all in the emitted image's pixels.</summary>
+    internal (IReadOnlyList<ProjectedAnnotationObject> Objects, IReadOnlyList<ProjectedAnnotationSegment> Segments,
+        ProjectedAnnotationOverlay? Overlay) CreateProjectedSceneInputs(ProjectedSceneV1 scene)
+    {
+        var objects = ProjectedSceneAnnotation.CreateObjects(scene, Options.MaximumLabelMagnitude);
+        IReadOnlyList<ProjectedAnnotationSegment> segments = Options.DrawConstellationLines
+            ? scene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
+                .Select(static item => new ProjectedAnnotationSegment(
+                    item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray()
+            : [];
+        return (objects, segments, CreateProjectionOverlay(scene));
+    }
+
+    /// <summary>
+    /// Scene objects, segments and footprints are already in the emitted image's pixels, but the landmarks come from
+    /// the source projection. They take the scene's crop, bin, mirror and rotation here so the image circle and
+    /// cardinals meet the objects they frame; the radius is kept per output axis because binning can be anisotropic.
+    /// </summary>
+    internal static ProjectedAnnotationOverlay? CreateProjectionOverlay(ProjectedSceneV1 scene)
+    {
+        var source = CreateProjectionOverlay(scene.Projection);
+        // Known limitation (#518, epic #520 coordinator decision 2026-10-06T22:48Z): a projected-scene-v1 input keeps
+        // its released source-pixel landmarks because its Annotation execution identity is unchanged and its bytes
+        // must be too. Remove this one gate under the next Annotation recipe implementation bump to correct v1.
+        if (!string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal))
+        {
+            return source;
+        }
+
+        if (source is null)
+        {
+            return null;
+        }
+
+        var transform = scene.ImageTransform;
+        // The transform is affine; evaluate it from the crop corners so landmarks outside the crop map exactly too.
+        var origin = ProjectedSceneImageTransform.Apply(transform, new PixelPoint(transform.CropX, transform.CropY));
+        var right = ProjectedSceneImageTransform.Apply(transform, new PixelPoint(transform.CropX + transform.CropWidth, transform.CropY));
+        var down = ProjectedSceneImageTransform.Apply(transform, new PixelPoint(transform.CropX, transform.CropY + transform.CropHeight));
+        PixelPoint Map(PixelPoint point)
+        {
+            var u = (point.X - transform.CropX) / transform.CropWidth;
+            var v = (point.Y - transform.CropY) / transform.CropHeight;
+            return new PixelPoint(
+                origin.X + u * (right.X - origin.X) + v * (down.X - origin.X),
+                origin.Y + u * (right.Y - origin.Y) + v * (down.Y - origin.Y));
+        }
+
+        var center = Map(source.Center);
+        var xBasis = Map(new PixelPoint(source.Center.X + source.ImageCircleRadius, source.Center.Y));
+        var yBasis = Map(new PixelPoint(source.Center.X, source.Center.Y + source.ImageCircleRadius));
+        return new ProjectedAnnotationOverlay(
+            center,
+            Math.Max(Math.Abs(xBasis.X - center.X), Math.Abs(yBasis.X - center.X)),
+            Map(source.North),
+            Map(source.East),
+            Map(source.South),
+            Map(source.West),
+            Math.Max(Math.Abs(xBasis.Y - center.Y), Math.Abs(yBasis.Y - center.Y)));
+    }
+
     private static ProjectedAnnotationOverlay? CreateProjectionOverlay(ProjectedSceneProjection projection)
         => CreateProjectionOverlay(new ProjectionContext(
             projection.Model,
@@ -395,7 +447,8 @@ internal sealed class AnnotationCaptureProcessingStep(
             projection.BoresightAzimuthDegrees,
             projection.RollDegrees,
             projection.HorizontalFlip,
-            projection.EnforceSensorBounds));
+            projection.EnforceSensorBounds,
+            projection.RadialDistortionK1));
 
     private async ValueTask<MetadataCornerOverlay?> CreateMetadataOverlayAsync(
         CaptureProcessingContext context,

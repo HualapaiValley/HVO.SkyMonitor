@@ -64,7 +64,8 @@ public sealed record ProjectedSceneProjection(
     [property: JsonRequired] double BoresightAzimuthDegrees,
     [property: JsonRequired] double RollDegrees,
     [property: JsonRequired] bool HorizontalFlip,
-    [property: JsonRequired] bool EnforceSensorBounds);
+    [property: JsonRequired] bool EnforceSensorBounds,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double RadialDistortionK1 = 0);
 
 /// <summary>Supported clockwise post-readout rotations in image coordinates.</summary>
 [JsonConverter(typeof(JsonStringEnumConverter<ProjectedSceneQuarterRotation>))]
@@ -108,7 +109,11 @@ public sealed record ProjectedSceneSource(
     [property: JsonRequired] Guid ArtifactId,
     [property: JsonRequired] string ArtifactIdentitySha256);
 
-/// <summary>A canonical immutable snapshot of existing visible-scene geometry; it does not claim physical detection.</summary>
+/// <summary>
+/// A canonical immutable snapshot of existing visible-scene geometry; it does not claim physical detection.
+/// Scenes with resolved footprints use <see cref="ResolvedFootprintSchemaVersion"/>; all others keep
+/// <see cref="CurrentSchemaVersion"/> and serialize byte-identically to the original v1 contract.
+/// </summary>
 public sealed record ProjectedSceneV1(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] string SceneIdentitySha256,
@@ -127,9 +132,20 @@ public sealed record ProjectedSceneV1(
     [property: JsonRequired] string? EphemerisModelVersion,
     [property: JsonRequired] ProjectedSceneSource Source,
     [property: JsonRequired] IReadOnlyList<ProjectedCelestialObject> Objects,
-    [property: JsonRequired] IReadOnlyList<ProjectedConstellationSegment> Segments)
+    [property: JsonRequired] IReadOnlyList<ProjectedConstellationSegment> Segments,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null)
 {
-    public const string CurrentSchemaVersion = "projected-scene-v1";
+    public const string CurrentSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion;
+    public const string ResolvedFootprintSchemaVersion = SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion;
+
+    /// <summary>Returns whether a stored product schema is a projected scene this contract parses.</summary>
+    public static bool IsSupportedSchemaVersion(string? schemaVersion) =>
+        SceneProvenance.IsRetainedProjectedSceneSchemaVersion(schemaVersion);
+
+    /// <summary>Every projected-scene schema version this contract parses, oldest first.</summary>
+    public static IReadOnlyList<string> SupportedSchemaVersions { get; } =
+        Array.AsReadOnly([CurrentSchemaVersion, ResolvedFootprintSchemaVersion]);
 }
 
 public sealed record ProjectedSceneParseResult(ProjectedSceneV1? Scene, string? ErrorPath)
@@ -151,6 +167,7 @@ public static class ProjectedSceneJson
     public const int MaximumPayloadBytes = 4 * 1024 * 1024;
     public const int MaximumObjectCount = 10_000;
     public const int MaximumSegmentCount = 50_000;
+    public const int MaximumResolvedFootprintCount = 64;
     /// <summary>Recommendation for durable storage; identity always covers uncompressed canonical JSON.</summary>
     public const string PersistenceRecommendation = "canonical-json-utf8-compress-at-rest-v1";
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -182,8 +199,15 @@ public static class ProjectedSceneJson
             throw new ArgumentException("Constellation selections and segments require topology provenance.", nameof(visibleScene));
         var projection = request.Projection;
         var geometry = ProjectedSceneImageTransform.CreateGeometrySnapshot(visibleScene, imageTransform);
+        var footprints = (geometry.ResolvedFootprints ?? [])
+            .Select(NormalizeGeneratedGeometry)
+            .OfType<ProjectedResolvedFootprint>()
+            .OrderBy(static item => item.Id, StringComparer.Ordinal)
+            .ToArray();
+        if (footprints.Length > MaximumResolvedFootprintCount)
+            throw new ArgumentException("Visible scene exceeds projected-scene structural bounds.", nameof(visibleScene));
         var scene = new ProjectedSceneV1(
-            ProjectedSceneV1.CurrentSchemaVersion,
+            footprints.Length == 0 ? ProjectedSceneV1.CurrentSchemaVersion : ProjectedSceneV1.ResolvedFootprintSchemaVersion,
             string.Empty,
             kind,
             request.Utc,
@@ -199,8 +223,7 @@ public static class ProjectedSceneJson
             new ProjectedSceneSelection(
                 request.CatalogQuery.MaximumMagnitude,
                 request.CatalogQuery.MaximumResults,
-                Freeze(request.ConstellationIds.Select(static id => id.ToUpperInvariant())
-                    .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)),
+                NormalizeConstellationIds(request.ConstellationIds),
                 Freeze(request.SolarSystemBodies.Distinct().Order()),
                 request.IncludeConstellationEndpointStars),
             new ProjectedSceneProjection(
@@ -219,7 +242,8 @@ public static class ProjectedSceneJson
                 projection.BoresightAzimuthDegrees,
                 projection.RollDegrees,
                 projection.HorizontalFlip,
-                projection.EnforceSensorBounds),
+                projection.EnforceSensorBounds,
+                projection.RadialDistortionK1),
             imageTransform,
             ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge,
             request.HorizonPolicy,
@@ -243,7 +267,8 @@ public static class ProjectedSceneJson
                 .OrderBy(static item => item.ConstellationId, StringComparer.Ordinal)
                 .ThenBy(static item => item.FromObjectId, StringComparer.Ordinal)
                 .ThenBy(static item => item.ToObjectId, StringComparer.Ordinal)
-                .ThenBy(static item => item.PartIndex)));
+                .ThenBy(static item => item.PartIndex)),
+            footprints.Length == 0 ? null : Freeze(footprints));
         scene = scene with { SceneIdentitySha256 = ComputeIdentity(scene) };
         Validate(scene);
         return scene;
@@ -300,6 +325,19 @@ public static class ProjectedSceneJson
         }
     }
 
+    /// <summary>
+    /// Returns a constellation selection as a scene records it: each identifier is converted with
+    /// <see cref="string.ToUpperInvariant()"/>, then duplicates are removed by ordinal comparison, then the result is
+    /// sorted by ordinal comparison. Producers declare the selection in configuration order, so a declared selection is
+    /// normalized this way before it is compared with a scene.
+    /// </summary>
+    public static IReadOnlyList<string> NormalizeConstellationIds(IEnumerable<string> constellationIds)
+    {
+        ArgumentNullException.ThrowIfNull(constellationIds);
+        return Freeze(constellationIds.Select(static id => id.ToUpperInvariant())
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+    }
+
     public static string ComputeIdentity(ProjectedSceneV1 scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
@@ -311,8 +349,14 @@ public static class ProjectedSceneJson
     public static void Validate(ProjectedSceneV1 scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        if (!string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        var hasFootprints = string.Equals(
+            scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal);
+        if (!hasFootprints && !string.Equals(scene.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal))
             throw new ArgumentException("Unsupported schema.", nameof(scene));
+        if (hasFootprints != scene.ResolvedFootprints is not null ||
+            scene.ResolvedFootprints is { Count: 0 or > MaximumResolvedFootprintCount } ||
+            scene.ResolvedFootprints?.Any(static item => item is null) == true)
+            throw new ArgumentException("Resolved footprints require projected-scene-v2 and are absent from v1.", nameof(scene));
         if (!Enum.IsDefined(scene.Kind) || !Enum.IsDefined(scene.CoordinateConvention) ||
             !Enum.IsDefined(scene.HorizonPolicy) || scene.EffectiveUtc == default || scene.EffectiveUtc.Offset != TimeSpan.Zero)
             throw new ArgumentException("Scene kind, coordinate convention, horizon policy, and effective UTC must be explicit.", nameof(scene));
@@ -346,7 +390,8 @@ public static class ProjectedSceneJson
         if (scene.Segments.Any(static item => item is null))
             throw new ArgumentException("Scene lists cannot contain null elements.", nameof(scene));
         var needsEphemeris = scene.Selection.SolarSystemBodies.Count > 0 ||
-            scene.Objects.Any(static item => item.Kind == CelestialObjectKind.SolarSystemBody);
+            scene.Objects.Any(static item => item.Kind == CelestialObjectKind.SolarSystemBody) ||
+            scene.ResolvedFootprints?.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.SolarSystemBody) == true;
         if (needsEphemeris && string.IsNullOrWhiteSpace(scene.EphemerisModelVersion))
             throw new ArgumentException("Solar-system selections and objects require ephemeris provenance.", nameof(scene));
         var needsTopology = scene.Selection.ConstellationIds.Count > 0 || scene.Segments.Count > 0;
@@ -432,9 +477,100 @@ public static class ProjectedSceneJson
                 throw new ArgumentException("Segment parts must be contiguous and zero-based per logical segment.", nameof(scene));
             previousSegment = item;
         }
+        if (scene.ResolvedFootprints is not null)
+            ValidateFootprints(scene, projector);
         ValidateSha256(scene.SceneIdentitySha256, nameof(scene.SceneIdentitySha256));
         if (!string.Equals(scene.SceneIdentitySha256, ComputeIdentity(scene), StringComparison.Ordinal))
             throw new ArgumentException("Scene identity does not match its canonical content.", nameof(scene));
+    }
+
+    private static void ValidateFootprints(ProjectedSceneV1 scene, IImageProjector projector)
+    {
+        var objectsById = scene.Objects.ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var expectedRefractionModel = scene.Refraction.Enabled ? AtmosphericRefraction.ModelVersion : null;
+        for (var index = 0; index < scene.ResolvedFootprints!.Count; index++)
+        {
+            var item = scene.ResolvedFootprints[index];
+            var path = $"resolvedFootprints[{index}]";
+            ValidateText(item.Id, $"{path}.id");
+            ValidateText(item.DisplayName, $"{path}.displayName");
+            ValidateText(item.SamplingAlgorithmVersion, $"{path}.samplingAlgorithmVersion");
+            if (index > 0 && StringComparer.Ordinal.Compare(scene.ResolvedFootprints[index - 1].Id, item.Id) >= 0)
+                throw new ArgumentException("Resolved footprints must be unique and in ID order.", nameof(scene));
+            if (!Enum.IsDefined(item.SourceKind) ||
+                !string.Equals(item.ContractVersion, ProjectedResolvedFootprint.CurrentContractVersion, StringComparison.Ordinal) ||
+                !string.Equals(item.RefractionModel, expectedRefractionModel, StringComparison.Ordinal))
+                throw new ArgumentException("Resolved footprint contract or refraction model is invalid.", path);
+            ValidateExtent(item.Extent, $"{path}.extent");
+            if (!Finite(item.GeometricCenter.AltitudeDegrees, item.GeometricCenter.AzimuthDegrees,
+                    item.ApparentCenter.AltitudeDegrees, item.ApparentCenter.AzimuthDegrees) ||
+                item.GeometricCenter.AltitudeDegrees is < -90 or > 90 || item.GeometricCenter.AzimuthDegrees is < 0 or >= 360 ||
+                item.ApparentCenter.AltitudeDegrees is < -90 or > 90 || item.ApparentCenter.AzimuthDegrees is < 0 or >= 360 ||
+                item.ApparentCenter.AzimuthDegrees != item.GeometricCenter.AzimuthDegrees ||
+                Math.Abs(item.ApparentCenter.AltitudeDegrees -
+                    AtmosphericRefraction.Apply(item.GeometricCenter.AltitudeDegrees, scene.Refraction)) > DirectionTolerance)
+                throw new ArgumentException("Resolved footprint centres must agree with the scene refraction.", path);
+            var sourceCenter = scene.HorizonPolicy == HorizonPolicy.GeometricHorizon && item.GeometricCenter.AltitudeDegrees < 0
+                ? null
+                : projector.Project(item.ApparentCenter);
+            PixelPoint? expectedCenter = sourceCenter is { } projected &&
+                ProjectedSceneImageTransform.ContainsCrop(scene.ImageTransform, projected)
+                    ? ProjectedSceneImageTransform.Apply(scene.ImageTransform, projected)
+                    : null;
+            if (expectedCenter.HasValue != item.CenterPixel.HasValue ||
+                item.CenterPixel is { } center && Distance(center, expectedCenter!.Value) > PixelTolerance)
+                throw new ArgumentException("Resolved footprint centre pixel must agree with the scene projection.", path);
+            if (item.Parts is null || item.Parts.Count is 0 or > ProjectedResolvedFootprint.MaximumPartCount ||
+                item.Parts.Any(static part => part?.Points is null) ||
+                item.Parts.Sum(static part => part.Points.Count) > ProjectedResolvedFootprint.MaximumPointCount ||
+                item.Bounds is null)
+                throw new ArgumentException("Resolved footprint parts exceed their bounds.", path);
+            for (var partIndex = 0; partIndex < item.Parts.Count; partIndex++)
+            {
+                var part = item.Parts[partIndex];
+                if (part.Points.Count < (part.Closed ? 3 : 2) ||
+                    part.Points.Any(point => !Finite(point.X, point.Y) ||
+                        !ContainsOutput(scene.Projection, scene.ImageTransform, point) ||
+                        !Contains(scene.Projection, ProjectedSceneImageTransform.Inverse(scene.ImageTransform, point))))
+                    throw new ArgumentException("Resolved footprint part contains an invalid point.", $"{path}.parts[{partIndex}]");
+            }
+            if (item.Clipped == ResolvedFootprintSampler.IsSingleClosed(item.Parts) ||
+                item.Bounds != ResolvedFootprintSampler.ComputeBounds(item.Parts))
+                throw new ArgumentException("Resolved footprint clipping and bounds must match its parts.", path);
+            if (objectsById.TryGetValue(item.Id, out var match) &&
+                (match.GeometricHorizontal != item.GeometricCenter || match.ApparentHorizontal != item.ApparentCenter))
+                throw new ArgumentException("A resolved footprint and its point object must share one centre.", path);
+            if (item.SourceKind == ResolvedFootprintSourceKind.SolarSystemBody)
+            {
+                if (item.Appearance is null ||
+                    !scene.Selection.SolarSystemBodies.Any(body => string.Equals(item.Id, $"solar-system:{body}", StringComparison.Ordinal)))
+                    throw new ArgumentException("Solar-system footprints require a selected body and its appearance.", path);
+                ValidateText(item.Appearance.EphemerisAlgorithmVersion, $"{path}.appearance.ephemerisAlgorithmVersion");
+                if (!Finite(item.Appearance.DistanceKilometers, item.Appearance.IlluminatedFraction,
+                        item.Appearance.BrightLimbAngleDegrees, item.Appearance.VisualMagnitude) ||
+                    item.Appearance.DistanceKilometers <= 0 || item.Appearance.IlluminatedFraction is < 0 or > 1 ||
+                    item.Appearance.BrightLimbAngleDegrees is <= -180 or > 180)
+                    throw new ArgumentException("Resolved body appearance is invalid.", $"{path}.appearance");
+            }
+            else if (item.Appearance is not null)
+            {
+                throw new ArgumentException("Only solar-system footprints carry a body appearance.", path);
+            }
+        }
+    }
+
+    private static void ValidateExtent(ResolvedFootprintExtent value, string path)
+    {
+        if (value is null || !Enum.IsDefined(value.Shape) ||
+            !Finite(value.SemiMajorAxisDegrees, value.SemiMinorAxisDegrees, value.PositionAngleDegrees) ||
+            value.SemiMinorAxisDegrees <= 0 || value.SemiMajorAxisDegrees < value.SemiMinorAxisDegrees ||
+            value.SemiMajorAxisDegrees > 90 || value.PositionAngleDegrees is < 0 or >= 180 ||
+            value.Shape == ResolvedFootprintShape.Circle &&
+                (value.SemiMajorAxisDegrees != value.SemiMinorAxisDegrees || value.PositionAngleDegrees != 0) ||
+            new[] { value.SemiMajorAxisUncertaintyDegrees, value.SemiMinorAxisUncertaintyDegrees, value.PositionAngleUncertaintyDegrees }
+                .Any(static uncertainty => uncertainty is { } quantified && (!double.IsFinite(quantified) || quantified < 0)))
+            throw new ArgumentException("Resolved footprint extent is invalid.", path);
+        ValidateText(value.Source, $"{path}.source");
     }
 
     private static byte[] SerializeCanonical(ProjectedSceneV1 scene) =>
@@ -447,7 +583,8 @@ public static class ProjectedSceneJson
             value.WidthPixels is < 1 or > MaximumDimensionPixels || value.HeightPixels is < 1 or > MaximumDimensionPixels ||
             (long)value.WidthPixels * value.HeightPixels > MaximumPixelArea ||
             !Finite(value.PrincipalPointX, value.PrincipalPointY, value.FocalLengthXPixels,
-                value.FocalLengthYPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees, value.RollDegrees) ||
+                value.FocalLengthYPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees, value.RollDegrees,
+                value.RadialDistortionK1) ||
             value.FocalLengthXPixels <= 0 || value.FocalLengthYPixels <= 0 ||
             value.BoresightAltitudeDegrees is < -90 or > 90 ||
             value.Aperture == ProjectionAperture.Circular && value.ImageCircleRadiusPixels is not { } ||
@@ -514,7 +651,7 @@ public static class ProjectedSceneJson
         value.Model, value.PrincipalPointX, value.PrincipalPointY, value.FocalLengthXPixels,
         value.FocalLengthYPixels, value.WidthPixels, value.HeightPixels, value.Aperture,
         value.ImageCircleRadiusPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees,
-        value.RollDegrees, value.HorizontalFlip, value.EnforceSensorBounds);
+        value.RollDegrees, value.HorizontalFlip, value.EnforceSensorBounds, value.RadialDistortionK1);
 
     private static double Distance(EnuVector left, EnuVector right) => Math.Sqrt(
         Math.Pow(left.East - right.East, 2) + Math.Pow(left.North - right.North, 2) + Math.Pow(left.Up - right.Up, 2));
@@ -598,6 +735,33 @@ public static class ProjectedSceneJson
             if (!HasProperties(item, "constellationId", "fromObjectId", "toObjectId", "fromPixel", "toPixel", "partIndex") ||
                 !Point(item, "fromPixel", "x", "y") || !Point(item, "toPixel", "x", "y")) return false;
         }
+        if (root.TryGetProperty("resolvedFootprints", out var footprints))
+        {
+            if (footprints.ValueKind != JsonValueKind.Array) return false;
+            foreach (var item in footprints.EnumerateArray())
+            {
+                if (!HasProperties(item, "id", "displayName", "sourceKind", "contractVersion", "samplingAlgorithmVersion",
+                        "extent", "geometricCenter", "apparentCenter", "refractionModel", "centerPixel", "clipped", "bounds",
+                        "parts", "appearance") ||
+                    !Point(item, "extent", "shape", "semiMajorAxisDegrees", "semiMinorAxisDegrees", "positionAngleDegrees",
+                        "semiMajorAxisUncertaintyDegrees", "semiMinorAxisUncertaintyDegrees", "positionAngleUncertaintyDegrees",
+                        "source") ||
+                    !Point(item, "geometricCenter", "altitudeDegrees", "azimuthDegrees") ||
+                    !Point(item, "apparentCenter", "altitudeDegrees", "azimuthDegrees") ||
+                    !Point(item, "bounds", "minX", "minY", "maxX", "maxY") ||
+                    item.GetProperty("centerPixel") is { ValueKind: not JsonValueKind.Null } centerPixel &&
+                        !HasProperties(centerPixel, "x", "y") ||
+                    item.GetProperty("appearance") is { ValueKind: not JsonValueKind.Null } appearance &&
+                        !HasProperties(appearance, "ephemerisAlgorithmVersion", "distanceKilometers", "illuminatedFraction",
+                            "brightLimbAngleDegrees", "visualMagnitude") ||
+                    !Array(item, "parts", out var parts)) return false;
+                foreach (var part in parts.EnumerateArray())
+                {
+                    if (!HasProperties(part, "closed", "points") || !Array(part, "points", out var points) ||
+                        points.EnumerateArray().Any(static point => !HasProperties(point, "x", "y"))) return false;
+                }
+            }
+        }
         return true;
 
         static bool Point(JsonElement parent, string name, params string[] properties) =>
@@ -650,6 +814,51 @@ public static class ProjectedSceneJson
     private static ProjectedConstellationSegment NormalizeGeneratedGeometry(ProjectedConstellationSegment value) =>
         value with { FromPixel = Normalize(value.FromPixel), ToPixel = Normalize(value.ToPixel) };
 
+    /// <summary>Rounds generated footprint geometry, removing points that rounding makes coincident.</summary>
+    private static ProjectedResolvedFootprint? NormalizeGeneratedGeometry(ProjectedResolvedFootprint value)
+    {
+        var parts = new List<ResolvedFootprintPart>();
+        foreach (var part in value.Parts)
+        {
+            var points = new List<PixelPoint>();
+            foreach (var point in part.Points.Select(Normalize))
+            {
+                if (points.Count == 0 || points[^1] != point) points.Add(point);
+            }
+            var closed = part.Closed;
+            if (closed && points.Count > 1 && points[0] == points[^1]) points.RemoveAt(points.Count - 1);
+            if (closed && points.Count < 3) closed = false;
+            if (points.Count >= 2) parts.Add(new ResolvedFootprintPart(closed, Freeze(points)));
+        }
+        if (parts.Count == 0) return null;
+        var extent = value.Extent;
+        return value with
+        {
+            Extent = extent with
+            {
+                SemiMajorAxisDegrees = Normalize(extent.SemiMajorAxisDegrees),
+                SemiMinorAxisDegrees = Normalize(extent.SemiMinorAxisDegrees),
+                PositionAngleDegrees = NormalizePeriodic(extent.PositionAngleDegrees, 180),
+                SemiMajorAxisUncertaintyDegrees = extent.SemiMajorAxisUncertaintyDegrees is { } major ? Normalize(major) : null,
+                SemiMinorAxisUncertaintyDegrees = extent.SemiMinorAxisUncertaintyDegrees is { } minor ? Normalize(minor) : null,
+                PositionAngleUncertaintyDegrees = extent.PositionAngleUncertaintyDegrees is { } angle ? Normalize(angle) : null
+            },
+            GeometricCenter = Normalize(value.GeometricCenter),
+            ApparentCenter = Normalize(value.ApparentCenter),
+            CenterPixel = value.CenterPixel is { } center ? Normalize(center) : null,
+            Clipped = !ResolvedFootprintSampler.IsSingleClosed(parts),
+            Bounds = ResolvedFootprintSampler.ComputeBounds(parts),
+            Parts = Freeze(parts),
+            Appearance = value.Appearance is { } appearance ? appearance with
+            {
+                DistanceKilometers = Normalize(appearance.DistanceKilometers),
+                IlluminatedFraction = Normalize(appearance.IlluminatedFraction),
+                BrightLimbAngleDegrees = Normalize(appearance.BrightLimbAngleDegrees),
+                VisualMagnitude = Normalize(appearance.VisualMagnitude)
+            } : null
+        };
+    }
+
     private static EquatorialPoint Normalize(EquatorialPoint value) => new(
         NormalizePeriodic(value.RightAscensionHours, 24), Normalize(value.DeclinationDegrees));
 
@@ -685,7 +894,11 @@ public static class ProjectedSceneJson
             SolarSystemBodies = Freeze(scene.Selection.SolarSystemBodies)
         },
         Objects = Freeze(scene.Objects),
-        Segments = Freeze(scene.Segments)
+        Segments = Freeze(scene.Segments),
+        ResolvedFootprints = scene.ResolvedFootprints is null ? null : Freeze(scene.ResolvedFootprints.Select(static item => item with
+        {
+            Parts = Freeze(item.Parts.Select(static part => part with { Points = Freeze(part.Points) }))
+        }))
     };
 
     private static ReadOnlyCollection<T> Freeze<T>(IEnumerable<T> values) =>

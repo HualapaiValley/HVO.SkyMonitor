@@ -14,6 +14,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class CalibrationPageTests
 {
+    private static readonly string[] ExpectedReferenceTitles =
+    [
+        "Bias reference / 0.001s / gain 82",
+        "Dark reference / 10.000s / gain 82",
+        "Flat reference / 2.000s / gain 82",
+        "Defect reference / 0.001s / gain 82"
+    ];
+
     [TestMethod]
     public void Render_ShowsStatusAcquisitionAndLibrary()
     {
@@ -23,11 +31,13 @@ public sealed class CalibrationPageTests
 
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Calibration library", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "No active bundle", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Acquire ASI676 references", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Page size 100", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Reference library", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "No active references", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Correction fails closed", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "No references", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "calibration.library.missing", StringComparison.Ordinal);
+            Assert.AreEqual("Acquire references", cut.Find("#start-calibration-acquisition").TextContent.Trim());
+            Assert.IsFalse(cut.Find("#start-calibration-acquisition").HasAttribute("disabled"));
         });
     }
 
@@ -38,10 +48,12 @@ public sealed class CalibrationPageTests
         using var context = CreateContext(service);
         var cut = context.Render<CalibrationPage>();
         cut.WaitForElement("#start-calibration-acquisition").Click();
-        var confirm = cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm");
 
-        confirm.Click();
-        confirm.Click();
+        cut.Find("#calibration-acquire-confirm").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Result unavailable.", StringComparison.Ordinal));
+        Assert.IsTrue(cut.Find("dialog fieldset").HasAttribute("disabled"));
+        Assert.AreEqual("Retry acquisition", cut.Find("#calibration-acquire-confirm").TextContent.Trim());
+        cut.Find("#calibration-acquire-confirm").Click();
 
         Assert.HasCount(2, service.Commands);
         Assert.AreEqual(service.Commands[0].Key, service.Commands[1].Key);
@@ -75,16 +87,12 @@ public sealed class CalibrationPageTests
         using var context = CreateContext(service);
         var cut = context.Render<CalibrationPage>();
         cut.WaitForElement("#start-calibration-acquisition").Click();
-        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
+        cut.Find("#calibration-acquire-confirm").Click();
 
-        cut.WaitForAssertion(() => Assert.IsTrue(cut.FindAll("button").Any(button =>
-            button.TextContent.Trim() == "Cancel acquisition")));
-        var cancel = cut.FindAll("button").Single(button =>
-            button.TextContent.Trim() == "Cancel acquisition");
+        cut.WaitForElement("#cancel-calibration-acquisition");
         Assert.IsFalse(service.AcquisitionToken.CanBeCanceled);
-        Assert.IsTrue(cut.FindAll("button").Single(button =>
-            button.TextContent.Trim() == "Review activate").HasAttribute("disabled"));
-        cancel.Click();
+        Assert.IsTrue(cut.Find("[id^=review-calibration-activate-]").HasAttribute("disabled"));
+        cut.Find("#cancel-calibration-acquisition").Click();
 
         cut.WaitForAssertion(() => Assert.AreEqual(1, service.CancelCount));
         cut.WaitForAssertion(() => StringAssert.Contains(
@@ -97,7 +105,7 @@ public sealed class CalibrationPageTests
         using var context = CreateContext(new LateCancellationCalibrationUiService(Status()));
         var cut = context.Render<CalibrationPage>();
 
-        cut.WaitForElement("button.btn-outline-warning").Click();
+        cut.WaitForElement("#cancel-calibration-acquisition").Click();
 
         cut.WaitForAssertion(() =>
         {
@@ -131,7 +139,7 @@ public sealed class CalibrationPageTests
         using var context = CreateContext(new ThrowingCalibrationUiService(Status()));
         var cut = context.Render<CalibrationPage>();
         cut.WaitForElement("#start-calibration-acquisition").Click();
-        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
+        cut.Find("#calibration-acquire-confirm").Click();
 
         cut.WaitForAssertion(() =>
         {
@@ -146,9 +154,9 @@ public sealed class CalibrationPageTests
     {
         using var context = CreateContext(new ConflictingCalibrationUiService(Status()));
         var cut = context.Render<CalibrationPage>();
-        cut.WaitForElement("button.btn-outline-warning").Click();
+        cut.WaitForElement("[id^=review-calibration-activate-]").Click();
 
-        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
+        cut.Find("#calibration-activation-confirm").Click();
 
         cut.WaitForAssertion(() => StringAssert.Contains(
             cut.Markup, "Calibration state changed before activation.", StringComparison.Ordinal));
@@ -160,12 +168,11 @@ public sealed class CalibrationPageTests
         var service = new DelayedActivationCalibrationUiService(Status());
         using var context = CreateContext(service);
         var cut = context.Render<CalibrationPage>();
-        await cut.WaitForElement("button.btn-outline-warning").ClickAsync().ConfigureAwait(false);
+        await cut.WaitForElement("[id^=review-calibration-activate-]").ClickAsync().ConfigureAwait(false);
         var dialog = cut.Find("dialog");
 
-        var command = cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm")
-            .TriggerEventAsync("onclick", EventArgs.Empty);
-        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .btn-primary").HasAttribute("disabled")));
+        var command = cut.Find("#calibration-activation-confirm").TriggerEventAsync("onclick", EventArgs.Empty);
+        cut.WaitForAssertion(() => Assert.IsTrue(cut.Find("dialog .button.primary").HasAttribute("disabled")));
 
         await dialog.TriggerEventAsync("oncancel", EventArgs.Empty).ConfigureAwait(false);
 
@@ -182,8 +189,7 @@ public sealed class CalibrationPageTests
         using var context = CreateContext(service);
         var cut = context.Render<CalibrationPage>();
         await cut.WaitForElement("#start-calibration-acquisition").ClickAsync().ConfigureAwait(false);
-        await cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm")
-            .ClickAsync().ConfigureAwait(false);
+        await cut.Find("#calibration-acquire-confirm").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() => Assert.AreEqual(
             1,
             context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "focusById")));
@@ -205,13 +211,152 @@ public sealed class CalibrationPageTests
         var cut = context.Render<CalibrationPage>();
         cut.WaitForElement("#start-calibration-acquisition").Click();
 
-        cut.FindAll("button").Single(button => button.TextContent.Trim() == "Confirm").Click();
+        cut.Find("#calibration-acquire-confirm").Click();
 
         cut.WaitForAssertion(() => StringAssert.Contains(
             cut.Markup, "Calibration acquisition published durably.", StringComparison.Ordinal));
         Assert.AreEqual(
             1,
             context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "focusById"));
+    }
+
+    [TestMethod]
+    public void Render_WithActiveBundle_ShowsReferencesSelectionAndReviewDate()
+    {
+        var active = Summary("bundle-active", new DateTimeOffset(2026, 1, 25, 8, 0, 0, TimeSpan.Zero));
+        var service = new LibraryCalibrationUiService(
+            Status() with { ActiveBundle = active, PublishedBundleCount = 2, LastSelectionReason = "calibration.library.selected" },
+            [active, Summary("bundle-older")]);
+        using var context = CreateContext(service);
+
+        var cut = context.Render<CalibrationPage>();
+
+        cut.WaitForAssertion(() => Assert.HasCount(4, cut.FindAll("article.ops-library-card")));
+        var cards = cut.FindAll("article.ops-library-card strong").Select(static strong => strong.TextContent.Trim()).ToArray();
+        CollectionAssert.AreEqual(ExpectedReferenceTitles, cards);
+        StringAssert.Contains(cut.Markup, "Software-generated (VirtualSky)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "3 source frames", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "bias / dark / flat / defect", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Compatible", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "10 days", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "Validity interval ends 25 Jan 2026", StringComparison.Ordinal);
+        Assert.AreEqual("bundle-active", cut.Find("#calibration-active-bundle").TextContent.Trim());
+        Assert.AreEqual(1, service.DetailRequests.Count(static id => id == "bundle-active"));
+        Assert.IsEmpty(cut.FindAll("#review-calibration-activate-bundle-active"));
+        Assert.HasCount(1, cut.FindAll("#review-calibration-activate-bundle-older"));
+        StringAssert.Contains(cut.Find("tr.current-row").TextContent, "bundle-active", StringComparison.Ordinal);
+
+        cut.Find("#calibration-refresh").Click();
+
+        // Published bundles are immutable, so a refresh does not refetch the active bundle's evidence.
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.DetailRequests.Count(static id => id == "bundle-active")));
+    }
+
+    [TestMethod]
+    [DataRow("calibration.library.incompatible-readout", "Readout mismatch")]
+    [DataRow("calibration.library.incompatible-exposure", "Exposure mismatch")]
+    [DataRow("calibration.library.stale", "Outside validity")]
+    [DataRow(null, "Not checked")]
+    [DataRow("calibration.library.future-code", "calibration.library.future-code")]
+    public void Render_MapsTheLastSelectionReasonToAnOperatorLabel(string? reason, string label)
+    {
+        using var context = CreateContext(new CalibrationUiService(Status() with { LastSelectionReason = reason }));
+
+        var cut = context.Render<CalibrationPage>();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            label, cut.Find("#calibration-selection-heading").Closest("header")!.QuerySelector(".state-chip")!.TextContent.Trim()));
+    }
+
+    [TestMethod]
+    public void Render_WhenAcquisitionIsUnavailable_DisablesAcquireAndExplainsWhy()
+    {
+        using var context = CreateContext(new CalibrationUiService(
+            Status() with { AcquisitionUnavailableReason = "The camera configuration has not loaded yet." }));
+
+        var cut = context.Render<CalibrationPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var start = cut.Find("#start-calibration-acquisition");
+            Assert.IsTrue(start.HasAttribute("disabled"));
+            Assert.AreEqual("The camera configuration has not loaded yet.", start.GetAttribute("title"));
+            StringAssert.Contains(cut.Markup, "Reference acquisition is unavailable.", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void AcquireValidationError_StaysInTheDialogAndClosesWithIt()
+    {
+        var service = new RetryingCalibrationUiService(Status());
+        using var context = CreateContext(service);
+        var cut = context.Render<CalibrationPage>();
+        cut.WaitForElement("#start-calibration-acquisition").Click();
+
+        cut.Find("#cal-light").Change("-1");
+        cut.Find("#calibration-acquire-confirm").Click();
+
+        const string error = "Gain, offset, temperature, seed, and positive finite exposures are required.";
+        StringAssert.Contains(cut.Find("dialog").TextContent, error, StringComparison.Ordinal);
+        Assert.IsEmpty(service.Commands);
+
+        cut.FindAll("dialog footer button").Single(button => button.TextContent.Trim() == "Cancel").Click();
+
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.DoesNotContain(error, cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual(
+            "start-calibration-acquisition",
+            context.JSInterop.Invocations.Last(static invocation => invocation.Identifier == "focusById").Arguments[0]);
+    }
+
+    [TestMethod]
+    public void Inspect_OpensTheEvidenceDialogWithOrderedLineage()
+    {
+        var service = new LibraryCalibrationUiService(Status() with { PublishedBundleCount = 1 }, [Summary("bundle-older")]);
+        using var context = CreateContext(service);
+        var cut = context.Render<CalibrationPage>();
+
+        cut.WaitForElement("#inspect-calibration-bundle-older").Click();
+
+        var dialog = cut.Find("dialog.calibration-detail");
+        Assert.AreEqual("bundle-older", dialog.QuerySelector("#calibration-detail-heading")!.TextContent.Trim());
+        Assert.HasCount(16, dialog.QuerySelectorAll("table[aria-label='Bundle artifacts'] tbody tr"));
+        Assert.HasCount(4, dialog.QuerySelectorAll("details.calibration-lineage"));
+        StringAssert.Contains(dialog.TextContent, "3 ordered sources", StringComparison.Ordinal);
+        Assert.IsTrue(cut.FindAll("dialog footer button").Any(static button => button.TextContent.Trim() == "Review activate"));
+
+        cut.FindAll("dialog footer button").Single(static button => button.TextContent.Trim() == "Close").Click();
+
+        Assert.IsEmpty(cut.FindAll("dialog"));
+        Assert.AreEqual(
+            "inspect-calibration-bundle-older",
+            context.JSInterop.Invocations.Last(static invocation => invocation.Identifier == "focusById").Arguments[0]);
+    }
+
+    [TestMethod]
+    public void Rollback_SendsThePreviousBundleWithThePinnedReason()
+    {
+        var active = Summary("bundle-active");
+        var service = new LibraryCalibrationUiService(
+            Status() with
+            {
+                ActiveBundle = active,
+                PublishedBundleCount = 2,
+                LastActivation = new CalibrationLibraryActivationSnapshot(
+                    "activate", "bundle-older", "bundle-active", 7, DateTimeOffset.UnixEpoch, null)
+            },
+            [active, Summary("bundle-older")]);
+        using var context = CreateContext(service);
+        var cut = context.Render<CalibrationPage>();
+
+        cut.WaitForElement("#review-calibration-rollback").Click();
+        Assert.AreEqual("Roll back calibration?", cut.Find("#calibration-activation-heading").TextContent.Trim());
+        cut.Find("#cal-activation-reason").Change("  flat was taken with the dome lit  ");
+        cut.Find("#calibration-activation-confirm").Click();
+
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Markup, "Calibration command completed durably.", StringComparison.Ordinal));
+        Assert.AreEqual(("bundle-older", 7L, "flat was taken with the dome lit"), service.Rollback);
     }
 
     private static BunitContext CreateContext(ICameraAgentCalibrationUiService service)
@@ -300,6 +445,37 @@ public sealed class CalibrationPageTests
             null);
     }
 
+    private static CalibrationUiBundleSummary Summary(string bundleId, DateTimeOffset? effectiveUntil = null)
+        => BundlePage().Items[0] with
+        {
+            BundleId = bundleId,
+            Applicability = BundlePage().Items[0].Applicability with { EffectiveUntilUtc = effectiveUntil }
+        };
+
+    private static CalibrationUiBundleDetail Detail(CalibrationUiBundleSummary summary)
+    {
+        var exposures = new Dictionary<string, TimeSpan>
+        {
+            [CalibrationReferenceKinds.Bias] = TimeSpan.FromMilliseconds(1),
+            [CalibrationReferenceKinds.Dark] = TimeSpan.FromSeconds(10),
+            [CalibrationReferenceKinds.Flat] = TimeSpan.FromSeconds(2),
+            [CalibrationReferenceKinds.Defect] = TimeSpan.FromMilliseconds(1)
+        };
+        var artifacts = new List<CalibrationUiArtifact>();
+        // Stored in reverse so the page's own kind/role/index ordering is what the assertions observe.
+        foreach (var kind in CalibrationReferenceKinds.All.Reverse())
+        {
+            var sources = Enumerable.Range(0, 3).Select(static _ => Guid.NewGuid()).ToArray();
+            artifacts.Add(new CalibrationUiArtifact(
+                kind, CalibrationLibraryArtifactRoles.Master, Guid.NewGuid(), new string('F', 64),
+                exposures[kind], 82, 1, -10, null, sources, null));
+            artifacts.AddRange(sources.Select((id, index) => new CalibrationUiArtifact(
+                kind, CalibrationLibraryArtifactRoles.Source, id, new string('A', 64),
+                exposures[kind], 82, 1, -10, index, [], null)));
+        }
+        return new CalibrationUiBundleDetail(summary, artifacts);
+    }
+
     private class CalibrationUiService(CalibrationUiStatus? status) : ICameraAgentCalibrationUiService
     {
         protected CalibrationUiStatus? CurrentStatus { get; set; } = status;
@@ -315,7 +491,7 @@ public sealed class CalibrationPageTests
             => ValueTask.FromResult(OperatorUiResult<CalibrationUiBundlePage>.Success(
                 new CalibrationUiBundlePage([], null)));
 
-        public ValueTask<OperatorUiResult<CalibrationUiBundleDetail>> GetBundleAsync(
+        public virtual ValueTask<OperatorUiResult<CalibrationUiBundleDetail>> GetBundleAsync(
             string bundleId, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
@@ -336,7 +512,7 @@ public sealed class CalibrationPageTests
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public ValueTask<OperatorUiResult<CalibrationUiStatus>> RollbackAsync(
+        public virtual ValueTask<OperatorUiResult<CalibrationUiStatus>> RollbackAsync(
             string bundleId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
@@ -509,6 +685,36 @@ public sealed class CalibrationPageTests
                 ? OperatorUiResult<CalibrationUiAcquisition>.Failure(
                     OperatorUiResultKind.Unavailable, "Result unavailable.")
                 : OperatorUiResult<CalibrationUiAcquisition>.Success(null!));
+        }
+    }
+
+    private sealed class LibraryCalibrationUiService(
+        CalibrationUiStatus status,
+        IReadOnlyList<CalibrationUiBundleSummary> bundles) : CalibrationUiService(status)
+    {
+        internal List<string> DetailRequests { get; } = [];
+
+        internal (string BundleId, long Version, string? Reason)? Rollback { get; private set; }
+
+        public override ValueTask<OperatorUiResult<CalibrationUiBundlePage>> GetBundlesAsync(
+            int pageSize, string? cursor, CancellationToken cancellationToken)
+            => ValueTask.FromResult(OperatorUiResult<CalibrationUiBundlePage>.Success(
+                new CalibrationUiBundlePage(bundles, null)));
+
+        public override ValueTask<OperatorUiResult<CalibrationUiBundleDetail>> GetBundleAsync(
+            string bundleId, CancellationToken cancellationToken)
+        {
+            DetailRequests.Add(bundleId);
+            return ValueTask.FromResult(OperatorUiResult<CalibrationUiBundleDetail>.Success(
+                Detail(bundles.Single(bundle => bundle.BundleId == bundleId))));
+        }
+
+        public override ValueTask<OperatorUiResult<CalibrationUiStatus>> RollbackAsync(
+            string bundleId, long expectedVersion, string idempotencyKey, string? reason,
+            CancellationToken cancellationToken)
+        {
+            Rollback = (bundleId, expectedVersion, reason);
+            return ValueTask.FromResult(OperatorUiResult<CalibrationUiStatus>.Success(CurrentStatus!));
         }
     }
 

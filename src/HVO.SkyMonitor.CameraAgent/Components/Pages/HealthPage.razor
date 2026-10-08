@@ -1,0 +1,120 @@
+@inherits SiteTimeComponent
+@page "/operations/health"
+@page "/operations/system"
+@page "/system"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Health &amp; diagnostics</PageTitle>
+
+<OperationsPageHeading Eyebrow="System / bounded diagnostics" Title="Health &amp; diagnostics" HeadingId="health-heading"
+                       Description="Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.">
+    <Actions>
+        <a class="button secondary" href="/operations/pipeline">Open pipeline</a>
+        <button type="button" id="health-refresh" class="button primary" disabled="@_loading" @onclick="LoadAsync">@(_loading ? "Checking…" : "Refresh checks")</button>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_loading && _health is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Running the health checks.</span></div>
+}
+else if (_health is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Health checks unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var health = _health;
+    var summary = _view?.Summary;
+    var acquisition = ScopeChip("Acquisition");
+    var processing = ScopeChip("Processing");
+    var host = ScopeChip("Host", "Local");
+    @if (_error is not null)
+    {
+        <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Showing the last completed checks.</strong> @_error</span></div>
+    }
+    @if (_summaryError is not null)
+    {
+        <div class="ops-note-banner" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Capture and lane facts are unavailable.</strong> @_summaryError</span></div>
+    }
+
+    <section class="ops-status-rail" aria-label="Health summary">
+        <div><span>Overall</span><strong>@StateText(health.Overall)</strong><small>@OverallDetail(health)</small></div>
+        <div><span>Image freshness</span><strong>@ImageFreshness</strong><small>@ImageFreshnessDetail</small></div>
+        <div><span>Local lanes</span><strong>@(summary is null ? "Unknown" : OperationsPage.SplitWords(summary.CaptureLanes.Value.Availability))</strong><small>@LanesDetail</small></div>
+        <div><span>Central dependency</span><strong>@CentralState</strong><small>@CentralDetail</small></div>
+    </section>
+
+    <div class="ops-grid three">
+        <section class="ops-panel" aria-labelledby="health-acquisition-heading">
+            <header class="ops-panel-heading"><div><h2 id="health-acquisition-heading">Acquisition</h2><p>Camera and admission path.</p></div><span class="state-chip @acquisition.Css">@acquisition.Text</span></header>
+            <dl class="ops-facts">
+                <div><dt>Capture</dt><dd>@(summary is null ? "Unknown" : OperationsPage.SplitWords(summary.CaptureControl.Value.State))</dd></div>
+                <div><dt>Last start</dt><dd>@(summary?.CaptureTelemetry.Value.LatestCaptureStartedUtc is { } started ? $"{FormatAge(started)} ago" : "None yet")</dd></div>
+                <div><dt>Clock drift</dt><dd id="health-clock-drift" title="@ClockDriftTitle(health.Clock)">@ClockFormat.HealthFact(health.Clock)</dd></div>
+                <div><dt>Last failure</dt><dd>@(summary?.CaptureRuntime.Value.LastFailedUtc is { } failed ? FormatSiteTime(failed) : "None since start")</dd></div>
+            </dl>
+        </section>
+        <section class="ops-panel" aria-labelledby="health-processing-heading">
+            <header class="ops-panel-heading"><div><h2 id="health-processing-heading">Processing</h2><p>Graph worker and durable lane.</p></div><span class="state-chip @processing.Css">@processing.Text</span></header>
+            <dl class="ops-facts">
+                <div><dt>Pending</dt><dd>@(summary is null ? "Unknown" : Number(summary.CaptureProcessing.Value.PendingCount))</dd></div>
+                <div><dt>Retrying</dt><dd>@(summary is null ? "Unknown" : Number(summary.CaptureProcessing.Value.RetryCount))</dd></div>
+                <div><dt>p95 latency</dt><dd>@ProcessingLatency</dd></div>
+                <div><dt>Quarantined</dt><dd>@(summary is null ? "Unknown" : Number(summary.CaptureProcessing.Value.QuarantineCount))</dd></div>
+            </dl>
+        </section>
+        <section class="ops-panel" aria-labelledby="health-host-heading">
+            <header class="ops-panel-heading"><div><h2 id="health-host-heading">Host</h2><p>Bounded resource signals.</p></div><span class="state-chip @host.Css">@host.Text</span></header>
+            <dl class="ops-facts">
+                <div><dt>CPU</dt><dd title="Average across all cores since the process started">@(health.Host.AverageCpuPercent is { } cpu ? $"{Percent(cpu)} avg" : "Unknown")</dd></div>
+                <div><dt>Working set</dt><dd>@OperationsPage.FormatBytes(health.Host.WorkingSetBytes)</dd></div>
+                <div><dt>Storage</dt><dd>@StorageUsed</dd></div>
+                <div><dt>Uptime</dt><dd>@FormatDuration(health.Host.Uptime)</dd></div>
+            </dl>
+        </section>
+    </div>
+
+    <section class="ops-panel ops-grid" aria-labelledby="health-checks-heading">
+        <header class="ops-panel-heading">
+            <div><h2 id="health-checks-heading">Dependency checks</h2><p>Central failures degrade integration state but never masquerade as empty data.</p></div>
+            <span>@FormatClock(health.EvaluatedUtc)</span>
+        </header>
+        <div class="ops-table-wrap">
+            <table class="ops-table health-checks">
+                <thead><tr><th scope="col">Check</th><th scope="col">Scope</th><th scope="col">State</th><th scope="col">Duration</th><th scope="col">Detail</th></tr></thead>
+                <tbody>
+                    @foreach (var check in health.Checks)
+                    {
+                        <tr>
+                            <td><strong>@check.Label</strong></td>
+                            <td>@check.Scope</td>
+                            <td><span class="state-chip @StateChip(check.State)">@StateText(check.State)</span></td>
+                            <td>@FormatDuration(check.Duration.TotalMilliseconds)</td>
+                            <td>
+                                @if (check.State == SystemCheckState.Disabled)
+                                {
+                                    <span>@(check.Scope == "Central" && !health.CentralIntegrationEnabled ? "Standalone agent" : "Switched off by configuration")</span>
+                                }
+                                else if (check.Href is not null)
+                                {
+                                    <a href="@check.Href">@(check.State == SystemCheckState.Healthy ? "View" : "Investigate")</a>
+                                }
+                                else
+                                {
+                                    <span>@(check.State == SystemCheckState.Healthy ? "Passing" : "See host logs")</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}

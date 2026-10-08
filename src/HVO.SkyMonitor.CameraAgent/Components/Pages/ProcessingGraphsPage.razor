@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/graphs"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -15,7 +16,7 @@
     </PageHeader>
 
     <nav class="graphs-links" aria-label="Pipeline sections">
-        <a href="/operations/pipeline">Pipeline summary</a>
+        <a href="/operations/pipeline">Pipeline</a>
         <a href="/operations/pipeline/executions">Processing executions</a>
         <a href="/operations/pipeline/graphs/new" class="graphs-links__primary">New draft graph</a>
     </nav>
@@ -65,10 +66,10 @@
                                 <td><a href="/operations/pipeline/graphs/@Uri.EscapeDataString(revision.RevisionId)"><strong>@revision.Name</strong> @revision.Revision</a><br /><code>@revision.RevisionId</code></td>
                                 <td><span class="state-chip @LifecycleClass(revision.Lifecycle)">@(isActive ? "Active" : revision.Lifecycle.ToString())</span></td>
                                 <td><code>@Short(revision.DefinitionIdentitySha256)</code></td>
-                                <td>@revision.CreatedUtc.ToString("u")</td>
-                                <td>@(revision.ValidatedUtc?.ToString("u") ?? "-")</td>
-                                <td>@(revision.ActivatedUtc?.ToString("u") ?? "-")</td>
-                                <td>@(revision.RetiredUtc?.ToString("u") ?? "-")</td>
+                                <td>@SiteTime.Format(revision.CreatedUtc)</td>
+                                <td>@SiteTime.Format(revision.ValidatedUtc, unavailable: "-")</td>
+                                <td>@SiteTime.Format(revision.ActivatedUtc, unavailable: "-")</td>
+                                <td>@SiteTime.Format(revision.RetiredUtc, unavailable: "-")</td>
                                 <td class="revision-actions">
                                     @if (revision.Lifecycle == ProcessingGraphRevisionLifecycle.Draft)
                                     {

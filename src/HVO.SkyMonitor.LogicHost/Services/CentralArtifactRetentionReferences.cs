@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -27,7 +29,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
 {
     public async Task<bool> IsHeldAsync(Guid centralArtifactId, CancellationToken cancellationToken)
     {
-        if (await DirectReferences(centralArtifactId).AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await HasDirectReferencesAsync(
+            DirectReferences(centralArtifactId), centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -56,8 +59,9 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
-        if (await DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId)
-                .AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await HasDirectReferencesAsync(
+            DirectReferencesOutsideTransientEvent(centralArtifactId, centralTransientEventId),
+            centralArtifactId, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -102,8 +106,40 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 || job.Status == CentralDerivativeJobStatus.CancelRequested), cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<bool> HasDirectReferencesAsync(
+        IQueryable<int> directReferences, Guid centralArtifactId, CancellationToken cancellationToken)
+    {
+        // Preserve the ordinary image-release query budget. The union returns at most two sentinels;
+        // only an actual projected-scene product needs the source-bound compact-consumer check.
+        var referenceKinds = await directReferences.Concat(dbContext.CentralArtifacts
+            .Where(artifact => artifact.Id == centralArtifactId && artifact.Role == FrameArtifactRole.Metadata &&
+                artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            .Select(_ => 2)).Distinct().ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        return referenceKinds.Contains(1) || referenceKinds.Contains(2) &&
+            await CompactSceneConsumersRemainAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> CompactSceneConsumersRemainAsync(Guid centralArtifactId, CancellationToken cancellationToken)
+    {
+        var scene = await dbContext.CentralArtifacts.AsNoTracking()
+            .Where(artifact => artifact.Id == centralArtifactId && artifact.Role == FrameArtifactRole.Metadata &&
+                artifact.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType)
+            .Select(artifact => new { artifact.CentralFrameId, artifact.Frame!.SceneProvenanceJson })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (scene is null || CentralProjectedSceneResolver.ReadProvenance(scene.SceneProvenanceJson)?.RequiresProjectedScene != true)
+            return false;
+        // A completed job releases its execution hold, but retained compact images still need this geometry
+        // for later annotation/replay. Reservation's serializable transaction fences this indexed frame range.
+        // Pending/quarantined consumers remain evidence until explicitly expired; no new lifetime column is needed.
+        return await dbContext.CentralArtifacts.AnyAsync(consumer =>
+            consumer.CentralFrameId == scene.CentralFrameId && consumer.Role != FrameArtifactRole.Metadata &&
+            consumer.ObjectState != CentralArtifactObjectState.Expired && consumer.RetentionDeletionToken == null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private IQueryable<int> DirectReferences(Guid centralArtifactId)
         => CurrentPublicReleases(centralArtifactId)
+            .Concat(ActiveTimeLapseReferences(centralArtifactId))
             .Concat(dbContext.CentralClearReferenceDesignations
                 .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
             .Concat(dbContext.CentralTransientObservations
@@ -122,6 +158,7 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
         Guid centralArtifactId,
         Guid centralTransientEventId)
         => CurrentPublicReleases(centralArtifactId)
+            .Concat(ActiveTimeLapseReferences(centralArtifactId))
             .Concat(dbContext.CentralClearReferenceDesignations
                 .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
             .Concat(dbContext.CentralTransientObservations.Where(item =>
@@ -144,6 +181,10 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 item.CentralArtifactId == centralArtifactId
                 && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
             .Concat(ActiveGraphExecutionReferences(centralArtifactId));
+
+    private IQueryable<int> ActiveTimeLapseReferences(Guid centralArtifactId)
+        => dbContext.CentralTimeLapseInputs.Where(input => input.CentralArtifactId == centralArtifactId &&
+            (input.Job!.State == TimeLapses.CentralTimeLapseState.Queued || input.Job.State == TimeLapses.CentralTimeLapseState.Working)).Select(_ => 1);
 
     private IQueryable<int> ActiveGraphExecutionReferences(Guid centralArtifactId)
         => dbContext.CentralProcessingGraphExecutions.Where(execution =>
@@ -433,6 +474,10 @@ internal sealed partial class CentralArtifactRetentionService(
         }
 
         var now = timeProvider.GetUtcNow();
+        // Available raw entered through checksum-verified publication or verification. Preserve
+        // that prior success before retirement overwrites its state; pending intents get no stamp.
+        if (artifact.Role == FrameArtifactRole.Raw && artifact.ObjectState == CentralArtifactObjectState.Available)
+            artifact.ObjectVerifiedAtUtc ??= artifact.ReconciledAtUtc ?? artifact.ReceivedAtUtc;
         artifact.ObjectState = CentralArtifactObjectState.Expired;
         artifact.StateReasonCode = "retention.expired";
         artifact.ReconciledAtUtc = now;

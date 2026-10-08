@@ -89,14 +89,16 @@ public static class RigProjectionContextFactory
     }
 
     private static double MaximumModelRadius(ProjectionContext projection)
-        => projection.Model switch
-        {
-            ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
-            ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
-            ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
-            ProjectionModel.StereographicFisheye => double.MaxValue / 4,
-            _ => projection.ImageCircleRadiusPixels!.Value
-        };
+        => projection.RadialDistortionK1 != 0 && projection.Model != ProjectionModel.Perspective
+            ? RadialDistortion.MaximumApertureRadiusPixels(projection)
+            : projection.Model switch
+            {
+                ProjectionModel.EquidistantFisheye => Math.PI * projection.FocalLengthXPixels,
+                ProjectionModel.EquisolidFisheye => 2 * projection.FocalLengthXPixels,
+                ProjectionModel.OrthographicFisheye => projection.FocalLengthXPixels,
+                ProjectionModel.StereographicFisheye => double.MaxValue / 4,
+                _ => projection.ImageCircleRadiusPixels!.Value
+            };
 
     /// <summary>Creates the calibrated native-sensor projection before readout.</summary>
     public static ProjectionContext CreateNative(CameraRigConfig rig)
@@ -123,7 +125,8 @@ public static class RigProjectionContextFactory
                 model, principalX, principalY, focalX, focalY, sensor.WidthPixels, sensor.HeightPixels,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: orientation.BoresightAltitudeDegrees,
                 BoresightAzimuthDegrees: orientation.BoresightAzimuthDegrees,
-                RollDegrees: orientation.RollAdjustmentDegrees, HorizontalFlip: optics.HorizontalFlip);
+                RollDegrees: orientation.RollAdjustmentDegrees, HorizontalFlip: optics.HorizontalFlip,
+                RadialDistortionK1: optics.RadialDistortionK1);
         }
         else
         {
@@ -148,7 +151,8 @@ public static class RigProjectionContextFactory
             projection = new ProjectionContext(
                 model, principalX, principalY, focal, focal, sensor.WidthPixels, sensor.HeightPixels,
                 ProjectionAperture.Circular, radius, orientation.BoresightAltitudeDegrees,
-                orientation.BoresightAzimuthDegrees, orientation.RollAdjustmentDegrees, optics.HorizontalFlip);
+                orientation.BoresightAzimuthDegrees, orientation.RollAdjustmentDegrees, optics.HorizontalFlip,
+                RadialDistortionK1: optics.RadialDistortionK1);
         }
 
         projection.Validate();
@@ -166,6 +170,62 @@ public static class RigProjectionContextFactory
         var native = CreateNative(rig);
         var readout = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout).Geometry;
         return TransformReadout(native, readout, divideByBins: false);
+    }
+
+    /// <summary>
+    /// Derives the binned output view of one native-sensor calibration for a declared readout. Principal point,
+    /// focal lengths and image circle follow the ROI offset and bin factors; the normalized radial distortion
+    /// coefficient is invariant and carries over unchanged.
+    /// </summary>
+    public static ProjectionContext CreateReadoutView(ProjectionContext native, FrameReadoutDescriptor readout)
+    {
+        ArgumentNullException.ThrowIfNull(readout);
+        native.Validate();
+        if (readout.NativeWidth != native.WidthPixels || readout.NativeHeight != native.HeightPixels ||
+            readout.RoiX < 0 || readout.RoiY < 0 || readout.RoiWidth <= 0 || readout.RoiHeight <= 0 ||
+            readout.BinX <= 0 || readout.BinY <= 0 ||
+            (long)readout.RoiX + readout.RoiWidth > native.WidthPixels || (long)readout.RoiY + readout.RoiHeight > native.HeightPixels ||
+            readout.RoiWidth % readout.BinX != 0 || readout.RoiHeight % readout.BinY != 0)
+            throw new ArgumentException("The readout does not describe a view of this native sensor.", nameof(readout));
+        return TransformReadout(native, readout, divideByBins: true);
+    }
+
+    /// <summary>
+    /// Expresses an accepted native-sensor calibration as a revised optics profile for the same rig. Only focal
+    /// lengths, principal point and the radial coefficient change; family, parity, aperture, sensor and pose must
+    /// already match the rig, and the revised profile must reproduce the calibration exactly.
+    /// </summary>
+    public static OpticsProfile CreateCalibratedOptics(CameraRigConfig rig, ProjectionContext calibratedNative,
+        string calibrationVersion)
+    {
+        ArgumentNullException.ThrowIfNull(rig);
+        if (string.IsNullOrWhiteSpace(calibrationVersion) || calibrationVersion.Length > 128)
+            throw new ArgumentException("A bounded calibration version is required.", nameof(calibrationVersion));
+        calibratedNative.Validate();
+        var nominal = CreateNative(rig);
+        if (nominal with
+        {
+            PrincipalPointX = calibratedNative.PrincipalPointX,
+            PrincipalPointY = calibratedNative.PrincipalPointY,
+            FocalLengthXPixels = calibratedNative.FocalLengthXPixels,
+            FocalLengthYPixels = calibratedNative.FocalLengthYPixels,
+            RadialDistortionK1 = calibratedNative.RadialDistortionK1
+        } != calibratedNative)
+            throw new ArgumentException("The calibration does not describe this rig's family, aperture, parity, sensor or pose.",
+                nameof(calibratedNative));
+        var optics = rig.Optics with
+        {
+            PrincipalPointX = calibratedNative.PrincipalPointX,
+            PrincipalPointY = calibratedNative.PrincipalPointY,
+            FocalLengthXPixels = calibratedNative.FocalLengthXPixels,
+            FocalLengthYPixels = calibratedNative.FocalLengthYPixels,
+            ImageCircleRadiusPixels = calibratedNative.ImageCircleRadiusPixels,
+            RadialDistortionK1 = calibratedNative.RadialDistortionK1,
+            CalibrationVersion = calibrationVersion
+        };
+        if (CreateNative(rig with { Optics = optics }) != calibratedNative)
+            throw new ArgumentException("The rig optics cannot represent this calibration.", nameof(calibratedNative));
+        return optics;
     }
 
     /// <summary>Parses supported projection names, including rectilinear and gnomonic aliases.</summary>

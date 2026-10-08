@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +18,58 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 [TestCategory("Unit")]
 public sealed class EnvironmentalLocalAutomationTaskRegistryTests
 {
+    [TestMethod]
+    public void CompositeWithoutInstalledWindowAdapter_DoesNotAdvertiseProducerCapabilities()
+    {
+        using var coordinator = CreateCoordinator();
+        var registry = new LocalAutomationTaskRegistry(CreateRegistry(coordinator, enabled: true), [], TimeProvider.System);
+        Assert.AreEqual(1, registry.Describe().Count);
+        var unsupported = LocalAutomationWindowTests.Definition("daily",
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.SunriseDay));
+        Assert.AreEqual(LocalAutomationContract.UnregisteredCombinationReasonCode, registry.Validate(unsupported)!.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task InstalledWindowAdapter_RequiresSupportedTargetAndRetainedFinality()
+    {
+        using var coordinator = CreateCoordinator();
+        var adapter = new WindowAdapter();
+        var calendar = ObservingDayCalendar.ForDeployment(LocalAutomationWindowTests.Site());
+        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
+        var policy = LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.SunriseDay);
+        var window = planner.ResolveWindows(new DateOnly(2026, 10, 12), policy).Single();
+        var time = new MutableTimeProvider(window.EarliestFinalUtc.AddTicks(-1));
+        var registry = new LocalAutomationTaskRegistry(CreateRegistry(coordinator, enabled: true), [adapter], time);
+        var definition = LocalAutomationWindowTests.Definition("daily", policy);
+        var occurrence = LocalAutomationWindowPlanner.CreateOccurrence(
+            new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition), null, null), window);
+        Assert.AreEqual(2, registry.Describe().Count);
+        Assert.IsNull(registry.Validate(definition));
+        Assert.AreEqual(LocalAutomationContract.UnregisteredTargetReasonCode,
+            registry.Validate(definition with { TaskTarget = "missing-rig" })!.ReasonCode);
+        Assert.AreEqual(LocalAutomationRunOutcome.Skipped,
+            (await registry.ExecuteAsync(occurrence, CancellationToken.None).ConfigureAwait(false)).Outcome);
+        Assert.IsEmpty(adapter.Executed);
+        time.Advance(TimeSpan.FromTicks(1));
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded,
+            (await registry.ExecuteAsync(occurrence, CancellationToken.None).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(occurrence, adapter.Executed.Single());
+    }
+
+    private sealed class WindowAdapter : ILocalAutomationWindowTaskAdapter
+    {
+        public List<LocalAutomationOccurrence> Executed { get; } = [];
+        public LocalAutomationTaskDescriptor Describe() => new(LocalAutomationTaskKind.StillImageGeneration,
+            "Installed fixture", [LocalAutomationTriggerKind.SourceWindowClosed], ["test-rig"], true, null)
+        { SupportedSourceWindows = [LocalAutomationSourceWindowKind.SunriseDay] };
+        public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition) => null;
+        public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+        {
+            Executed.Add(occurrence);
+            return ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Succeeded, "Fixture"));
+        }
+    }
+
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly LocalAutomationTriggerKind[] ExpectedTriggers =
     [

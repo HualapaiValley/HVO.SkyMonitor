@@ -67,7 +67,8 @@ internal sealed class CentralDerivativeJobExecutor(
     ICentralTransientDerivativeExecutor transientDerivativeExecutor,
     ICentralTransientReprocessingExecutor transientReprocessingExecutor,
     CentralDerivativeWorkerTelemetry telemetry,
-    TimeProvider timeProvider) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
+    TimeProvider timeProvider,
+    CentralProjectedSceneResolver? projectedScenes = null) : ICentralDerivativeJobExecutor, ICentralDerivativeExecutionPipeline
 {
     private const double MaximumLabelMagnitude = 2.5;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -143,14 +144,11 @@ internal sealed class CentralDerivativeJobExecutor(
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
         var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(lease.InputSelectorJson, SerializerOptions)
             ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");
-        var currentRequestedIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
+        if (!MatchesCurrentRequestedIdentity(
             lease.RecipeName,
             optionsDocument.RootElement,
-            selector).IdentitySha256;
-        if (!string.Equals(
-            currentRequestedIdentity,
-            lease.RequestedRecipeIdentitySha256,
-            StringComparison.OrdinalIgnoreCase))
+            selector,
+            lease.RequestedRecipeIdentitySha256))
         {
             const string reason = "processing.recipe-identity-mismatch";
             await jobService.FailAsync(
@@ -196,7 +194,10 @@ internal sealed class CentralDerivativeJobExecutor(
         // unavailable input is surfaced and suspends the job before the recipe can skip; the kernel skips a null
         // annotation on the runner path with the same reason code.
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CreateAnnotation(lease.SceneProvenanceJson)
+            ? lease.ProjectedScene is not null
+                ? await (projectedScenes ?? throw new CentralDerivativeJobStateException("Projected scene resolution is unavailable."))
+                    .ResolveAsync(lease, jobService, cancellationToken).ConfigureAwait(false)
+                : CreateAnnotation(lease.SceneProvenanceJson)
             : null;
         return new CentralDerivativeExecutionPreparation(
             null, false, selector, optionsDocument.RootElement.Clone(), annotation, canonicalInputs);
@@ -212,6 +213,7 @@ internal sealed class CentralDerivativeJobExecutor(
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(outcome);
         if (string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && lease.ProjectedScene is null
             && CreateAnnotation(lease.SceneProvenanceJson) is null)
         {
             // Authoritative on both paths: an annotation job without frozen provenance is skipped, whatever the
@@ -284,7 +286,8 @@ internal sealed class CentralDerivativeJobExecutor(
     /// durable side effect, so a completion can re-derive the execution identity the kernel must have produced.
     /// </summary>
     internal static (JsonElement Options, ProcessingInputSelector Selector, ProcessingAnnotationInput? Annotation,
-        IReadOnlyList<ProcessingAuxiliaryInput> CanonicalInputs) CreateFrozenRequestInputs(CentralDerivativeJobLease lease)
+        IReadOnlyList<ProcessingAuxiliaryInput> CanonicalInputs) CreateFrozenRequestInputs(
+            CentralDerivativeJobLease lease, ProcessingAnnotationInput? projectedAnnotation = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         using var optionsDocument = JsonDocument.Parse(lease.RecipeOptionsJson);
@@ -293,10 +296,39 @@ internal sealed class CentralDerivativeJobExecutor(
         var canonicalInputs = CreateCanonicalInputs(lease)
             ?? throw new CentralDerivativeJobStateException("The derivative canonical inputs are invalid.");
         var annotation = string.Equals(lease.RecipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
-            ? CreateAnnotation(lease.SceneProvenanceJson)
+            ? projectedAnnotation ?? CreateAnnotation(lease.SceneProvenanceJson)
             : null;
         return (optionsDocument.RootElement.Clone(), selector, annotation, canonicalInputs);
     }
+
+    /// <summary>
+    /// Whether a job's frozen requested identity still equals the identity this binary derives for the same recipe,
+    /// options and selector. A job frozen by an earlier recipe implementation fails it and is failed terminally with
+    /// <c>processing.recipe-identity-mismatch</c> on its first lease; startup seeding uses the same predicate to count
+    /// such jobs (<see cref="Data.CanonicalCentralGraphSeedDiagnostics"/>).
+    /// </summary>
+    internal static bool MatchesCurrentRequestedIdentity(
+        string recipeName,
+        string recipeOptionsJson,
+        string inputSelectorJson,
+        string requestedRecipeIdentitySha256)
+    {
+        using var optionsDocument = JsonDocument.Parse(recipeOptionsJson);
+        var selector = JsonSerializer.Deserialize<ProcessingInputSelector>(inputSelectorJson, SerializerOptions)
+            ?? throw new CentralDerivativeJobStateException("The derivative input selector is invalid.");
+        return MatchesCurrentRequestedIdentity(
+            recipeName, optionsDocument.RootElement, selector, requestedRecipeIdentitySha256);
+    }
+
+    private static bool MatchesCurrentRequestedIdentity(
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        string requestedRecipeIdentitySha256)
+        => string.Equals(
+            BuiltInProcessingRecipes.CreateRequestedIdentity(recipeName, options, selector).IdentitySha256,
+            requestedRecipeIdentitySha256,
+            StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Transient runtime recipes read and write LogicHost transient state and never leave the process.</summary>
     internal static bool IsInProcessOnlyRecipe(string recipeName)
@@ -457,8 +489,9 @@ internal sealed class CentralDerivativeJobExecutor(
     /// instead of producing evidence whose recipe identity the frozen expectation and the evidence trigger reject.
     /// The marker is unambiguous because <see cref="CentralProcessingGraphNodeRegistry"/> admits annotation nodes with
     /// only a primary binding, so nothing but a frozen annotation can move the expected identity off the requested
-    /// one. A bound expected identity was derived from the frame's write-once provenance, which is therefore the
-    /// frozen value itself. Legacy jobs keep the live frame provenance.
+    /// one. Legacy inline geometry remains immutable when present. Compact captures instead carry a separate
+    /// frozen projected-scene artifact reference, which the executor resolves before running the recipe.
+    /// Legacy jobs without that reference keep the live frame provenance.
     /// </summary>
     internal static string? ResolveLeaseSceneProvenance(
         Guid? graphExecutionId,
@@ -483,7 +516,13 @@ internal sealed class CentralDerivativeJobExecutor(
         {
             return null;
         }
-        var objects = provenance.Objects?.Select(item =>
+        return CreateAnnotation(provenance.SceneId, provenance.Objects, provenance.Segments);
+    }
+
+    internal static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, IReadOnlyList<ProjectedObjectProvenance>? projectedObjects,
+        IReadOnlyList<ProjectedSegmentProvenance>? projectedSegments)
+        => CreateAnnotation(sceneId, projectedObjects?.Select(item =>
         {
             var annotate = ShouldAnnotate(item);
             return new ProjectedAnnotationObject(
@@ -492,13 +531,26 @@ internal sealed class CentralDerivativeJobExecutor(
                 new PixelPoint(item.PixelX, item.PixelY),
                 annotate,
                 annotate);
-        }).ToArray() ?? [];
-        var segments = provenance.Segments?.Select(item => new ProjectedAnnotationSegment(
+        }).ToArray() ?? [], projectedSegments);
+
+    /// <summary>
+    /// Annotates a resolved-footprint scene exactly as the edge annotates the same artifact: outlines, footprint-only
+    /// bodies and labels come from the shared mapping, and the footprint parts are bound into the input identity.
+    /// </summary>
+    internal static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, ProjectedSceneV1 scene, IReadOnlyList<ProjectedSegmentProvenance> projectedSegments)
+        => CreateAnnotation(sceneId, ProjectedSceneAnnotation.CreateObjects(scene, MaximumLabelMagnitude), projectedSegments);
+
+    private static ProcessingAnnotationInput CreateAnnotation(
+        string sceneId, IReadOnlyList<ProjectedAnnotationObject> objects,
+        IReadOnlyList<ProjectedSegmentProvenance>? projectedSegments)
+    {
+        var segments = projectedSegments?.Select(item => new ProjectedAnnotationSegment(
             item.ConstellationId,
             new PixelPoint(item.FromPixelX, item.FromPixelY),
             new PixelPoint(item.ToPixelX, item.ToPixelY))).ToArray() ?? [];
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(
-            CaptureContractJson.SerializeToElement(new { provenance.SceneId, objects, segments }));
+            CaptureContractJson.SerializeToElement(new { SceneId = sceneId, objects, segments }));
         return new ProcessingAnnotationInput(
             objects,
             segments,

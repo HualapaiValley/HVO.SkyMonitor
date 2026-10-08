@@ -17,7 +17,7 @@ public sealed record PresentationAnnotationStyleV1(
     int LabelScale = 1,
     int MaximumLabelCharacters = 24,
     double MaximumLabelMagnitude = 2.5,
-    int SegmentThickness = 1,
+    int SegmentThickness = 3,
     IReadOnlyList<string>? ConstellationIds = null,
     PresentationColor? MarkerColor = null,
     PresentationColor? LabelColor = null,
@@ -96,9 +96,15 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v5-plex-star-scale";
-    public const string MetadataProducerVersion = "metadata-corner-presentation-v2-plex";
-    public const string CloudProducerVersion = "cloud-presentation-v2-plex";
+    public const string SceneProducerVersion = "projected-scene-presentation-v10-resolved-footprints";
+
+    /// <summary>
+    /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
+    /// clearance its label keeps. The outline therefore frames the rendered disc instead of covering its limb.
+    /// </summary>
+    public const double ResolvedFootprintPaddingPixels = AnnotationRenderer.ResolvedFootprintPaddingPixels;
+    public const string MetadataProducerVersion = "metadata-corner-presentation-v5-heading-rules";
+    public const string CloudProducerVersion = "cloud-presentation-v4-payload-v3";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -115,7 +121,7 @@ public static class PresentationLayerProducers
         return PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
             scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
             groups.StarAnnotations.Markers,
-            groups.Constellations.Segments,
+            groups.StarAnnotations.Segments.Concat(groups.Constellations.Segments).ToArray(),
             groups.ImageCircle.Ellipses,
             groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray());
     }
@@ -135,7 +141,7 @@ public static class PresentationLayerProducers
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
                 scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
-                groups.StarAnnotations.Markers, ellipses: groups.ImageCircle.Ellipses,
+                groups.StarAnnotations.Markers, groups.StarAnnotations.Segments, groups.ImageCircle.Ellipses,
                 textBlocks: groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray()),
             groups.Constellations);
     }
@@ -160,24 +166,63 @@ public static class PresentationLayerProducers
             style.SegmentThickness is < 1 or > 8 || style.CardinalScale is < 1 or > 8 || style.ConstellationIds is null ||
             style.ConstellationIds.Count > 256 || style.ConstellationIds.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentOutOfRangeException(nameof(style));
-        var markerColor = style.MarkerColor ?? new(144, 144, 144);
-        var labelColor = style.LabelColor ?? new(255, 255, 255);
-        var segmentColor = style.SegmentColor ?? new(96, 160, 255);
-        var imageCircleColor = style.ImageCircleColor ?? new(96, 96, 96);
-        var cardinalColor = style.CardinalColor ?? new(255, 255, 255);
+        var markerColor = style.MarkerColor ?? new(210, 184, 244);
+        var labelColor = style.LabelColor ?? new(210, 184, 244);
+        var segmentColor = style.SegmentColor ?? new(188, 140, 255);
+        var imageCircleColor = style.ImageCircleColor ?? new(116, 209, 255);
+        var cardinalColor = style.CardinalColor ?? new(195, 236, 255);
         var annotatedObjects = scene.Objects.Where(item => IsNamed(item.Id, item.DisplayName) &&
             (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= style.MaximumLabelMagnitude)).ToArray();
         var width = scene.ImageTransform.OutputWidthPixels;
         var height = scene.ImageTransform.OutputHeightPixels;
         var cardinalScale = PresentationFont.FrameScale(width, height, style.CardinalScale);
+        var cardinalAppearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+            9_000 * style.CardinalScale, 360 * style.CardinalScale, cardinalColor, new(3, 8, 14), 950_000, 4_000));
         var cardinalTexts = new List<PresentationTextBlockV1>();
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var markers = includeMarkers ? annotatedObjects.Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor)) : [];
-        var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
-            style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
-            .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor)) : [];
+        var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
+        // the same anchor the raster annotation uses.
+        var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var footprintOnly = footprints.Values.Where(item => !objectIds.Contains(item.Id) && IsNamed(item.Id, item.DisplayName))
+            .OrderBy(static item => item.Id, StringComparer.Ordinal)
+            .Select(item => (Footprint: item, Anchor: ProjectedSceneAnnotation.FootprintAnchor(item, scene.ImageTransform)))
+            .ToArray();
+        // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
+        var markers = includeMarkers ? annotatedObjects
+            .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
+            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
+            .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
+        var segments = new List<PresentationSegmentV1>();
+        PixelPoint? previousEnd = null;
+        var dashOffset = 0d;
+        if (includeConstellations)
+            foreach (var segment in scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
+                style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase)))
+            {
+                // Great-circle arcs arrive tessellated; restarting each short piece would erase the gaps.
+                if (previousEnd != segment.FromPixel) dashOffset = 0;
+                segments.Add(new(segment.FromPixel, segment.ToPixel, style.SegmentThickness, segmentColor,
+                    new(10, 8, 1_000_000, dashOffset)));
+                var dx = segment.ToPixel.X - segment.FromPixel.X;
+                var dy = segment.ToPixel.Y - segment.FromPixel.Y;
+                dashOffset = (dashOffset + Math.Sqrt(dx * dx + dy * dy)) % 18;
+                previousEnd = segment.ToPixel;
+            }
+        var footprintSegments = new List<PresentationSegmentV1>();
+        if (includeMarkers)
+            foreach (var footprint in footprints.Values.OrderBy(static item => item.Id, StringComparer.Ordinal))
+            {
+                if (PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius && (annotatedObjects.Any(item => item.Id == footprint.Id) ||
+                    footprintOnly.Any(item => item.Footprint.Id == footprint.Id))) continue;
+                var outline = Outline(footprint, scene.ImageTransform, markerColor);
+                // Bounded deterministically: an outline that would exceed the payload budget is omitted whole.
+                if (segments.Count + footprintSegments.Count + outline.Count > PresentationLayerPayloadV1.MaximumSegments) continue;
+                footprintSegments.AddRange(outline);
+            }
         var starTexts = new List<PresentationTextBlockV1>();
         var ellipses = new List<PresentationEllipseV1>();
         PixelPoint? cardinalCenter = null;
@@ -196,7 +241,7 @@ public static class PresentationLayerProducers
                     var radiusX = Math.Max(Math.Abs(xVector.X), Math.Abs(yVector.X));
                     var radiusY = Math.Max(Math.Abs(xVector.Y), Math.Abs(yVector.Y));
                     if (radiusX > 0 && radiusY > 0)
-                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor));
+                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, new(0, 0, 450_000), 2_000));
                 }
             }
             if (includeCardinalDirections)
@@ -206,7 +251,8 @@ public static class PresentationLayerProducers
                     scene.Projection.WidthPixels, scene.Projection.HeightPixels, scene.Projection.Aperture,
                     scene.Projection.ImageCircleRadiusPixels, scene.Projection.BoresightAltitudeDegrees,
                     scene.Projection.BoresightAzimuthDegrees, scene.Projection.RollDegrees,
-                    scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds);
+                    scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds,
+                    scene.Projection.RadialDistortionK1);
                 if (RigProjectionContextFactory.CreateAnnotationLandmarks(projection) is { } landmarks)
                 {
                     cardinalCenter ??= ContainsCrop(landmarks.Center) ? landmarks.Center : null;
@@ -231,43 +277,62 @@ public static class PresentationLayerProducers
             reserved.Add(new SKRect(0, height - cornerHeight, width / 3f, height));
             reserved.Add(new SKRect(width * 2 / 3f, height - cornerHeight, width, height));
         }
-        using (var font = PresentationFont.Create(cardinalScale))
+        using (var font = PresentationFont.Create(cardinalAppearance.Body))
             foreach (var (label, point) in cardinalPoints)
             {
                 var bounds = PresentationFont.LineBounds(font, label, (float)point.X, (float)point.Y);
-                bounds.Inflate(PresentationFont.Halo(cardinalScale), PresentationFont.Halo(cardinalScale));
+                bounds.Inflate(cardinalScale * 2, cardinalScale * 2);
                 if (width >= 640 && height >= 480 && reserved.Any(box => Overlaps(box, bounds))) continue;
                 reserved.Add(bounds);
                 cardinalTexts.Add(new(PresentationTextAnchor.Point, point, new ReadOnlyCollection<string>([label]),
-                    cardinalScale, 0, 0, cardinalColor));
+                    cardinalScale, 0, 0, cardinalColor,
+                    new(new(2, 8, 14), 840_000, new(116, 209, 255), 5, 0,
+                        new(1_700, 380_000, MinimumWidthMilliPixels: 38_000, MinimumHeightMilliPixels: 25_000,
+                            CornerRadiusMilliPixels: 5_000)), cardinalAppearance));
             }
         if (includeLabels && style.MaximumLabelCharacters > 0)
         {
             var scale = PresentationFont.StarFrameScale(width, height, style.LabelScale);
-            using var font = PresentationFont.Create(scale);
+            var labelSize = Math.Min(112_000, 9_000 * scale);
+            var appearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoBold,
+                labelSize, labelSize / 25, labelColor, new(3, 8, 14), 950_000, 5_000));
+            using var font = PresentationFont.Create(appearance.Body);
             var occupied = new List<SKRect>();
-            foreach (var item in annotatedObjects.OrderBy(static item => item.Magnitude)
+            // Every visible disc keeps other labels off itself; only its own label is placed beside it.
+            var discs = footprints.Values.Select(item => (item.Id, Bounds: new SKRect(
+                (float)(item.Bounds.MinX - ResolvedFootprintPaddingPixels), (float)(item.Bounds.MinY - ResolvedFootprintPaddingPixels),
+                (float)(item.Bounds.MaxX + ResolvedFootprintPaddingPixels), (float)(item.Bounds.MaxY + ResolvedFootprintPaddingPixels)))).ToArray();
+            var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
+                .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
+                    Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue)));
+            foreach (var item in labelled.OrderBy(static item => item.Magnitude)
                 .ThenBy(static item => item.Id, StringComparer.Ordinal)
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
                 if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
                 var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
-                var x = Math.Round(item.Pixel.X + style.MarkerRadius + 2 * scale, MidpointRounding.AwayFromZero);
+                var clearance = footprints.TryGetValue(item.Id, out var footprint)
+                    ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
+                    : style.MarkerRadius;
+                var x = Math.Round(item.Pixel.X + clearance + 2 * scale, MidpointRounding.AwayFromZero);
                 var y = Math.Round(item.Pixel.Y - 3 * scale, MidpointRounding.AwayFromZero);
-                var bounds = PresentationFont.LineBounds(font, name, (float)x, (float)y);
-                bounds.Inflate(PresentationFont.Halo(scale) + scale, PresentationFont.Halo(scale) + scale);
+                var bounds = PresentationFont.LineBounds(font, name, (float)x, (float)y,
+                    appearance.Body.LetterSpacingMilliPixels / 1000f);
+                bounds.Inflate(appearance.Body.HaloWidthMilliPixels / 2000f + scale,
+                    appearance.Body.HaloWidthMilliPixels / 2000f + scale);
                 if (bounds.Left < 0 || bounds.Top < 0 || bounds.Right > width || bounds.Bottom > height ||
                     occupied.Any(box => Overlaps(box, bounds)) ||
+                    discs.Any(disc => disc.Id != item.Id && Overlaps(disc.Bounds, bounds)) ||
                     reserved.Any(box => Overlaps(box, bounds))) continue;
                 starTexts.Add(new(PresentationTextAnchor.Point, new PixelPoint(x, y),
-                    new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor));
+                    new ReadOnlyCollection<string>([name]), scale, 0, 0, labelColor, Appearance: appearance));
                 occupied.Add(bounds);
             }
         }
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, markers, textBlocks: starTexts),
+                scene.ImageTransform.OutputHeightPixels, markers, footprintSegments, textBlocks: starTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
@@ -279,20 +344,23 @@ public static class PresentationLayerProducers
         {
             if (!TryApply(cardinalCenter!.Value, out var outputCenter) || !TryApply(point, out var target))
                 return;
-            var scale = cardinalScale;
+            using var font = PresentationFont.Create(cardinalAppearance.Body);
+            var glyph = PresentationFont.LineBounds(font, label, 0, 0);
+            var horizontalInset = Math.Max(20, (glyph.Width + 10) / 2 + 1);
+            var verticalInset = Math.Max(14, (glyph.Height + 10) / 2 + 1);
             var deltaX = target.X - outputCenter.X;
             var deltaY = target.Y - outputCenter.Y;
             var factor = 1d;
-            if (deltaX < 0) factor = Math.Min(factor, (3 * scale - outputCenter.X) / deltaX);
+            if (deltaX < 0) factor = Math.Min(factor, (horizontalInset - outputCenter.X) / deltaX);
             else if (deltaX > 0) factor = Math.Min(factor,
-                (scene.ImageTransform.OutputWidthPixels - 3 * scale - 1 - outputCenter.X) / deltaX);
-            if (deltaY < 0) factor = Math.Min(factor, (4 * scale - outputCenter.Y) / deltaY);
+                (scene.ImageTransform.OutputWidthPixels - horizontalInset - 1 - outputCenter.X) / deltaX);
+            if (deltaY < 0) factor = Math.Min(factor, (verticalInset - outputCenter.Y) / deltaY);
             else if (deltaY > 0) factor = Math.Min(factor,
-                (scene.ImageTransform.OutputHeightPixels - 4 * scale - 1 - outputCenter.Y) / deltaY);
+                (scene.ImageTransform.OutputHeightPixels - verticalInset - 1 - outputCenter.Y) / deltaY);
             factor = Math.Clamp(factor, 0, 1);
             cardinalPoints.Add((label, new PixelPoint(
-                Math.Round(outputCenter.X + deltaX * factor, MidpointRounding.AwayFromZero) - 2 * scale,
-                Math.Round(outputCenter.Y + deltaY * factor, MidpointRounding.AwayFromZero) - 3 * scale)));
+                Math.Round(outputCenter.X + deltaX * factor - glyph.Width / 2, MidpointRounding.AwayFromZero),
+                Math.Round(outputCenter.Y + deltaY * factor - glyph.Height / 2, MidpointRounding.AwayFromZero))));
         }
 
         bool TryApply(PixelPoint point, out PixelPoint output)
@@ -313,6 +381,45 @@ public static class PresentationLayerProducers
             point.Y >= scene.ImageTransform.CropY &&
             point.Y <= scene.ImageTransform.CropY + scene.ImageTransform.CropHeight;
 
+        // Measured on the padded outline itself, as the raster annotation measures it, so a clipped disc padded from
+        // its visible bounds gets the same marker or outline in both.
+        static double PaddedHalfExtent(ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            var points = Pad(footprint, transform).SelectMany(static part => part.Points).ToArray();
+            return points.Length == 0 ? 0 : Math.Max(points.Max(static point => point.X) - points.Min(static point => point.X),
+                points.Max(static point => point.Y) - points.Min(static point => point.Y)) / 2;
+        }
+
+        static List<PresentationSegmentV1> Outline(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform, PresentationColor color)
+        {
+            var result = new List<PresentationSegmentV1>();
+            foreach (var (closed, points) in Pad(footprint, transform))
+            {
+                for (var index = 1; index < points.Length; index++)
+                    result.Add(new(points[index - 1], points[index], 2, color));
+                if (closed && points.Length > 2) result.Add(new(points[^1], points[0], 2, color));
+            }
+            return result;
+        }
+
+        // Pushes each limb point outward along its ray from the centre. Sun, Moon and catalogue ellipses are convex,
+        // so the ray is a valid outward direction; clipped parts stay open and keep their frame-edge endpoints.
+        static IEnumerable<(bool Closed, PixelPoint[] Points)> Pad(
+            ProjectedResolvedFootprint footprint, ProjectedSceneImageTransformV1 transform)
+        {
+            // Padded from the same anchor as the raster outline, so a cropped disc grows toward its visible centre.
+            var center = ProjectedSceneAnnotation.FootprintAnchor(footprint, transform);
+            return footprint.Parts.Select(part => (part.Closed, part.Points.Select(point =>
+            {
+                var dx = point.X - center.X;
+                var dy = point.Y - center.Y;
+                var length = Math.Sqrt(dx * dx + dy * dy);
+                var factor = length > 0 ? (length + ResolvedFootprintPaddingPixels) / length : 1;
+                return new PixelPoint(center.X + dx * factor, center.Y + dy * factor);
+            }).ToArray()));
+        }
+
         static bool IsNamed(string id, string displayName) =>
             !string.IsNullOrWhiteSpace(displayName) && !string.Equals(id, displayName, StringComparison.Ordinal);
         static bool Overlaps(SKRect a, SKRect b) =>
@@ -325,6 +432,7 @@ public static class PresentationLayerProducers
         int scale = 1, int inset = 4, int lineSpacing = 2)
     {
         ArgumentNullException.ThrowIfNull(facts);
+        inset = Math.Max(inset, Math.Min(32, Math.Max(8, heightPixels / 60)));
         var textScale = PresentationFont.FrameScale(widthPixels, heightPixels, scale);
         // The metadata payload has no knowledge of the scene. Fit its actual glyph bounds into
         // the same outer thirds reserved by the scene producer.
@@ -338,33 +446,34 @@ public static class PresentationLayerProducers
         };
         return PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, widthPixels, heightPixels, textBlocks: blocks);
 
-        PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines) =>
-            new(anchor, default, lines, textScale, inset, lineSpacing, color ?? new(255, 255, 255));
+        PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines, int? candidate = null) =>
+            new(anchor, default, lines, candidate ?? textScale, inset, Math.Max(lineSpacing, 4), color ?? new(216, 229, 246),
+                new(new(5, 10, 17), 780_000, new(88, 166, 255), Math.Min(8, inset / 2), 2, new(0, 0, HeadingRule: true)),
+                new(new(PresentationFontFaceV3.MonoRegular, 3_500 * (candidate ?? textScale), 0,
+                        color ?? new(216, 229, 246), default, 0, 0),
+                    new(PresentationFontFaceV3.MonoBold, 4_140 * (candidate ?? textScale), 0, new(255, 255, 255), default, 0, 0)));
 
         bool Fits(int candidate)
         {
-            using var font = PresentationFont.Create(candidate);
             foreach (var block in new[]
             {
-                new PresentationTextBlockV1(PresentationTextAnchor.TopLeft, default, facts.TopLeft, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.TopRight, default, facts.TopRight, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.BottomLeft, default, facts.BottomLeft, candidate, inset, lineSpacing, default),
-                new PresentationTextBlockV1(PresentationTextAnchor.BottomRight, default, facts.BottomRight, candidate, inset, lineSpacing, default)
+                Block(PresentationTextAnchor.TopLeft, facts.TopLeft, candidate),
+                Block(PresentationTextAnchor.TopRight, facts.TopRight, candidate),
+                Block(PresentationTextAnchor.BottomLeft, facts.BottomLeft, candidate),
+                Block(PresentationTextAnchor.BottomRight, facts.BottomRight, candidate)
             })
-                for (var index = 0; index < block.Lines.Count; index++)
-                {
-                    var line = block.Lines[index];
-                    var (x, y) = PresentationFont.LineOrigin(block, widthPixels, heightPixels, font, line, index);
-                    var bounds = PresentationFont.LineBounds(font, line, x, y);
-                    bounds.Inflate(PresentationFont.Halo(candidate), PresentationFont.Halo(candidate));
-                    var right = block.Anchor is PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight;
-                    var bottom = block.Anchor is PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight;
-                    if (bounds.Left < (right ? widthPixels * 2 / 3f : 0) ||
-                        bounds.Right > (right ? widthPixels : widthPixels / 3f) ||
-                        bounds.Top < (bottom ? heightPixels / 2f : 0) ||
-                        bounds.Bottom > (bottom ? heightPixels : heightPixels / 2f))
-                        return false;
-                }
+            {
+                if (block.Lines.Count == 0) continue;
+                using var font = PresentationFont.Create(block, 0);
+                var bounds = PresentationFont.BackplateBounds(block, widthPixels, heightPixels, font);
+                var right = block.Anchor is PresentationTextAnchor.TopRight or PresentationTextAnchor.BottomRight;
+                var bottom = block.Anchor is PresentationTextAnchor.BottomLeft or PresentationTextAnchor.BottomRight;
+                if (bounds.Left < (right ? widthPixels * 2 / 3f : 0) ||
+                    bounds.Right > (right ? widthPixels : widthPixels / 3f) ||
+                    bounds.Top < (bottom ? heightPixels / 2f : 0) ||
+                    bounds.Bottom > (bottom ? heightPixels : heightPixels / 2f))
+                    return false;
+            }
             return true;
         }
     }
@@ -404,7 +513,7 @@ public static class PresentationLayerProducers
         return new(
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels,
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
-                    bits, lineThickness, color ?? new PresentationColor(255, 64, 32))),
+                    bits, lineThickness, color ?? new PresentationColor(57, 197, 207))),
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels, textBlocks: texts));
     }
 }

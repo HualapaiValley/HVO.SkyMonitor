@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -1570,6 +1570,94 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralElasticRunnerInstance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("ColdStartMilliseconds")
+                        .HasColumnType("int");
+
+                    b.Property<string>("HostName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("InstanceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("KeepWarm")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LastBusyAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OwnerHeartbeatAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ProcessArchitecture")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int?>("ProcessId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset?>("RegisteredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RunnerId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("RuntimeImage")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("StartedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTimeOffset?>("StoppedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstanceId")
+                        .IsUnique();
+
+                    b.HasIndex("StartedAtUtc");
+
+                    b.HasIndex("Provider", "State");
+
+                    b.ToTable("CentralElasticRunnerInstances", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
+                        });
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralFrame", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2598,6 +2686,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
                         });
+                });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingUsageRollup", b =>
                 {
@@ -2627,95 +2716,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasKey("ObservatoryId", "ResourceClass", "Outcome");
 
                     b.ToTable("CentralProcessingUsageRollups", (string)null);
-                });
-
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralElasticRunnerInstance", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int?>("ColdStartMilliseconds")
-                        .HasColumnType("int");
-
-                    b.Property<string>("HostName")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<string>("InstanceId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<bool>("KeepWarm")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTimeOffset?>("LastBusyAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<DateTimeOffset>("OwnerHeartbeatAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ProcessArchitecture")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<int?>("ProcessId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<string>("Reason")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<DateTimeOffset?>("RegisteredAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("RunnerId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("RuntimeImage")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<DateTimeOffset>("StartedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("State")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<DateTimeOffset?>("StoppedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("InstanceId")
-                        .IsUnique();
-
-                    b.HasIndex("StartedAtUtc");
-
-                    b.HasIndex("Provider", "State");
-
-                    b.ToTable("CentralElasticRunnerInstances", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
-                        });
-                });
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>
@@ -2854,6 +2854,197 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_CentralStructuredProcessingProducts_DescriptorJson_Length", "LEN([DescriptorJson]) <= 65536");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseDependency", b =>
+                {
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("HourlyJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("JobId", "HourlyJobId");
+
+                    b.HasIndex("HourlyJobId");
+
+                    b.ToTable("CentralTimeLapseDependencies", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseDependencies_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseInput", b =>
+                {
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("JobId", "CentralArtifactId");
+
+                    b.HasIndex("CentralArtifactId");
+
+                    b.ToTable("CentralTimeLapseInputs", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseInputs_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DevicePublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DiscoveryIdentity")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("EndUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ExclusionsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ExclusionsSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<bool>("IsDaily")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("RequestJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RequestSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset>("StartUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)");
+
+                    b.Property<DateTimeOffset>("UpdatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "CreatedUtc");
+
+                    b.HasIndex("State", "IsDaily", "CreatedUtc");
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc");
+
+                    b.ToTable("CentralTimeLapseJobs", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseJobs_Identity");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseVideo", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DevicePublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsDaily")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsGapFiller")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("PayloadBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProductJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ProductSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId")
+                        .IsUnique();
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "CreatedUtc");
+
+                    b.ToTable("CentralTimeLapseVideos", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseVideos_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentObservation", b =>
@@ -8127,6 +8318,53 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Artifact");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseDependency", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "HourlyJob")
+                        .WithMany()
+                        .HasForeignKey("HourlyJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "Job")
+                        .WithMany("Dependencies")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("HourlyJob");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseInput", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "Artifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "Job")
+                        .WithMany("Inputs")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Artifact");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseVideo", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentObservation", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", "Assessment")
@@ -9528,6 +9766,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Assignments");
 
                     b.Navigation("Executions");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", b =>
+                {
+                    b.Navigation("Dependencies");
+
+                    b.Navigation("Inputs");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", b =>

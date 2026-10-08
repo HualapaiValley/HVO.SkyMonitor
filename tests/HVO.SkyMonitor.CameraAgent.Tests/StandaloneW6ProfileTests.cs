@@ -56,15 +56,19 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
+            "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8",
             localProfileSha256,
             localProfileSha256);
+        Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        Assert.AreEqual(
+            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
+            HistoricalCatalogCapProfileSha256(configuration));
         Assert.AreEqual(
             "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "DC29C83638C695CBAF379FF6F387A2661F109462DE0931D25FC1BCC63484110D",
+            "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -140,24 +144,28 @@ public sealed class StandaloneW6ProfileTests
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631",
+            "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "72473832303887743861B9C82F1F11A55147254E34948C628EE1FBE77DF42B7D",
+            "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
+        Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         Assert.AreEqual(
-            "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB",
+            "EEED95D733FB1DA82DAB7D0AEBE692BCD6C95703EC4EDADD98C3453E65BBB38B",
+            HistoricalCatalogCapProfileSha256(configuration));
+        Assert.AreEqual(
+            "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "44A1253961E3BE879BF69C27DC57F24DD492FE4416232913EEB99E6273D7A7E5",
+            "A7C84CBE5B6BCA51537F52E378C9327ACB17D360B20A8DFA00D7C6D29B3D8192",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
-        Assert.HasCount(4, preview.EffectiveNodes);
+        Assert.HasCount(5, preview.EffectiveNodes);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node =>
             node.Alias is "Calibration" or "RollingCombination"));
         CollectionAssert.Contains(
@@ -370,6 +378,23 @@ public sealed class StandaloneW6ProfileTests
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
             factory.CreateGraph(WithSecondaryPolicy(queueForUpload: true)));
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
+    }
+
+    private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
+    {
+        // Only the explicitly enlarged safety cap may change these pinned profile identities.
+        var options = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
+            configuration.Module.Options!.Value.GetRawText())!;
+        options["maximumResults"] = System.Text.Json.JsonSerializer.SerializeToElement(300);
+        var historical = configuration with
+        {
+            Module = configuration.Module with
+            {
+                Options = System.Text.Json.JsonSerializer.SerializeToElement(options)
+            }
+        };
+        return LocalCaptureProfileContract.ComputeSha256(
+            LocalCaptureProfileDefinition.CreateForConfiguration(historical, historical.Schedule!));
     }
 
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)

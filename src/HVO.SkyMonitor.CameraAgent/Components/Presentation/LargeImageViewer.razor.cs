@@ -25,6 +25,19 @@ public sealed partial class LargeImageViewer : ComponentBase, IAsyncDisposable
     [Parameter] public string Title { get; set; } = "Large sky image";
     [Parameter] public string Alt { get; set; } = "Sky capture";
     [Parameter] public string? TriggerId { get; set; }
+    [Parameter] public string Eyebrow { get; set; } = "Protected local image";
+    [Parameter] public string CloseLabel { get; set; } = "Close large image";
+
+    /// <summary>Content shown when there is no <see cref="Source"/>, such as a player or a stated failure; it has no size modes.</summary>
+    [Parameter] public RenderFragment? Media { get; set; }
+
+    /// <summary>Facts and links shown beside the media, or below it on a narrow screen.</summary>
+    [Parameter] public RenderFragment? Details { get; set; }
+
+    /// <summary>Raised when the browser cannot read <see cref="Source"/>.</summary>
+    [Parameter] public EventCallback OnImageError { get; set; }
+
+    private bool ShowsImage => Source is not null;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

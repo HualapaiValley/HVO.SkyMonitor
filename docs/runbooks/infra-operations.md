@@ -130,6 +130,12 @@ The expected digest is
 `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`.
 The fixture digest is never valid for a production host.
 
+This local harness mounts HYG 4.2. Each host's catalog health entry also reports
+`CatalogId`, `PackageVersion`, `CatalogVersion`, `SchemaVersion`, the database
+checksum and the row count of the snapshot it resolved, so a host started
+against a different approved lineage, such as HYG 4.4, is identifiable from
+health alone ([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
+
 ## Reset
 
 Reset is destructive and requires an approved backup and rollback decision:
@@ -428,7 +434,33 @@ incomplete or durable findings await review and `Unhealthy` when progress is
 stalled. Inspect events `2120`-`2129`, span `central-artifact.reconcile`, and
 `skymonitor.central.recovery.*` metrics for scanned/matched/missing/corrupt/
 orphan counts and bytes, cycle duration, retry, and backlog. These signals use
-bounded outcomes only and never object keys or payload paths. Do not delete
+bounded outcomes only and never object keys or payload paths.
+
+A source whose evidence fails integrity validation while a background loop
+schedules its derivatives (for example a projected scene that does not match
+its raw source) is a per-artifact finding. It does not fail the loop, retry
+the whole work item, or stop LogicHost, and later sources in the same pass are
+still scheduled. The artifact keeps its verified object and records
+`StateReasonCode = object.derivative-scheduling-rejected`. Each loop emits one
+Error event with the bounded integrity reason code and no object keys:
+
+| Loop | Event | Metric |
+| --- | --- | --- |
+| Recovery reconciliation | `2141` | `skymonitor.central.ingest.reconciled{outcome=scheduling-rejected}` |
+| Transient retrospective scheduling | `2142` | `skymonitor.central.derivative.operations{operation=transient-schedule,outcome=scheduling-rejected}` |
+| Deployment-location reconciliation | `2143` | `skymonitor.deployment_location.reconciliation.items{phase=scheduling,outcome=scheduling-rejected}` |
+
+The marker makes the source ineligible for retrospective scheduling, and the
+deployment-location cursor moves past it, so it cannot lead later windows ahead
+of good work. Correct the evidence or the validator rather than deleting the
+artifact. The marker clears without operator action. The next recovery
+generation (at most 24 hours later) verifies the object, clears the reason, and
+schedules once more. An edge retry of the upload reschedules immediately. If
+the evidence still fails, the source is marked again; there is no hot retry.
+To retry sooner after a fix, set `StateReasonCode` to `NULL` on only the
+affected `CentralArtifacts` row while it still holds this reason. The
+retrospective lane picks it up on its next pass, and a new deployment-location
+authority generation reselects it. Do not delete
 quarantine objects or disposition rows until SQL/object counts, checksums,
 lineage, jobs, and retention references have been reviewed.
 

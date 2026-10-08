@@ -68,7 +68,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             CatalogSnapshotResolver.SupportedManifestVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.catalog-manifest-version"]);
-        Assert.AreEqual("hyg-v42-production-p3-s2", labels["io.hvo.skymonitor.catalog-contract"]);
+        Assert.AreEqual("hvo-approved-catalogs-v1", labels["io.hvo.skymonitor.catalog-contract"]);
     }
 
     private static Dictionary<string, string> ReadImageLabels()

@@ -1,3 +1,91 @@
-.pipeline-page { display: flex; flex-direction: column; gap: 1rem; }
-.truth-note { margin: 0; padding: .75rem 1rem; border: 1px solid var(--hvo-border-muted); background: var(--hvo-surface-elevated); color: var(--hvo-muted-strong); font-size: .9rem; }
-.truth-note a { color: var(--hvo-info-fg); }
+/* Pipeline layout, ported from the Pipeline prototype. The shared Operations vocabulary (.ops-*, .button,
+   .action-dialog) lives in OperationsLayout.razor.css. */
+
+.pipeline-message { margin-bottom: .8rem; }
+.pipeline-error { align-items: center; }
+.pipeline-error .button { margin-left: auto; }
+.pipeline-named a, .pipeline-switch-row a, .ops-inspector-footnote a, .pipeline-links a { color: #9bcaff; }
+.ops-profile-banner dl { flex-wrap: wrap; }
+.ops-profile-banner dd { overflow-wrap: anywhere; }
+
+.pipeline-switch-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; margin-bottom: .8rem; }
+.pipeline-switch-row p { margin: 0; color: var(--muted); font-size: .58rem; }
+.pipeline-switch { display: inline-flex; padding: .15rem; border: 1px solid var(--border); border-radius: .45rem; background: var(--surface-soft); }
+.pipeline-switch button { padding: .35rem .7rem; border: 0; border-radius: .35rem; color: var(--muted-strong); background: transparent; font: inherit; font-size: .6rem; font-weight: 650; cursor: pointer; }
+.pipeline-switch button[aria-pressed="true"] { color: var(--text); background: var(--blue-soft); box-shadow: inset 0 0 0 1px var(--blue); }
+
+.ops-pipeline-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 18rem; border: 1px solid var(--border); border-radius: .55rem; background: #070b12; overflow: hidden; }
+.ops-pipeline-canvas { min-width: 0; padding: 1rem; overflow-x: auto; }
+.ops-pipeline-graph { position: relative; display: grid; grid-template-columns: repeat(var(--pipeline-columns), 10rem); grid-template-rows: var(--pipeline-row-template); gap: 1rem 2.5rem; width: max-content; }
+.ops-pipeline-edges { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.ops-pipeline-edges .pipeline-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.ops-pipeline-edges .pipeline-edge.off { stroke-dasharray: 4 4; opacity: .6; }
+.ops-pipeline-edges .pipeline-edge.selected { stroke: var(--blue); opacity: 1; }
+.ops-pipeline-edges .pipeline-edge.transient { stroke: #826bb4; }
+.ops-pipeline-edges .pipeline-edge.transient.selected { stroke: #bc8cff; }
+.ops-pipeline-node { position: relative; z-index: 2; display: grid; align-content: center; gap: .2rem; min-width: 0; padding: .55rem; border: 1px solid var(--border-strong); border-radius: .4rem; color: var(--text); background: #101925; cursor: pointer; font: inherit; text-align: left; }
+.ops-pipeline-node:hover, .ops-pipeline-node.active { border-color: var(--blue); background: #13243a; }
+.ops-pipeline-node.active { box-shadow: 0 0 0 2px var(--blue-soft); }
+.ops-pipeline-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.ops-pipeline-node.off { border-style: dashed; color: var(--muted-strong); background: #0b111a; }
+.ops-pipeline-node.off.active { background: #111c2b; }
+.ops-pipeline-node strong { overflow: hidden; font-size: .59rem; text-overflow: ellipsis; white-space: nowrap; }
+.ops-pipeline-node small { overflow: hidden; color: var(--muted); font-size: .48rem; text-overflow: ellipsis; white-space: nowrap; }
+.ops-pipeline-node .node-port { position: absolute; top: 50%; right: -.23rem; width: .4rem; height: .4rem; border: 1px solid var(--blue); border-radius: 50%; background: #07101a; transform: translateY(-50%); }
+.ops-pipeline-node .node-port.in { right: auto; left: -.23rem; }
+.ops-pipeline-node.source { border-color: rgba(88, 166, 255, .5); background: linear-gradient(145deg, #13243a, #0d1623); }
+.ops-pipeline-node.transient { border-color: rgba(188, 140, 255, .42); background: linear-gradient(145deg, #1b1728, #101522); }
+.ops-pipeline-node.transient.central { border-style: dashed; }
+.ops-pipeline-node.transient .node-port { border-color: #bc8cff; }
+.ops-pipeline-node.transient:hover, .ops-pipeline-node.transient.active { border-color: #bc8cff; background: linear-gradient(145deg, #241c38, #141a2b); }
+.ops-pipeline-node.transient.active { box-shadow: 0 0 0 2px rgba(188, 140, 255, .22); }
+.ops-pipeline-node.transient:focus-visible { outline-color: #bc8cff; }
+.ops-pipeline-lane-band { z-index: 0; margin: -.5rem -.5rem; border-top: 1px solid rgba(188, 140, 255, .35); border-radius: .4rem; background: linear-gradient(180deg, rgba(188, 140, 255, .08), rgba(188, 140, 255, .02)); }
+.ops-pipeline-lane-title { position: relative; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .7rem; min-width: 0; margin: 0; }
+.ops-pipeline-lane-title strong { color: #cdb3ff; font-size: .68rem; letter-spacing: .04em; text-transform: uppercase; }
+.ops-pipeline-lane-title small { color: var(--muted); font-size: .55rem; }
+.ops-pipeline-lane-state { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted-strong); font-size: .55rem; }
+.ops-pipeline-lane-note { position: relative; z-index: 2; display: flex; align-items: center; gap: .5rem; min-width: 0; padding: .55rem .7rem; border: 1px dashed rgba(188, 140, 255, .35); border-radius: .4rem; color: var(--muted-strong); font-size: .58rem; line-height: 1.45; }
+.ops-pipeline-lane-note a { color: #cdb3ff; }
+.pipeline-empty { position: relative; z-index: 2; align-self: center; margin: 0; color: var(--muted); font-size: .65rem; }
+
+.ops-pipeline-inspector { min-width: 0; padding: .9rem; border-left: 1px solid var(--border); background: #0b121d; }
+.ops-pipeline-inspector h2 { margin: .2rem 0 .4rem; font-size: .84rem; overflow-wrap: anywhere; }
+.ops-pipeline-inspector > p { margin: 0 0 .7rem; color: var(--muted); font-size: .59rem; line-height: 1.45; }
+.ops-node-facts { margin: 0; }
+.ops-node-facts > div { padding: .52rem 0; border-top: 1px solid var(--border); }
+.ops-node-facts dt { color: var(--muted); font-size: .48rem; text-transform: uppercase; }
+.ops-node-facts dd { margin: .18rem 0 0; font-size: .56rem; font-weight: 650; overflow-wrap: anywhere; }
+.pipeline-inspector-actions { padding-top: .6rem; border-top: 1px solid var(--border); }
+.pipeline-toggle-reason { margin: .45rem 0 0; color: var(--muted); font-size: .58rem; line-height: 1.45; }
+.ops-pipeline-inspector > p.ops-inspector-footnote { margin: .75rem 0 0; padding-top: .65rem; border-top: 1px solid var(--border); font-size: .53rem; }
+
+.pipeline-text { margin-top: .6rem; color: var(--muted-strong); font-size: .6rem; }
+.pipeline-text summary { width: fit-content; color: #9bcaff; cursor: pointer; }
+.pipeline-text ol { margin: .5rem 0 0; padding-left: 1.2rem; line-height: 1.6; }
+.pipeline-text li { overflow-wrap: anywhere; }
+.pipeline-text .pipeline-text-lane { margin: .6rem 0 0; }
+
+.ops-validation-list { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.ops-validation-item { display: flex; align-items: center; gap: .5rem; padding: .48rem 0; border-top: 1px solid var(--border); font-size: .57rem; }
+.ops-validation-item:first-child { border-top: 0; }
+.ops-validation-item i { display: grid; flex: 0 0 auto; width: 1rem; height: 1rem; place-items: center; border-radius: 50%; color: #a9ecb1; background: var(--green-soft); font-style: normal; font-size: .55rem; }
+.ops-validation-item.failed i { color: #ffb4ae; background: var(--red-soft); }
+.ops-validation-item.neutral { color: var(--muted-strong); }
+.ops-validation-item.neutral i { color: var(--muted-strong); background: var(--surface-raised); }
+.pipeline-links { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .7rem 0 0; font-size: .6rem; }
+
+dialog.action-dialog.pipeline-dialog { width: min(calc(100% - 2rem), 34rem); }
+.pipeline-dialog-body { padding: 0 1.1rem; }
+.pipeline-dialog-body .dialog-note { margin: .8rem 0 0; }
+.pipeline-dialog-body dd { overflow-wrap: anywhere; }
+
+@media (max-width: 940px) {
+    .ops-pipeline-workspace { grid-template-columns: 1fr; }
+    .ops-pipeline-inspector { border-top: 1px solid var(--border); border-left: 0; }
+}
+
+@media (max-width: 480px) {
+    dialog.action-dialog.pipeline-dialog { width: calc(100% - 1rem); }
+    .ops-pipeline-canvas { padding: .75rem; }
+}

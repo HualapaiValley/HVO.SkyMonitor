@@ -120,6 +120,12 @@ public interface ITransientRuntimeManagement
     ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(Guid captureId, CancellationToken cancellationToken);
     ValueTask<IReadOnlyList<TransientStageEvent>> ReadCaptureStageEventsAsync(Guid captureId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads the newest captures admitted to the transient lane, newest first, with the causal outcome and candidate
+    /// counts their durable frame receipts record. At most <see cref="TransientCaptureOutcome.MaximumPageSize"/> rows.
+    /// </summary>
+    ValueTask<IReadOnlyList<TransientCaptureOutcome>> ReadRecentCaptureOutcomesAsync(int limit, CancellationToken cancellationToken);
+
     ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
         int pageSize,
         TransientRuntimeQuarantineCursor? cursor,
@@ -149,6 +155,13 @@ internal sealed class TransientRuntimeManagement(
     {
         await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         return await store.ReadCaptureStageEventsAsync(captureId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<TransientCaptureOutcome>> ReadRecentCaptureOutcomesAsync(
+        int limit, CancellationToken cancellationToken)
+    {
+        await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await store.ReadRecentCaptureOutcomesAsync(limit, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
@@ -185,6 +198,27 @@ public sealed record TransientCaptureRunState(
     int CompletedCandidates,
     int QuarantinedCandidates,
     DateTimeOffset UpdatedUtc);
+
+/// <summary>
+/// One capture's transient-lane outcome. <see cref="FrameState"/> is null until the worker admits the frame;
+/// <see cref="Reason"/> is the bounded reason code the frame receipt recorded, never a payload.
+/// </summary>
+public sealed record TransientCaptureOutcome(
+    Guid CaptureId,
+    long CaptureSequence,
+    DateTimeOffset ExposureStartedUtc,
+    string WorkState,
+    string? FrameState,
+    bool? CausalSucceeded,
+    string? Reason,
+    int FrameAttempts,
+    int CandidateCount,
+    int CompletedCandidates,
+    int QuarantinedCandidates,
+    DateTimeOffset UpdatedUtc)
+{
+    public const int MaximumPageSize = 50;
+}
 
 public sealed record TransientStageEvent(
     string StageKey,
@@ -273,6 +307,60 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt32(2) != 0,
             reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5), reader.GetInt32(6),
             DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)));
+    }
+
+    public async ValueTask<IReadOnlyList<TransientCaptureOutcome>> ReadRecentCaptureOutcomesAsync(
+        int limit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, TransientCaptureOutcome.MaximumPageSize);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // The candidate counts group once over the bounded recent set through the (target, slot) unique index.
+        command.CommandText = """
+            WITH recent AS (
+                SELECT raw_capture_row_id FROM transient_capture_work
+                ORDER BY raw_capture_row_id DESC
+                LIMIT $limit),
+            counts AS (
+                SELECT candidate.target_raw_capture_row_id AS raw_capture_row_id,
+                       COUNT(*) AS total,
+                       SUM(candidate.state = 'completed') AS completed,
+                       SUM(candidate.state = 'quarantined') AS quarantined
+                FROM transient_worker_candidates candidate
+                WHERE candidate.target_raw_capture_row_id IN (SELECT raw_capture_row_id FROM recent)
+                GROUP BY candidate.target_raw_capture_row_id)
+            SELECT raw.capture_id, raw.capture_sequence, raw.exposure_started_unix_ms,
+                   work.state, frame.state, frame.causal_succeeded, frame.failure_reason,
+                   COALESCE(frame.attempt_count, 0),
+                   COALESCE(counts.total, 0), COALESCE(counts.completed, 0), COALESCE(counts.quarantined, 0),
+                   MAX(work.updated_unix_ms, COALESCE(frame.updated_unix_ms, 0))
+            FROM recent
+            JOIN transient_capture_work work ON work.raw_capture_row_id = recent.raw_capture_row_id
+            JOIN raw_captures raw ON raw.raw_capture_row_id = recent.raw_capture_row_id
+            LEFT JOIN transient_worker_frames frame ON frame.raw_capture_row_id = recent.raw_capture_row_id
+            LEFT JOIN counts ON counts.raw_capture_row_id = recent.raw_capture_row_id
+            ORDER BY recent.raw_capture_row_id DESC;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var outcomes = new List<TransientCaptureOutcome>(limit);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var hasFrame = !await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false);
+            outcomes.Add(new TransientCaptureOutcome(
+                Guid.ParseExact(reader.GetString(0), "N"),
+                reader.GetInt64(1),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+                reader.GetString(3),
+                hasFrame ? reader.GetString(4) : null,
+                hasFrame ? reader.GetInt32(5) != 0 : null,
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
+                reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9), reader.GetInt32(10),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11))));
+        }
+        return outcomes;
     }
 
     public async ValueTask<IReadOnlyList<TransientStageEvent>> ReadCaptureStageEventsAsync(
@@ -1039,7 +1127,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                     WHERE raw_capture_row_id = $raw AND state IN ('pending', 'candidate_persisted');
                 UPDATE raw_captures SET retention_hold = CASE WHEN
                     EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
-                        AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                        AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                     OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
                         ON c.candidate_id = s.candidate_id WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
                     {executionPinClause}
@@ -1218,7 +1306,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 hold.CommandText = $"""
                     UPDATE raw_captures SET retention_hold = CASE WHEN
                         EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
-                            AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                            AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                         OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
                             ON c.candidate_id = s.candidate_id
                             WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
@@ -2171,7 +2259,6 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             return await SqliteInspectionSnapshot.InspectAsync(
                 databasePath,
                 busyTimeoutSeconds,
-                "hvo-transient-runtime-inspection-",
                 () => EnsureDatabaseFilesArePhysical(root, databasePath),
                 async (connection, token) =>
                 {

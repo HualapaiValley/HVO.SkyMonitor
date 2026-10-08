@@ -1,9 +1,12 @@
 # Filesystem Topology Qualification (#586)
 
-Status: correction review in progress. Issue #506 remains gated. Backup
-exclusion, durability, CI ownership, operations, native fault campaigns, and
-complete resource evidence are implemented and locally validated; exact-range
-review, final synchronization, protected CI, and the final decision remain.
+Status: **GO for the qualified one-writer native Linux same-host ext4 envelope**.
+The [final #586 handoff](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/586#issuecomment-5746412049)
+records completed review, native qualification, local validation and protected
+CI. PR #924 merged as `becd5e68d9a4f618ef99db54c919fa796e715ac9`;
+#506 subsequently adopted the provider in PR #926. The final disposition below
+supersedes the earlier correction checkpoint without replacing its measured
+source identities or broadening its support envelope.
 
 ## Candidate
 
@@ -15,11 +18,12 @@ mounts are explicitly declared and must not overlap object storage.
 NFS, SMB, NAS, other local filesystems, arbitrary volume drivers, multiple
 writers, and emulated native-platform results are not qualified by this work.
 
-## Initial Findings
+## Initial Findings (Historical Correction Checkpoint)
 
 The initial audit used development/v1 revision `bfd368d7`. Local corrections
-are on `feature/586-filesystem-qualification`; the final evidence must name an
-immutable reviewed revision and exact image digests.
+were on `feature/586-filesystem-qualification`. The table records findings and
+remaining work at that checkpoint; the later lifecycle decision is recorded
+under Final Disposition. Native image and measurement identities remain below.
 
 | Gate | Finding and remaining evidence |
 | --- | --- |
@@ -47,9 +51,9 @@ dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.
   --no-restore -c Release --filter 'FullyQualifiedName~FilesystemObjectBackupTests'
 ```
 
-The complete Tier M candidate gate and checksummed ten-trial native evidence are
-complete on the correction candidate. Independent correction review and final
-target synchronization remain before a go decision.
+The complete Tier M candidate gate and checksummed ten-trial native evidence
+were complete on the correction candidate. The subsequent independent reviews,
+final synchronization and protected CI completed before the final GO decision.
 
 ## Candidate Artifacts
 
@@ -120,14 +124,15 @@ rendered Compose model and exact image digest.
 - Raw evidence is retained outside the candidate filesystem under
   `/var/lib/hvo-qualification/evidence` on `allsky01`.
 
-## Remaining Gates
+## Qualified Envelope and Retained Limitation
 
 - Retain the limitation that Microsoft SQL Server has no supported native ARM64
   Linux image; full HTTP host evidence is therefore x64, while ARM64 evidence is
   native provider/image/offline-operation evidence. No substitute database was
   introduced.
-- Complete exact-head correction review, final target synchronization, protected
-  CI, and a final go/no-go decision before #506 starts.
+- Exact-head correction review, final synchronization and protected CI completed
+  before the GO handoff unlocked #506. Its supported deployment and fixture
+  adoption is delivered; this does not qualify another topology or a new image.
 
 ## Native X64 Evidence
 
@@ -224,14 +229,62 @@ exact ordinal key set without gaps or duplicates, and restored inventory had
 zero mismatches. ARM64 retained the previously observed high durability-latency
 variance without changing the supported load conclusion.
 
-## Current Disposition
+## Final Disposition
 
 The exact support envelope remains one trusted LogicHost writer on native Linux
 amd64 or arm64, with a fixed non-root identity, read-only container root and a
 dedicated same-host ext4 mount. Direct ext4 x64 and loop-backed ext4 Pi 5 are the
 tested storage forms; NFS, SMB, NAS, XFS/ZFS object roots, clustered filesystems,
-arbitrary Docker volumes and multiple writers remain unsupported. The current
-decision is **NO-GO pending correction rereview and finalization**. The corrected
-native evidence and complete Tier M candidate gate are green, but #506 remains
-gated until exact-range independent correction review records GO and protected
-CI passes the final reviewed head.
+arbitrary Docker volumes, external mutation and multiple writers remain
+unsupported. Runtime identity is `4242:4343`, with precreated canonical buckets
+and root/bucket modes `0750`. The final decision is **GO for this envelope**.
+
+The earlier NO-GO was a pre-finalization checkpoint, not the final qualification
+decision. The [final correction review](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/924#issuecomment-5746352181)
+recorded GO for `e52e6e4d1ae5deded29589cf3884db887296091a..93ba5411880eeb4614b611e440c7ca198ba95676`.
+The [terminal qualification ledger](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/924#issuecomment-5746409486)
+then recorded both required Development v1 checks passing on reviewed head
+`93ba5411880eeb4614b611e440c7ca198ba95676` in
+[run 35478441841](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/35478441841),
+with unchanged target `2dfbea5974fe8f96d1272dfbce2bb3ec50433090` before merge.
+The issue's final handoff confirms the supported-topology GO decision after all
+review rounds, including the targeted protected-CI correction reviews.
+
+Native performance remains bound to measurement revision
+`84b8b0b6e9d744d45e7f6029e6b32e95df070fc0`, assembly digest
+`d2cbdaa47ab7ea3e0332e2b1872b221d5690aa93675ce18ba5b3f90950fde985`,
+and tracked JSON SHA-256
+`e33784f696df93d0c8a145cc94195ca7a705b48ea5db7eb0b38ba7fb80671825`.
+The native image digests above identify the exercised campaign images; the later
+reviewed head and merge are lifecycle identities, not replacement measurement
+or image identities. No hardware or destructive campaign was rerun for this
+documentation reconciliation.
+
+### Supported Adoption and Epic Closeout
+
+[PR #926](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/926) adopted the
+filesystem provider and removed supported MinIO server/control-plane ownership
+at `fb07a6ccd3be8d5b72a6f7643fc5e27978804c1d`. Its required
+[Development v1 run 35500884031](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/35500884031)
+passed on reviewed head `37246fa454139738fdc8f42de7e94dcac7eda2c3`.
+That adoption retains the first-release filesystem-only profile; external S3,
+Azure and remote-filesystem profiles remain independently qualified future work.
+
+The required #499 chain is delivered: #584 (PR #915), #592 (PR #916), #585
+(PRs #917, #918, #919 and #921), #586 (PR #924) and #506 (PR #926).
+Their merge commits are ancestors of the reconciliation base
+`e41336069d42445387096b6b4b50dcfc090bf4bf`. The independently reviewed current
+source tree passed both required checks in
+[run 37135415702](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/37135415702).
+Its CI synthetic merge, reviewed head `6c14984d1d8327512f62f427861368fc1fe7918a`
+and final merge have the same tree
+`603d92cfb5c8695afaae7ef08d3ac30785db6a30`; this is current branch qualification,
+not a remeasurement of the historical #586 native campaign. The documentation
+closeout receives its own current-head review and protected CI before merge.
+
+RM-005 / #421 is delivered. RM-018 / #531 consumes this final storage decision
+while retaining its own importer, workspace, distribution and exact-digest
+combined acceptance gates. Optional CameraAgent adoption #587 and RM-019
+profiles #588–#591 are outside #499 completion. Epic closure records delivered
+scope; it does not authorize a deployment, image publication or promotion to
+`main`.

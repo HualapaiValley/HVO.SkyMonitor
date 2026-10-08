@@ -1,7 +1,7 @@
 {
-  "Unit": 85,
+  "Unit": 160,
   "Integration": 0,
-  "Manual": 0,
+  "Manual": 1,
   "Soak": 0,
   "External": 0,
   "Hardware": 0

@@ -1,0 +1,4 @@
+.time-lapse-detail { max-width: 80rem; margin: auto; padding: 1.5rem; }
+.time-lapse-detail dl { display: grid; grid-template-columns: minmax(8rem, 1fr) 4fr; gap: .75rem; }
+.time-lapse-detail dd { margin: 0; overflow-wrap: anywhere; }
+.checksum { font-family: monospace; }

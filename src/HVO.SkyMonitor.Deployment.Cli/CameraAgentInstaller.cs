@@ -43,7 +43,7 @@ internal sealed class CameraAgentInstaller
         var identityRequest = request;
         var docker = new DockerClient(processRunner);
         var instanceId = request.InstanceId ?? Guid.NewGuid();
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         if (request.DryRun)
         {
             using var dryRunAcquirer = distributionFactory();
@@ -52,7 +52,7 @@ internal sealed class CameraAgentInstaller
             return await PlanAsync(
                     ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage),
                     dryRunCatalog.Evidence,
-                    paths,
+                    paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(dryRunCatalog.BundlePath).CatalogId),
                     instanceId,
                     docker,
                     dryRunImage?.Image,
@@ -79,6 +79,8 @@ internal sealed class CameraAgentInstaller
 
         var preflightDaemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
+        // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
+        paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
@@ -205,6 +207,7 @@ internal sealed class CameraAgentInstaller
                 .ConfigureAwait(false);
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+            EnsureImageSupportsCatalog(image, catalog.CatalogId);
             if (daemon != preflightDaemon)
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
@@ -330,7 +333,7 @@ internal sealed class CameraAgentInstaller
                 cancellationToken).ConfigureAwait(false);
             var baseAddress = new UriBuilder("http", "127.0.0.1", request.Port).Uri;
             var ownerClient = ownerClientFactory(baseAddress);
-            await ownerClient.WaitForHealthAsync(cancellationToken).ConfigureAwait(false);
+            await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
 
             var ownerState = retainedCompletedResult?.OwnerBootstrapState ?? "owner-temporary-password";
             string? password = null;
@@ -370,7 +373,7 @@ internal sealed class CameraAgentInstaller
                         compose.ProjectName,
                         ["up", "--detach", "--remove-orphans"],
                         cancellationToken).ConfigureAwait(false);
-                    await ownerClient.WaitForHealthAsync(cancellationToken).ConfigureAwait(false);
+                    await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
                     ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -514,7 +517,7 @@ internal sealed class CameraAgentInstaller
         try
         {
             var applicationIdentity = Guid.NewGuid();
-            var temporaryPaths = InstallationPaths.Create(temporaryRoot, instanceId, ProductionCatalog.CatalogId);
+            var temporaryPaths = InstallationPaths.Create(temporaryRoot, instanceId, Path.GetFileName(finalPaths.CatalogRoot));
             var catalog = CatalogInstaller.Install(request.CatalogBundle!, temporaryPaths.CatalogRoot, Guid.NewGuid()) with
             {
                 InstallRoot = finalPaths.CatalogRoot,
@@ -524,6 +527,7 @@ internal sealed class CameraAgentInstaller
                 .ConfigureAwait(false);
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+            EnsureImageSupportsCatalog(image, catalog.CatalogId);
             var compose = ComposeDeployment.Write(
                 request,
                 temporaryPaths,
@@ -647,7 +651,7 @@ internal sealed class CameraAgentInstaller
         var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-rerun-{Guid.NewGuid():N}");
         try
         {
-            var outputPaths = InstallationPaths.Create(temporaryRoot, instanceId, ProductionCatalog.CatalogId);
+            var outputPaths = InstallationPaths.Create(temporaryRoot, instanceId, Path.GetFileName(paths.CatalogRoot));
             var compose = ComposeDeployment.Write(
                 request,
                 paths,
@@ -935,10 +939,7 @@ internal sealed class CameraAgentInstaller
     }
 
     private static bool IsValid(CatalogInstallationIdentity? value)
-        => value is not null && value.CatalogId == ProductionCatalog.CatalogId && HasValue(value.PackageVersion) &&
-           value.SchemaVersion == "2" && value.PreprocessingVersion == "3" &&
-           value.DatabaseSha256 == ProductionCatalog.DatabaseSha256 &&
-           value.DatabaseLength == ProductionCatalog.DatabaseLength && value.RowCount == ProductionCatalog.RowCount &&
+        => ProductionCatalog.IsPinned(value) &&
            HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline" &&
            (value.Distribution is null || IsValid(value.Distribution) &&
             value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&
@@ -954,7 +955,7 @@ internal sealed class CameraAgentInstaller
            value.ImageId is not null && value.ImageId.StartsWith("sha256:", StringComparison.Ordinal) &&
            IsSha256(value.ImageId["sha256:".Length..]) && value.Architecture is "amd64" or "arm64" &&
             value.Component == "CameraAgent" && value.ConfigurationContract == "cameraagent-install-v1" &&
-             value.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(value.SourceRevision) &&
+             CameraAgentImageContract.IsKnownCatalogContract(value.CatalogContract) && IsSourceRevision(value.SourceRevision) &&
              (replayProfile == CameraAgentReplayProfile.InProcess ||
               value.ReplayRunnerContract == "local-replay-runner-v1") &&
             (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256)) &&
@@ -1081,6 +1082,12 @@ internal sealed class CameraAgentInstaller
             throw new InstallerException(
                 $"Insufficient storage: {required} bytes are required before installation mutation.");
         }
+    }
+
+    internal static void EnsureImageSupportsCatalog(ImageInstallationIdentity image, string catalogId)
+    {
+        if (!CameraAgentImageContract.SupportsCatalog(image.CatalogContract, catalogId))
+            throw new InstallerException("The CameraAgent image cannot resolve the selected catalog.");
     }
 
     private static void ValidateCatalogInput(string bundlePath)

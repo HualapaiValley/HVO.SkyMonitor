@@ -214,6 +214,51 @@ can be evaluated against persisted state first without acquiring, loading, or st
 candidate's state migration and is required only when the candidate declares one.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
+### Edge work persisted across an upgrade
+
+Captures accepted by the previous version keep their raw evidence and their
+frozen processing plan. When the new version builds a different node plan for
+the same pipeline, standard processing of that earlier work cannot run:
+
+- Each such capture's standard work is **abandoned** with reason
+  `plan-superseded`, and its execution is expired with
+  `processing.plan-superseded`. The raw stays held until its upload completes,
+  and a scene-required upload completes with the raw alone. Ingress keeps
+  accepting captures. Abandoned work is not a terminal failure and does not
+  quarantine the lane.
+- Live work that exceeds its maximum queue age is abandoned with
+  `processing-expired` instead of quarantined. On startup, standard work that an
+  earlier version quarantined for `processing-expired` is converted to
+  abandoned, so it stops blocking ingress.
+- Genuinely corrupt or missing raw evidence still quarantines and refuses new
+  captures. That is unchanged and needs the evidence recovery path.
+
+A Named active revision compiled by the earlier version cannot run any live work.
+In that case:
+
+- `capture-processing` health is **Degraded**, with reason
+  `active-revision-superseded` and the revision in `SupersededActiveRevisionId`.
+- CameraAgent logs one Error (event 2097) naming the node and both plan hashes.
+- Captures are still accepted and uploaded, but their standard processing is
+  abandoned.
+
+To recover, use the **Named graphs** page (`/operations/pipeline/graphs`)
+to do one of the following:
+
+- Create, validate and activate a revision of the same pipeline, which this
+  version compiles.
+- Roll back to configured-basic, which is recompiled from configuration at every
+  startup.
+
+Health clears within one refresh, and an Information entry (event 2098) records
+it. No restart is needed. Configured-basic is never reported as superseded.
+
+Annotation work for captures without resolved footprints (`projected-scene-v1`)
+keeps its released identity and algorithm version. A retry after the upgrade
+therefore reproduces the same output under the same key and the same manifest
+bytes. A later change to the Annotation recipe definition, which issue #526
+owns, abandons earlier annotation work in the same way.
+
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
@@ -939,9 +984,32 @@ hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
 hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version>
 hvo-skymonitor catalog rollback --instance-id <uuid>
 hvo-skymonitor catalog gc --catalog-version <version>
+hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
-Mutating garbage collection requires one explicit version. It fails closed on
+Each approved catalog ID has its own root,
+`<productRoot>/catalogs/<catalogId>/versions/<package-version>`, so HYG 4.2
+(`hyg-v42-production`) and HYG 4.4 (`hyg-v44-production`) install side by side.
+`install` takes the catalog ID from the bundle manifest and refuses an ID,
+package version, lineage or hash that the embedded approved-catalog registry
+does not name. It never changes a selection. Package versions are unique across
+lineages, so `--catalog-version` names exactly one root. A `select` that changes
+the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
+mount and reauthenticates the Compose model. It requires an image whose catalog
+contract label is `hvo-approved-catalogs-v1`, retires the retained image
+rollback, and pins the previous identity as a historical reference. `rollback`
+returns to the previous selection across lineages. The exact identities and
+selection behavior are documented in
+[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
+
+`catalog check` is read-only. It verifies the signed manifest or index, or the
+previously verified cached copy when offline, and reports `available` or
+`installed`. It takes no lock, downloads no bundle, and changes no catalog,
+selection, cache or rollback state. It refuses an installed version whose
+identity differs from the signed release.
+
+Mutating garbage collection requires one explicit version. A dry run without a
+version plans collection across every installed approved catalog ID. It fails closed on
 unknown instance roots, malformed selection pointers, active Docker mounts,
 manifests, backups, operations, rollback slots, or historical reconstruction
 references. Interrupted deletion continues from an authenticated tombstone and

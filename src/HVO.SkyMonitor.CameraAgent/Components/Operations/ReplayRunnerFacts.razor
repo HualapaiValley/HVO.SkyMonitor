@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @using HVO.SkyMonitor.CameraAgent.Components.Pages
 @using HVO.SkyMonitor.CameraAgent.Services
 
@@ -26,7 +27,7 @@
             <div><dt>OS / process architecture</dt><dd>@Facts.Capabilities.OsArchitecture / @Facts.Capabilities.ProcessArchitecture</dd></div>
             <div><dt>Runtime identifier</dt><dd>@Facts.Capabilities.RuntimeIdentifier</dd></div>
             <div><dt>Framework</dt><dd>@Facts.Capabilities.FrameworkDescription</dd></div>
-            <div><dt>Process started</dt><dd><time datetime="@Facts.Capabilities.ProcessStartedUtc.ToString("O")">@Facts.Capabilities.ProcessStartedUtc.ToString("u")</time></dd></div>
+            <div><dt>Process started</dt><dd><time datetime="@Facts.Capabilities.ProcessStartedUtc.ToString("O")">@SiteTime.Format(Facts.Capabilities.ProcessStartedUtc)</time></dd></div>
             <div><dt>Declared concurrency</dt><dd>@Facts.Capabilities.MaxConcurrency</dd></div>
             <div><dt>Declared transfer ceiling</dt><dd>@OperationsPage.FormatBytes(Facts.Capabilities.MaxTransferBytes)</dd></div>
         </dl>

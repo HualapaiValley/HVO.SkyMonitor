@@ -56,7 +56,7 @@ is_reduced_path() {
   fi
 
   case "$path" in
-    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md)
+    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
       return 1
       ;;
   esac
@@ -199,6 +199,7 @@ shared_projects=(
   HVO.SkyMonitor.Fleet.Contracts
   HVO.SkyMonitor.Imaging
   HVO.SkyMonitor.Processing
+  HVO.SkyMonitor.Video.FFmpeg
   HVO.SkyMonitor.ProcessingRunner
   HVO.SkyMonitor.ProcessingRunner.Contracts
   HVO.SkyMonitor.Storage.FileSystem
