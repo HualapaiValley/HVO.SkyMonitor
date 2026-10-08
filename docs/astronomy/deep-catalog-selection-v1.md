@@ -1207,3 +1207,48 @@ The check is committed before its first run on measured or synthetic packs. Focu
 and hashed before execution. The e1 request carries the exact new proofs, ordinary finite and ordered controls,
 original partial-finding scenarios, meaningful regression controls, full r3 report and separate severity disposition.
 New finding counts are recorded as observed; no unchanged-count claim is made for a corrected checker.
+
+**Focused result.** The checker implementation was committed at `16959b24`, before its first pack run. `0b394294`
+corrects only two citation strings and one declaration-coordinate pair; an exact transformed-byte comparison binds
+the reused `16959b24` semantic results to that checker. Both new counter quotations match their exact starting lines
+at A and B. The final checker SHA-256 is `cfd75758ab348b5b9441ca4287160cf20c3029a70e65d4183051701dae7d1eac`.
+
+The focused matrix has **24 distinct full-pack scenarios and 15 direct boundary checks**, all matching their retained
+expectations. These are owner integrity proofs, pending independent e1 verification, and are not performance reruns.
+
+| Scenario | Current check |
+| --- | --- |
+| Baseline A/B, baseline deep, posted final | rc 0, no findings |
+| Finite even-median overflow; finite ratio overflow | rc 1, 4 / 2 findings |
+| Zero medians; negative cold samples | rc 1, 4 each |
+| Optical reversal / displaced neighbour | rc 1, 2 each |
+| Pixel reversal / displaced neighbour; negative hypotheses | rc 1, 4 each (A1/B1 and their synthetic A2/B2 aliases) |
+| Original unordered gen3 kit; same kit with integer overflow | rc 1, 40 / 41 findings |
+| Separately ordered kit; its integer-overflow mutation | rc 0, 0 / rc 1, 1 finding |
+| Original NaN / `1e309` cold samples | rc 1, 8 each |
+| Original R1-F2 null / empty optical overlays | rc 1, 12 / 27 findings |
+| Duplicate optical rows; identity-only validations; B precision-zero; admitted-count mismatch | rc 1, 4 / 2 / 2 / 1 findings |
+
+The direct cases exercise negative, zero, Int32 maximum, above-maximum, boolean and floating-point hypothesis tokens;
+positive/negative integer double overflow, the finite double maximum and its integer boundary; equal-ID ordering,
+supplementary UTF-16 order, its invalid code-point order and an unpaired surrogate. Bool/int/double distinction and
+the named-string scope also pass. The frozen evaluator still passes finite median overflow and symmetric reversal;
+ratio overflow returns its literal `resolvable-regression`, and zero denominators throw `ZeroDivisionError`.
+
+The source-normalized control audits **90 indexed reports plus 10 pair reports**, selecting all **50** pixel/optical
+files by indexed filename, including tuning. Every one of **1,430** declared association-array nodes is a
+row-conserving permutation with ordinal postcondition. It supplies no new measured evidence. The original gen3
+kit's random unsorted arrays and its new 40 order findings are preserved.
+
+**Expectation disclosures.** Original attempts and their oracles remain immutable: v1 used an incorrect frozen
+verdict label; v2 expected two rather than four pixel alias domains; v3's control builder omitted tuning; v4 wrongly
+expected an order finding for duplicate rows whose two ID groups are already ordered. Each stopped. The successful
+remaining v5 run uses a **new revised oracle**, after a complete source-derived label/alias/type and coverage audit;
+it is not described as the original predeclaration. Already matching cases are explicitly reused with their original
+loaded heads and hashes. No evaluator, threshold or product algorithm was changed to repair these owner proofs.
+
+All attempts, expectations, repairs, coverage, source quotes, head mapping and actual results are retained at
+`evidence/1167/0b394294/cap-e1-proof/`: **96 files**, verified self-excluding SHA256SUMS
+`7a75c0d4a59220424e91aa68dbf38365775ad6c257857d0dad156c3bc56a3553`. The e1 report must independently disposition
+the five r3 findings and the three partial carried findings. Source/check/documentation changes and new text in this
+subsection were produced by **Codex gpt-6.1-sol/xhigh**; inherited Claude Opus 5.5 authorship remains.
