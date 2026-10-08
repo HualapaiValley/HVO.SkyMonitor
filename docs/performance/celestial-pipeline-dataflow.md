@@ -25,6 +25,9 @@ Only summaries and hashes are committed.
 
 ## Scope and honesty boundaries
 
+- **Attribution of host and activity statements.** Any statement in this document about hosts, locks,
+  processes, sessions, sampling, kernel settings or other activity that does not cite a retained record (a log
+  line, a pack's `host.hostname`, a `run.trx` `computerName`, or another named file) is the owner's account.
 - **Measured:** the shipped CameraAgent composition, from VirtualSky capture through raw ingress, lane claim,
   the configured processing graph and completion, on development host `home-dev-01`. The harness is
   `tests/HVO.SkyMonitor.CameraAgent.Tests/Issue1170ComposedPipelineEvidenceTests.cs`, which drives the real
@@ -363,7 +366,8 @@ re-run there with the same runner, method and verdict rule.
   - The `home-dev-02` heavy lock was held from 03:36:45Z to 04:14:10Z (holder pid 244494, 75-minute cap). It
     was released early, after the last timing trial (04:01:37Z), while S1 ran. S1 is output identity only.
   - The `home-dev-02` sampler over the window, 03:36:46–04:14:08Z (449 samples): busy median 1.1%, p95 2.6%,
-    max 10.7%; load1 median 0.16. load1 stayed above 2 only until 03:37:51Z, the decay of a gate that exited
+    max 10.7%; load1 median 0.16. Busy p95 here and below is the nearest-rank 95th percentile of the 5 s
+    intervals. load1 stayed above 2 only until 03:37:51Z: by the owner's account, the decay of a gate that exited
     just before the lock was taken.
 - **Steal.** `home-dev-01` steal ticks were sampled once a second (`clk_tck` 100, 12 vCPUs) and attributed to
   each trial:
@@ -427,6 +431,199 @@ re-run there with the same runner, method and verdict rule.
   - The solver v2 identity change was expected when #1126 merged; see
     [Composition checkpoints](#composition-checkpoints).
 
+
+### Checkpoint cp-518
+
+After #518 merged into `development/v1` (#1176), the full unchanged manifest was re-run there as an interleaved
+matrix. The runner, method and verdict rule are unchanged. The checkpoint is recorded in
+`docs/validation/issue-1170-checkpoints.json`, which binds every pack below to the committed manifest SHA-256.
+- **Arms.**
+  - A = `f7d19865` is `development/v1` after this issue's first record (#1177), before #518.
+  - B = `87f947c6` is the #1176 merge.
+  - Both arms are real branch heads with no scratch commits. The runner's manifest still names product base
+    `b13f0d0e`, so `productSourceUnchangedFromBase` is false in both arms' indexes. That is expected: the field
+    describes the primary matrix's base, not these arms.
+- **Protocol.** Every arm ran on `home-dev-01` (each pack's `host.hostname`) between 09:22:49Z, the first arm's
+  start in `prof.log`, and 13:19:48Z, the last arm's finish in `attr.log`. The packs' `runs[]` records span
+  09:22:49Z–13:19:42Z. Odd manifest cells run A then B, and even cells run B then A. Each cell is compared only
+  against its adjacent pair.
+- **Named exclusion: `renderSolarSystemDisks`.** cp-518 has no disks-on cell.
+  - The option is an opt-in on the VirtualSky source. It defaults to false and is absent from
+    `cameraagent.sample.json`.
+  - No real-camera path produces resolved Sun or Moon footprints. The only producer is `VirtualSkyCameraModule`
+    calling `VisibleScene.WithResolvedBodies` when the option is on.
+  - cp-518 therefore measures the production composition. Footprint-free scenes keep `projected-scene-v1` and the
+    released annotation identity (`AnnotationRenderer.AlgorithmVersionFor`, #518 commit `c72af9c1`).
+  - A disks-on cell would measure synthetic-source cost that no production camera pays.
+- **Windows and quiet neighbour.** By the owner's account, each window held `home-dev-02`'s heavy lock for its whole length. By the owner's account, a 5 s
+  sampler there recorded load and CPU busy and a 1 s sampler on `home-dev-01` recorded aggregate steal ticks
+  (`clk_tck` 100, 12 vCPUs).
+
+  | Window | `home-dev-02` lock held (owner's account) | Runs | `home-dev-01` steal | `home-dev-02` during the window |
+  |---|---|---|---|---|
+  | (a) | 10:36:14Z–11:47:59Z (95-minute cap) | S1 A r2 10:36:22–10:54:09Z; pairs 01–05 and 09–11 10:54:09–11:47:43Z | r2: 69 ticks over 1,066 s (0.005%), at most 10 in one second. Pairs: 383 ticks over 3,214 s (0.010%), at most 6 | 861 samples: load1 median 0.11, max 0.73; busy median 1.0%, p95 2.7%, max 12.3% |
+  | (b) | 11:49:24Z–12:43:39Z (75-minute cap) | pairs 06–07 11:49:32–12:35:11Z | 464 ticks over 2,739 s (0.014%), at most 59 | 651 samples over (b) and (c): load1 median 0.14, max 0.56; busy median 1.2%, p95 3.1%, max 5.3% |
+  | (c) | same holder as (b) | pair 08 12:35:11–12:43:28Z | 110 ticks over 497 s (0.019%), at most 18 | as (b) |
+
+  - Each holder released on the driver's done marker, after the last timing trial. No cell ran outside a held
+    window.
+  - The caps are the holder's invocation arguments. `holder.log` does not record them, and no cap took effect,
+    because every hold ended with `reason=done`.
+  - In (a), one `home-dev-02` sample exceeded 10% busy: 12.3% in the 5 s ending 11:43:07Z, inside pair 11 arm
+    A's trial 5 (11:42:58–11:43:12Z). Pair 11 shows no resolvable change.
+  - During the pairs, six seconds had 10 or more steal ticks, all in (b) and (c). Each was checked against the
+    trial bounds in the arms' indexes. Five fell between trials. One, 14 ticks at 12:12:56Z, fell inside pair 07
+    arm A's trial 1, and pair 07 shows no resolvable change. The one 10-tick second in (a) was during S1 r2,
+    which is output identity only.
+- **Verdict weight.** These pairs bear verdicts, and a regression would block.
+
+| Pair | Cell | Order | Metric (ms) | A `f7d19865` | B `87f947c6` | Median change | Verdict |
+|---|---|---|---|---|---|---|---|
+| 01 | s2-sample-night | AB | Foreground | 104 [99–105] | 100 [99–108] | -3.8% | no resolvable change |
+|  |  |  | Processing | 118 [112–124] | 114 [112–120] | -3.8% | no resolvable change |
+|  |  |  | Service | 219 [211–229] | 216 [211–229] | -1.2% | no resolvable change |
+| 02 | s2-w1-night-long | BA | Foreground | 201 [198–204] | 198 [196–199] | -1.5% | no resolvable change |
+|  |  |  | Processing | 204 [201–205] | 203 [201–205] | -0.4% | no resolvable change |
+|  |  |  | Service | 401 [400–409] | 402 [396–404] | +0.4% | no resolvable change |
+| 03 | s2-w1-night-short | AB | Foreground | 71 [70–72] | 70 [69–71] | -2.5% | no resolvable change |
+|  |  |  | Processing | 193 [190–199] | 192 [191–196] | -0.6% | no resolvable change |
+|  |  |  | Service | 263 [259–267] | 260 [257–264] | -1.0% | no resolvable change |
+| 04 | s2-w1-day | BA | Foreground | 149 [145–155] | 145 [139–150] | -2.5% | no resolvable change |
+|  |  |  | Processing | 166 [163–172] | 165 [164–167] | -0.1% | no resolvable change |
+|  |  |  | Service | 320 [306–323] | 314 [307–318] | -1.8% | no resolvable change |
+| 05 | s2-w1-dense | AB | Foreground | 200 [197–201] | 201 [197–202] | +0.3% | no resolvable change |
+|  |  |  | Processing | 202 [201–206] | 201 [199–202] | -0.7% | no resolvable change |
+|  |  |  | Service | 402 [397–406] | 399 [398–405] | -0.7% | no resolvable change |
+| 06 | s2-w2-night | BA | Foreground | 944 [936–950] | 949 [942–957] | +0.5% | no resolvable change |
+|  |  |  | Processing | 1,246 [1,235–1,263] | 1,252 [1,243–1,265] | +0.5% | no resolvable change |
+|  |  |  | Service | 2,189 [2,167–2,216] | 2,203 [2,190–2,205] | +0.7% | no resolvable change |
+| 07 | s2-w6-night | AB | Foreground | 962 [959–968] | 964 [956–965] | +0.2% | no resolvable change |
+|  |  |  | Processing | 1,359 [1,333–1,379] | 1,369 [1,355–1,393] | +0.8% | no resolvable change |
+|  |  |  | Service | 2,325 [2,309–2,337] | 2,336 [2,329–2,361] | +0.5% | no resolvable change |
+| 08 | s2-w1-night-long-tc0 | BA | Foreground | 254 [253–255] | 254 [253–255] | +0.1% | no resolvable change |
+|  |  |  | Processing | 239 [237–242] | 240 [239–242] | +0.3% | no resolvable change |
+|  |  |  | Service | 495 [492–497] | 495 [493–495] | +0.0% | no resolvable change |
+| 09 | s3-sample-cold | AB | Foreground | 583 [578–587] | 587 [579–594] | +0.6% | no resolvable change |
+|  |  |  | First-operation service | 977 [971–994] | 984 [983–995] | +0.7% | no resolvable change |
+| 10 | s3-w1-cold | BA | Foreground | 790 [776–849] | 847 [798–873] | +7.2% | no resolvable change |
+|  |  |  | First-operation service | 1,304 [1,289–1,415] | 1,403 [1,315–1,433] | +7.6% | no resolvable change |
+| 11 | s4-w1-saturation | AB | Foreground | 226 [225–234] | 228 [224–231] | +0.9% | no resolvable change |
+|  |  |  | Drain after last accept | 365 [223–509] | 425 [279–528] | +16.6% | no resolvable change |
+
+| Pair | Cell | Allocated bytes per operation, A → B | Change | Peak RSS change | Output values compared | Outputs |
+|---|---|---|---|---|---|---|
+| 01 | s2-sample-night | 200.7 MiB → 200.7 MiB | -0.00% | +1.5% | 1,750 | identical |
+| 02 | s2-w1-night-long | 305.1 MiB → 305.0 MiB | -0.01% | -0.1% | 1,750 | identical |
+| 03 | s2-w1-night-short | 111.2 MiB → 111.2 MiB | -0.00% | -0.2% | 1,750 | identical |
+| 04 | s2-w1-day | 257.2 MiB → 257.2 MiB | -0.01% | -0.0% | 1,750 | identical |
+| 05 | s2-w1-dense | 305.0 MiB → 305.0 MiB | +0.01% | +0.3% | 1,750 | identical |
+| 06 | s2-w2-night | 1790.2 MiB → 1790.2 MiB | +0.00% | +3.6% | 1,750 | identical |
+| 07 | s2-w6-night | 1076.4 MiB → 1076.4 MiB | +0.00% | +3.3% | 1,750 | identical |
+| 08 | s2-w1-night-long-tc0 | 308.1 MiB → 308.1 MiB | +0.00% | +0.2% | 1,750 | identical |
+| 09 | s3-sample-cold | 213.3 MiB → 213.3 MiB | -0.01% | +1.0% | 50 | identical |
+| 10 | s3-w1-cold | 302.1 MiB → 302.7 MiB | +0.20% | +3.9% | 50 | identical |
+| 11 | s4-w1-saturation | 304.3 MiB → 304.4 MiB | +0.05% | -0.3% | 1,750 | identical |
+
+- **Result.** No pair regressed and every output is identical. The comparator returned rc=0 with
+  `regressed=False outputsIdentical=True complete=True` over all 11 manifest cells.
+  - #518 changed 55 source files between the arms. They include code on the measured path: the SQLite
+    processing and raw-ingress stores, `ProjectedSceneCaptureProcessingStep`, `AnnotationRenderer` and the
+    presentation-layer producers. None of the changes resolves as a timing, allocation or peak RSS change in the
+    production composition.
+  - The largest point changes are pair 10's cold first-operation service (+7.6%) and pair 11's drain (+16.6%).
+    The two arms' trial ranges overlap in both, so neither is claimed as a change in either direction.
+  - The comparator excludes four fields as run-variant, because they vary between each arm's own trials:
+    `Annotation` and `ProjectedScene` recipe and output identities. Each payload hash and size still matches.
+- **S4.** The decomposition gives the same allocation picture in both arms:
+
+  | Arm | Residual share | Whole run ÷ 30 (MB) | Saturation phase ÷ 30 (MB) | Gen0 | Backlog peak | Drain (s) |
+  |---|---|---|---|---|---|---|
+  | A | 2.1–3.5% | 375.8–376.1 | 320.8–321.2 | 905–918 | 2–3 | 0.22–0.51 |
+  | B | 2.2–3.3% | 375.8–376.3 | 320.9–321.4 | 903–917 | 2–3 | 0.28–0.53 |
+
+  Every range overlaps between the arms, and all 30 operations complete in every trial.
+- **S1.** S1 is output identity only; its timings bear no cp-518 regression verdict. It ran three times:
+  - A, 09:22:49–09:43:56Z, rc=1. This run is the record and is unchanged. It failed the #1106 4× wall-clock gate
+    on `measured-stars-held-out` 01-mono-bin2. The failure line reads `v2 measurement 64 ms vs v1 12 ms`; from
+    the unrounded measurements the ratio is 64.251 / 11.952 ms = 5.4×. Every output assertion passed.
+    - The run was outside a quiet window. By the owner's account, `home-dev-02` was the probable co-resident host
+      and #526's Tier C held its lock. The #520 coordinator read load 15.67/14.83/10.37 there at 09:43:09Z; its
+      decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. The window's driver, `prof.sh`,
+      starts no sampler.
+    - The gate has only about 1.2–1.4× headroom on this host (4× over the A r2 ratios below). The headroom belongs to the #520 software envelope,
+      and neither the gate nor the test is changed here.
+  - B, 09:43:56–10:04:02Z, rc=0, also outside a quiet window.
+  - A r2, in window (a), rc=0 with all 16 runs passed. It is an additional sample, not a replacement.
+    - Loads at its start: `home-dev-01` 0.02/0.03/0.18, `home-dev-02` 0.17/0.95/2.46.
+    - The bin2 ratios, each computed from the unrounded `measurementMs` and rounded once:
+
+      | Run | 01-mono-bin2 | 01-mono-roi-bin2 | 05-mono-bin2 | 05-mono-roi-bin2 | 09-mono-bin2 | 09-mono-roi-bin2 |
+      |---|---:|---:|---:|---:|---:|---:|
+      | A r2 | 3.4× (36.297 / 10.822 ms) | 3.5× | 3.2× | 3.3× | 2.8× | 3.3× |
+      | A (rc=1) | 5.4× (64.251 / 11.952 ms) | 3.6× | 3.7× | 3.6× | 3.0× | 2.1× |
+
+    - The reading is that the gate is load-sensitive.
+  - Identity:
+    - A r2 against B is **identical**: 0 differences. Each of the 118 ignored leaf keys is a timing,
+      allocation, working-set, throughput or revision field.
+    - A (rc=1) against B has 3 differences. All three are the held-out gate itself: the run's status, its exit
+      code and its single failure line. No measured value, catalog or provenance field differs.
+- **Attribution.** This is explanatory only, and the interleaved pairs above stay the evidence of record. One
+  trial per cell and collector ran at each arm in a separate quiet window, B then A, on `home-dev-01` only.
+  By the owner's account, `home-dev-02`'s heavy lock was held from 12:49:35Z to 13:19:57Z with a 50-minute cap.
+  - B 12:49:47–13:05:15Z and A 13:05:54–13:19:42Z. Both arms passed.
+  - `home-dev-01` steal was 307 ticks over 1,804 s (1,803.8 s; 0.014%). The busiest second, 13 ticks at 13:09:05Z, fell
+    2 s before a trial started.
+  - On `home-dev-02`, load1 had median 0.20 and max 0.79; busy had median 1.2%, p95 3.1% and max 10.3%.
+  - **Labelled activity on `home-dev-02`.** By the owner's account, other sessions did light work there during the window: one
+    11-second scripted burst with no `dotnet`, plus `git fetch`, `git` reads and `gh` calls. The trials whose
+    bounds overlap that activity are labelled, not adjusted:
+
+    | # | Activity (owner's account) | Overlapping trial | `home-dev-02` busy | `home-dev-01` steal |
+    |---|---|---|---|---|
+    | 1 | Scripted burst 12:55:42–12:55:52Z | None; it fell between B W2 allocation (ended 12:54:59Z) and B W2 cpu (started 12:55:53Z) | 6.3%, 10.3% (the window max) and 3.6% in the three samples covering it | 0 ticks |
+    | 2 | `git` reads about 12:54:30–12:56:25Z | B W2 allocation (12:54:30–12:54:59Z overlap) and B W2 cpu (12:55:53–12:56:25Z overlap) | 1.0–3.3% outside the burst | at most 1 tick per second, in 17 seconds |
+    | 3 | `git fetch` 13:07:15Z | A W1-long allocation (13:07:03–13:07:28Z) | 0.8–3.4% | six seconds at 1 tick |
+    | 4 | `git` and `gh` reads 13:09:04–13:09:15Z | A W2 allocation (13:09:07–13:09:15Z overlap) | 1.6–2.0% | 13 ticks at 13:09:05Z (the window max, before the trial started), then 1 tick at 13:09:08Z |
+
+    - B W2 allocation (+2.0%; sibling +3.4%), A W1-long allocation (+2.0%; sibling +2.1%) and A W2
+      allocation (+3.4%; sibling +2.0%) are not outliers against their siblings.
+    - B W2 cpu: highest of 20 (+5.2%, sibling +4.1%); overlapped labelled interval 2; explanatory only; no
+      verdict depends on it. The evidence can't tell whether it was disturbed or is the top of the normal
+      spread.
+  - **Collector overhead.** This is each attribution trial's median against the same arm's interleaved median
+    for the cell (processing; foreground for S4). It ranges from −1.8% to +5.2%:
+
+    | Cell | A `allocation` | A `cpu` | B `allocation` | B `cpu` |
+    |---|---:|---:|---:|---:|
+    | s2-sample-night | +2.8% | -0.8% | +3.4% | +0.8% |
+    | s2-w1-night-long | +2.0% | +3.1% | +2.1% | +0.5% |
+    | s2-w2-night | +3.4% | +4.1% | +2.0% | +5.2% |
+    | s2-w6-night | -1.8% | +2.1% | -0.3% | +0.0% |
+    | s4-w1-saturation | +3.5% | +4.7% | +3.0% | +2.7% |
+
+  - **On-CPU split and #518 frames** (exclusive running milliseconds per `cpu` trace, A → B):
+
+    | Cell | Running | `RenderSensorPlane` | `Rasterize` | `StellarExposureRenderPlan.Prepare` | `AnnotationRenderer` | SQLite prepare |
+    |---|---:|---:|---:|---:|---:|---:|
+    | s2-sample-night | 6,014 → 6,001 | 77 → 82 | 315 → 374 | 445 → 469 | 20 → 21 | 202 → 228 |
+    | s2-w1-night-long | 11,881 → 11,804 | 1,672 → 1,671 | 810 → 828 | 483 → 512 | 115 → 109 | 226 → 248 |
+    | s2-w2-night | 62,032 → 62,779 | 13,768 → 13,948 | 5,421 → 5,440 | 586 → 587 | 600 → 584 | 225 → 237 |
+    | s2-w6-night | 76,029 → 75,382 | 24,352 → 24,374 | 730 → 683 | 490 → 518 | 1,120 → 1,133 | 245 → 256 |
+    | s4-w1-saturation | 13,390 → 13,332 | 1,786 → 1,804 | 937 → 998 | 554 → 541 | 122 → 128 | 297 → 316 |
+
+    - The ranked frames match the primary attribution's after head. `RenderSensorPlane`, `DemosaicToRgb24` and
+      `Rasterize` lead the large-frame cells. SQLite `NextResult` and `StellarExposureRenderPlan.Prepare` lead
+      sample-night.
+    - Running totals agree within 1.2%. One trial per arm can't resolve a change, so no frame difference is
+      claimed in either direction.
+    - One direction is consistent, however. SQLite prepare is higher at B in all five cells, by 11 to 26 ms per
+      trace (4.3% to 12.9%), and #518 changed the SQLite processing and raw-ingress stores. The difference is under
+      0.5% of running time in every cell. The pairs, which are the record, show no resolvable change in any cell.
+    - No `SolarDisk` frame appears in any of the ten `cpu` traces, as the `renderSolarSystemDisks` exclusion
+      predicts. The check covers each trace's full frame set (2,196–2,374 distinct frames), not only the
+      top-200 rankings in `oncpu.json`, and those sets do hold the VirtualSky and planet-ephemeris frames. A
+      sampled trace shows that no such frame was on-CPU at any sample. It can't prove the code never ran.
 
 ### Comparator corrections (reviews r0 to r2)
 
@@ -678,15 +875,17 @@ Attribution separates them by frame.
 ## Composition checkpoints
 
 Each sibling merge triggers a `cp-<issue>` refresh. The refresh re-runs the manifest at the new
-`development/v1` head and records identity changes the sibling intends. The manifest that measured this
-PR's packs stays unchanged here, so its recorded SHA-256 still matches. Checkpoint entries go into the
-manifest when a refresh re-measures.
+`development/v1` head and records identity changes the sibling intends. Every retained pack records the
+SHA-256 of the manifest it was measured with, and the comparator rejects a measure pack whose manifest differs from
+the committed one; the checkpoint check under [Reproduce](#reproduce) rejects any pack a checkpoint cites whose recorded manifest differs. A checkpoint is therefore recorded in `docs/validation/issue-1170-checkpoints.json`, and
+the manifest stays byte-unchanged. The manifest changes only together with a re-measure under its new
+SHA-256. `Issue1170CheckpointsTests` fails when the sidecar cites any manifest other than the committed one.
 
 | Checkpoint | Trigger | Expected identity change | Status |
 |---|---|---|---|
 | `pr1` | This PR. Primary matrix at `productBase` `b13f0d0e`; post-sync confirmation at `0639e27d` | None. The kernels and pooling are byte-exact and identity-neutral. | This record |
 | `cp-1126` | #1126 merges | `AstrometricConventions.SolverVersion` moves from `spherical-triangle-astrometry-v1` to `spherical-triangle-astrometry-v2` (bounded wide-field solver fix approved by the #520 coordinator). Equidistant and the other fisheye families stay bit-identical. This is an expected identity change, not a regression. | #1126 merged into the post-sync base `0639e27d`. Its identities are in both post-sync arms, so the confirmation compares like with like. A full refresh follows the remaining sibling merges. |
-| `cp-518` | #518 merges | Whatever the renderer or scene-schema versions declare. The renderer candidates below are re-measured. | Pending |
+| `cp-518` | #518 merges | Whatever the renderer or scene-schema versions declare. The renderer candidates below are re-measured. | Full manifest re-run at `87f947c6` against `f7d19865` as an interleaved matrix: no pair regressed and every output is identical. Production composition measured, with the `renderSolarSystemDisks` exclusion named. See [Checkpoint cp-518](#checkpoint-cp-518). |
 | `cp-526` | #526 merges | Calibration recipe versions it declares. The calibration `PackRows` and SHA candidates are re-measured. | Pending |
 | `final` | Last sibling refresh | Carries any Tier C, byte-exact sibling-area optimizations. `Closes #1170`. | Pending |
 
@@ -717,6 +916,75 @@ python3 -I docs/validation/issue-1170-s4-allocation.py <root>/<NN>-s4-w1-saturat
 # Re-run the on-CPU split for one attribution trace.
 python3 -I docs/validation/issue-1170-oncpu.py <trial>/trace.speedscope.json <trial>/oncpu.json
 ```
+
+A checkpoint's packs are not in the repository, so CI cannot read them. On `home-dev-01`, from a clean worktree
+at the revision that records the checkpoint, this checks that every cited pack was measured with the committed
+manifest and still matches its recorded hashes, then re-runs the comparison:
+
+```bash
+(
+set -euo pipefail
+E=${E:-~/development-state/HVO.SkyMonitor/evidence/1170} id=${ID:-cp-518}
+S=${S:-docs/validation/issue-1170-checkpoints.json} M=docs/validation/issue-1170-pipeline-manifest.json
+# Read only the bytes committed at HEAD, whose shape the drift test enforces; fail closed if git cannot say.
+committed() { local w c; w=$(git hash-object --no-filters -- "$1") && c=$(git rev-parse --verify -q "HEAD:$2") &&
+    [[ -n $w && $w == "$c" ]]; }
+committed "$S" docs/validation/issue-1170-checkpoints.json && committed "$M" "$M" ||
+    { echo "FAIL $S or $M is not the version committed at HEAD"; exit 1; }
+m=$(sha256sum < "$M" | cut -d' ' -f1)
+# One JSON document whose checkpoints array holds exactly one checkpoint with that id, citing at least one pack.
+jq -se --arg id "$id" 'length == 1 and (.[0].checkpoints | type) == "array"
+    and ([.[0].checkpoints[] | select(.id == $id)] | length == 1 and (.[0].evidence | type) == "array"
+        and (.[0].evidence | length) > 0)' "$S" >/dev/null ||
+    { echo "FAIL checkpoint $id"; exit 1; }
+rows=$(jq -er --arg id "$id" '.checkpoints[] | select(.id == $id) | .evidence[]
+    | [.pack, .manifestSha256, .archiveSha256, .sha256SumsSha256] | @tsv' "$S")
+n=0 bad=0
+while IFS=$'\t' read -r pack ms archive sums; do
+    d=$E/$pack n=$((n + 1))
+    if [[ $ms == "$m" && $(jq -r .manifestSha256 "$d/index.json") == "$m" &&
+          $(sha256sum < "$d.tar.zst" | cut -d' ' -f1) == "$archive" &&
+          $(sha256sum < "$d/SHA256SUMS" | cut -d' ' -f1) == "$sums" ]] &&
+       (cd "$d" && sha256sum --quiet -c SHA256SUMS); then echo "ok $pack"; else echo "FAIL $pack"; bad=$((bad + 1)); fi
+done <<< "$rows"
+echo "packs=$n failed=$bad"
+((n > 0 && bad == 0)) || exit 1
+# The cp518 directory also holds the attribution packs, which pairs would report as incomplete slots, so the
+# comparison reads a scratch root that links only the interleaved slots.
+r=$(mktemp -d); trap 'rm -rf "$r"' EXIT
+ln -s "$E"/cp518/[0-9][0-9]-* "$r"/
+python3 -I docs/validation/issue-1170-interleaved.py pairs "$r" "$r.pairs.json" \
+    "$(jq -r '[.cells[].id] | join(",")' "$M")"
+)
+```
+
+The block reads only the sidecar and manifest committed at `HEAD`. It compares their raw bytes, with no line-ending
+conversion, against the `HEAD` blobs before any `jq` call. The sidecar's shape is enforced only by
+`Issue1170CheckpointsTests`, which runs in the Unit selection, and the block makes no claim of parser
+equivalence with that test. Its `jq` guard is defense in depth. At another revision the block verifies that
+revision's committed sidecar, which is only as sound as the drift test's pass there.
+
+The block runs in a subshell and exits nonzero in any of these cases:
+
+- git cannot read `HEAD`, for example outside a repository;
+- the bytes at `$S` or `$M` differ from the blobs committed at `HEAD`, including an uncommitted edit or a CRLF
+  checkout;
+- the sidecar is not a single JSON document with a `checkpoints` array;
+- the id matches no checkpoint, or more than one;
+- that checkpoint's `evidence` is not a nonempty array;
+- any pack fails;
+- the comparison fails.
+
+The comparison runs only after every pack verifies.
+
+Each negative check below must exit 1, with `S0=docs/validation/issue-1170-checkpoints.json` and `t=$(mktemp)`:
+
+- `ID=cp-none`;
+- `S="$t"` after writing any changed sidecar to `$t`, for example `jq '.checkpoints += [null]' "$S0" > "$t"` or
+  `{ printf '\xef\xbb\xbf'; cat "$S0"; } > "$t"`, which fails at the binding;
+- an uncommitted edit to the sidecar or the manifest;
+- `E="$x"`, where `x=$(mktemp -d); cp -as "$E0"/cp518 "$x"/` mirrors the pack root `E0` and one cited pack's
+  `.tar.zst`, or one file its `SHA256SUMS` lists, is then replaced by a different file.
 
 Attribution needs `dotnet-trace` installed outside the repository tool manifest, in the directory named by
 `HVO_1170_TOOLS` (default `~/.local/share/hvo-1170-tools`):
@@ -831,3 +1099,77 @@ The review r2 re-runs are in `postsync-analysis/r2-correction/` on `home-dev-02`
 - The on-CPU reclassification of both arms' cpu traces is on `home-dev-02` under
   `~/development-state/HVO.SkyMonitor/evidence/1170/reclassify/`. Each trace there was copied from its
   pack and hash-checked against the pack's `index.json`.
+
+### Checkpoint cp-518 packs
+
+The [cp-518](#checkpoint-cp-518) packs are under `cp518/` in the same evidence root.
+`docs/validation/issue-1170-checkpoints.json` records each pack's manifest SHA-256, archive SHA-256 and
+`SHA256SUMS` SHA-256, and the Reproduce section verifies all three from the PR head.
+
+| Pack | Role | `.tar.zst` SHA-256 | `SHA256SUMS` SHA-256 |
+|---|---|---|---|
+| `cp518/s1/A-f7d19865` | S1 arm A, rc=1, the record | `3eefaa66a1ba2a3e851fcff3d63719cdd5026b6a594d9a842697a6df3f031af3` | `cd8c558603f583756f629a34341f69e42b39eb612de82d8ca57311a0eb938389` |
+| `cp518/s1/A-f7d19865-r2` | S1 arm A r2, additional sample | `7ae8e9194fab19dbcae95c30e97fdfe2708d16111e90d51b58b8811cb8e17b6d` | `731f0304d342b2acc70b97ce129210315225739d3d459f3573b3faec20700f09` |
+| `cp518/s1/B-87f947c6` | S1 arm B | `e3b66c71877e33c07c55e6b32301ea1b8ed49414ca3b2a23ec5bfeab10746471` | `b20855785ad1022ea529a401d063b102008aad1d016704bfde274cd21b078446` |
+| `cp518/01-s2-sample-night/A-f7d19865` | Pair 01, arm A | `2eab46efe004194ac2747493ce64dfe5ab002c56feb85ef539a41c002abdaa75` | `10059f782c509187ed669a52b5af7b6adfec29c27c6c39ff7334b7220ec976e2` |
+| `cp518/01-s2-sample-night/B-87f947c6` | Pair 01, arm B | `3c04ed66d65ee2a4f2935ee0ee37ef70e62408b9053cec1c6ac7b319a07b2ced` | `ad9e6d0affc2b498d80c5856cd75ba343f84dec536e40d6fae6072b3ed33abd5` |
+| `cp518/02-s2-w1-night-long/A-f7d19865` | Pair 02, arm A | `2a555356dc6fec7a5cf781f8d43ff093e5a7f1b45e6ed0a5faf89949ac2e69fc` | `dbcdcaf87fa2ea2ec9777e1ae695576c7810dbf2618b40cf057e76e2f7d605b5` |
+| `cp518/02-s2-w1-night-long/B-87f947c6` | Pair 02, arm B | `05d12d61b1d5b190932d3dee484cd8fcf30c5f8706ff7b45e50f0fef3ba3a7ea` | `52ef0886c78baa818fb972f3e964a6275494d7feabb9ee26cadcfccf0ac8fb0a` |
+| `cp518/03-s2-w1-night-short/A-f7d19865` | Pair 03, arm A | `5405daccfb0192c397f0f292f306a08ca80a0e78de94a28cf1ec0e9d414f663f` | `421a9659dc1a83ff277456b5774b5739346f01591962f753f0aab35eb81c2535` |
+| `cp518/03-s2-w1-night-short/B-87f947c6` | Pair 03, arm B | `99cc216d4868863a6018eeed1162655b4a5ec095ebcd7bc05f1f7791fb8bba74` | `8aca1b8bc0cb5d107c8d74533b9c4647ff8a8b7c059b8a681508a0cfddf01c3d` |
+| `cp518/04-s2-w1-day/A-f7d19865` | Pair 04, arm A | `8011d5c48d2cc8c15636112795a794161841ef760259d65ec3999d9149067d38` | `10d6cd7e54388717121992b240e1c4cf5083659a4c8525e93ccd80b9305a361e` |
+| `cp518/04-s2-w1-day/B-87f947c6` | Pair 04, arm B | `ad2beb1f42464b3bc427d88c0bc0bbaecd055bbf37e302f3e654f8684f1dfafe` | `902d7ffb206829cc0c64b6544c102990eabac68675f70954b4b1b69b598e933d` |
+| `cp518/05-s2-w1-dense/A-f7d19865` | Pair 05, arm A | `f55a121fb4a4eaa17e51af1a43b52cc9ff3baca78aabaa841bee045fe6720329` | `f02881d096079e47c32312637ceb37c736e9eda26e7bc426ca7ea1cbbcd66226` |
+| `cp518/05-s2-w1-dense/B-87f947c6` | Pair 05, arm B | `b25df0b7a8f5ce79ae2e6d9e1da4a8b205c7d9e3c3f2be18d5107cc25216c48c` | `a3a2af6a7c13e88c8cb341243509796bfcfab70dcfba4b248ab6a096d7dd75eb` |
+| `cp518/06-s2-w2-night/A-f7d19865` | Pair 06, arm A | `f182d477cd61daf638c602c0e1e6ff5784e257209aa99d8bbe30550347600ccc` | `a0b0df14b6468bbddf11a5ef9248e5e6e04b414d2259f4b5be887d05ddd06efa` |
+| `cp518/06-s2-w2-night/B-87f947c6` | Pair 06, arm B | `0ee791eddab636b22d4c1048fd7eb60218defa76ad406c2b57416e5ce17bb441` | `edbf506656cf2f811eeb740a39c8872c42b113dbaac7c8d806de5cb108621aca` |
+| `cp518/07-s2-w6-night/A-f7d19865` | Pair 07, arm A | `bd59728774e443c5500ae33c6a3fe85610d60183a2d2aad683307f39dcb8e2ad` | `6222a23e4b753b2b3b736c34255b226147a234ba206d14ef85b4a555610ae5f4` |
+| `cp518/07-s2-w6-night/B-87f947c6` | Pair 07, arm B | `4f7fa102e3406cf8a462ea3260a93947c351cecfe63d5f5c0c282a1071cc6318` | `07803039c7c759a80d2872539490e27e85643efef4924f7718c17184ce6b7a75` |
+| `cp518/08-s2-w1-night-long-tc0/A-f7d19865` | Pair 08, arm A | `3e6a2a61a25e875cf7ab395d364d8176d62d6a1e214231569c7a3c33dbb4a8d8` | `3a68f00bf62c53d90a692bed40fff2dbed5415483562a45263da892ac97dcd61` |
+| `cp518/08-s2-w1-night-long-tc0/B-87f947c6` | Pair 08, arm B | `d9ee7579106baf12412ba27527a12dec5ab2e303f26f835c9109674204b6ddc8` | `8496f8c8ee75d09528268c89dcd4df51970d494fceed5466e28a4403b1dc6009` |
+| `cp518/09-s3-sample-cold/A-f7d19865` | Pair 09, arm A | `0d33c1169fa4f9a5c5a8b0e21dcb988af4a011db274015753ffaf6ef5049767f` | `36a73ccf2f96bb96d3bae3661f01c5314309d67ae503ff85790c0511a43f3360` |
+| `cp518/09-s3-sample-cold/B-87f947c6` | Pair 09, arm B | `ea31afceea3a4a8cfa449c23b401c94c384d83a2d3f04a5ca60130c83d98f861` | `7039b438a3db3150d9c7a5ab7d30dccb91257c09d3044afac3af4615c5bce8a0` |
+| `cp518/10-s3-w1-cold/A-f7d19865` | Pair 10, arm A | `fa2aeda65cd8ef9c76fea2c0fcc2a16bd7106e9fe0885da9a1bbbdc117711df6` | `be6ea2fc8a01458f38471b6227beb750786c3af3f70705d20f32db1d4e9ee1d5` |
+| `cp518/10-s3-w1-cold/B-87f947c6` | Pair 10, arm B | `72a7e4e6fccb26a677afbce2c97119e28cfdadd5c9836505953e07b9a8b8545c` | `95cc7d10455e28ab1241c47c79015d0b8d7f11384466cef33440c8eac2dc5d72` |
+| `cp518/11-s4-w1-saturation/A-f7d19865` | Pair 11, arm A | `caa1e61635ca5ecde8c1ffe782c7d0f0d610a93b22302da7d0c9fc1d10f602f2` | `ef6d30288e92ed82a7ff3d3f095320a489dd4042d134c37cf2c97d51da53c97e` |
+| `cp518/11-s4-w1-saturation/B-87f947c6` | Pair 11, arm B | `4c12463cea6764a19fa19f03b3f292632b23834ba5c7c396bbceb110597d0d15` | `38efa36616ed3aed1129f8689274922057067da4384ca3a27376a49622b2387e` |
+| `cp518/attribute/B-87f947c6` | Attribution arm B, explanatory only | `94cd8d1b2c13d513a045e3184cd0c6b2b5d8dcabc0c251e50fd774d8316edbf2` | `86a09f32ece887a21dc6753affe89c929044bf6fb2fd9034041254219003dd29` |
+| `cp518/attribute/A-f7d19865` | Attribution arm A, explanatory only | `ed58667d64cf97a08965e22709626b5ff7bbc7ddec1f43b6dcdfff5154cea2b9` | `8a6ea7c4b0a9cb920b02a4b38e6cc10cd4e2b1472778c199f6191937651f7fe2` |
+
+Samplers:
+- `home-dev-01` steal, one line per second (`cp518/steal-ticks-<slot>.txt`, each with a `.meta`):
+  - `a-r2`: `88e1e1626de351a72d0085bc43960c96adce2853668b2f0a310ef1c7f2a15497`
+  - `a`: `9e8850c8394314a4ce822e14d6c5ac221f2201eeec9681ee1ec1714e52fe5b3b`
+  - `b`: `27f79723d8eb36a00f2200c34c3bae20fbf4bed364e14692ad7937b8351ac976`
+  - `c`: `cbbbb1abbb2c6fc54c25cf31bb0bbad8c13bebbaff1f15f9076b9a790b090054`
+  - `attr`: `3d48458be6e276a33c449c7bc85db329e3c0be6917560afd44b06abaee134477`
+- `home-dev-02` load and CPU every 5 s, under `~/development-state/HVO.SkyMonitor/evidence/1170/cp518-hd02/` on
+  `home-dev-02`:
+  - `hd02-load-a.txt`: `9a717a6436f1781e387c10b3f307142b843eaf28f1117206eb2fa89189cf3317`
+  - `hd02-load-bc.txt`: `6676026e0931457a9d67bc1a94e7936591fe1420c6a8cf5ba2db85c498340b52`
+  - `hd02-load-attr.txt`: `53ab28b464cfd8e0335a1b5c7783d8eb6485a87c4145b772fe6d7e97b79acaaf`
+  - The columns are epoch seconds, the three load averages, cumulative busy jiffies (user, nice, system, irq,
+    softirq) and cumulative idle plus iowait jiffies. Busy is Δbusy / (Δbusy + Δidle) between consecutive
+    samples, and p95 is the nearest-rank 95th percentile of those intervals.
+  - The holder script is `holder.sh` (`8e32715fc35fc367f3389a83dc494b3989d626934a944f735a4ce8fcc0db4da2`), and
+    its acquire and release log is `holder.log` (`ab983d43aff116a8e67b8b23acf51630f6073610f49e261414f02410082b0791`).
+
+Analysis outputs are in `cp518-analysis/` beside the packs:
+- `pairs.json`, the record: `2ec2867fadc7b750278808f0ff8e934b58ba8bad9d37843147e0ff8a8935eea4`
+- `s1-A-f7d19865-vs-B.json`: `9151148398643ffcdf200cd3c011e096c26889d77ab5dfe9672e8bd4981bad43`
+- `s1-A-f7d19865-r2-vs-B.json`: `726dd5cb4deb1eae5e628db7b116d1496972d0de631fe9203e7043e9a6cf2268`
+- `s4-allocation.json`: `ecf75ca366b02b14f4562ce5ea2593c810fd14a8ef6fd6a30f4a6ab54605762c`
+- `attribution/attribution.json`: `363e027302029709a06a3f63c84a271fddaf03c4158c880abd8c9425089b5418`. It is
+  explanatory only, and was produced by `attribution/attr.py`
+  (`b659c24417e57cac12584b30ceeef30109e26278d6e1de08854188fe3bc5ea8c`).
+  `metrics.sh` accepts only measure packs, so it does not apply to the attribution packs.
+- `attribution/frames/`: the distinct frame names of each `cpu` trace, one `<arm>-<cell>.frames.txt` per trace,
+  with `SHA256SUMS` (`3ba587c0ab4cbe67fab81f5d8f13e2618a77eac18b3d9a28d478d57afd7c59ff`). Each list comes from
+  a scratch copy of the pack's `trace.nettrace`, converted with
+  `dotnet-trace convert --format Speedscope` (10.0.745401) and reduced to the sorted `shared.frames[].name` set.
+
+The driver scripts and logs are in `run-cp518/`. These drivers produced the cited packs:
+- `prof.sh` (the S1 A and B runs in the `prof` slot): `0e7837cb6b546bf5e03daa797179c241163ef2e779377963c27a47de67ede9dd`
+- `a.sh`: `a4640057530fb6737e64adc7f47fe2d33effc70fadad36b5ea3410eb34f30479`
+- `bc.sh`: `0074f2b8b9b47d74858cc7a832c34983466549e9422ff0fc6bdc0bd01113c716`
+- `attr.sh`: `98c6d946da6685bd78c333ed8f6bd185bf0f66e40914bd08890abd79497ae727`
