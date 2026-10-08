@@ -134,7 +134,7 @@ public sealed class ExpectedPositionLabelOutputTests
             [new CelestialCatalogObject("star:vega", name, position.RightAscensionHours, position.DeclinationDegrees, 1)]),
             null, new AstronomyEnginePlanetEphemeris()).BuildAsync(new VisibleSceneRequest(utc,
             new ObserverLocation(0, 0, 0),
-            new ProjectionContext(ProjectionModel.Perspective, 100, 200, 400, 400, Width, Height,
+            new ProjectionContext(ProjectionModel.Perspective, 300, 200, 400, 400, Width, Height,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
                 new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1",
