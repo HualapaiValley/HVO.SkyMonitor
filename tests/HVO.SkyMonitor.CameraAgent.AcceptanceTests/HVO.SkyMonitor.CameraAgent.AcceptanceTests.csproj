@@ -13,6 +13,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.Tests\VirtualAstrometryReference.cs" Link="Linked\VirtualAstrometryReference.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.Tests\VirtualAstrometryFixture.cs" Link="Linked\VirtualAstrometryFixture.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>

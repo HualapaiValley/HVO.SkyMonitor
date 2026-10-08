@@ -3821,11 +3821,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(520, observer.GetProperty("elevationMeters").GetInt32());
         Assert.AreEqual("0B3F2F069338CBD420FF214926E97760A9B59EEACB444F0B8F08149DF698DF6E",
             observer.GetProperty("identitySha256").GetString());
+        var site = new ObserverLocation(
+            observer.GetProperty("latitudeDegrees").GetDouble(),
+            observer.GetProperty("longitudeDegrees").GetDouble(),
+            observer.GetProperty("elevationMeters").GetDouble());
         var fixtureProjection = fixtureRoot.GetProperty("projection");
         Assert.AreEqual("EquidistantFisheye", fixtureProjection.GetProperty("model").GetString());
         Assert.AreEqual(3552, fixtureProjection.GetProperty("width").GetInt32());
         Assert.AreEqual(3552, fixtureProjection.GetProperty("height").GetInt32());
         Assert.AreEqual(ExpectedRigSha256, fixtureProjection.GetProperty("rigSha256").GetString());
+        var configuration = await LoadW6ConfigurationAsync().ConfigureAwait(false);
+        Assert.AreEqual(ExpectedRigSha256, CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var tolerances = fixtureRoot.GetProperty("tolerances");
         var projectedTolerance = tolerances.GetProperty("projectedSensorPixels").GetDouble();
         var centroidTolerance = tolerances.GetProperty("rawCentroidPixels").GetDouble();
@@ -3833,10 +3839,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var cardinalTolerance = tolerances.GetProperty("cardinalSensorPixels").GetDouble();
         var fixtureSceneUtc = fixtureRoot.GetProperty("sceneUtc").GetDateTimeOffset();
         var campaignCaptureIds = campaignCaptures.Select(static capture => capture.CaptureId).ToHashSet();
+        // The fixture is anchored at the representative capture's integration start; the capture's scene is at its
+        // celestial midpoint (#1116), so the fixture pixels are transported to that midpoint below.
         var raw = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
             campaignCaptureIds.Contains(item.Manifest.Descriptor.Capture.CaptureId) &&
-            item.Manifest.Scene?.SceneUtc == fixtureSceneUtc);
+            item.Manifest.Scene?.VirtualExposure?.CelestialStartUtc == fixtureSceneUtc);
         var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
         var scene = raw.Manifest.Scene ?? throw new InvalidDataException("The W6 scene is missing.");
         var sceneUtc = scene.SceneUtc
@@ -3862,9 +3870,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var rowId = expected.GetProperty("rowId").GetString()!;
             var projected = retainedScene.Objects.Single(item => item.Id == rowId);
             Assert.AreEqual(expected.GetProperty("name").GetString(), projected.DisplayName);
-            var expectedPixel = expected.GetProperty("expectedPixel");
-            var expectedX = expectedPixel.GetProperty("x").GetDouble();
-            var expectedY = expectedPixel.GetProperty("y").GetDouble();
+            var fixturePixel = ReadPoint(expected.GetProperty("expectedPixel"));
+            var transported = W6FixtureMidpointTransport.Transport(
+                configuration.Rig, site, fixturePixel, fixtureSceneUtc, sceneUtc);
+            var expectedX = transported.X;
+            var expectedY = transported.Y;
             var projectedError = Distance(projected.Pixel.X, projected.Pixel.Y, expectedX, expectedY);
             Assert.IsLessThanOrEqualTo(projectedTolerance, projectedError, rowId);
             var centroid = CalculateRawCentroid(
@@ -3890,6 +3900,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.IsLessThanOrEqualTo(markerTolerance, markerError, rowId);
             observations.Add(new GeometryObjectEvidence(
                 rowId,
+                fixturePixel.X,
+                fixturePixel.Y,
                 expectedX,
                 expectedY,
                 projected.Pixel.X,
@@ -3904,7 +3916,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 marker.ChangedPoints));
         }
 
-        var configuration = await LoadW6ConfigurationAsync().ConfigureAwait(false);
         var landmarks = RigProjectionContextFactory.CreateAnnotationLandmarks(
             RigProjectionContextFactory.Create(configuration.Rig));
         Assert.IsNotNull(landmarks);
@@ -3997,6 +4008,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             fixtureRoot.GetProperty("fixtureId").GetString()!,
             fixtureRoot.GetProperty("referenceModel").GetString()!,
             captureId,
+            fixtureSceneUtc,
             sceneUtc,
             markerTolerance,
             observations,
@@ -6828,6 +6840,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string FixtureId,
         string ReferenceModel,
         Guid CaptureId,
+        DateTimeOffset FixtureSceneUtc,
         DateTimeOffset SceneUtc,
         double RenderedMarkerTolerancePixels,
         IReadOnlyList<GeometryObjectEvidence> Objects,
@@ -6892,6 +6905,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private sealed record GeometryObjectEvidence(
         string RowId,
+        double FixtureX,
+        double FixtureY,
         double ExpectedX,
         double ExpectedY,
         double ProjectedX,
