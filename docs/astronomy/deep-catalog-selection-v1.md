@@ -987,8 +987,16 @@ that change a compared leaf in the B arm alone.
 **Archive.** The self-test, the rewrap record and every condition-5 output are kept at `evidence/1167/a8f09a0a/`
 (`SHA256SUMS` sha256 `3baf98db8c917b21eec89dee78b44ba74d2b431932bab7ed6ec0e9dccdd94c0c`). The archive does not keep
 the 766 MiB of rewritten scratch JSON. Instead, each synthetic case keeps a manifest of every file it wrote, with
-path, bytes and SHA-256, and its symlink list. Every case was rebuilt from scratch, and all 32 reproduced their
-manifests and link lists exactly.
+path, bytes and SHA-256, and its symlink lists. The retained reproduction record compared all 32 written-file
+manifests and post-trigger `links.txt` lists. That did not establish literal equality for `synthetic-links.txt`:
+r3 preparation found a stale row for A2 stereographic in `r1f1-a2-revision-absent`, in both this archive and
+`evidence/1167/a7a58b43/cond5/`. The builders recorded synthetic links before applying triggers, while a later
+written-file manifest recorded the replacement regular file. The original archives remain unchanged. Reconciliation
+removes only link rows whose source paths are verified regular written files with the recorded SHA-256 and size
+where present, compares the residual links exactly, and separately checks every link's confinement and regular
+target. The r3 evidence pack retains each removed row and its verification, the original mismatch and timing proof,
+and both stopped builder attempts. Written-file equality and reconciled residual links are distinct checks; no
+unexplained link difference is accepted.
 
 **Disclosures.**
 
