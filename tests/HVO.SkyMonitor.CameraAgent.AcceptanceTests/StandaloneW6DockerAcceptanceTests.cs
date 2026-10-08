@@ -4332,7 +4332,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 var expected = source[offset] * (1 - coverage) + color[channel] * coverage;
                 requiredChange |= quarters >= 2 && Math.Abs(source[offset] - expected) > 2;
                 CloudRequire(Math.Abs(overlay[offset] - expected) <= 2d, CloudContractFailure.RasterCoverage,
-                    $"Cloud coverage/color mismatch at ({pixel % layout.Width}, {pixel / layout.Width}) channel {channel}.");
+                    $"Cloud coverage/color mismatch at ({pixel % layout.Width}, {pixel / layout.Width}) channel {channel}. " +
+                    $"SourceRGB=({source[pixel * 3]},{source[pixel * 3 + 1]},{source[pixel * 3 + 2]}); " +
+                    $"actualRGB=({overlay[pixel * 3]},{overlay[pixel * 3 + 1]},{overlay[pixel * 3 + 2]}); " +
+                    $"strokeRGB=({color[0]},{color[1]},{color[2]}); quarterMask={quadrants}; " +
+                    $"expectedCoverage={quarters}/4; expectedChannelNumerator={source[offset] * (4 - quarters) + color[channel] * quarters}/4.");
             }
             if (requiredChange) requiredChangedPixels++;
         }
