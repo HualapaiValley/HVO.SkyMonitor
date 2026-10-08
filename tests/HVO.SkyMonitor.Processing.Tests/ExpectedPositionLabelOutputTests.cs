@@ -25,6 +25,7 @@ public sealed class ExpectedPositionLabelOutputTests
     public async Task FinalTypedAndRasterDiagnosticsPreserveMarkerOrSuppressLabel(
         string catalogueName, int limit, string? expected)
     {
+        ArgumentNullException.ThrowIfNull(catalogueName);
         var scene = await SceneAsync(catalogueName).ConfigureAwait(false);
         var typed = Labels(scene, limit, null, diagnostics: true);
         Assert.HasCount(expected is null ? 0 : 1, typed.TextBlocks);

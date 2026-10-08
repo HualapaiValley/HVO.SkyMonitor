@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
