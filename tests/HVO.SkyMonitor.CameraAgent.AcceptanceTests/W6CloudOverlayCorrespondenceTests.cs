@@ -24,6 +24,9 @@ public sealed class W6CloudOverlayCorrespondenceTests
     private static readonly (int Column, int Row)[] DefaultTiles = [(6, 0), (7, 8), (0, 15), (15, 15)];
     // Accepted semantic reference color, deliberately supplied independently of producer defaults.
     private static readonly PresentationColor Cyan = new(57, 197, 207);
+    private static readonly int[] ComparisonItems = [1, 2];
+    private static readonly int[] ReversedComparisonItems = [2, 1];
+    private static readonly string[] StringComparisonItems = ["1", "2"];
 
     [TestMethod]
     [DataRow("interior")]
@@ -242,7 +245,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
         var reference = new PresentationProductReference(CaptureId, new string('A', 64),
             PresentationLayerPayloadJson.MediaType,
             new(Size, Size, new string('B', 64), new string('C', 64)));
-        var options = JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 1, 2 }, label = "v" } });
+        var options = JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = ComparisonItems, label = "v" } });
         var layer = LayeredPresentationJson.CreateLayer("comparison-control", reference, null,
             PresentationCoordinateSpace.ScenePixels, "comparison-renderer", "comparison-style", 10,
             PresentationBlendMode.Normal, 1_000_000, true, options);
@@ -286,7 +289,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
             ("BlendMode", layer with { BlendMode = PresentationBlendMode.Lighten }),
             ("OpacityMillionths", layer with { OpacityMillionths = 500_000 }),
             ("EnabledByDefault", layer with { EnabledByDefault = false }),
-            ("Options", layer with { Options = JsonSerializer.SerializeToElement(new { flag = false, nested = new { items = new[] { 1, 2 }, label = "v" } }) }),
+            ("Options", layer with { Options = JsonSerializer.SerializeToElement(new { flag = false, nested = new { items = ComparisonItems, label = "v" } }) }),
         ];
         foreach (var change in changes)
         {
@@ -299,11 +302,11 @@ public sealed class W6CloudOverlayCorrespondenceTests
         // Nested value/type/key/array-order changes must remain detectable, not just top-level Options text.
         var changedOptions = new[]
         {
-            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 2, 1 }, label = "v" } }),
-            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { 1, 2 }, label = "changed" } }),
-            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = new[] { "1", "2" }, label = "v" } }),
-            JsonSerializer.SerializeToElement(new { Flag = true, nested = new { items = new[] { 1, 2 }, label = "v" } }),
-            JsonSerializer.SerializeToElement(new { flag = true, extra = true, nested = new { items = new[] { 1, 2 }, label = "v" } })
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = ReversedComparisonItems, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = ComparisonItems, label = "changed" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, nested = new { items = StringComparisonItems, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { Flag = true, nested = new { items = ComparisonItems, label = "v" } }),
+            JsonSerializer.SerializeToElement(new { flag = true, extra = true, nested = new { items = ComparisonItems, label = "v" } })
         };
         foreach (var changed in changedOptions)
         {
