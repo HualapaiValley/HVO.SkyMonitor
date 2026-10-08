@@ -224,7 +224,7 @@ public sealed class MeasuredStellarAssociationProfileTests
 
         return new InMemoryCelestialCatalog([
             Create("HIP 900001", "Zenith Star", "900001", new AltAzPoint(89, 0)),
-            Create("HIP 900002", "East Star", "900002", new AltAzPoint(86, 90)),
+            Create("HIP 900002", "E", "900002", new AltAzPoint(86, 90)),
             Create("HIP 900003", "West Star", "900003", new AltAzPoint(84, 270))
         ]);
     }
