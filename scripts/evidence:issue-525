@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Issue #525 W3-CAT-DSO driver. It compares the HYG 4.4 + OpenNGC composed catalog package with the HYG 4.4 package
+# whose stars it carries, on one Release build of the checked-out head, by running the two Manual cases of
+# CatalogPerformanceTests in a fresh test process per trial:
+#   A = W3CatDsoStarsOnlyArmEvidenceAsync (hyg-v44-production)
+#   B = W3CatDsoComposedArmEvidenceAsync  (hyg-v44-openngc-production)
+#
+#   MSBUILDDISABLENODEREUSE=1 flock -o LOCK scripts/evidence:issue-525 smoke|measure EVIDENCE_DIR
+#
+# It may also run from a driver that itself runs under the lock: the lock must be held by this process or one of its
+# ancestors.
+# smoke runs A then B once and is not a measurement. measure runs A B B A three times, so each adjacent pair compares
+# the two packages under the same host conditions. The driver does not build: the head's Release output must already
+# exist, and the worktree must be clean.
+#
+# Environment:
+#   HVO_ISSUE525_LOCK              the lock file an ancestor holds (required); its /proc/locks line is recorded
+#   HVO_ISSUE525_STARS_ROOT        installation root with versions/<version>/ of hyg-v44-production (required)
+#   HVO_ISSUE525_COMPOSED_ROOT     installation root with versions/<version>/ of hyg-v44-openngc-production (required)
+#   HVO_ISSUE525_STARS_VERSION     default hyg-v4.4-p4-s3-r1
+#   HVO_ISSUE525_COMPOSED_VERSION  default hyg-v4.4-openngc-v20260501-p5-s4-r1
+#   HVO_ISSUE525_NICE              1 runs each trial under nice -n 19 with idle-class I/O
+#
+# The page cache is neither dropped nor controlled. Each trial's evidence reports the bytes its catalog startup read
+# from storage (read_bytes) beside the bytes it read through system calls (rchar), and the driver records the cached
+# memory before every trial. A trial whose storage reads fall far below its database length ran from a warm cache and
+# is not a cold start.
+set -euo pipefail
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+MODE=${1:-}
+EVIDENCE_DIR=${2:-}
+[[ ( "$MODE" == smoke || "$MODE" == measure ) && -n "$EVIDENCE_DIR" ]] ||
+  fail "usage: scripts/evidence:issue-525 smoke|measure EVIDENCE_DIR"
+EVIDENCE_DIR=$(realpath -m -- "$EVIDENCE_DIR")
+case "$EVIDENCE_DIR/" in "$ROOT"/*) fail "The evidence directory must be outside the repository." ;; esac
+[[ ! -e "$EVIDENCE_DIR" ]] || fail "The evidence directory is create-only: $EVIDENCE_DIR"
+
+LOCK=${HVO_ISSUE525_LOCK:?HVO_ISSUE525_LOCK must name the lock file an ancestor holds.}
+STARS_ROOT=${HVO_ISSUE525_STARS_ROOT:?HVO_ISSUE525_STARS_ROOT is required.}
+COMPOSED_ROOT=${HVO_ISSUE525_COMPOSED_ROOT:?HVO_ISSUE525_COMPOSED_ROOT is required.}
+STARS_VERSION=${HVO_ISSUE525_STARS_VERSION:-hyg-v4.4-p4-s3-r1}
+COMPOSED_VERSION=${HVO_ISSUE525_COMPOSED_VERSION:-hyg-v4.4-openngc-v20260501-p5-s4-r1}
+STARS_PACKAGE="$STARS_ROOT/versions/$STARS_VERSION"
+COMPOSED_PACKAGE="$COMPOSED_ROOT/versions/$COMPOSED_VERSION"
+[[ -f "$STARS_PACKAGE/manifest.json" ]] || fail "No stars-only package: $STARS_PACKAGE"
+[[ -f "$COMPOSED_PACKAGE/manifest.json" ]] || fail "No composed package: $COMPOSED_PACKAGE"
+
+PROJECT=tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj
+OUTPUT_DIR=tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/bin/Release/net10.0
+CLASS=HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.CatalogPerformanceTests
+[[ -f "$OUTPUT_DIR/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.dll" ]] ||
+  fail "The Release output is missing; build the head first: $OUTPUT_DIR"
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || fail "The worktree must be clean."
+
+LOCK_INODE=$(stat -c %i -- "$LOCK")
+LOCK_LINE=
+holder=$$
+while [[ "$holder" -gt 1 ]]; do
+  LOCK_LINE=$(grep -E "^[0-9]+: FLOCK +ADVISORY +WRITE +$holder [0-9a-f]+:[0-9a-f]+:$LOCK_INODE " /proc/locks) && break
+  holder=$(awk '/^PPid:/ { print $2 }' "/proc/$holder/status" 2> /dev/null || true)
+done
+[[ -n "$LOCK_LINE" ]] || fail "Neither this process (pid $$) nor an ancestor holds $LOCK (inode $LOCK_INODE)."
+
+mkdir -p "$EVIDENCE_DIR/results" "$EVIDENCE_DIR/trials"
+LOG="$EVIDENCE_DIR/driver.log"
+VMSTAT_PID=
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$*" | tee -a "$LOG"; }
+finish() {
+  local code=$?
+  [[ -z "$VMSTAT_PID" ]] || kill "$VMSTAT_PID" 2> /dev/null || true
+  printf '%s\n' "$code" > "$EVIDENCE_DIR/exit.code"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+export MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false UseRazorBuildServer=false
+export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+HEAD_SHA=$(git rev-parse HEAD)
+log "START mode=$MODE hostname=$(hostname) head=$HEAD_SHA tree=$(git rev-parse 'HEAD^{tree}') pid=$$"
+log "LOCK $LOCK inode=$LOCK_INODE holder=$holder $LOCK_LINE"
+log "DF -B1 / $(df -B1 / | tail -n 1)"
+log "HOST nproc=$(nproc) loadavg=$(cat /proc/loadavg) kernel=$(uname -r) sdk=$(dotnet --version)"
+log "SCRIPT sha256=$(sha256sum -- "$0" | cut -c1-64)"
+(cd "$OUTPUT_DIR" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$EVIDENCE_DIR/release-output.sha256"
+log "RELEASE-OUTPUT files=$(wc -l < "$EVIDENCE_DIR/release-output.sha256") sha256=$(sha256sum < "$EVIDENCE_DIR/release-output.sha256" | cut -c1-64)"
+
+# vmstat's st column is the CPU time a hypervisor took from this guest.
+TZ=UTC vmstat -n -t -w 1 > "$EVIDENCE_DIR/vmstat.log" 2>&1 &
+VMSTAT_PID=$!
+
+if [[ "$MODE" == smoke ]]; then
+  PLAN=(A B)
+else
+  PLAN=(A B B A A B B A A B B A)
+fi
+NICE=()
+[[ "${HVO_ISSUE525_NICE:-0}" != 1 ]] || NICE=(nice -n 19 ionice -c 3)
+
+index=0
+for arm in "${PLAN[@]}"; do
+  index=$((index + 1))
+  trial=$(printf '%s-t%02d' "$MODE" "$index")
+  if [[ "$arm" == A ]]; then
+    name=stars-only method=W3CatDsoStarsOnlyArmEvidenceAsync root=$STARS_ROOT version=$STARS_VERSION
+  else
+    name=composed method=W3CatDsoComposedArmEvidenceAsync root=$COMPOSED_ROOT version=$COMPOSED_VERSION
+  fi
+  log "TRIAL $trial arm=$arm $name $(grep -E '^(MemAvailable|Cached):' /proc/meminfo | tr -s ' ' | paste -sd ' ')"
+  started=$(date +%s%N)
+  code=0
+  HVO_CATALOG_DSO_ROOT=$root HVO_CATALOG_DSO_VERSION=$version HVO_PERF_REVISION=$HEAD_SHA HVO_PERF_TRIAL=$trial \
+    HVO_PERF_OUTPUT="$EVIDENCE_DIR/results" \
+    "${NICE[@]}" dotnet test "$PROJECT" --no-build --configuration Release \
+    -nodeReuse:false -p:UseSharedCompilation=false -p:UseRazorBuildServer=false \
+    --filter "FullyQualifiedName=$CLASS.$method" \
+    --logger "trx;LogFileName=$trial.trx" --results-directory "$EVIDENCE_DIR/trials/$trial" \
+    > "$EVIDENCE_DIR/trials/$trial.log" 2>&1 || code=$?
+  log "TRIAL-END $trial exit=$code wallMilliseconds=$((($(date +%s%N) - started) / 1000000))"
+  [[ "$code" -eq 0 ]] || fail "Trial $trial failed; see trials/$trial.log."
+  [[ -f "$EVIDENCE_DIR/results/catalog-dso-$name-$trial.json" ]] || fail "Trial $trial wrote no evidence."
+done
+
+kill "$VMSTAT_PID"
+wait "$VMSTAT_PID" 2> /dev/null || true
+VMSTAT_PID=
+# The packages are hashed only after the last trial so that hashing cannot warm the cache a trial reads.
+sha256sum -- "$STARS_PACKAGE"/* "$COMPOSED_PACKAGE"/* > "$EVIDENCE_DIR/packages.sha256"
+log "DONE mode=$MODE trials=${#PLAN[@]}"
+SUMS=$(cd "$EVIDENCE_DIR" && find . -type f ! -name exit.code -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
+printf '%s\n' "$SUMS" > "$EVIDENCE_DIR/SHA256SUMS"

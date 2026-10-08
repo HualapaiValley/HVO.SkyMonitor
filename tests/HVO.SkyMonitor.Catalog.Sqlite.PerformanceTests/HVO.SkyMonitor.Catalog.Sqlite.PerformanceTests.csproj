@@ -2,9 +2,11 @@
   <ItemGroup>
     <PackageReference Include="MSTest" />
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
   </ItemGroup>
 </Project>
