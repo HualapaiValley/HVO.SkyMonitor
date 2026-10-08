@@ -207,8 +207,12 @@ public sealed partial class CatalogPerformanceTests
     private sealed record BaselineSpatialEntry(DeepSkyObject Object, (double X, double Y, double Z) Direction,
         double ReachDegrees);
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
+        Justification = "System.Text.Json constructs the pinned contract through its public record constructor.")]
     private sealed record DsoQueryPins(string Schema, string DatabaseSha256, List<DsoQueryPin> Workloads);
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
+        Justification = "System.Text.Json constructs each pinned workload through its public record constructor.")]
     private sealed record DsoQueryPin(string Name, string Kind, int ExpectedMatchCount, string[] ExpectedIds,
         string ExpectedContentSha256, int MaximumResults = 64, double RightAscensionHours = 0,
         double DeclinationDegrees = 0, double RadiusDegrees = 0, string[]? ObjectTypes = null,

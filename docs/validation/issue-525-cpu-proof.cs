@@ -37,6 +37,11 @@ foreach (var burn in new[] { false, true })
     var record = task.GetType().GetProperty("Result")!.GetValue(task)!;
     var cpu = (double)record.GetType().GetProperty("CpuMillisecondsPerOperation")!.GetValue(record)!;
     var verification = (double?)record.GetType().GetProperty("VerificationCpuMillisecondsPerOperation")?.GetValue(record);
+    var identity = (string)record.GetType().GetProperty("ResultChecksumSha256")!.GetValue(record)!;
+    var expectedIdentity = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(":" + checksum)));
+    var median = (double)record.GetType().GetProperty("MedianMilliseconds")!.GetValue(record)!;
+    if (identity != expectedIdentity || median > 1)
+        throw new InvalidOperationException("fixed operation identity or sub-millisecond median changed");
     operationCpu.Add(cpu);
     verificationCpu.Add(verification);
     records.Add(new { verificationBurnMilliseconds = burn ? 40 : 0, measurement = record });
@@ -61,6 +66,7 @@ Console.WriteLine(JsonSerializer.Serialize(new
     repetitions = 30,
     verificationOnlyBurnMilliseconds = 40,
     invariantOperationCpuToleranceMilliseconds = 5,
+    fixedOperationMedianLimitMilliseconds = 1,
     expectedOldContaminationMinimumMilliseconds = 20,
     records,
     passed = true
