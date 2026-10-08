@@ -48,7 +48,9 @@ public sealed class W6CloudOverlayCorrespondenceTests
         Assert.IsGreaterThan(0, evidence.MatchedBorderPixelCount);
         Assert.AreEqual(0, evidence.UnexpectedBorderPixelCount);
         // Separate raster invocation proves the independent oracle, rather than just executor replay equality.
-        CheckRaster(fixture, MaskRaster(fixture));
+        var raster = MaskRaster(fixture);
+        CheckRaster(fixture, raster);
+        if (geometry == "neighbours") AssertNeighbourCompositingControls(fixture, raster);
     }
 
     [TestMethod]
@@ -328,6 +330,36 @@ public sealed class W6CloudOverlayCorrespondenceTests
         Assert.AreEqual(CloudFailure.LayerField, duplicate.Data["W6.CloudGuard"]);
         Assert.AreEqual(1, duplicate.Data["W6.CloudLayerIndex"]);
         Assert.AreEqual("LayerIdentitySha256", duplicate.Data["W6.CloudMember"]);
+    }
+
+    private static void AssertNeighbourCompositingControls(Fixture fixture, byte[] healthyRaster)
+    {
+        // The healthy actual raster already passed independently. At this prescribed shared straight
+        // edge there are two half profiles: missing a contribution, adding one, or flattening to full
+        // geometric-union coverage must each fail RasterCoverage on the valid original payload.
+        for (var fault = 0; fault < 3; fault++)
+        {
+            var wrongCoverage = fault switch
+            {
+                0 => 0.5,
+                1 => 0.875,
+                _ => 1d
+            };
+            var changed = healthyRaster.ToArray();
+            for (var x = 221; x <= 222; x++)
+            {
+                var offset = (100 * Size + x) * 3;
+                changed[offset] = Blend(fixture.Base.Payload.Span[offset], Cyan.Red, wrongCoverage);
+                changed[offset + 1] = Blend(fixture.Base.Payload.Span[offset + 1], Cyan.Green, wrongCoverage);
+                changed[offset + 2] = Blend(fixture.Base.Payload.Span[offset + 2], Cyan.Blue, wrongCoverage);
+            }
+            var exception = Assert.ThrowsExactly<AssertFailedException>(() => CheckRaster(fixture, changed),
+                $"Shared-neighbour contribution control {fault}.");
+            Assert.AreEqual(CloudFailure.RasterCoverage, exception.Data["W6.CloudGuard"]);
+        }
+
+        static byte Blend(byte source, byte color, double coverage) =>
+            (byte)Math.Round(source * (1 - coverage) + color * coverage, MidpointRounding.AwayFromZero);
     }
 
     private static StandaloneW6DockerAcceptanceTests.CloudOverlayCorrespondenceEvidence Check(Fixture fixture) =>

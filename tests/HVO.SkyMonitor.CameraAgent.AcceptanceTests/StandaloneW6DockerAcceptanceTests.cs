@@ -4303,7 +4303,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             if (region.IsCloudy) cloudyTiles++;
         }
         Assert.AreEqual(assessment.Grid.CloudyRegionCount, cloudyTiles);
-        var expectedSupport = CloudStrokeSupport(layout, assessment);
+        var expectedSupport = CloudStrokePasses(layout, assessment);
         var changedSupport = new HashSet<int>();
         var matchedBorderPixels = 0L;
         var requiredChangedPixels = 0L;
@@ -4318,25 +4318,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 changedSupport.Add(pixel);
                 matchedBorderPixels++;
             }
-            if (!expectedSupport.TryGetValue(pixel, out var quadrants)) continue;
-            var quarters = System.Numerics.BitOperations.PopCount((uint)quadrants);
-            // The native AA path may omit the outer quarter at a miter corner. It may not omit a straight
-            // half-pixel profile. Two byte levels bound coverage quantization, premultiply/unpremultiply,
-            // and final RGB rounding; the palette and geometric fractions come from the contract.
-            if (!changed && quarters == 1) continue;
-            var coverage = quarters / 4d;
+            if (!expectedSupport.TryGetValue(pixel, out var passes)) continue;
+            // Accepted centered, width-one, butt-ended grid segments each contribute a half profile.
+            // The pinned native hairline path composites every segment with SrcOver, including coincident
+            // neighbour edges. Spatial union area is not the accumulated buffer opacity. Expectations
+            // depend only on the independent assessment grid and cyan contract, never rendered pixels.
+            CloudRequire(passes is >= 1 and <= 4, CloudContractFailure.RasterCoverage,
+                "Cloud stroke pass count is outside the registered grid bound.");
+            var denominator = 1 << passes;
+            var coverage = (denominator - 1d) / denominator;
             var requiredChange = false;
             for (var channel = 0; channel < 3; channel++)
             {
                 var offset = pixel * 3 + channel;
                 var expected = source[offset] * (1 - coverage) + color[channel] * coverage;
-                requiredChange |= quarters >= 2 && Math.Abs(source[offset] - expected) > 2;
+                requiredChange |= Math.Abs(source[offset] - expected) > 2;
+                // Retain the existing two-byte quantization/colour bound without widening it.
                 CloudRequire(Math.Abs(overlay[offset] - expected) <= 2d, CloudContractFailure.RasterCoverage,
                     $"Cloud coverage/color mismatch at ({pixel % layout.Width}, {pixel / layout.Width}) channel {channel}. " +
                     $"SourceRGB=({source[pixel * 3]},{source[pixel * 3 + 1]},{source[pixel * 3 + 2]}); " +
                     $"actualRGB=({overlay[pixel * 3]},{overlay[pixel * 3 + 1]},{overlay[pixel * 3 + 2]}); " +
-                    $"strokeRGB=({color[0]},{color[1]},{color[2]}); quarterMask={quadrants}; " +
-                    $"expectedCoverage={quarters}/4; expectedChannelNumerator={source[offset] * (4 - quarters) + color[channel] * quarters}/4.");
+                    $"strokeRGB=({color[0]},{color[1]},{color[2]}); centeredHalfPasses={passes}; " +
+                    $"expectedOpacity={denominator - 1}/{denominator}; " +
+                    $"expectedChannelNumerator={source[offset] + color[channel] * (denominator - 1)}/{denominator}.");
             }
             if (requiredChange) requiredChangedPixels++;
         }
@@ -4363,35 +4367,37 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 if ((uint)y < (uint)layout.Height) yield return y * layout.Width + x;
     }
 
-    private static Dictionary<int, byte> CloudStrokeSupport(FrameLayoutDescriptor layout, CloudAssessmentV1 assessment)
+    private static Dictionary<int, int> CloudStrokePasses(FrameLayoutDescriptor layout, CloudAssessmentV1 assessment)
     {
-        var support = new Dictionary<int, byte>();
+        var support = new Dictionary<int, int>();
         foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
         {
-            foreach (var pixel in CloudTilePixels(layout, region)) Add(pixel);
-            foreach (var cornerX in new[] { region.X, region.X + region.Width })
-                foreach (var cornerY in new[] { region.Y, region.Y + region.Height })
-                    for (var y = cornerY - 1; y <= cornerY; y++)
-                        for (var x = cornerX - 1; x <= cornerX; x++)
-                            if ((uint)x < (uint)layout.Width && (uint)y < (uint)layout.Height) Add(y * layout.Width + x);
-
-            void Add(int pixel)
+            // Integer endpoints with butt caps: along-edge intervals include their start and exclude
+            // their end. Across each edge, both adjacent pixels have a half profile; clip to the frame.
+            // Count each independently prescribed edge, preserving coincident neighbour contributions.
+            for (var x = region.X; x < region.X + region.Width; x++)
             {
-                byte quadrants = 0;
-                for (var quadrant = 0; quadrant < 4; quadrant++)
-                {
-                    var x = pixel % layout.Width + (quadrant % 2 == 0 ? 0.25 : 0.75);
-                    var y = pixel / layout.Width + (quadrant / 2 == 0 ? 0.25 : 0.75);
-                    var outer = x >= region.X - 0.5 && x < region.X + region.Width + 0.5 &&
-                        y >= region.Y - 0.5 && y < region.Y + region.Height + 0.5;
-                    var inner = x >= region.X + 0.5 && x < region.X + region.Width - 0.5 &&
-                        y >= region.Y + 0.5 && y < region.Y + region.Height - 0.5;
-                    if (outer && !inner) quadrants |= (byte)(1 << quadrant);
-                }
-                support[pixel] = (byte)(support.GetValueOrDefault(pixel) | quadrants);
+                Add(x, region.Y - 1);
+                Add(x, region.Y);
+                Add(x, region.Y + region.Height - 1);
+                Add(x, region.Y + region.Height);
+            }
+            for (var y = region.Y; y < region.Y + region.Height; y++)
+            {
+                Add(region.X - 1, y);
+                Add(region.X, y);
+                Add(region.X + region.Width - 1, y);
+                Add(region.X + region.Width, y);
             }
         }
         return support;
+
+        void Add(int x, int y)
+        {
+            if ((uint)x >= (uint)layout.Width || (uint)y >= (uint)layout.Height) return;
+            var pixel = y * layout.Width + x;
+            support[pixel] = checked(support.GetValueOrDefault(pixel) + 1);
+        }
     }
 
     private static long CountPackedPixelDifferences(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
