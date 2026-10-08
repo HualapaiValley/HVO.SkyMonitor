@@ -175,7 +175,7 @@ public sealed class W6CloudOverlayCorrespondenceTests
             "layer-reference" => "Layer products",
             "manifest-identity" => "Manifest artifact",
             _ => throw new ArgumentOutOfRangeException(nameof(fault))
-        });
+        }, StringComparison.Ordinal);
     }
 
     private static StandaloneW6DockerAcceptanceTests.CloudOverlayCorrespondenceEvidence Check(Fixture fixture) =>

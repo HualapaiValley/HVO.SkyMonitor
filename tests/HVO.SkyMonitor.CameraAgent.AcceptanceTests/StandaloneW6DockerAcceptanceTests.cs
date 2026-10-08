@@ -152,6 +152,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         "AnnotatedPreview/w6-annotated-preview"
     ];
     private static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions CompatibilityJson = new(JsonSerializerDefaults.Web);
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -4033,7 +4034,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             descriptor.Artifact.Variant, reader.GetString(1), descriptor.Artifact.MediaType, descriptor.Layout,
             payload, descriptor.Artifact.CreatedUtc, TimeSpan.FromTicks(reader.GetInt64(3)),
             JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>((byte[])reader.GetValue(2),
-                new JsonSerializerOptions(JsonSerializerDefaults.Web))!, descriptor.Capture.CaptureSequence,
+                CompatibilityJson)!, descriptor.Capture.CaptureSequence,
             descriptor.Artifact.SourceArtifactIds)
         { ContentIdentitySha256 = identity, CaptureId = descriptor.Capture.CaptureId };
         Assert.IsFalse(reader.Read());
