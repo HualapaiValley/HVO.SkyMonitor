@@ -9,16 +9,18 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests;
 public sealed partial class CatalogPerformanceTests
 {
     private const string ExpectedDsoQueryPinsSha256 = "ACB6F7600850307AAC42A5B5FE021885F4B26C4507F1F4DFED6F333E806C30F6";
+    private static readonly string[] RequiredDsoQueryFamilies = ["spatial", "type", "brightness", "alias", "outline"];
 
     private static async Task<object> MeasurePinnedDeepSkyQueriesAsync(CatalogSnapshotResult snapshot, DeepSkyCatalog catalog)
     {
-        var pinsBytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "issue-525-query-pins.json"));
+        var pinsBytes = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "issue-525-query-pins.json"))
+            .ConfigureAwait(false);
         Assert.AreEqual(ExpectedDsoQueryPinsSha256, ComputeBytesChecksum(pinsBytes));
         var pins = JsonSerializer.Deserialize<DsoQueryPins>(pinsBytes, JsonOptions)!;
         Assert.AreEqual("hvo-issue525-query-pins-v1", pins.Schema);
         Assert.AreEqual(pins.DatabaseSha256.ToUpperInvariant(), snapshot.DatabaseSha256.ToUpperInvariant());
         Assert.AreEqual(15, pins.Workloads.Count);
-        CollectionAssert.AreEquivalent(new[] { "spatial", "type", "brightness", "alias", "outline" },
+        CollectionAssert.AreEquivalent(RequiredDsoQueryFamilies,
             pins.Workloads.Select(static pin => pin.Kind).Distinct(StringComparer.Ordinal).ToArray());
 
         // These reference collections are setup, after the recorded startup. They are not another catalog resolve.
