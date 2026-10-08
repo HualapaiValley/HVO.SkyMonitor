@@ -57,6 +57,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
     private static readonly string[] QualityDependentNodeIds = ["storage", "telemetry"];
+    // #1035's accepted contract renders the cardinals as pale-cyan #C3ECFF letters on dark bordered plates (issue
+    // #1035 AC; docs/validation/issue-1035-current-sky.md:147). The W6 configuration sets no cardinal value.
+    private static readonly PresentationColor ExpectedW6CardinalFill = new(195, 236, 255);
+    private static readonly string[] ExpectedW6CardinalLines = ["N", "E", "S", "W"];
     // Issue #719 phase 2. Every value below is sourced from the W6 template's `pipeline.steps`
     // (`src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json`) or from the issue's stated
     // bounds, never from an observed execution. A node set read off one run would assert only that
@@ -3938,38 +3942,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ReadPoint(expectedLandmarks.GetProperty("east")),
             ReadPoint(expectedLandmarks.GetProperty("south")),
             ReadPoint(expectedLandmarks.GetProperty("west")));
-        var renderedLandmarks = new Dictionary<string, PackedMarkerObservation>(StringComparer.Ordinal)
-        {
-            ["center"] = CalculatePackedChangedCentroidAtValue(previewPayload, annotatedPayload,
-                annotated.Manifest.Descriptor.Layout, fixtureLandmarks.Center, 8, 255),
-            ["north"] = CalculatePackedChangedCentroidAtValue(previewPayload, annotatedPayload,
-                annotated.Manifest.Descriptor.Layout, fixtureLandmarks.North, 8, 255),
-            ["east"] = CalculatePackedChangedCentroidAtValue(previewPayload, annotatedPayload,
-                annotated.Manifest.Descriptor.Layout, fixtureLandmarks.East, 8, 255),
-            ["south"] = CalculatePackedChangedCentroidAtValue(previewPayload, annotatedPayload,
-                annotated.Manifest.Descriptor.Layout, fixtureLandmarks.South, 8, 255),
-            ["west"] = CalculatePackedChangedCentroidAtValue(previewPayload, annotatedPayload,
-                annotated.Manifest.Descriptor.Layout, fixtureLandmarks.West, 8, 255)
-        };
-        Assert.IsTrue(renderedLandmarks.Where(static item => item.Key != "center").All(item =>
-            item.Value.ChangedPoints > 0 && Distance(
-                item.Value.X,
-                item.Value.Y,
-                item.Key switch
-                {
-                    "north" => fixtureLandmarks.North.X,
-                    "east" => fixtureLandmarks.East.X,
-                    "south" => fixtureLandmarks.South.X,
-                    _ => fixtureLandmarks.West.X
-                },
-                item.Key switch
-                {
-                    "north" => fixtureLandmarks.North.Y,
-                    "east" => fixtureLandmarks.East.Y,
-                    "south" => fixtureLandmarks.South.Y,
-                    _ => fixtureLandmarks.West.Y
-                }) <= markerTolerance),
-            string.Join(", ", renderedLandmarks.Select(static item => $"{item.Key}={item.Value.ChangedPoints}")));
+        var cardinalLayer = ReadProductManifests(root, ExpectedAgentId).Single(item =>
+            item.Manifest.Capture.CaptureId == captureId &&
+            item.Manifest.Artifact.Role == FrameArtifactRole.Metadata &&
+            item.Manifest.Artifact.Variant == "w6-cardinal-layer");
+        AssertW6CardinalLayerPayload(
+            await File.ReadAllBytesAsync(Path.Combine(root, cardinalLayer.Manifest.RelativeArtifactPath))
+                .ConfigureAwait(false),
+            ExpectedW6CardinalFill);
+        var renderedLandmarks = ProbeRenderedCardinals(previewPayload, annotatedPayload,
+            annotated.Manifest.Descriptor.Layout, fixtureLandmarks, ExpectedW6CardinalFill);
+        AssertRenderedCardinalPlacement(renderedLandmarks, fixtureLandmarks, markerTolerance, ExpectedW6CardinalFill);
         var cloud = ReadProductManifests(root, ExpectedAgentId).Single(item =>
             item.Manifest.Capture.CaptureId == captureId &&
             item.Manifest.Artifact.Role == FrameArtifactRole.Metadata &&
@@ -4120,19 +4103,89 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return changed;
     }
 
-    private static PackedMarkerObservation CalculatePackedChangedCentroidAtValue(
+    private static void AssertW6CardinalLayerPayload(ReadOnlyMemory<byte> payload, PresentationColor expectedFill)
+    {
+        var parsed = PresentationLayerPayloadJson.Parse(payload);
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        var blocks = parsed.Payload!.TextBlocks;
+        CollectionAssert.AreEqual(ExpectedW6CardinalLines,
+            blocks.Select(static block => string.Join('|', block.Lines)).ToArray());
+        foreach (var block in blocks)
+        {
+            var line = string.Join('|', block.Lines);
+            Assert.AreEqual(expectedFill, block.Color, line);
+            Assert.IsNotNull(block.Appearance, line);
+            Assert.AreEqual(expectedFill, block.Appearance.Body.Color, line);
+        }
+    }
+
+    private static Dictionary<string, PackedColorBoxObservation> ProbeRenderedCardinals(
+        ReadOnlyMemory<byte> source,
+        ReadOnlyMemory<byte> annotated,
+        FrameLayoutDescriptor layout,
+        ProjectionAnnotationLandmarks landmarks,
+        PresentationColor expectedFill)
+    {
+        return new(StringComparer.Ordinal)
+        {
+            ["center"] = Probe(landmarks.Center),
+            ["north"] = Probe(landmarks.North),
+            ["east"] = Probe(landmarks.East),
+            ["south"] = Probe(landmarks.South),
+            ["west"] = Probe(landmarks.West)
+        };
+
+        PackedColorBoxObservation Probe(PixelPoint point) =>
+            CalculatePackedChangedBoxCenterAtColor(source.Span, annotated.Span, layout, point, 8, expectedFill);
+    }
+
+    // Each cardinal glyph is centred on its rig landmark (docs/validation/issue-1035-current-sky.md:296-297), so the
+    // centre of the bounding box of exact-fill pixels is held to the rendered-marker tolerance. The centre landmark is
+    // recorded but carries no glyph.
+    private static void AssertRenderedCardinalPlacement(
+        IReadOnlyDictionary<string, PackedColorBoxObservation> rendered,
+        ProjectionAnnotationLandmarks landmarks,
+        double markerTolerance,
+        PresentationColor expectedFill)
+    {
+        var cardinals = new Dictionary<string, PixelPoint>(StringComparer.Ordinal)
+        {
+            ["north"] = landmarks.North,
+            ["east"] = landmarks.East,
+            ["south"] = landmarks.South,
+            ["west"] = landmarks.West
+        };
+        var distances = cardinals.ToDictionary(static item => item.Key, item => rendered[item.Key].ChangedPoints == 0
+            ? double.NaN
+            : Distance(rendered[item.Key].X, rendered[item.Key].Y, item.Value.X, item.Value.Y), StringComparer.Ordinal);
+        Assert.IsTrue(cardinals.Keys.All(key => rendered[key].ChangedPoints > 0 && distances[key] <= markerTolerance),
+            string.Join("; ", cardinals.Select(item =>
+            {
+                var value = rendered[item.Key];
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"{item.Key} count={value.ChangedPoints} " +
+                    $"box=x[{value.MinX},{value.MaxX}] y[{value.MinY},{value.MaxY}] " +
+                    $"centre=({value.X},{value.Y}) landmark=({item.Value.X},{item.Value.Y}) " +
+                    $"distance={distances[item.Key]} tolerance={markerTolerance} " +
+                    $"expected=({expectedFill.Red},{expectedFill.Green},{expectedFill.Blue})");
+            })));
+    }
+
+    private static PackedColorBoxObservation CalculatePackedChangedBoxCenterAtColor(
         ReadOnlySpan<byte> source,
         ReadOnlySpan<byte> annotated,
         FrameLayoutDescriptor layout,
         PixelPoint point,
         int radius,
-        byte expectedValue)
+        PresentationColor expectedFill)
     {
         var centerX = (int)Math.Round(point.X, MidpointRounding.AwayFromZero);
         var centerY = (int)Math.Round(point.Y, MidpointRounding.AwayFromZero);
         var changed = 0;
-        var totalX = 0d;
-        var totalY = 0d;
+        var minX = int.MaxValue;
+        var maxX = int.MinValue;
+        var minY = int.MaxValue;
+        var maxY = int.MinValue;
         for (var y = Math.Max(0, centerY - radius); y <= Math.Min(layout.Height - 1, centerY + radius); y++)
         {
             for (var x = Math.Max(0, centerX - radius); x <= Math.Min(layout.Width - 1, centerX + radius); x++)
@@ -4140,18 +4193,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 var offset = checked((y * layout.Width + x) * 3);
                 if ((annotated[offset] != source[offset] || annotated[offset + 1] != source[offset + 1] ||
                     annotated[offset + 2] != source[offset + 2]) &&
-                    annotated[offset] == expectedValue && annotated[offset + 1] == expectedValue &&
-                    annotated[offset + 2] == expectedValue)
+                    annotated[offset] == expectedFill.Red && annotated[offset + 1] == expectedFill.Green &&
+                    annotated[offset + 2] == expectedFill.Blue)
                 {
                     changed++;
-                    totalX += x;
-                    totalY += y;
+                    minX = Math.Min(minX, x);
+                    maxX = Math.Max(maxX, x);
+                    minY = Math.Min(minY, y);
+                    maxY = Math.Max(maxY, y);
                 }
             }
         }
         return changed == 0
-            ? new PackedMarkerObservation(point.X, point.Y, 0)
-            : new PackedMarkerObservation(totalX / changed, totalY / changed, changed);
+            ? new PackedColorBoxObservation(point.X, point.Y, 0, 0, 0, 0, 0)
+            : new PackedColorBoxObservation((minX + maxX) / 2d, (minY + maxY) / 2d, changed, minX, maxX, minY, maxY);
     }
 
     private static PixelPoint ReadPoint(JsonElement value)
@@ -6855,7 +6910,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         double RenderedMarkerTolerancePixels,
         IReadOnlyList<GeometryObjectEvidence> Objects,
         ProjectionAnnotationLandmarks CardinalLandmarks,
-        IReadOnlyDictionary<string, PackedMarkerObservation> RenderedCardinalMarkers,
+        IReadOnlyDictionary<string, PackedColorBoxObservation> RenderedCardinalMarkers,
         long WeatherOverlayChangedPixels,
         CloudOverlayCorrespondenceEvidence WeatherOverlayCorrespondence);
 
@@ -6931,6 +6986,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
         int PackedMarkerChangedPoints);
 
     private sealed record PackedMarkerObservation(double X, double Y, int ChangedPoints);
+
+    private sealed record PackedColorBoxObservation(
+        double X, double Y, int ChangedPoints, int MinX, int MaxX, int MinY, int MaxY);
 
     private sealed record TransientSnapshot(
         long PendingFrames,
