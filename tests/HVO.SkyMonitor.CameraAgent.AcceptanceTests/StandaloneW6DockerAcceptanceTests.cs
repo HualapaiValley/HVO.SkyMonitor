@@ -60,6 +60,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
     // #1035's accepted contract renders the cardinals as pale-cyan #C3ECFF letters on dark bordered plates (issue
     // #1035 AC; docs/validation/issue-1035-current-sky.md:147). The W6 configuration sets no cardinal value.
     private static readonly PresentationColor ExpectedW6CardinalFill = new(195, 236, 255);
+    // Independent #1035 reference style: docs/prototypes/pipeline-operations/styles.css, --cyan.
+    // The SVG grid path uses true tile boundaries and a centered one-pixel stroke; not an inset raster.
+    internal static readonly PresentationColor ExpectedW6CloudStroke = new(57, 197, 207);
     private static readonly string[] ExpectedW6CardinalLines = ["N", "E", "S", "W"];
     // Issue #719 phase 2. Every value below is sourced from the W6 template's `pipeline.steps`
     // (`src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json`) or from the issue's stated
@@ -3988,10 +3991,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var presentationChangedPixels = CountPackedPixelDifferences(previewPayload, annotatedPayload);
         Assert.IsGreaterThan(0, presentationChangedPixels);
         var cloudCorrespondence = AssertCloudOverlayCorrespondence(
-            previewPayload,
-            annotatedPayload,
-            presentation.Manifest.Descriptor.Layout,
-            assessment);
+            ReadRetainedDisplayProduct(root, combinedPreview.Manifest, previewPayload),
+            ReadRetainedDisplayProduct(root, presentation.Manifest, annotatedPayload),
+            ReadRetainedMetadataProduct(root, cloud.Manifest),
+            ReadRetainedMetadataProduct(root, ReadProductManifests(root, ExpectedAgentId).Single(item =>
+                item.Manifest.Capture.CaptureId == captureId && item.Manifest.Artifact.Variant == "w6-overlay-manifest").Manifest),
+            ReadRetainedPresentationLayers(root, captureId));
         return new GeometryEvidence(
             fixtureRoot.GetProperty("fixtureId").GetString()!,
             fixtureRoot.GetProperty("referenceModel").GetString()!,
@@ -4006,85 +4011,280 @@ public sealed class StandaloneW6DockerAcceptanceTests
             cloudCorrespondence);
     }
 
-    private static CloudOverlayCorrespondenceEvidence AssertCloudOverlayCorrespondence(
+    // Codex gpt-6.1-sol/xhigh: test-only contract repair; production raster/SVG style is unchanged.
+    private static ProcessingArtifact ReadRetainedDisplayProduct(
+        string root, ArtifactManifestV2 manifest, byte[] payload)
+    {
+        var descriptor = manifest.Descriptor;
+        using var connection = OpenJournal(root);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, recipe_identity_sha256, compatibility_json, total_integration_ticks
+            FROM processing_outputs WHERE artifact_id = $artifact AND capture_id = $capture;
+            """;
+        command.Parameters.AddWithValue("$artifact", descriptor.Artifact.ArtifactId.ToString("N"));
+        command.Parameters.AddWithValue("$capture", descriptor.Capture.CaptureId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        Assert.IsTrue(reader.Read(), "The retained display product has no committed processing identity.");
+        var identity = reader.GetString(0);
+        Assert.AreEqual(descriptor.Artifact.ArtifactId, ProcessingIdentity.CreateArtifactId(identity));
+        Assert.AreEqual(descriptor.Artifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(payload)));
+        var artifact = new ProcessingArtifact(descriptor.Artifact.ArtifactId, descriptor.Artifact.Role,
+            descriptor.Artifact.Variant, reader.GetString(1), descriptor.Artifact.MediaType, descriptor.Layout,
+            payload, descriptor.Artifact.CreatedUtc, TimeSpan.FromTicks(reader.GetInt64(3)),
+            JsonSerializer.Deserialize<ProcessingCompatibilityIdentity>((byte[])reader.GetValue(2),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))!, descriptor.Capture.CaptureSequence,
+            descriptor.Artifact.SourceArtifactIds)
+        { ContentIdentitySha256 = identity, CaptureId = descriptor.Capture.CaptureId };
+        Assert.IsFalse(reader.Read());
+        return artifact;
+    }
+
+    private static ProcessingArtifact ReadRetainedMetadataProduct(string root, IDurableProcessingProductManifest manifest)
+    {
+        var payload = File.ReadAllBytes(Path.Combine(root, manifest.RelativeArtifactPath));
+        Assert.AreEqual(manifest.Artifact.ChecksumSha256, Convert.ToHexString(SHA256.HashData(payload)));
+        Assert.AreEqual(manifest.ByteLength, payload.LongLength);
+        Assert.AreEqual(manifest.Artifact.ArtifactId, ProcessingIdentity.CreateArtifactId(manifest.OutputIdentitySha256));
+        return new ProcessingArtifact(manifest.Artifact.ArtifactId, manifest.Artifact.Role, manifest.Artifact.Variant,
+            ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe).IdentitySha256,
+            manifest.Artifact.MediaType, null, payload, manifest.Artifact.CreatedUtc,
+            TimeSpan.FromTicks(manifest.TotalIntegrationTicks), manifest.Compatibility,
+            manifest.Capture.CaptureSequence, manifest.Artifact.SourceArtifactIds)
+        {
+            ProductKind = manifest.Kind, SchemaVersion = manifest.ProductSchemaVersion,
+            ContentIdentitySha256 = manifest.ContentIdentitySha256 ?? manifest.OutputIdentitySha256,
+            CaptureId = manifest.Capture.CaptureId
+        };
+    }
+
+    private static PresentationLayerProductInput[] ReadRetainedPresentationLayers(string root, Guid captureId)
+    {
+        var products = ReadProductManifests(root, ExpectedAgentId).Where(item => item.Manifest.Capture.CaptureId == captureId)
+            .ToDictionary(static item => item.Manifest.Artifact.ArtifactId, static item => item.Manifest);
+        var parsed = LayeredPresentationJson.ParseManifest(File.ReadAllBytes(Path.Combine(root,
+            products.Values.Single(static product => product.Artifact.Variant == "w6-overlay-manifest").RelativeArtifactPath)));
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        return parsed.Document!.Layers.Select(layer =>
+            new PresentationLayerProductInput(layer, ReadRetainedMetadataProduct(root, products[layer.SourceProduct.ArtifactId])))
+            .ToArray();
+    }
+
+    internal static CloudOverlayCorrespondenceEvidence AssertCloudOverlayCorrespondence(
+        ProcessingArtifact source, ProcessingArtifact overlay, ProcessingArtifact cloud,
+        ProcessingArtifact manifestArtifact, IReadOnlyList<PresentationLayerProductInput> layers)
+    {
+        var parsedAssessment = CloudAssessmentJson.Parse(cloud.Payload);
+        Assert.IsTrue(parsedAssessment.Validation.IsValid, parsedAssessment.Validation.FieldPath);
+        var assessment = parsedAssessment.Assessment!;
+        Assert.AreEqual(ProcessingProductKind.Metadata, cloud.ProductKind);
+        Assert.AreEqual(CloudAssessmentV1.CurrentSchemaVersion, cloud.SchemaVersion);
+        Assert.AreEqual(assessment.AssessmentIdentitySha256, cloud.ContentIdentitySha256);
+        Assert.IsNotNull(source.CaptureId);
+        Assert.AreEqual(source.CaptureId, overlay.CaptureId);
+        Assert.AreEqual(source.CaptureId, cloud.CaptureId);
+        Assert.AreEqual(source.CaptureId, manifestArtifact.CaptureId);
+        Assert.IsTrue(layers.All(input => input.Product.CaptureId == source.CaptureId));
+        Assert.AreEqual(FrameArtifactRole.Preview, source.Role);
+        Assert.AreEqual("combined-preview", source.Variant);
+        Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, overlay.Role);
+        Assert.AreEqual("w6-annotated-preview", overlay.Variant);
+        Assert.AreEqual(source.Layout, overlay.Layout);
+        var layout = source.Layout;
+        Assert.IsNotNull(layout);
+        Assert.AreEqual(source.Compatibility, overlay.Compatibility);
+        var parsedManifest = LayeredPresentationJson.ParseManifest(manifestArtifact.Payload);
+        Assert.IsTrue(parsedManifest.IsValid, parsedManifest.ErrorPath);
+        var manifest = parsedManifest.Document!;
+        CollectionAssert.AreEqual(manifest.Layers.ToArray(), layers.Select(static input => input.Layer).ToArray());
+        Assert.IsTrue(manifest.Layers.All(static layer => layer.EnabledByDefault), "W6 selects every retained layer.");
+        var maskLayers = layers.Where(static input => input.Layer.LayerKind == "cloud-mask").ToArray();
+        Assert.HasCount(1, maskLayers, "The selected W6 cloud-mask layer is missing or ambiguous.");
+        var maskLayer = maskLayers[0];
+        Assert.AreEqual(PresentationCoordinateSpace.ScenePixels, maskLayer.Layer.CoordinateSpace);
+        Assert.AreEqual("typed-presentation-compositor-v6-pinned-appearance", maskLayer.Layer.RendererVersion);
+        Assert.AreEqual("cloud-presentation-v4-payload-v3", maskLayer.Layer.StyleVersion);
+        Assert.AreEqual(30, maskLayer.Layer.ZOrder);
+        Assert.AreEqual(PresentationBlendMode.Normal, maskLayer.Layer.BlendMode);
+        Assert.AreEqual(1_000_000, maskLayer.Layer.OpacityMillionths);
+        Assert.AreEqual(ProcessingProductKind.Metadata, maskLayer.Product.ProductKind);
+        Assert.AreEqual(PresentationLayerPayloadV1.CurrentSchemaVersion, maskLayer.Product.SchemaVersion);
+        var parsedMask = PresentationLayerPayloadJson.Parse(maskLayer.Product.Payload);
+        Assert.IsTrue(parsedMask.IsValid, parsedMask.ErrorPath);
+        var maskPayload = parsedMask.Payload!;
+        Assert.AreEqual(maskPayload.ContentIdentitySha256, maskLayer.Product.ContentIdentitySha256);
+        Assert.AreEqual(cloud.ContentIdentitySha256, maskPayload.SourceIdentitySha256);
+        CollectionAssert.AreEqual(new[] { cloud.ArtifactId }, maskLayer.Product.SourceArtifactIds!.ToArray());
+
+        // The executor is the observed-input path, not the geometry/color oracle. Reproduce the whole stored
+        // selection first, including order, recipe/output identity and immediate lineage, before isolation.
+        var enabled = manifest.Layers.Select(static layer => layer.LayerIdentitySha256).ToArray();
+        var full = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
+            enabled, overlay.Variant);
+        Assert.AreEqual(overlay.ArtifactId, ProcessingIdentity.CreateArtifactId(full.OutputIdentitySha256));
+        Assert.AreEqual(overlay.ContentIdentitySha256, full.OutputIdentitySha256);
+        Assert.AreEqual(overlay.RecipeIdentitySha256, full.Recipe.IdentitySha256);
+        CollectionAssert.AreEqual(full.SourceArtifactIds.ToArray(), overlay.SourceArtifactIds!.ToArray());
+        Assert.IsTrue(full.Payload.Span.SequenceEqual(overlay.Payload.Span), "Stored presentation differs from its retained stack.");
+        var isolated = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
+            [maskLayer.Layer.LayerIdentitySha256], overlay.Variant);
+        var evidence = AssertCloudBorderRaster(source.Payload.Span, isolated.Payload.Span, layout, assessment, maskPayload);
+        var withoutMask = PresentationMaterializationExecutor.MaterializePacked(source, manifestArtifact, manifest, layers,
+            enabled.Where(identity => identity != maskLayer.Layer.LayerIdentitySha256), overlay.Variant);
+        var support = CloudStrokeSupport(layout, assessment);
+        var visible = new HashSet<int>();
+        for (var pixel = 0; pixel < layout.Width * layout.Height; pixel++)
+        {
+            if (overlay.Payload.Span.Slice(pixel * 3, 3).SequenceEqual(withoutMask.Payload.Span.Slice(pixel * 3, 3))) continue;
+            Assert.IsTrue(support.ContainsKey(pixel), $"Cloud contribution outside registered support at pixel {pixel}.");
+            visible.Add(pixel);
+        }
+        foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
+        {
+            Assert.IsTrue(CloudTilePixels(layout, region).Any(visible.Contains),
+                $"Cloudy tile ({region.Column}, {region.Row}) has no visible contribution in the stored full selection.");
+        }
+        return evidence;
+    }
+
+    internal static CloudOverlayCorrespondenceEvidence AssertCloudBorderRaster(
         ReadOnlySpan<byte> source,
         ReadOnlySpan<byte> overlay,
         FrameLayoutDescriptor layout,
-        CloudAssessmentV1 assessment)
+        CloudAssessmentV1 assessment,
+        PresentationLayerPayloadV1 payload)
     {
+        Assert.IsTrue(CloudAssessmentJson.Validate(assessment).IsValid);
+        Assert.AreEqual(CloudAssessmentStatus.Quantified, assessment.Status);
         Assert.AreEqual(CameraPixelFormat.Rgb24, layout.PixelFormat);
+        Assert.AreEqual(3552, layout.Width);
+        Assert.AreEqual(3552, layout.Height);
         Assert.AreEqual(checked(layout.Width * 3), layout.StrideBytes);
+        Assert.AreEqual(checked(layout.Width * layout.Height * 3), source.Length);
+        Assert.AreEqual(source.Length, overlay.Length);
+        Assert.AreEqual((long)source.Length, layout.ByteLength);
+        Assert.AreEqual(16, assessment.Grid.Columns);
+        Assert.AreEqual(16, assessment.Grid.Rows);
+        PresentationLayerPayloadJson.Validate(payload);
+        Assert.AreEqual(PresentationLayerPayloadV1.CurrentSchemaVersion, payload.SchemaVersion);
+        Assert.AreEqual(assessment.AssessmentIdentitySha256, payload.SourceIdentitySha256);
+        Assert.AreEqual(layout.Width, payload.WidthPixels);
+        Assert.AreEqual(layout.Height, payload.HeightPixels);
+        Assert.HasCount(0, payload.Markers);
+        Assert.HasCount(0, payload.Segments);
+        Assert.HasCount(0, payload.Ellipses);
+        Assert.HasCount(0, payload.TextBlocks);
+        Assert.IsNotNull(payload.TileMask);
+        Assert.AreEqual(ExpectedW6CloudStroke, payload.TileMask.Color);
+        Assert.AreEqual(1, payload.TileMask.LineThickness);
+        Assert.AreEqual(PresentationTileMaskV1.RowMajorLsbFirst, payload.TileMask.Encoding);
         var mask = assessment.Mask ?? throw new InvalidDataException("The cloud mask is missing.");
         Assert.AreEqual(assessment.Grid.Columns, mask.Width);
         Assert.AreEqual(assessment.Grid.Rows, mask.Height);
+        Assert.AreEqual(CloudAssessmentMaskV1.RowMajorLsbFirst, mask.Encoding);
+        Assert.AreEqual(mask.Width, payload.TileMask.Columns);
+        Assert.AreEqual(mask.Height, payload.TileMask.Rows);
+        CollectionAssert.AreEqual(mask.Bits.ToArray(), payload.TileMask.Bits.ToArray());
         var cloudyTiles = 0;
-        var expectedBorderPixels = new HashSet<int>();
-        for (var row = 0; row < assessment.Grid.Rows; row++)
+        foreach (var region in assessment.Regions)
         {
-            for (var column = 0; column < assessment.Grid.Columns; column++)
-            {
-                var index = row * assessment.Grid.Columns + column;
-                if ((mask.Bits.Span[index >> 3] & 1 << (index & 7)) == 0)
-                {
-                    continue;
-                }
-                cloudyTiles++;
-                var x0 = (int)((long)column * layout.Width / assessment.Grid.Columns);
-                var x1 = (int)((long)(column + 1) * layout.Width / assessment.Grid.Columns) - 1;
-                var y0 = (int)((long)row * layout.Height / assessment.Grid.Rows);
-                var y1 = (int)((long)(row + 1) * layout.Height / assessment.Grid.Rows) - 1;
-                var tileMatches = 0;
-                for (var x = x0; x <= x1; x++)
-                {
-                    expectedBorderPixels.Add(y0 * layout.Width + x);
-                    expectedBorderPixels.Add(y1 * layout.Width + x);
-                    tileMatches += IsCloudBorderPixel(source, overlay, layout, x, y0) ? 1 : 0;
-                    tileMatches += IsCloudBorderPixel(source, overlay, layout, x, y1) ? 1 : 0;
-                }
-                for (var y = y0 + 1; y < y1; y++)
-                {
-                    expectedBorderPixels.Add(y * layout.Width + x0);
-                    expectedBorderPixels.Add(y * layout.Width + x1);
-                    tileMatches += IsCloudBorderPixel(source, overlay, layout, x0, y) ? 1 : 0;
-                    tileMatches += IsCloudBorderPixel(source, overlay, layout, x1, y) ? 1 : 0;
-                }
-                Assert.IsGreaterThan(0, tileMatches, $"Cloudy tile ({column}, {row}) has no rendered border pixels.");
-            }
+            var x0 = region.Column * layout.Width / 16;
+            var x1 = (region.Column + 1) * layout.Width / 16;
+            var y0 = region.Row * layout.Height / 16;
+            var y1 = (region.Row + 1) * layout.Height / 16;
+            Assert.AreEqual(x0, region.X);
+            Assert.AreEqual(y0, region.Y);
+            Assert.AreEqual(x1 - x0, region.Width);
+            Assert.AreEqual(y1 - y0, region.Height);
+            var index = region.Row * 16 + region.Column;
+            Assert.AreEqual(region.IsCloudy, (mask.Bits.Span[index >> 3] & 1 << (index & 7)) != 0);
+            if (region.IsCloudy) cloudyTiles++;
         }
         Assert.AreEqual(assessment.Grid.CloudyRegionCount, cloudyTiles);
+        var expectedSupport = CloudStrokeSupport(layout, assessment);
+        var changedSupport = new HashSet<int>();
         var matchedBorderPixels = 0L;
-        var unexpectedBorderPixels = 0L;
-        for (var y = 0; y < layout.Height; y++)
+        var requiredChangedPixels = 0L;
+        var color = new[] { ExpectedW6CloudStroke.Red, ExpectedW6CloudStroke.Green, ExpectedW6CloudStroke.Blue };
+        for (var pixel = 0; pixel < layout.Width * layout.Height; pixel++)
         {
-            for (var x = 0; x < layout.Width; x++)
+            var changed = !source.Slice(pixel * 3, 3).SequenceEqual(overlay.Slice(pixel * 3, 3));
+            if (changed)
             {
-                if (!IsCloudBorderPixel(source, overlay, layout, x, y))
-                {
-                    continue;
-                }
+                Assert.IsTrue(expectedSupport.ContainsKey(pixel), $"Cloud stroke outside registered support at pixel {pixel}.");
+                changedSupport.Add(pixel);
                 matchedBorderPixels++;
-                if (!expectedBorderPixels.Contains(y * layout.Width + x))
-                {
-                    unexpectedBorderPixels++;
-                }
             }
+            if (!expectedSupport.TryGetValue(pixel, out var quadrants)) continue;
+            var quarters = System.Numerics.BitOperations.PopCount((uint)quadrants);
+            // The native AA path may omit the outer quarter at a miter corner. It may not omit a straight
+            // half-pixel profile. Two byte levels bound coverage quantization, premultiply/unpremultiply,
+            // and final RGB rounding; the palette and geometric fractions come from the contract.
+            if (!changed && quarters == 1) continue;
+            var coverage = quarters / 4d;
+            var requiredChange = false;
+            for (var channel = 0; channel < 3; channel++)
+            {
+                var offset = pixel * 3 + channel;
+                var expected = source[offset] * (1 - coverage) + color[channel] * coverage;
+                requiredChange |= quarters >= 2 && Math.Abs(source[offset] - expected) > 2;
+                Assert.IsLessThanOrEqualTo(2d, Math.Abs(overlay[offset] - expected),
+                    $"Cloud coverage/color mismatch at ({pixel % layout.Width}, {pixel / layout.Width}) channel {channel}.");
+            }
+            if (requiredChange) requiredChangedPixels++;
         }
         Assert.IsGreaterThan(0, matchedBorderPixels);
-        Assert.AreEqual(0, unexpectedBorderPixels);
-        return new CloudOverlayCorrespondenceEvidence(cloudyTiles, matchedBorderPixels, unexpectedBorderPixels);
+        foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
+        {
+            Assert.IsTrue(CloudTilePixels(layout, region).Any(changedSupport.Contains),
+                $"Cloudy tile ({region.Column}, {region.Row}) has no rendered border pixels.");
+        }
+        Assert.IsGreaterThanOrEqualTo(requiredChangedPixels, matchedBorderPixels);
+        Assert.IsLessThanOrEqualTo((long)expectedSupport.Count, matchedBorderPixels);
+        return new CloudOverlayCorrespondenceEvidence(cloudyTiles, matchedBorderPixels, 0);
     }
 
-    private static bool IsCloudBorderPixel(
-        ReadOnlySpan<byte> source,
-        ReadOnlySpan<byte> overlay,
-        FrameLayoutDescriptor layout,
-        int x,
-        int y)
+    private static IEnumerable<int> CloudTilePixels(FrameLayoutDescriptor layout, CloudAssessmentRegionV1 region)
     {
-        var offset = y * layout.StrideBytes + x * 3;
-        return (source[offset] != overlay[offset] || source[offset + 1] != overlay[offset + 1] ||
-                source[offset + 2] != overlay[offset + 2]) &&
-            overlay[offset] == byte.MaxValue && overlay[offset + 1] == 64 && overlay[offset + 2] == 32;
+        // Enumerate both sides of every straight edge. Clipping leaves one side at image edges.
+        // These paired samples, checked above at half coverage, reject a shifted or inset-only stroke.
+        for (var y = region.Y + 1; y < region.Y + region.Height - 1; y++)
+            foreach (var x in new[] { region.X - 1, region.X, region.X + region.Width - 1, region.X + region.Width })
+                if ((uint)x < (uint)layout.Width) yield return y * layout.Width + x;
+        for (var x = region.X + 1; x < region.X + region.Width - 1; x++)
+            foreach (var y in new[] { region.Y - 1, region.Y, region.Y + region.Height - 1, region.Y + region.Height })
+                if ((uint)y < (uint)layout.Height) yield return y * layout.Width + x;
+    }
+
+    private static Dictionary<int, byte> CloudStrokeSupport(FrameLayoutDescriptor layout, CloudAssessmentV1 assessment)
+    {
+        var support = new Dictionary<int, byte>();
+        foreach (var region in assessment.Regions.Where(static region => region.IsCloudy))
+        {
+            foreach (var pixel in CloudTilePixels(layout, region)) Add(pixel);
+            foreach (var cornerX in new[] { region.X, region.X + region.Width })
+                foreach (var cornerY in new[] { region.Y, region.Y + region.Height })
+                    for (var y = cornerY - 1; y <= cornerY; y++)
+                        for (var x = cornerX - 1; x <= cornerX; x++)
+                            if ((uint)x < (uint)layout.Width && (uint)y < (uint)layout.Height) Add(y * layout.Width + x);
+
+            void Add(int pixel)
+            {
+                byte quadrants = 0;
+                for (var quadrant = 0; quadrant < 4; quadrant++)
+                {
+                    var x = pixel % layout.Width + (quadrant % 2 == 0 ? 0.25 : 0.75);
+                    var y = pixel / layout.Width + (quadrant / 2 == 0 ? 0.25 : 0.75);
+                    var outer = x >= region.X - 0.5 && x < region.X + region.Width + 0.5 &&
+                        y >= region.Y - 0.5 && y < region.Y + region.Height + 0.5;
+                    var inner = x >= region.X + 0.5 && x < region.X + region.Width - 0.5 &&
+                        y >= region.Y + 0.5 && y < region.Y + region.Height - 0.5;
+                    if (outer && !inner) quadrants |= (byte)(1 << quadrant);
+                }
+                support[pixel] = (byte)(support.GetValueOrDefault(pixel) | quadrants);
+            }
+        }
+        return support;
     }
 
     private static long CountPackedPixelDifferences(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
@@ -6914,7 +7114,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         long WeatherOverlayChangedPixels,
         CloudOverlayCorrespondenceEvidence WeatherOverlayCorrespondence);
 
-    private sealed record CloudOverlayCorrespondenceEvidence(
+    internal sealed record CloudOverlayCorrespondenceEvidence(
         int CloudyTileCount,
         long MatchedBorderPixelCount,
         long UnexpectedBorderPixelCount);
