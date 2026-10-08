@@ -335,8 +335,8 @@ public sealed class W6CloudOverlayCorrespondenceTests
     private static void AssertNeighbourCompositingControls(Fixture fixture, byte[] healthyRaster)
     {
         // The healthy actual raster already passed independently. At this prescribed shared straight
-        // edge there are two half profiles: missing a contribution, adding one, or flattening to full
-        // geometric-union coverage must each fail RasterCoverage on the valid original payload.
+        // edge there are two half profiles: missing a contribution, adding one, or replacing partial
+        // opacity with solid coverage must each fail RasterCoverage on the valid original payload.
         for (var fault = 0; fault < 3; fault++)
         {
             var wrongCoverage = fault switch
