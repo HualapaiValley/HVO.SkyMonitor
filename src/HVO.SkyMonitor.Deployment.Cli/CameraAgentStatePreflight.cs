@@ -448,12 +448,13 @@ internal static class CameraAgentStatePreflight
                 "catalog-manifest-unreadable", boundary, Blocking: true, manifestPath, "unreadable",
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"a readable manifest declaring version {CatalogSnapshotResolver.SupportedManifestVersion}"),
+                    $"a readable manifest declaring version {CatalogSnapshotResolver.MinimumSupportedManifestVersion}"),
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        // A candidate that declares no manifest version is still compared against the resolver the runtime uses.
-        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.SupportedManifestVersion;
+        // The catalog library also reads composed manifests, but an undeclared legacy image keeps its stars-only
+        // version-2 boundary. Composed image adoption requires a separately declared image contract.
+        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.MinimumSupportedManifestVersion;
         if (manifest.Value.ManifestVersion != expectedManifestVersion)
         {
             findings.Add(new CameraAgentStatePreflightFinding(

@@ -129,7 +129,8 @@ internal sealed class CatalogSnapshotResolverTests
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        StringAssert.Contains(exception.Message, "Expected 2, got 1", StringComparison.Ordinal);
+        Assert.AreEqual(
+            "Catalog manifest version 1 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
     }
 
     [TestMethod]
@@ -165,11 +166,24 @@ internal sealed class CatalogSnapshotResolverTests
     public void ResolveRejectsUnknownManifestVersionExplicitly()
     {
         using var installation = CreateInstallation();
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 4));
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+        Assert.AreEqual(
+            "Catalog manifest version 4 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
+    }
+
+    [TestMethod]
+    public void ResolveRejectsAVersion3ManifestWithoutItsDeepSkyContract()
+    {
+        // Raising only the version number of a stars-only manifest must not pass as a composed catalog.
+        using var installation = CreateInstallation();
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 3));
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        StringAssert.Contains(exception.Message, "Expected 2, got 3", StringComparison.Ordinal);
+        Assert.AreEqual("Catalog manifest object 'database' is missing required property 'deepSky'.", exception.Message);
     }
 
     [TestMethod]
