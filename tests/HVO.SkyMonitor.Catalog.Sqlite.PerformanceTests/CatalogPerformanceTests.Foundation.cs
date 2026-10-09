@@ -134,8 +134,9 @@ public sealed partial class CatalogPerformanceTests
             }
         };
         Directory.CreateDirectory(output);
-        await using var stream = new FileStream(Path.Combine(output, $"catalog-foundation-{arm}-{trial}.json"),
+        var stream = new FileStream(Path.Combine(output, $"catalog-foundation-{arm}-{trial}.json"),
             FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await using var streamDisposal = stream.ConfigureAwait(false);
         await JsonSerializer.SerializeAsync(stream, evidence, JsonOptions).ConfigureAwait(false);
         GC.KeepAlive(snapshot.Catalog);
     }
