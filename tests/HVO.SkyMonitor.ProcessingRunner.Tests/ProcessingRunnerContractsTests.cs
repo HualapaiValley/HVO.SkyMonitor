@@ -113,7 +113,8 @@ public sealed class ProcessingRunnerContractsTests
         {
             SchemaVersion = "v1",
             ContentIdentitySha256 = new string('b', 64),
-            CaptureId = Guid.NewGuid()
+            CaptureId = Guid.NewGuid(),
+            DescriptorIdentitySha256 = new string('d', 64)
         };
         var metadata = ProcessingRunnerProjection.ProjectArtifact(
             artifact, Guid.NewGuid(), "/api/v1.0/devices/x/artifacts/y/content", payload.Length,
@@ -137,6 +138,7 @@ public sealed class ProcessingRunnerContractsTests
         Assert.AreEqual(artifact.SchemaVersion, rebuilt.SchemaVersion);
         Assert.AreEqual(artifact.ContentIdentitySha256, rebuilt.ContentIdentitySha256);
         Assert.AreEqual(artifact.CaptureId, rebuilt.CaptureId);
+        Assert.AreEqual(artifact.DescriptorIdentitySha256, rebuilt.DescriptorIdentitySha256);
         CollectionAssert.AreEqual(payload, rebuilt.Payload.ToArray());
 
         Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var previewDefinition));

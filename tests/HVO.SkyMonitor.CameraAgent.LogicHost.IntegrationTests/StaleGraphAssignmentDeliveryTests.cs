@@ -97,7 +97,7 @@ public sealed class StaleGraphAssignmentDeliveryTests
 
             // Condition 2: the operator correction. The edge's next attempt probes central status, which reconciles
             // the committed duplicate and schedules it on the newly resolved revision. That revision is the basic
-            // graph on current recipe versions without its Annotation node: on this base an edge-staged projected
+            // graph on current recipe versions without its scene-bound Annotation and MeasuredStellarAssociations nodes: on this base an edge-staged projected
             // scene records its calibration version as the projection algorithm version, so central scene validation
             // rejects it for any installed camera, independently of the assignment being corrected here.
             var recoveredRevisionId = await ReassignToCurrentRecipeRevisionAsync(seeded).ConfigureAwait(false);
@@ -300,7 +300,8 @@ public sealed class StaleGraphAssignmentDeliveryTests
             Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(basic with
             {
                 Name = $"stale-delivery-recovered-{seeded.LogicalCameraId:N}",
-                Nodes = [.. basic.Nodes.Where(static node => node.StepAlias != BuiltInProcessingRecipes.Annotation)]
+                Nodes = [.. basic.Nodes.Where(static node => node.StepAlias is not (BuiltInProcessingRecipes.Annotation or
+                    BuiltInProcessingRecipes.MeasuredStellarAssociations))]
             })),
             registry,
             seeded.OwnerUserId,

@@ -112,6 +112,19 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selected);
+        Assert.AreEqual(scene.SchemaVersion, selected.Reference.SchemaVersion);
+        // A frozen selector/input round trip carries the actual schema; the lease service reads this reference.
+        var job = new CentralDerivativeJob { SourceArtifact = rawArtifact };
+        CentralProjectedSceneResolver.AddRequirement(job, selected, utc);
+        Assert.IsNotNull(CentralProjectedSceneResolver.MaterializeReference(job, utc));
+        Assert.AreEqual(selected.Reference, CentralProjectedSceneResolver.ReadReference(job));
+        var requirement = job.InputRequirements.Single();
+        var originalSelector = requirement.SelectorJson;
+        requirement.SelectorJson = JsonSerializer.Serialize(selected.Reference with { SchemaVersion = "projected-scene-v99" },
+            JsonSerializerOptions.Web);
+        var unsupported = Assert.ThrowsExactly<CentralDerivativeJobStateException>(() => CentralProjectedSceneResolver.ReadReference(job));
+        Assert.AreEqual("The frozen projected-scene schema is unsupported.", unsupported.Message);
+        requirement.SelectorJson = originalSelector;
         var retention = new CentralArtifactRetentionReferences(db);
         Assert.IsTrue(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
             "compact image consumers hold geometry independently of job lifetime");
@@ -157,6 +170,17 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var resolved = await resolver.ResolveAsync(selected.Reference, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(selected.Annotation.ProvenanceSha256, resolved.ProvenanceSha256);
+        var legacy = selected.Reference with { SchemaVersion = null };
+        var legacyJson = JsonSerializer.Serialize(legacy, JsonSerializerOptions.Web);
+        Assert.IsFalse(legacyJson.Contains("schemaVersion", StringComparison.Ordinal));
+        var legacyResolved = await resolver.ResolveAsync(
+            JsonSerializer.Deserialize<CentralProjectedSceneReference>(legacyJson, JsonSerializerOptions.Web)!,
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(selected.Annotation.ProvenanceSha256, legacyResolved.ProvenanceSha256,
+            "legacy annotation references remain compatible with both authenticated schemas");
+        await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.ResolveAsync(
+            selected.Reference with { SchemaVersion = resolvedSun ? ProjectedSceneV1.CurrentSchemaVersion : ProjectedSceneV1.ResolvedFootprintSchemaVersion },
+            CancellationToken.None)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<CentralArtifactIntegrityException>(() => resolver.ResolveAsync(
             selected.Reference with { ContentIdentitySha256 = new string('F', 64) }, CancellationToken.None)).ConfigureAwait(false);
         rawArtifact.ObjectState = CentralArtifactObjectState.Available;

@@ -176,7 +176,11 @@ public sealed partial class CentralProcessingGraphMigrationTests
             // One job frozen by an earlier recipe implementation, as a recipe ImplementationVersion change leaves it.
             // A graph job's frozen identity is immutable once expanded, so this test-only setup bypasses the trigger
             // on this test's own database and restores it whatever happens.
-            var stale = jobs.First(item => !CentralDerivativeJobExecutor.IsInProcessOnlyRecipe(item.RecipeName));
+            // The job is named, not taken first: job ids are random, so an unordered first pick could land on a job
+            // this scene-less frame has already settled (cloud-assessment skips without a clear reference and
+            // weather-cloud-overlay fails on it), which the count excludes as terminal.
+            var stale = jobs.Single(item => item.RecipeName == BuiltInProcessingRecipes.EncodedPreview);
+            stale.Status.Should().Be(CentralDerivativeJobStatus.Pending, "the counted job must still be in flight");
             var staleIdentity = new string('F', 64);
             await context.Database.ExecuteSqlRawAsync(
                 "DISABLE TRIGGER [TR_CentralDerivativeJobs_GraphIdentityImmutable] ON [CentralDerivativeJobs];")

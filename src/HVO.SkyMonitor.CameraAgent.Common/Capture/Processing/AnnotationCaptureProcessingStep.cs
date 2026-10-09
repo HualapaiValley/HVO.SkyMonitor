@@ -22,7 +22,7 @@ internal sealed class AnnotationCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter,
     IServiceProvider? serviceProvider = null)
     : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options),
-       ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep
+       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     public bool Enabled => Options.Enabled;
 
@@ -39,22 +39,26 @@ internal sealed class AnnotationCaptureProcessingStep(
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
 
-    public IReadOnlyList<IReadOnlySet<FrameArtifactRole>> RequiredDependencyRoleGroups =>
+    /// <summary>
+    /// One preview, the projected scene when required, and the optional measured associations that alone may license
+    /// star labels. Without that product the fail-closed label policy suppresses every star label.
+    /// </summary>
+    public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
         Options.RequireProjectedSceneDependency
             ?
             [
-                new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
-                new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }
+                new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }),
+                new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+                    new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene }),
+                MeasuredAssociationsRequirement
             ]
-            : [new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }];
+            : [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }), MeasuredAssociationsRequirement];
 
-    public IReadOnlyDictionary<FrameArtifactRole, IReadOnlySet<string>> RequiredDependencyRecipes =>
-        Options.RequireProjectedSceneDependency
-            ? new Dictionary<FrameArtifactRole, IReadOnlySet<string>>
-            {
-                [FrameArtifactRole.Metadata] = new HashSet<string> { BuiltInProcessingRecipes.ProjectedScene }
-            }
-            : new Dictionary<FrameArtifactRole, IReadOnlySet<string>>();
+    private static CaptureProcessingDependencyRequirement MeasuredAssociationsRequirement { get; } = new(
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+        new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+        new HashSet<string>(StringComparer.Ordinal) { MeasuredStellarAssociationsV1.CurrentSchemaVersion },
+        Required: false);
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
@@ -204,7 +208,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             input = input with { RecipeIdentitySha256 = previewProduct.Recipe.IdentitySha256 };
         }
         var executionInputs = new List<ProcessingArtifact> { input };
-        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null;
+        var auxiliaryInputs = new List<ProcessingAuxiliaryInput>();
         if (projectedSceneProduct is not null)
         {
             var projectedSceneArtifactId = CaptureProcessingContext.CreateArtifactId(
@@ -226,17 +230,30 @@ internal sealed class AnnotationCaptureProcessingStep(
                 SchemaVersion = projectedSceneProduct.SchemaVersion,
                 ContentIdentitySha256 = projectedSceneProduct.ContentIdentitySha256
             });
-            auxiliaryInputs =
-            [
-                new ProcessingAuxiliaryInput(
-                    "projected-scene",
-                    ProcessingAuxiliaryInputKind.Artifact,
-                    ProcessingInputSelector.RecipeResult(
-                        projectedSceneProduct.Role,
-                        projectedSceneProduct.Variant,
-                        projectedSceneProduct.Recipe.IdentitySha256),
-                    ArtifactId: projectedSceneArtifactId)
-            ];
+            auxiliaryInputs.Add(new ProcessingAuxiliaryInput(
+                "projected-scene",
+                ProcessingAuxiliaryInputKind.Artifact,
+                ProcessingInputSelector.RecipeResult(
+                    projectedSceneProduct.Role,
+                    projectedSceneProduct.Variant,
+                    projectedSceneProduct.Recipe.IdentitySha256),
+                ArtifactId: projectedSceneArtifactId));
+        }
+        var measuredProduct = context.GetDependencyProducts().SingleOrDefault(static product =>
+            product.Kind == ProcessingProductKind.Metadata &&
+            string.Equals(product.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal));
+        if (measuredProduct is not null)
+        {
+            var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, measuredProduct);
+            executionInputs.Add(measured);
+            auxiliaryInputs.Add(new ProcessingAuxiliaryInput(
+                "measured-stellar-associations",
+                ProcessingAuxiliaryInputKind.Artifact,
+                ProcessingInputSelector.RecipeResult(
+                    measuredProduct.Role,
+                    measuredProduct.Variant,
+                    measuredProduct.Recipe.IdentitySha256),
+                ArtifactId: measured.ArtifactId));
         }
         var annotationInput = new ProcessingAnnotationInput(
             objects,
@@ -268,7 +285,8 @@ internal sealed class AnnotationCaptureProcessingStep(
             ConstellationLineBlue: Options.ConstellationLineBlue,
             ConstellationLineThickness: Options.ConstellationLineThickness,
             ConstellationLineOpacity: Options.ConstellationLineOpacity,
-            OutputEncoding: "Packed"));
+            OutputEncoding: "Packed",
+            ExpectedPositionDiagnostics: Options.ExpectedPositionDiagnostics));
         var outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.Annotation,
             recipeOptions,
@@ -279,7 +297,7 @@ internal sealed class AnnotationCaptureProcessingStep(
             executionInputs,
             Options.OutputVariant,
             annotationInput,
-            AuxiliaryInputs: auxiliaryInputs,
+            AuxiliaryInputs: auxiliaryInputs.Count == 0 ? null : auxiliaryInputs,
             InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
@@ -392,14 +410,8 @@ internal sealed class AnnotationCaptureProcessingStep(
     internal static ProjectedAnnotationOverlay? CreateProjectionOverlay(ProjectedSceneV1 scene)
     {
         var source = CreateProjectionOverlay(scene.Projection);
-        // Known limitation (#518, epic #520 coordinator decision 2026-10-06T22:48Z): a projected-scene-v1 input keeps
-        // its released source-pixel landmarks because its Annotation execution identity is unchanged and its bytes
-        // must be too. Remove this one gate under the next Annotation recipe implementation bump to correct v1.
-        if (!string.Equals(scene.SchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal))
-        {
-            return source;
-        }
-
+        // Every scene schema version takes the corrected landmarks: the #518 v2-only gate was removed under the
+        // Annotation Definition v4 bump (#526), which changes the execution identity of every Annotation output.
         if (source is null)
         {
             return null;
@@ -766,6 +778,9 @@ public sealed class AnnotationProcessingStepOptions : IValidatableObject
     public bool DrawMetadataCorners { get; init; }
 
     public bool RequireProjectedSceneDependency { get; init; }
+
+    /// <summary>Opt-in diagnostic: keep unqualified star labels at expected positions, suffixed "(expected)".</summary>
+    public bool ExpectedPositionDiagnostics { get; init; }
 
     public IReadOnlyList<string> TopLeftTokens { get; init; } =
     [

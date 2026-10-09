@@ -891,6 +891,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<CentralProjectedSceneResolver>();
+        builder.Services.AddScoped<CentralMeasuredAssociationSceneReader>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<CentralDerivativeJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobService>(

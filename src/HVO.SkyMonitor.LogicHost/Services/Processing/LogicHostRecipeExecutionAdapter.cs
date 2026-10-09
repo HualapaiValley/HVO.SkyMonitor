@@ -148,7 +148,14 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Artifact.SourceArtifactIds,
             observation.StartedUtc,
             observation.EndedUtc,
-            CreateConditions(descriptor));
+            CreateConditions(descriptor))
+        {
+            // Recipes that bind a capture-scoped product (projected scene, measured associations) check the capture and
+            // descriptor identity the edge adapter records from the same descriptor; neither enters a recipe or output
+            // identity, and the descriptor identity is the one CentralProjectedSceneResolver verifies the scene against.
+            CaptureId = descriptor.Capture.CaptureId,
+            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor)
+        };
     }
 
     private static ProcessingCaptureConditions CreateConditions(ReconstructionDescriptor descriptor)

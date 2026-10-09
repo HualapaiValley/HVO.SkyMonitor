@@ -54,12 +54,14 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
     internal const string RollingMeanRecipeVersion = "central-rolling-mean-v1";
     internal const string CloudAssessmentRecipeVersion = "central-cloud-assessment-v1";
     internal const string WeatherCloudOverlayRecipeVersion = "central-weather-cloud-overlay-v1";
+    internal const string MeasuredStellarAssociationsRecipeVersion = "central-measured-stellar-associations-v1";
     internal const string PreviewVariant = "central-preview";
     internal const string AnnotatedPreviewVariant = "central-annotated-preview";
     internal const string ImageQualityVariant = "central-image-quality";
     internal const string RollingMeanVariant = "central-rolling-mean";
     internal const string CloudAssessmentVariant = "cloud-assessment-v1";
     internal const string WeatherCloudOverlayVariant = "weather-cloud-overlay-v1";
+    internal const string MeasuredStellarAssociationsVariant = "measured-stellar-associations-v1";
     private static readonly JsonElement PreviewOptions = CaptureContractJson.SerializeToElement(new EncodedPreviewOptions());
     private static readonly JsonElement AnnotationOptions = CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions());
     private static readonly JsonElement ImageQualityOptions = CaptureContractJson.SerializeToElement(new { });
@@ -67,6 +69,8 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
     internal static readonly JsonElement CloudAssessmentOptions = CaptureContractJson.SerializeToElement(new CloudAssessmentOptions());
     internal static readonly JsonElement WeatherCloudOverlayOptions = CaptureContractJson.SerializeToElement(
         new WeatherCloudOverlayOptions());
+    internal static readonly JsonElement MeasuredStellarAssociationsOptions = CaptureContractJson.SerializeToElement(
+        new MeasuredStellarAssociationRecipeOptions());
     private static readonly ProcessingInputSelector RawInput = ProcessingInputSelector.Raw();
     internal static readonly string PreviewRequestedRecipeIdentity = BuiltInProcessingRecipes.CreateRequestedIdentity(
         BuiltInProcessingRecipes.EncodedPreview,
@@ -96,6 +100,11 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         BuiltInProcessingRecipes.WeatherCloudOverlay,
         WeatherCloudOverlayOptions,
         PreviewInput).IdentitySha256;
+    internal static readonly string MeasuredStellarAssociationsRequestedRecipeIdentity =
+        BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.MeasuredStellarAssociations,
+            MeasuredStellarAssociationsOptions,
+            RawInput).IdentitySha256;
     internal const int DefaultMaxAttempts = 5;
 
     private static readonly IReadOnlyList<CentralDerivativeRecipe> BaseRawRecipes =
@@ -131,6 +140,19 @@ internal sealed class CentralDerivativeRecipeCatalog : ICentralDerivativeRecipeC
         WeatherCloudOverlayOptions,
         PreviewInput,
         WeatherCloudOverlayRequestedRecipeIdentity,
+        DefaultMaxAttempts);
+
+    // Graph-only, like the weather overlay: legacy live scheduling never derives associations, because only a graph
+    // node can bind the frame's resolved projected scene.
+    internal static readonly CentralDerivativeRecipe MeasuredStellarAssociationsRecipe = new(
+        FrameArtifactRole.Raw,
+        FrameArtifactRole.Metadata,
+        MeasuredStellarAssociationsRecipeVersion,
+        MeasuredStellarAssociationsVariant,
+        BuiltInProcessingRecipes.MeasuredStellarAssociations,
+        MeasuredStellarAssociationsOptions,
+        RawInput,
+        MeasuredStellarAssociationsRequestedRecipeIdentity,
         DefaultMaxAttempts);
 
     private readonly IReadOnlyList<CentralDerivativeRecipe> _rawRecipes;

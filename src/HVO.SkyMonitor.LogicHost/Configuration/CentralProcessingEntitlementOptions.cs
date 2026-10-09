@@ -97,6 +97,7 @@ internal sealed class CentralProcessingEntitlementOptions
         [BuiltInProcessingRecipes.WeatherCloudOverlay] = PresentationClass,
         [BuiltInProcessingRecipes.ImageQuality] = StructuredAnalysisClass,
         [BuiltInProcessingRecipes.CloudAssessment] = StructuredAnalysisClass,
+        [BuiltInProcessingRecipes.MeasuredStellarAssociations] = StructuredAnalysisClass,
         [BuiltInProcessingRecipes.NoOpAnalyzer] = StructuredAnalysisClass,
         ["central-transient-validation"] = StructuredAnalysisClass,
         ["central-transient-derivative"] = StructuredAnalysisClass,

@@ -9,9 +9,10 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class PresentationLayerGoldenTests
 {
-    // Captured from development/v1 b13f0d0e (projected-scene-presentation-v9). A scene without resolved footprints
-    // must keep producing these payload bytes; only the producer version in the recipe identity moves.
-    private const string ExpectedPayloadsSha256 = "426DBD4E39B71893874CE6504D408E74A4ED52D317BAE64DFA549BB3A95F43B1";
+    // Captured from development/v1 b13f0d0e (projected-scene-presentation-v9) and moved once by #526
+    // (projected-scene-presentation-v11), whose label policy suppresses every star label that has no measured
+    // association. A scene without resolved footprints must keep producing these payload bytes.
+    private const string ExpectedPayloadsSha256 = "0324F60974C96DDF871D156B92A0BB7EA7D6DBDD4360276F62A6058FDA378B4E";
 
     [TestMethod]
     public async Task FootprintFreeScenesProduceTheV9PayloadBytes()

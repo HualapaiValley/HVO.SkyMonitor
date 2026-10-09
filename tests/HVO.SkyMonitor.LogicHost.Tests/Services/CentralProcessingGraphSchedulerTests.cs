@@ -38,9 +38,14 @@ public sealed class CentralProcessingGraphSchedulerTests
             new[]
             {
                 "Preview", "Annotation", "ImageQuality", "CloudAssessment", "RollingMean",
-                "WeatherCloudOverlay"
+                "WeatherCloudOverlay", "MeasuredStellarAssociations"
             },
             plan.Nodes.Select(node => node.Definition.Id).ToArray());
+        var associations = plan.Nodes.Single(node => node.Definition.Id == "Annotation").InputBindings
+            .Single(binding => binding.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+        Assert.AreEqual(BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName, associations.BindingName);
+        Assert.AreEqual("MeasuredStellarAssociations", associations.ProducerId);
+        Assert.IsFalse(associations.Required, "the annotation still renders, unlabeled, when associations are omitted");
         var rolling = plan.Nodes.Single(node => node.Definition.Id == "RollingMean").Definition;
         Assert.AreEqual(ProcessingGraphWindowKind.Centered, rolling.Window!.Kind);
         CollectionAssert.AreEqual(new[] { -2, -1, 0, 1, 2 }, rolling.Window.RequiredPositions.ToArray());
@@ -108,8 +113,10 @@ public sealed class CentralProcessingGraphSchedulerTests
     [TestMethod]
     public void CentralRegistryRejectsAuxiliaryArtifactBindingsOnAnnotationNodes()
     {
-        // ResolveLeaseSceneProvenance treats Expected == Requested as "no annotation frozen"; that marker is only
-        // unambiguous while annotation nodes carry a primary binding alone, and the recipe ignores auxiliaries anyway.
+        // ResolveLeaseSceneProvenance recomputes an annotation's expected identity from its primary binding and its
+        // measured associations only, so a required auxiliary on an annotation node would execute against an identity
+        // the lease cannot reproduce. The one optional pair admitted is covered by
+        // CentralRegistryAdmitsOnlyTheMeasuredAssociationAuxiliaryOnALeafAnnotation.
         var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
         var baseline = CreateAnnotationConsumerGraph();
         var calibratedSource = new ProcessingGraphSourceDefinition(
@@ -146,6 +153,160 @@ public sealed class CentralProcessingGraphSchedulerTests
         Assert.IsTrue(annotationAuxiliary.IsValid, string.Join(Environment.NewLine, annotationAuxiliary.Diagnostics));
         Assert.IsFalse(registry.Validate(annotationAuxiliary.Plan!));
         Assert.AreEqual(BuiltInProcessingRecipes.Annotation, registry.FindUnsupported(annotationAuxiliary.Plan!));
+    }
+
+    [TestMethod]
+    public void CentralRegistryAdmitsOnlyTheMeasuredAssociationAuxiliaryOnALeafAnnotation()
+    {
+        // #526 condition 2: the scheduler re-derives an expected identity only for Annotation's optional measured
+        // association auxiliary, so that exact pair is the one optional auxiliary LogicHost may freeze. Each case
+        // below differs from the admitted pair in one respect and must be rejected at publication/assignment.
+        const string associationsId = "MeasuredStellarAssociations";
+        var associationsInput = BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName;
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var baseline = DatabaseSeeder.CreateBasicCentralProcessingGraph();
+        var preview = baseline.Nodes.Single(node => node.Id == "Preview");
+        var qualityInput = new ProcessingGraphInputContract(
+            [FrameArtifactRole.Metadata], [ProcessingProductKind.Metadata],
+            [CentralDerivativeRecipeCatalog.ImageQualityVariant], [BuiltInProcessingRecipes.ImageQuality], [],
+            Required: false, BindingName: "quality", BindingKind: ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+        var sceneInput = new ProcessingGraphInputContract(
+            [FrameArtifactRole.Metadata], [ProcessingProductKind.Metadata],
+            [CentralDerivativeRecipeCatalog.ImageQualityVariant], [], [],
+            BindingName: "scene", BindingKind: ProcessingGraphInputBindingKind.CanonicalJson);
+        var sceneDependency = new ProcessingGraphDependencyDefinition(
+            "ImageQuality", ProcessingGraphDependencyKind.CanonicalJson);
+
+        ProcessingGraphDefinition WithAnnotationAuxiliary(
+            Func<ProcessingGraphInputContract, ProcessingGraphInputContract> input,
+            Func<ProcessingGraphDependencyDefinition, ProcessingGraphDependencyDefinition>? dependency = null)
+            => ReplaceNode(baseline, "Annotation", node => RebuildNode(
+                node,
+                dependencies: [.. node.Dependencies.Select(item =>
+                    item.ProducerId == associationsId && dependency is not null ? dependency(item) : item)],
+                inputs: [.. node.Inputs.Select(item => item.BindingName == associationsInput ? input(item) : item)]));
+        ProcessingGraphDefinition WithAssociationOutput(
+            Func<ProcessingGraphProductContract, ProcessingGraphProductContract> output,
+            Func<ProcessingGraphInputContract, ProcessingGraphInputContract> filter)
+            => ReplaceNode(WithAnnotationAuxiliary(filter), associationsId,
+                node => RebuildNode(node, outputs: [output(node.Outputs[0])]));
+        ProcessingGraphCompilationResult Compile(ProcessingGraphDefinition definition)
+        {
+            var compiled = ProcessingGraphCompiler.Compile(
+                definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
+            Assert.IsTrue(compiled.IsValid, string.Join(Environment.NewLine, compiled.Diagnostics));
+            return compiled;
+        }
+        static bool AdmitsAuxiliaries(ProcessingGraphExecutionPlan plan, string nodeId)
+        {
+            var node = plan.Nodes.Single(item => item.Definition.Id == nodeId);
+            return node.InputBindings
+                .Where(static binding => binding.BindingKind == ProcessingGraphInputBindingKind.AuxiliaryArtifact)
+                .All(binding => CentralProcessingGraphNodeRegistry.IsAllowedAuxiliaryBinding(plan, node, binding));
+        }
+
+        var admitted = Compile(baseline).Plan!;
+        Assert.IsTrue(registry.Validate(admitted));
+        Assert.IsTrue(AdmitsAuxiliaries(admitted, "Annotation"));
+
+        // (name, definition, auxiliary-bearing node, unsupported alias; null when the mutated producer is itself
+        // rejected first and the allow-list's own refusal is asserted directly instead).
+        var rejected = new (string Name, ProcessingGraphDefinition Definition, string NodeId, string? Unsupported)[]
+        {
+            ("required",
+                WithAnnotationAuxiliary(input => input with { Required = true }, dependency => dependency with { Required = true }),
+                "Annotation", BuiltInProcessingRecipes.Annotation),
+            ("binding-name",
+                WithAnnotationAuxiliary(input => input with { BindingName = "associations" }),
+                "Annotation", BuiltInProcessingRecipes.Annotation),
+            ("variant",
+                WithAssociationOutput(
+                    output => output with { Variant = "measured-stellar-associations-v0" },
+                    input => input with { Variants = ["measured-stellar-associations-v0"] }),
+                "Annotation", null),
+            ("role",
+                WithAssociationOutput(
+                    output => output with { Role = FrameArtifactRole.Calibrated },
+                    input => input with { Roles = [FrameArtifactRole.Calibrated] }),
+                "Annotation", null),
+            ("schema",
+                WithAssociationOutput(
+                    output => output with { SchemaVersion = "measured-stellar-associations-v0" },
+                    input => input with { SchemaVersions = ["measured-stellar-associations-v0"] }),
+                "Annotation", null),
+            ("producer",
+                ReplaceNode(baseline, "Annotation", node => RebuildNode(
+                    node,
+                    dependencies: [.. node.Dependencies.Select(item => item.ProducerId == associationsId
+                        ? new ProcessingGraphDependencyDefinition("ImageQuality", Required: false)
+                        : item)],
+                    inputs: [.. node.Inputs.Select(item => item.BindingName == associationsInput
+                        ? qualityInput with { BindingName = associationsInput }
+                        : item)])),
+                "Annotation", BuiltInProcessingRecipes.Annotation),
+            ("second-auxiliary",
+                ReplaceNode(baseline, "Annotation", node => RebuildNode(
+                    node,
+                    dependencies: [.. node.Dependencies, new ProcessingGraphDependencyDefinition("ImageQuality", Required: false)],
+                    inputs: [.. node.Inputs, qualityInput])),
+                "Annotation", BuiltInProcessingRecipes.Annotation),
+            ("non-leaf-annotation",
+                baseline with
+                {
+                    Nodes =
+                    [
+                        .. baseline.Nodes,
+                        RebuildNode(
+                            preview,
+                            id: "AnnotatedPreviewConsumer",
+                            order: 1000,
+                            dependencies: [new ProcessingGraphDependencyDefinition("Annotation")],
+                            inputs: [new ProcessingGraphInputContract(
+                                [FrameArtifactRole.AnnotatedPreview], [ProcessingProductKind.PixelData],
+                                [CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant],
+                                [BuiltInProcessingRecipes.Annotation], [])],
+                            outputs: [preview.Outputs[0] with { Variant = "central-annotated-consumer" }])
+                    ]
+                },
+                "Annotation", BuiltInProcessingRecipes.Annotation),
+            ("optional-auxiliary-on-another-node",
+                ReplaceNode(baseline, "Preview", node => RebuildNode(
+                    node,
+                    dependencies: [.. node.Dependencies, new ProcessingGraphDependencyDefinition(associationsId, Required: false)],
+                    inputs:
+                    [
+                        .. node.Inputs,
+                        baseline.Nodes.Single(item => item.Id == "Annotation").Inputs
+                            .Single(item => item.BindingName == associationsInput)
+                    ])),
+                "Preview", BuiltInProcessingRecipes.EncodedPreview)
+        };
+        foreach (var (name, definition, nodeId, unsupported) in rejected)
+        {
+            var plan = Compile(definition).Plan!;
+            Assert.IsFalse(AdmitsAuxiliaries(plan, nodeId), name);
+            Assert.IsFalse(registry.Validate(plan), name);
+            if (unsupported is not null)
+            {
+                Assert.AreEqual(unsupported, registry.FindUnsupported(plan), name);
+            }
+        }
+
+        // The association node's scene is attached by the host; a declared canonical-JSON scene binding stays
+        // host-incompatible on that node and on every other.
+        foreach (var (nodeId, unsupported) in new[]
+                 {
+                     (associationsId, BuiltInProcessingRecipes.MeasuredStellarAssociations),
+                     ("Preview", BuiltInProcessingRecipes.EncodedPreview)
+                 })
+        {
+            var plan = Compile(ReplaceNode(baseline, nodeId, node => RebuildNode(
+                node,
+                dependencies: [.. node.Dependencies, sceneDependency],
+                inputs: [.. node.Inputs, sceneInput]))).Plan!;
+            Assert.IsFalse(registry.Validate(plan), nodeId);
+            Assert.AreEqual(unsupported, registry.FindUnsupported(plan), nodeId);
+        }
     }
 
     [TestMethod]
@@ -625,6 +786,384 @@ public sealed class CentralProcessingGraphSchedulerTests
             CentralProcessingGraphNodeHandlerKind.TransientValidation, CentralTransientRuntime.RecipeName,
             annotationOptions, selector, new string('C', 64), [auxiliary], provenance),
             "transient validation nodes always keep the catalog's requested identity");
+    }
+
+    [TestMethod]
+    public void AnnotationLeaseMarkerStaysUnambiguousWithTheMeasuredAssociationAuxiliary()
+    {
+        // #526 (Z) condition 7. Expected == Requested is the lease's "no annotation frozen" marker. The optional
+        // association auxiliary is in the expectation only while its producer may still complete, and the producer
+        // completes only against a scene frozen with the annotation; an omitted auxiliary is re-derived out. So both
+        // branches of ResolveLeaseSceneProvenance still mean what they meant before the auxiliary existed.
+        var options = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.Annotation, CaptureContractJson.SerializeToElement(new AnnotationRecipeOptions()));
+        var selector = ProcessingInputSelector.Raw();
+        var requested = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.Annotation, options, selector).IdentitySha256;
+        var provenanceJson = JsonSerializer.Serialize(new SceneProvenance(
+            "scene-1", "rig-v1", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            Objects: [new ProjectedObjectProvenance("star:1", "Vega", 10, 12, 0.03)]), JsonSerializerOptions.Web);
+        ProcessingAuxiliaryInput[] associations =
+        [
+            new(BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName, ProcessingAuxiliaryInputKind.Artifact,
+                ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.Metadata,
+                    CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant,
+                    new string('E', 64)))
+        ];
+        var executionId = Guid.NewGuid();
+        string Expected(IReadOnlyList<ProcessingAuxiliaryInput> auxiliaries, string? frozenProvenance)
+            => CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+                CentralProcessingGraphNodeHandlerKind.BuiltInRecipe, BuiltInProcessingRecipes.Annotation, options,
+                selector, requested, auxiliaries, frozenProvenance);
+        string? Resolve(string expected) => CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            executionId, BuiltInProcessingRecipes.Annotation, requested, expected, provenanceJson);
+
+        // Annotation frozen: the provenance reaches the executor whether the associations completed or were omitted.
+        var frozenWithAssociations = Expected(associations, provenanceJson);
+        var frozenWithoutAssociations = Expected([], provenanceJson);
+        Assert.AreNotEqual(requested, frozenWithAssociations);
+        Assert.AreNotEqual(requested, frozenWithoutAssociations);
+        Assert.AreNotEqual(frozenWithAssociations, frozenWithoutAssociations,
+            "the association auxiliary is part of the frozen expectation until it is omitted");
+        Assert.AreEqual(provenanceJson, Resolve(frozenWithAssociations));
+        Assert.AreEqual(provenanceJson, Resolve(frozenWithoutAssociations));
+
+        // Nothing frozen: once the omitted auxiliary is re-derived out, the expectation is the requested identity
+        // again, so provenance the frame acquired after expansion is still withheld.
+        var unfrozenOmitted = Expected([], null);
+        Assert.AreEqual(requested, unfrozenOmitted);
+        Assert.IsNull(Resolve(unfrozenOmitted));
+        Assert.AreEqual(provenanceJson, CentralDerivativeJobExecutor.ResolveLeaseSceneProvenance(
+            null, BuiltInProcessingRecipes.Annotation, requested, unfrozenOmitted, provenanceJson),
+            "legacy (non-graph) jobs keep the live frame provenance");
+    }
+
+    [TestMethod]
+    public async Task MeasuredAssociationNodeFreezesTheBoundRawVariantWhileOtherRawNodesKeepRaw()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 10, 7, 9, 0, 0, TimeSpan.Zero);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var definition = CreateMeasuredAssociationGraph();
+        var night = AddAssignedArtifact(context, "night", definition, registry, now);
+        night.Variant = "night-raw";
+        var source = AddAssignedArtifact(context, "source", definition, registry, now);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+        static string Canonical(ProcessingInputSelector selector)
+            => CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(selector)).GetRawText();
+        JsonElement OptionsOf(string nodeId) => definition.Nodes.Single(node => node.Id == nodeId).EffectiveOptions;
+
+        var nightResult = await scheduler.ScheduleLiveAsync(night.Id, now, CancellationToken.None).ConfigureAwait(false);
+        var sourceResult = await scheduler.ScheduleLiveAsync(source.Id, now, CancellationToken.None).ConfigureAwait(false);
+
+        foreach (var (result, variant) in new[] { (nightResult, "night-raw"), (sourceResult, "source") })
+        {
+            Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, result.Outcome, result.ReasonCode);
+            var jobs = result.Execution!.Jobs;
+            var associations = jobs.Single(job => job.GraphNodeId == "MeasuredStellarAssociations");
+            // (b) the association node binds Raw(<bound raw variant>), as the edge step binds Raw(source.Variant).
+            Assert.AreEqual(Canonical(ProcessingInputSelector.Raw(variant)), associations.InputSelectorJson, variant);
+            Assert.AreEqual(BuiltInProcessingRecipes.CreateRequestedIdentity(
+                    BuiltInProcessingRecipes.MeasuredStellarAssociations, OptionsOf("MeasuredStellarAssociations"),
+                    ProcessingInputSelector.Raw(variant)).IdentitySha256,
+                associations.RequestedRecipeIdentitySha256, variant);
+            // (d) every other raw-primary node keeps the pre-existing Raw() selector and requested identity.
+            foreach (var other in jobs.Where(job => job.GraphNodeId is "Preview" or "Annotation"))
+            {
+                Assert.AreEqual(Canonical(ProcessingInputSelector.Raw()), other.InputSelectorJson, other.GraphNodeId);
+                Assert.AreEqual(BuiltInProcessingRecipes.CreateRequestedIdentity(
+                        other.RecipeName, OptionsOf(other.GraphNodeId!), ProcessingInputSelector.Raw()).IdentitySha256,
+                    other.RequestedRecipeIdentitySha256, other.GraphNodeId);
+            }
+            // (e) the annotation's optional auxiliary pins the association node's frozen identity.
+            var requirement = jobs.Single(job => job.GraphNodeId == "Annotation").InputRequirements
+                .Single(item => item.BindingName == BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName);
+            Assert.IsFalse(requirement.IsRequired);
+            Assert.AreEqual(Canonical(ProcessingInputSelector.RecipeResult(
+                    FrameArtifactRole.Metadata,
+                    CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant,
+                    associations.ExpectedRecipeIdentitySha256!)),
+                requirement.SelectorJson, variant);
+        }
+        foreach (var nodeId in new[] { "Preview", "Annotation" })
+        {
+            Assert.AreEqual(
+                sourceResult.Execution!.Jobs.Single(job => job.GraphNodeId == nodeId).RequestedRecipeIdentitySha256,
+                nightResult.Execution!.Jobs.Single(job => job.GraphNodeId == nodeId).RequestedRecipeIdentitySha256,
+                $"the raw variant never reaches {nodeId}'s identity");
+        }
+
+        // The variant is frozen at expansion: a later expansion request or convergence never re-reads it.
+        var frozen = nightResult.Execution!.Jobs.Single(job => job.GraphNodeId == "MeasuredStellarAssociations");
+        var (frozenSelector, frozenRequested, expectedFrozenIdentity) = (
+            frozen.InputSelectorJson, frozen.RequestedRecipeIdentitySha256, frozen.ExpectedRecipeIdentitySha256);
+        night.Variant = "changed-raw";
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var again = await scheduler.ScheduleLiveAsync(night.Id, now.AddMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false);
+        await scheduler.ConvergeAsync(nightResult.Execution.Id, now.AddMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Existing, again.Outcome);
+        Assert.AreEqual(nightResult.Execution.Id, again.Execution!.Id);
+        var reread = await context.CentralDerivativeJobs.AsNoTracking()
+            .SingleAsync(job => job.Id == frozen.Id).ConfigureAwait(false);
+        Assert.AreEqual(frozenSelector, reread.InputSelectorJson);
+        Assert.AreEqual(frozenRequested, reread.RequestedRecipeIdentitySha256);
+        Assert.AreEqual(expectedFrozenIdentity, reread.ExpectedRecipeIdentitySha256);
+    }
+
+    [TestMethod]
+    [DataRow(null, false, DisplayName = "null")]
+    [DataRow("", false, DisplayName = "empty")]
+    [DataRow("   ", true, DisplayName = "whitespace")]
+    public async Task MeasuredAssociationNodeFailsTheExpansionClosedWhenTheRawVariantIsUnavailable(
+        string? variant, bool reachesTheSelector)
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 10, 7, 9, 0, 0, TimeSpan.Zero);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var raw = AddAssignedArtifact(context, "variantless", CreateMeasuredAssociationGraph(), registry, now);
+        raw.Variant = variant;
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+
+        var result = await scheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None).ConfigureAwait(false);
+
+        // No "source" fallback: central ingest reconstructs raw artifacts only with a descriptor variant. A null or
+        // empty variant never matches a graph source contract, so the graph is not applicable at all; a variant that
+        // matches the acquisition contract but cannot bind a Raw(<variant>) selector rejects the whole expansion.
+        if (reachesTheSelector)
+        {
+            Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Invalid, result.Outcome);
+            Assert.AreEqual(CentralProcessingGraphScheduler.MeasuredAssociationRawVariantReasonCode, result.ReasonCode);
+        }
+        else
+        {
+            Assert.AreEqual(CentralProcessingGraphScheduleOutcome.NotApplicable, result.Outcome);
+        }
+        Assert.AreEqual(0, await context.CentralProcessingGraphExecutions.CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(0, await context.CentralDerivativeJobs.CountAsync().ConfigureAwait(false));
+        var binding = new ProcessingGraphInputBinding(
+            0, "input", ProcessingGraphInputBindingKind.PrimaryArtifact, "$raw", 0, true);
+        Assert.IsNull(CentralProcessingGraphScheduler.CreateMeasuredAssociationSelector(binding,
+            new Dictionary<string, CentralProcessingGraphExecutionSource>
+            {
+                ["$raw"] = new() { Artifact = new CentralArtifact { Role = FrameArtifactRole.Raw, Variant = variant } }
+            }));
+        Assert.IsNull(CentralProcessingGraphScheduler.CreateMeasuredAssociationSelector(binding,
+            new Dictionary<string, CentralProcessingGraphExecutionSource>
+            {
+                ["$raw"] = new() { Artifact = new CentralArtifact { Role = FrameArtifactRole.Calibrated, Variant = "source" } }
+            }), "only a raw primary carries the bound variant");
+    }
+
+    [TestMethod]
+    public async Task MeasuredAssociationsCannotBeReprocessedOutsideTheirGraph()
+    {
+        // The frozen Raw(<variant>) selector exists only on the graph node. Operator reprocess builds an independent
+        // Raw() job, so it refuses the association recipe instead of deriving an identity the edge never produces;
+        // a graph node is never requeued independently either (pinned in the integration suite), so replay of the
+        // graph, which re-expands from the immutable raw row, is the only reset path.
+        await using var context = CreateContext();
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        var operations = new CentralDerivativeJobOperationsService(
+            context, TimeProvider.System, telemetry, NullLogger<CentralDerivativeJobOperationsService>.Instance);
+        var options = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.MeasuredStellarAssociations,
+            CaptureContractJson.SerializeToElement(new MeasuredStellarAssociationRecipeOptions()));
+
+        await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => operations.ReprocessAsync(
+            Guid.NewGuid(),
+            new(BuiltInProcessingRecipes.MeasuredStellarAssociations, options,
+                CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant, Supersede: false),
+            "operator",
+            CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("Skipped", DisplayName = "skipped")]
+    [DataRow("TerminalFailure", DisplayName = "failed")]
+    [DataRow("Completed", DisplayName = "completed-without-output")]
+    public async Task OmittedMeasuredAssociationsRederiveTheAnnotationAsTheNoAuxiliaryIdentity(string outcome)
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 10, 7, 9, 0, 0, TimeSpan.Zero);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var definition = CreateMeasuredAssociationGraph();
+        var raw = AddAssignedArtifact(context, "omitted", definition, registry, now);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+        var result = await scheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, result.Outcome, result.ReasonCode);
+        var execution = result.Execution!;
+        var annotation = execution.Jobs.Single(job => job.GraphNodeId == "Annotation");
+        var associations = execution.Jobs.Single(job => job.GraphNodeId == "MeasuredStellarAssociations");
+        var frozen = (annotation.RequestedRecipeIdentitySha256, annotation.ExpectedRecipeIdentitySha256,
+            annotation.RequestIdentitySha256, annotation.InputSelectorJson);
+        var options = definition.Nodes.Single(node => node.Id == "Annotation").EffectiveOptions;
+        var kind = registry.GetRequired(BuiltInProcessingRecipes.Annotation).Kind;
+        var auxiliary = new ProcessingAuxiliaryInput(
+            BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+            ProcessingAuxiliaryInputKind.Artifact,
+            ProcessingInputSelector.RecipeResult(FrameArtifactRole.Metadata,
+                CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant,
+                associations.ExpectedRecipeIdentitySha256!));
+        // The frame carries no scene provenance, so without the auxiliary the annotation identity is the requested one:
+        // the same no-auxiliary shape the edge annotation takes when its association step produced nothing.
+        var expectedWithoutAuxiliary = CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            kind, BuiltInProcessingRecipes.Annotation, options, ProcessingInputSelector.Raw(),
+            frozen.RequestedRecipeIdentitySha256, [], sceneProvenanceJson: null);
+        var expectedWithAuxiliary = CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity(
+            kind, BuiltInProcessingRecipes.Annotation, options, ProcessingInputSelector.Raw(),
+            frozen.RequestedRecipeIdentitySha256, [auxiliary], sceneProvenanceJson: null);
+        Assert.AreEqual(expectedWithAuxiliary, frozen.ExpectedRecipeIdentitySha256,
+            "expansion freezes the identity with the optional auxiliary bound");
+        Assert.AreNotEqual(expectedWithoutAuxiliary, frozen.ExpectedRecipeIdentitySha256);
+
+        // Scheduling clears the change tracker, so the returned graph is detached: settle the producer through a
+        // tracked copy.
+        var producer = await context.CentralDerivativeJobs.Include(job => job.Outputs)
+            .SingleAsync(job => job.Id == associations.Id).ConfigureAwait(false);
+        producer.Status = Enum.Parse<CentralDerivativeJobStatus>(outcome);
+        producer.StateReasonCode = producer.Status == CentralDerivativeJobStatus.Skipped
+            ? ProcessingReasonCodes.MissingProjectedScene
+            : producer.Status == CentralDerivativeJobStatus.TerminalFailure ? "test.failed" : null;
+        producer.CompletedAtUtc = now;
+        Assert.IsTrue(producer.Outputs.All(output => output.ResultArtifact is null && output.ResultCentralArtifactId is null),
+            "every outcome here leaves the association output unbound");
+        await context.SaveChangesAsync().ConfigureAwait(false);
+
+        await scheduler.ConvergeAsync(execution.Id, now.AddSeconds(1), CancellationToken.None).ConfigureAwait(false);
+        var first = await ReadAsync().ConfigureAwait(false);
+        await scheduler.ConvergeAsync(execution.Id, now.AddSeconds(2), CancellationToken.None).ConfigureAwait(false);
+        var second = await ReadAsync().ConfigureAwait(false);
+
+        var requirement = first.InputRequirements.Single(item =>
+            item.BindingName == BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName);
+        Assert.AreEqual(CentralDerivativeInputResolutionState.Missing, requirement.ResolutionState, outcome);
+        Assert.AreEqual("processing.graph.optional-dependency-omitted", requirement.ResolutionReasonCode, outcome);
+        Assert.AreEqual(CentralDerivativeJobStatus.Pending, first.Status, first.StateReasonCode);
+        Assert.AreEqual(expectedWithoutAuxiliary, first.ExpectedRecipeIdentitySha256, outcome);
+        // Only the expectation moves: the requested identity, the request identity and the selector stay frozen.
+        Assert.AreEqual(frozen.RequestedRecipeIdentitySha256, first.RequestedRecipeIdentitySha256);
+        Assert.AreEqual(frozen.RequestIdentitySha256, first.RequestIdentitySha256);
+        Assert.AreEqual(frozen.InputSelectorJson, first.InputSelectorJson);
+        Assert.AreEqual(first.ExpectedRecipeIdentitySha256, second.ExpectedRecipeIdentitySha256, "idempotent");
+        Assert.AreEqual(first.Status, second.Status);
+
+        // (Z6) The annotation publishes under the id derived from the re-derived identity and its bound sources, which
+        // are the raw primary alone, exactly as the edge publishes its no-auxiliary annotation. The id projected at
+        // expansion from the pre-omission identity is never published, and the leaf-only rule leaves it no consumer.
+        var bound = first.Inputs.OrderBy(input => input.Ordinal).Select(input => input.Artifact!.ArtifactId).ToArray();
+        CollectionAssert.AreEqual(new[] { raw.ArtifactId }, bound);
+        var published = ProcessingIdentity.CreateArtifactId(ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.AnnotatedPreview, CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+            first.ExpectedRecipeIdentitySha256!, bound));
+        var edge = ProcessingIdentity.CreateArtifactId(ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.AnnotatedPreview, CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+            BuiltInProcessingRecipes.CreateExecutionIdentity(BuiltInProcessingRecipes.Annotation, options,
+                ProcessingInputSelector.Raw(), annotation: null, auxiliaryInputs: []).IdentitySha256,
+            [raw.ArtifactId]));
+        Assert.AreEqual(edge, published);
+        Assert.AreNotEqual(ProcessingIdentity.CreateArtifactId(ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.AnnotatedPreview, CentralDerivativeRecipeCatalog.AnnotatedPreviewVariant,
+            frozen.ExpectedRecipeIdentitySha256!, bound)), published);
+
+        Task<CentralDerivativeJob> ReadAsync()
+            => context.CentralDerivativeJobs.AsNoTracking()
+                .Include(job => job.InputRequirements)
+                .Include(job => job.Inputs).ThenInclude(input => input.Artifact)
+                .SingleAsync(job => job.Id == annotation.Id);
+    }
+
+    [TestMethod]
+    public async Task CompletedMeasuredAssociationsKeepTheAuxiliaryInTheAnnotationIdentity()
+    {
+        await using var context = CreateContext();
+        var now = new DateTimeOffset(2026, 10, 7, 9, 0, 0, TimeSpan.Zero);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var raw = AddAssignedArtifact(context, "associated", CreateMeasuredAssociationGraph(), registry, now);
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+        var result = await scheduler.ScheduleLiveAsync(raw.Id, now, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, result.Outcome, result.ReasonCode);
+        var execution = result.Execution!;
+        var annotation = execution.Jobs.Single(job => job.GraphNodeId == "Annotation");
+        var associations = execution.Jobs.Single(job => job.GraphNodeId == "MeasuredStellarAssociations");
+        var expectedFrozenIdentity = annotation.ExpectedRecipeIdentitySha256;
+        // Scheduling clears the change tracker, so the returned graph is detached: bind the product by key and settle
+        // the producer through a tracked copy.
+        var producer = await context.CentralDerivativeJobs.Include(job => job.Outputs)
+            .SingleAsync(job => job.Id == associations.Id).ConfigureAwait(false);
+        var product = new CentralArtifact
+        {
+            CentralFrameId = raw.Frame!.Id,
+            DevicePublicId = raw.DevicePublicId,
+            ArtifactId = Guid.NewGuid(),
+            Role = FrameArtifactRole.Metadata,
+            Variant = CentralDerivativeRecipeCatalog.MeasuredStellarAssociationsVariant,
+            RecipeVersion = "metadata-v1",
+            ManifestSchemaVersion = "manifest-v1",
+            MediaType = "application/json",
+            ByteLength = 2,
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256("{}"u8.ToArray()),
+            StorageReference = $"object://skymonitor-artifacts/{Guid.NewGuid():N}",
+            IdempotencyKey = Guid.NewGuid().ToString("N"),
+            ReceivedAtUtc = now,
+            CreatedUtc = now,
+            ObjectState = CentralArtifactObjectState.Available,
+            ReconstructionState = CentralReconstructionState.Complete
+        };
+        context.Add(product);
+        producer.Status = CentralDerivativeJobStatus.Completed;
+        producer.CompletedAtUtc = now;
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var output = producer.Outputs.Single();
+        output.ResultCentralArtifactId = product.Id;
+        output.ResultArtifact = product;
+        output.ResultOutputIdentitySha256 = new string('A', 64);
+        output.BoundAtUtc = now;
+        await context.SaveChangesAsync().ConfigureAwait(false);
+
+        await scheduler.ConvergeAsync(execution.Id, now.AddSeconds(1), CancellationToken.None).ConfigureAwait(false);
+
+        var persisted = await context.CentralDerivativeJobs.AsNoTracking()
+            .Include(job => job.InputRequirements)
+            .SingleAsync(job => job.Id == annotation.Id).ConfigureAwait(false);
+        var requirement = persisted.InputRequirements.Single(item =>
+            item.BindingName == BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName);
+        Assert.AreEqual(CentralDerivativeInputResolutionState.Resolved, requirement.ResolutionState);
+        var expectedAssociationsId = product.Id;
+        Assert.AreEqual(expectedAssociationsId, requirement.ExpectedCentralArtifactId);
+        Assert.AreEqual(CentralDerivativeJobStatus.Pending, persisted.Status, persisted.StateReasonCode);
+        Assert.AreEqual(expectedFrozenIdentity, persisted.ExpectedRecipeIdentitySha256,
+            "a produced association keeps the identity frozen with the auxiliary");
+    }
+
+    /// <summary>
+    /// The canonical basic graph's raw-only measured-association slice: the association node, the annotation that
+    /// optionally consumes it, and an unrelated raw-primary node.
+    /// </summary>
+    private static ProcessingGraphDefinition CreateMeasuredAssociationGraph()
+    {
+        var basic = DatabaseSeeder.CreateBasicCentralProcessingGraph();
+        string[] kept = ["Preview", "Annotation", "MeasuredStellarAssociations"];
+        return basic with
+        {
+            Name = "measured-associations",
+            Sources = [.. basic.Sources.Where(static source => source.Id == "$raw")],
+            Nodes = [.. basic.Nodes.Where(node => kept.Contains(node.Id, StringComparer.Ordinal))]
+        };
     }
 
     /// <summary>A graph in which a node consumes the output of the annotation-bearing node.</summary>
@@ -1507,7 +2046,7 @@ public sealed class CentralProcessingGraphSchedulerTests
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(CentralProcessingGraphScheduleOutcome.Created, result.Outcome);
-        Assert.HasCount(7, result.Execution!.Jobs);
+        Assert.HasCount(8, result.Execution!.Jobs);
         Assert.HasCount(central.Sources.Length, result.Execution.Sources);
         Assert.IsTrue(result.Execution.Jobs.Any(job => job.Inputs.Any(input =>
             input.CentralArtifactId == clearReference.Id)));
@@ -2410,6 +2949,24 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     /// <summary>Adds a metadata source consumed through a CanonicalJson binding; portable compilation accepts it.</summary>
+    private static ProcessingGraphDefinition ReplaceNode(
+        ProcessingGraphDefinition definition,
+        string nodeId,
+        Func<ProcessingGraphNodeDefinition, ProcessingGraphNodeDefinition> replace)
+        => definition with { Nodes = [.. definition.Nodes.Select(node => node.Id == nodeId ? replace(node) : node)] };
+
+    private static ProcessingGraphNodeDefinition RebuildNode(
+        ProcessingGraphNodeDefinition node,
+        string? id = null,
+        int? order = null,
+        ImmutableArray<ProcessingGraphDependencyDefinition>? dependencies = null,
+        ImmutableArray<ProcessingGraphInputContract>? inputs = null,
+        ImmutableArray<ProcessingGraphProductContract>? outputs = null)
+        => new(
+            id ?? node.Id, node.StepAlias, node.StepVersion, node.OperationKind, node.Enabled,
+            node.FailurePolicy, order ?? node.Order, node.EffectiveOptions, dependencies ?? node.Dependencies,
+            inputs ?? node.Inputs, outputs ?? node.Outputs, node.Window, node.CapabilityLabels, node.HostApplicability);
+
     private static ProcessingGraphDefinition WithCanonicalJsonBinding(ProcessingGraphDefinition baseline)
     {
         var node = baseline.Nodes[0];

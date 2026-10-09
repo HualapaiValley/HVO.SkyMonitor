@@ -425,6 +425,17 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         nameof(CentralDerivativeJob.CreatedAtUtc)
     ];
 
+    /// <summary>
+    /// The only frozen column with an exemption, mirrored exactly by <c>TR_CentralDerivativeJobs_GraphIdentityImmutable</c>:
+    /// an annotation whose optional measured-association auxiliary was omitted re-derives its expectation once (ruling
+    /// (Z) on #526). <see cref="IsAdmittedExpectedIdentityRederivation"/> is the complete predicate.
+    /// </summary>
+    internal const string GraphJobRederivableProperty = nameof(CentralDerivativeJob.ExpectedRecipeIdentitySha256);
+
+    internal const string GraphJobRederivableRecipeName = BuiltInProcessingRecipes.Annotation;
+
+    internal const string GraphJobRederivationBindingName = BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName;
+
     private void ValidateGraphJobMutation()
     {
         var frozenProperties = GraphJobFrozenProperties;
@@ -436,7 +447,9 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             var isGraphOwned = wasGraphOwned || entry.Entity.GraphExecutionId is not null;
             if (entry.State == EntityState.Deleted && isGraphOwned ||
                 entry.State == EntityState.Modified && isGraphOwned && entry.Properties.Any(property =>
-                    property.IsModified && frozenProperties.Contains(property.Metadata.Name, StringComparer.Ordinal)))
+                    property.IsModified && frozenProperties.Contains(property.Metadata.Name, StringComparer.Ordinal) &&
+                    !(string.Equals(property.Metadata.Name, GraphJobRederivableProperty, StringComparison.Ordinal) &&
+                      IsAdmittedExpectedIdentityRederivation(entry))))
             {
                 throw new InvalidOperationException("Derivative graph executable identity is immutable.");
             }
@@ -454,6 +467,33 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             EnsureStringIsOneTime(entry, nameof(CentralDerivativeJob.InputSetIdentitySha256));
             EnsureTimestampIsOneTime(entry, nameof(CentralDerivativeJob.ResolutionCompletedAtUtc));
         }
+    }
+
+    /// <summary>
+    /// Mirrors the trigger exemption element for element: Waiting with no attempt and no lease before and after, the
+    /// annotation recipe before and after, and a Missing measured-association requirement that is already durable
+    /// (its original tracked state is Missing), so the guard admits no batch the trigger would order differently.
+    /// </summary>
+    private bool IsAdmittedExpectedIdentityRederivation(
+        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<CentralDerivativeJob> entry)
+    {
+        T Original<T>(string name) => (T)entry.OriginalValues[name]!;
+        var job = entry.Entity;
+        return Original<CentralDerivativeJobStatus>(nameof(CentralDerivativeJob.Status)) == CentralDerivativeJobStatus.Waiting &&
+            job.Status == CentralDerivativeJobStatus.Waiting &&
+            Original<int>(nameof(CentralDerivativeJob.AttemptCount)) == 0 && job.AttemptCount == 0 &&
+            entry.OriginalValues[nameof(CentralDerivativeJob.LeaseOwner)] is null && job.LeaseOwner is null &&
+            entry.OriginalValues[nameof(CentralDerivativeJob.LeaseToken)] is null && job.LeaseToken is null &&
+            entry.OriginalValues[nameof(CentralDerivativeJob.LeaseAcquiredAtUtc)] is null && job.LeaseAcquiredAtUtc is null &&
+            entry.OriginalValues[nameof(CentralDerivativeJob.LeaseExpiresAtUtc)] is null && job.LeaseExpiresAtUtc is null &&
+            string.Equals(Original<string>(nameof(CentralDerivativeJob.RecipeName)), GraphJobRederivableRecipeName, StringComparison.Ordinal) &&
+            string.Equals(job.RecipeName, GraphJobRederivableRecipeName, StringComparison.Ordinal) &&
+            ChangeTracker.Entries<CentralDerivativeJobInputRequirement>().Any(requirement =>
+                requirement.State is EntityState.Unchanged or EntityState.Modified &&
+                requirement.Entity.CentralDerivativeJobId == job.Id &&
+                string.Equals(requirement.Entity.BindingName, GraphJobRederivationBindingName, StringComparison.Ordinal) &&
+                (CentralDerivativeInputResolutionState)requirement.OriginalValues[
+                    nameof(CentralDerivativeJobInputRequirement.ResolutionState)]! == CentralDerivativeInputResolutionState.Missing);
     }
 
     private void ValidateGraphInputMutation()

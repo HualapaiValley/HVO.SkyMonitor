@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.Astronomy;
 #if COMBINED_TESTS
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.LogicHost.Services;
 #endif
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
@@ -538,6 +539,207 @@ public sealed class LogicHostProcessingConformanceTests
         Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
         CollectionAssert.AreEqual(expected.Algorithms.ToArray(), actual.Algorithms.ToArray());
         CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
+    }
+
+    /// <summary>
+    /// The measured-association product and the annotation that consumes it are byte-identical through the edge and
+    /// central adapters: the central scene auxiliary verified from its frozen reference equals the edge step's, and the
+    /// annotation renders the same overlay with and without the optional association auxiliary.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task EquivalentMeasuredAssociationAndAnnotationRequestsMatchCameraAgentAdapter()
+    {
+        // The measurer rejects frames under 16 px, so the fixture frame is widened to 32x32 with one star at the zenith
+        // the scene predicts.
+        var (descriptor, payload) = CreateMeasuredAssociationFrame(ProcessingConformanceFixture.CreateDescriptor());
+        var descriptorIdentity = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+        // The edge adapter stamps a descriptor-backed raw artifact with its capture and descriptor identity.
+        var source = ProcessingConformanceFixture.CreateProcessingArtifact() with
+        {
+            Layout = descriptor.Layout,
+            Payload = payload,
+            CaptureId = descriptor.Capture.CaptureId,
+            DescriptorIdentitySha256 = descriptorIdentity
+        };
+        var (scenePayload, sceneReference) = await CreateMeasuredAssociationSceneAsync(descriptor, descriptorIdentity)
+            .ConfigureAwait(false);
+        var edgeScene = new ProcessingAuxiliaryInput(
+            BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName,
+            ProcessingAuxiliaryInputKind.CanonicalJson,
+            SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+            IdentitySha256: sceneReference.ContentIdentitySha256,
+            Payload: scenePayload)
+        {
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(scenePayload)
+        };
+        var verified = CentralMeasuredAssociationSceneReader.Verify(sceneReference, scenePayload);
+        Assert.IsNull(verified.FailureReasonCode, verified.FailureReasonCode);
+        var centralScene = verified.Input!;
+        Assert.AreEqual(edgeScene with { Payload = default }, centralScene with { Payload = default });
+        CollectionAssert.AreEqual(scenePayload, centralScene.Payload.ToArray());
+
+        var selector = ProcessingInputSelector.Raw("source");
+        var associationOptions = JsonSerializer.SerializeToElement(new MeasuredStellarAssociationRecipeOptions());
+        var cameraAgent = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+        var logicHost = new LogicHostRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+        var edgeAssociations = await cameraAgent.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.MeasuredStellarAssociations,
+            associationOptions,
+            selector,
+            [source],
+            "measured-stellar-associations-v1",
+            AuxiliaryInputs: [edgeScene],
+            InputArtifactId: source.ArtifactId), CancellationToken.None).ConfigureAwait(false);
+        var centralAssociations = await logicHost.ExecuteAsync(
+            descriptor,
+            payload,
+            BuiltInProcessingRecipes.MeasuredStellarAssociations,
+            associationOptions,
+            selector,
+            "measured-stellar-associations-v1",
+            auxiliaryInputs: [centralScene]).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, edgeAssociations.Status, edgeAssociations.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, centralAssociations.Status, centralAssociations.ReasonCode);
+        var associations = edgeAssociations.Products.Single();
+        AssertSameProduct(associations, centralAssociations.Products.Single());
+        Assert.AreEqual(MeasuredStellarAssociationJson.Parse(associations.Payload).Associations!.AssociationIdentitySha256,
+            associations.ContentIdentitySha256);
+
+        // The association product as both hosts bind it: the edge from its dependency product, the central input reader
+        // from the layoutless artifact and its processing evidence.
+        var measured = new ProcessingArtifact(
+            ProcessingIdentity.CreateArtifactId(associations.OutputIdentitySha256),
+            associations.Role,
+            associations.Variant,
+            associations.Recipe.IdentitySha256,
+            associations.MediaType,
+            associations.Layout,
+            associations.Payload,
+            ProcessingConformanceFixture.CapturedUtc,
+            associations.TotalIntegration,
+            associations.Compatibility,
+            SourceArtifactIds: associations.SourceArtifactIds)
+        {
+            ProductKind = associations.Kind,
+            SchemaVersion = associations.SchemaVersion,
+            ContentIdentitySha256 = associations.ContentIdentitySha256
+        };
+        ProcessingAuxiliaryInput[] edgeAuxiliary =
+        [
+            new(
+                BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+                ProcessingAuxiliaryInputKind.Artifact,
+                ProcessingInputSelector.RecipeResult(associations.Role, associations.Variant, associations.Recipe.IdentitySha256),
+                ArtifactId: measured.ArtifactId)
+        ];
+        var annotationOptions = JsonSerializer.SerializeToElement(new AnnotationRecipeOptions(OutputEncoding: "Packed"));
+        var annotation = new ProcessingAnnotationInput(
+            [new ProjectedAnnotationObject("zenith", "Zenith", new PixelPoint(1, 1), true, true)],
+            [],
+            new PreviewTransform(1, 1),
+            null,
+            new string('A', 64));
+        var recipeIdentities = new List<string>();
+        foreach (var withAssociations in new[] { false, true })
+        {
+            var edge = await cameraAgent.ExecuteAsync(new ProcessingExecutionRequest(
+                BuiltInProcessingRecipes.Annotation,
+                annotationOptions,
+                selector,
+                withAssociations ? [source, measured] : [source],
+                "annotated-conformance",
+                annotation,
+                withAssociations ? edgeAuxiliary : null,
+                source.ArtifactId), CancellationToken.None).ConfigureAwait(false);
+            LogicHostProcessingInput[] inputs = withAssociations
+                ?
+                [
+                    new(descriptor, payload),
+                    new(null, measured.Payload, BuiltInProcessingRecipes.MeasuredStellarAssociationsInputName,
+                        measured, ProcessingGraphInputBindingKind.AuxiliaryArtifact)
+                ]
+                : [new(descriptor, payload)];
+            var central = await logicHost.ExecuteAsync(
+                inputs,
+                BuiltInProcessingRecipes.Annotation,
+                annotationOptions,
+                selector,
+                "annotated-conformance",
+                annotation,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, edge.Status, $"{withAssociations}: {edge.ReasonCode}");
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, central.Status, $"{withAssociations}: {central.ReasonCode}");
+            AssertSameProduct(edge.Products.Single(), central.Products.Single());
+            recipeIdentities.Add(edge.Products.Single().Recipe.IdentitySha256);
+        }
+        Assert.AreNotEqual(recipeIdentities[0], recipeIdentities[1], "the bound association product is identity-bearing");
+    }
+
+    private static void AssertSameProduct(ProcessingProduct expected, ProcessingProduct actual)
+    {
+        CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
+        Assert.AreEqual(expected.ChecksumSha256, actual.ChecksumSha256);
+        Assert.AreEqual(expected.OutputIdentitySha256, actual.OutputIdentitySha256);
+        Assert.AreEqual(expected.Recipe.IdentitySha256, actual.Recipe.IdentitySha256);
+        Assert.AreEqual(expected.ContentIdentitySha256, actual.ContentIdentitySha256);
+        CollectionAssert.AreEqual(expected.Algorithms.ToArray(), actual.Algorithms.ToArray());
+        CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
+    }
+
+    private static (ReconstructionDescriptor Descriptor, byte[] Payload) CreateMeasuredAssociationFrame(
+        ReconstructionDescriptor baseline)
+    {
+        const int size = 32;
+        var payload = new byte[size * size * 2];
+        for (var index = 0; index < size * size; index++)
+        {
+            var dx = (index % size + 0.5 - size / 2d) / 1.2;
+            var dy = (index / size + 0.5 - size / 2d) / 1.2;
+            // A deterministic low-amplitude texture keeps the background noise estimate finite and non-zero.
+            var sample = (ushort)Math.Round(1000 + 4000 * Math.Exp(-0.5 * (dx * dx + dy * dy)) + (index * 7919 % 13) - 6);
+            payload[index * 2] = (byte)sample;
+            payload[index * 2 + 1] = (byte)(sample >> 8);
+        }
+        return (baseline with
+        {
+            Layout = baseline.Layout with
+            {
+                Width = size,
+                Height = size,
+                StrideBytes = size * 2,
+                BlackLevel = 0,
+                WhiteLevel = ushort.MaxValue,
+                ByteLength = payload.Length
+            },
+            Artifact = baseline.Artifact with { ChecksumSha256 = PayloadChecksum.ComputeSha256(payload) }
+        }, payload);
+    }
+
+    private static async Task<(byte[] Payload, CentralProjectedSceneReference Reference)> CreateMeasuredAssociationSceneAsync(
+        ReconstructionDescriptor descriptor,
+        string descriptorIdentity)
+    {
+        var utc = descriptor.Timing.ExposureStartedUtc;
+        var (width, height) = (descriptor.Layout.Width, descriptor.Layout.Height);
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
+        ]);
+        var visible = await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(utc,
+            new ObserverLocation(0, 0, 0),
+            new ProjectionContext(ProjectionModel.Perspective, width / 2d, height / 2d, 16, 16, width, height,
+                ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
+                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        var source = new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, descriptorIdentity);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(width, height), source, "calibration-v1", visible.Request.ProjectionVersion);
+        var payload = ProjectedSceneJson.Serialize(scene);
+        return (payload, new CentralProjectedSceneReference(
+            Guid.NewGuid(), Guid.NewGuid(), descriptor.Capture.CaptureId, ProcessingIdentity.ComputePayloadSha256(payload),
+            scene.SceneIdentitySha256, source, "scene", new string('D', 64)));
     }
 
     [TestMethod]
