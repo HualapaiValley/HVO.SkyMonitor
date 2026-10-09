@@ -73,11 +73,12 @@ public sealed class ProductionCatalogRegistryTests
     {
         const string composedCatalogId = "hyg-v44-openngc-production";
         var composed = ProductionCatalog.Get(composedCatalogId);
+        var defaultCatalog = ProductionCatalog.Get(ProductionCatalog.DefaultCatalogId);
 
         Assert.AreEqual(3, composed.ManifestVersion);
         Assert.AreEqual("hyg-v4.4-openngc-v20260501-p5-s4-r", composed.PackageVersionPrefix);
-        Assert.AreEqual(HygV42.CatalogId, ProductionCatalog.DefaultCatalogId);
-        Assert.AreEqual("hvo-approved-catalogs-v1", CameraAgentImageContract.CatalogContract);
+        Assert.AreEqual(HygV42.CatalogId, defaultCatalog.CatalogId);
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog("hvo-approved-catalogs-v1", defaultCatalog.CatalogId));
         Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.CatalogContract, composedCatalogId));
         Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.LegacyCatalogContract, composedCatalogId));
         Assert.IsFalse(CameraAgentImageContract.IsKnownCatalogContract("hvo-approved-catalogs-v2"));
