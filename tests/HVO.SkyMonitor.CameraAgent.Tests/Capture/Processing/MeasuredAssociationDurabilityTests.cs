@@ -200,7 +200,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var dx = (index % width + .5 - width / 2d) / 1.2;
             var dy = (index / width + .5 - height / 2d) / 1.2;
-            var sample = (ushort)Math.Round(1000 + index * 17 % 23 - 11 + 4000 * Math.Exp(-.5 * (dx * dx + dy * dy)));
+            var sample = (ushort)Math.Round(1000 + MeasuredDurabilityNoise(index) + 4000 * Math.Exp(-.5 * (dx * dx + dy * dy)));
             bytes[index * 2] = (byte)sample;
             bytes[index * 2 + 1] = (byte)(sample >> 8);
         }
@@ -256,6 +256,18 @@ public sealed partial class DurableCaptureProcessingTests
             CaptureContractJson.ComputeManifestSha256(manifestBytes));
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
         return (new Fixture(manifest, options, new FrameProcessingItem(config, CreateSubmission(frame!), receipt)), sceneInput);
+    }
+
+    // Same bounded synthetic noise as the real-producer conformance fixture; periodic ramps have zero adjacent-difference MAD.
+    private static int MeasuredDurabilityNoise(int index)
+    {
+        var bits = (uint)index + 526u;
+        bits ^= bits >> 16;
+        bits = unchecked(bits * 0x7FEB352Du);
+        bits ^= bits >> 15;
+        bits = unchecked(bits * 0x846CA68Bu);
+        bits ^= bits >> 16;
+        return (int)(bits % 13) - 6;
     }
 
     private sealed class MeasuredDurabilityObservationStep : ICaptureProcessingStep
