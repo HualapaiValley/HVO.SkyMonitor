@@ -914,8 +914,8 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 reader.GetString(1),
                 reader.GetString(2),
                 Shared(pool, reader.GetString(3)),
-                reader.GetDouble(4),
-                reader.GetDouble(5),
+                ReadDouble(reader, 4),
+                ReadDouble(reader, 5),
                 Shared(pool, reader.GetString(6)),
                 OptionalDouble(reader, 7),
                 OptionalDouble(reader, 8),
@@ -982,9 +982,9 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         while (reader.Read())
         {
             var rowObject = reader.GetString(0);
-            var rowLevel = reader.GetInt64(1);
-            var rowRing = reader.GetInt64(2);
-            var rowSequence = reader.GetInt64(3);
+            var rowLevel = ReadInt64(reader, 1);
+            var rowRing = ReadInt64(reader, 2);
+            var rowSequence = ReadInt64(reader, 3);
             var sameSet = string.Equals(rowObject, objectId, StringComparison.Ordinal) && rowLevel == level;
             if (!sameSet || rowRing != ring)
             {
@@ -1013,7 +1013,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             {
                 throw new InvalidDataException($"Catalog outline points for '{rowObject}' are not numbered from zero.");
             }
-            points.Add(new DeepSkyOutlinePoint(reader.GetDouble(4), reader.GetDouble(5)));
+            points.Add(new DeepSkyOutlinePoint(ReadDouble(reader, 4), ReadDouble(reader, 5)));
         }
         if (objectId is not null)
         {
@@ -1040,10 +1040,30 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     }
 
     private static double? OptionalDouble(SqliteDataReader reader, int ordinal)
-        => reader.IsDBNull(ordinal) ? null : reader.GetDouble(ordinal);
+        => reader.IsDBNull(ordinal) ? null : ReadDouble(reader, ordinal);
 
     private static int? OptionalInt32(SqliteDataReader reader, int ordinal)
-        => reader.IsDBNull(ordinal) ? null : checked((int)reader.GetInt64(ordinal));
+        => reader.IsDBNull(ordinal) ? null : checked((int)ReadInt64(reader, ordinal));
+
+    private static double ReadDouble(SqliteDataReader reader, int ordinal)
+    {
+        // SQLite numeric getters coerce TEXT/BLOB values, so validate the stored type before conversion.
+        var fieldType = reader.GetFieldType(ordinal);
+        if (reader.IsDBNull(ordinal) || fieldType != typeof(double) && fieldType != typeof(long))
+        {
+            throw new InvalidDataException($"Catalog deep-sky column '{reader.GetName(ordinal)}' must contain a numeric value.");
+        }
+        return reader.GetDouble(ordinal);
+    }
+
+    private static long ReadInt64(SqliteDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal) || reader.GetFieldType(ordinal) != typeof(long))
+        {
+            throw new InvalidDataException($"Catalog deep-sky column '{reader.GetName(ordinal)}' must contain an integer value.");
+        }
+        return reader.GetInt64(ordinal);
+    }
 
     private static string Shared(HashSet<string> pool, string value)
         => pool.TryGetValue(value, out var shared) ? shared : Add(pool, value);
