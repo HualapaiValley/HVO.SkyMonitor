@@ -68,7 +68,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2",
+            "6ED345566CC5D836EEB96CB07113F8682C0C9F8B813F4F8458A67F4C9C334221",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -98,6 +98,7 @@ public sealed class StandaloneW6ProfileTests
         var graph = factory.CreateGraph(configuration);
         try
         {
+            AssertMeasuredAssociationSceneContract(preview, graph, "scene-presentation", 2);
             var shared = graph.SharedPlan!;
             var scene = shared.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
             Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, scene.StepVersion);
@@ -137,7 +138,8 @@ public sealed class StandaloneW6ProfileTests
     {
         var configuration = await LoadAsync("cameraagent.standalone-w6-mono8.json").ConfigureAwait(false);
         using var provider = CreateProvider();
-        var preview = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(configuration);
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var preview = factory.PreviewPlan(configuration);
 
         Assert.AreEqual(
             "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479",
@@ -162,7 +164,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "A7C84CBE5B6BCA51537F52E378C9327ACB17D360B20A8DFA00D7C6D29B3D8192",
+            "995420F11CAB69DC4D5E092C3E736236D66482042A62BEA34474F40BF1A8FC94",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -176,6 +178,35 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual(120, layout.Height);
         Assert.AreEqual(CameraPixelFormat.Mono8, layout.PixelFormat);
         Assert.AreEqual(19_200L, layout.ByteLength);
+        var graph = factory.CreateGraph(configuration);
+        try
+        {
+            AssertMeasuredAssociationSceneContract(preview, graph, "annotation", 3);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+    }
+
+    private static void AssertMeasuredAssociationSceneContract(
+        CaptureProcessingPlanPreview preview, CaptureProcessingGraph graph, string consumerId, int requirementCount)
+    {
+        // The diagnostic default and typed dependency requirements enter ComputeNodePlanSha256. ScenePresentation
+        // adds an optional association requirement; Annotation replaces its old role groups with typed requirements.
+        // These effective contracts change even when the unchanged profile wires no association producer.
+        var scene = preview.EffectiveNodes.Single(node => node.Id == consumerId);
+        Assert.IsFalse(scene.Options!.Value.GetProperty("expectedPositionDiagnostics").GetBoolean());
+        var step = (IRequiredCaptureProcessingDependencies)graph.Nodes.Single(node => node.Id == consumerId).Step;
+        Assert.HasCount(requirementCount, step.DependencyRequirements);
+        Assert.IsTrue(step.DependencyRequirements.Single(static requirement =>
+            requirement.RecipeNames?.Contains(BuiltInProcessingRecipes.ProjectedScene) == true).Required);
+        var associations = step.DependencyRequirements.Single(static requirement =>
+            requirement.RecipeNames?.Contains(BuiltInProcessingRecipes.MeasuredStellarAssociations) == true);
+        Assert.IsFalse(associations.Required);
+        CollectionAssert.AreEquivalent(new[] { FrameArtifactRole.Metadata }, associations.Roles.ToArray());
+        CollectionAssert.AreEqual(new[] { MeasuredStellarAssociationsV1.CurrentSchemaVersion }, associations.SchemaVersions!.ToArray());
+        Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Alias == "MeasuredStellarAssociations"));
     }
 
     [TestMethod]
