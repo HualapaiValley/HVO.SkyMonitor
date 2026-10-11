@@ -374,7 +374,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         _tombstonesById = new Dictionary<string, DeepSkyTombstone>(tombstoneRows.Length, StringComparer.Ordinal);
         foreach (var item in _tombstones)
         {
-            ValidateTombstone(item);
+            ValidateTombstone(item, _objectsById);
             if (_objectsById.ContainsKey(item.Id) || !_tombstonesById.TryAdd(item.Id, item))
             {
                 throw new InvalidDataException($"Deep-sky tombstone '{item.Id}' names a live or repeated ID.");
@@ -563,14 +563,15 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         }
     }
 
-    private static void ValidateTombstone(DeepSkyTombstone item)
+    private static void ValidateTombstone(DeepSkyTombstone item, Dictionary<string, DeepSkyObject> objects)
     {
         ArgumentNullException.ThrowIfNull(item);
         if (!IsText(item.Id) || !IsText(item.Designation) || item.Reason is null ||
             !DeepSkyTombstoneReasons.All.Contains(item.Reason, StringComparer.Ordinal) || item.Candidates is null ||
-            string.Equals(item.Reason, DeepSkyTombstoneReasons.DuplicateConflict, StringComparison.Ordinal) !=
-                item.Candidates.Count > 1 ||
-            item.Candidates.Any(static candidate => !IsText(candidate)) ||
+            (string.Equals(item.Reason, DeepSkyTombstoneReasons.DuplicateConflict, StringComparison.Ordinal)
+                ? item.Candidates.Count < 2
+                : item.Candidates.Count != 0) ||
+            item.Candidates.Any(candidate => !IsText(candidate) || !objects.ContainsKey(candidate)) ||
             item.Candidates.Zip(item.Candidates.Skip(1)).Any(static pair => string.CompareOrdinal(pair.First, pair.Second) >= 0))
         {
             throw new InvalidDataException($"Deep-sky tombstone '{item.Id}' contains invalid data.");

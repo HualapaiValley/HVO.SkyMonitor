@@ -523,6 +523,11 @@ public sealed class DeepSkyCatalogTests
     [DataRow("conflict-without-candidates")]
     [DataRow("conflict-with-one-candidate")]
     [DataRow("candidates-without-conflict")]
+    [DataRow("nonexistent-with-one-candidate")]
+    [DataRow("unresolved-with-one-candidate")]
+    [DataRow("dangling-candidates")]
+    [DataRow("one-dangling-candidate")]
+    [DataRow("repeated-candidates")]
     [DataRow("blank-candidate")]
     [DataRow("unordered-candidates")]
     public void ConstructorRejectsAnInvalidTombstone(string defect)
@@ -540,6 +545,11 @@ public sealed class DeepSkyCatalogTests
             "conflict-without-candidates" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict }],
             "conflict-with-one-candidate" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ["NGC5457"] }],
             "candidates-without-conflict" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateUnresolved, Candidates = ConflictCandidates }],
+            "nonexistent-with-one-candidate" => [valid with { Candidates = ["NGC5457"] }],
+            "unresolved-with-one-candidate" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateUnresolved, Candidates = ["NGC5457"] }],
+            "dangling-candidates" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ["NGC9998", "NGC9999"] }],
+            "one-dangling-candidate" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ["NGC5457", "NGC9999"] }],
+            "repeated-candidates" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ["NGC5457", "NGC5457"] }],
             "blank-candidate" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ["", "NGC5457"] }],
             "unordered-candidates" => [valid with { Reason = DeepSkyTombstoneReasons.DuplicateConflict, Candidates = ReversedCandidates }],
             _ => throw new ArgumentOutOfRangeException(nameof(defect)),
