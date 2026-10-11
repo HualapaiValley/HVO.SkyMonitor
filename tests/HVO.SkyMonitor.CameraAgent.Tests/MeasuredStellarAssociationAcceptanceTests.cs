@@ -410,14 +410,18 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         Check(failures, string.Equals(scene.SceneIdentitySha256, sceneOutput.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase),
             "The durable scene identity differs from its durable content identity.");
         var rawLineage = new[] { descriptor.Artifact.ArtifactId };
+        // The product carries canonical uppercase identities; compare exactly against the canonical form.
+        var canonicalDescriptorSha256 = descriptorSha256.ToUpperInvariant();
+        var canonicalRecipeIdentity = rawRecipeIdentity.ToUpperInvariant();
+        var canonicalSceneIdentity = scene.SceneIdentitySha256.ToUpperInvariant();
         Check(failures, sceneOutput.Artifact.SourceArtifactIds.SequenceEqual(rawLineage),
             "The durable scene lineage is not exactly the raw artifact.");
         Check(failures, product.Source.CaptureId == captureId && product.Source.ArtifactId == descriptor.Artifact.ArtifactId &&
-            product.Source.DescriptorIdentitySha256 == descriptorSha256.ToUpperInvariant() && product.Source.Role == FrameArtifactRole.Raw &&
-            product.Source.Variant == descriptor.Artifact.Variant && product.Source.RecipeIdentitySha256 == rawRecipeIdentity.ToUpperInvariant() &&
+            product.Source.DescriptorIdentitySha256 == canonicalDescriptorSha256 && product.Source.Role == FrameArtifactRole.Raw &&
+            product.Source.Variant == descriptor.Artifact.Variant && product.Source.RecipeIdentitySha256 == canonicalRecipeIdentity &&
             product.Source.PixelFormat == layout.PixelFormat && product.Source.WidthPixels == layout.Width && product.Source.HeightPixels == layout.Height,
             "The measured product source does not identify the durable raw capture, artifact, descriptor, recipe and layout.");
-        Check(failures, product.Scene.SceneIdentitySha256 == scene.SceneIdentitySha256.ToUpperInvariant(),
+        Check(failures, product.Scene.SceneIdentitySha256 == canonicalSceneIdentity,
             "The measured product is not bound to the durable projected scene.");
         Check(failures, string.Equals(product.AssociationIdentitySha256, measuredOutput.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
             measuredOutput.ProductSchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
