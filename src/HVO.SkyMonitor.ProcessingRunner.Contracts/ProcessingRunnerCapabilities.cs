@@ -95,6 +95,7 @@ public sealed record ProcessingRunnerCapabilities(
         BuiltInProcessingRecipes.Annotation,
         BuiltInProcessingRecipes.RollingMean,
         BuiltInProcessingRecipes.ImageQuality,
+        BuiltInProcessingRecipes.MeasuredStellarAssociations,
         BuiltInProcessingRecipes.NoOpAnalyzer,
         BuiltInProcessingRecipes.CloudAssessment,
         BuiltInProcessingRecipes.WeatherCloudOverlay,

@@ -27,6 +27,7 @@ public sealed class ProcessingRunnerContractsTests
 
         Assert.AreEqual(ProcessingRunnerProtocol.Version, capabilities.ProtocolVersion);
         Assert.AreEqual(ProcessingRunnerWarmState.Warm, capabilities.WarmState);
+        Assert.IsTrue(capabilities.ResolveVersionMatchedRecipes().Contains(BuiltInProcessingRecipes.MeasuredStellarAssociations));
         CollectionAssert.AreEqual(ExpectedLabels, capabilities.Labels.ToArray());
         CollectionAssert.AreEquivalent(
             ProcessingRunnerCapabilities.BuiltInRecipeNames,
@@ -243,6 +244,15 @@ public sealed class ProcessingRunnerContractsTests
             ProcessingRunnerReasonCodes.PayloadChecksumMismatch,
             Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
                 ProcessingRunnerProjection.ReconstructAuxiliaryInput(forged)).ReasonCode);
+        var forgedIdentity = metadata with
+        {
+            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(canonical),
+            IdentitySha256 = new string('A', 64)
+        };
+        Assert.AreEqual(
+            ProcessingRunnerReasonCodes.PayloadChecksumMismatch,
+            Assert.ThrowsExactly<ProcessingRunnerProtocolException>(() =>
+                ProcessingRunnerProjection.ReconstructAuxiliaryInput(forgedIdentity)).ReasonCode);
     }
 
     [TestMethod]

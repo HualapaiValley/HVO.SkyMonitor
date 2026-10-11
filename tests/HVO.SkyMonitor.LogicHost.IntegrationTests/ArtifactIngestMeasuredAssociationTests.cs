@@ -245,7 +245,8 @@ public sealed partial class ArtifactIngestTests
     /// shared database is terminalized so the next claim belongs to this capture.
     /// </summary>
     private static async Task<MeasuredAssociationCase> CreateMeasuredAssociationCaseAsync(
-        Func<HttpClient, ArtifactManifestV2, StructuredProcessingProductManifestV1, byte[], Task>? deliverScene = null)
+        Func<HttpClient, ArtifactManifestV2, StructuredProcessingProductManifestV1, byte[], Task>? deliverScene = null,
+        bool resolvedSun = false)
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
         var rig = CreateRig($"measured-{Guid.NewGuid():N}");
@@ -254,17 +255,26 @@ public sealed partial class ArtifactIngestTests
 
         var utc = DateTimeOffset.UnixEpoch;
         var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
-        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+        var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("alpha", "ALPHA", (siderealHours + 2d / 15 + 24) % 24, 1.5, 1.2),
             new CelestialCatalogObject("beta", "BETA", (siderealHours - 3d / 15 + 24) % 24, -1, 1.8)
-        ])).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
+        ]);
+        var visible = await (resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
             new ProjectionContext(ProjectionModel.Perspective, MeasuredWidth / 2d, MeasuredHeight / 2d, 400, 400,
                 MeasuredWidth, MeasuredHeight, ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
-                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1")).ConfigureAwait(false);
+                new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        if (resolvedSun)
+        {
+            visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, utc,
+                new AltAzPoint(90, 0), 1, 0, 1, 0, 149600000)]);
+        }
 
         var samples = Enumerable.Repeat(1000d, MeasuredWidth * MeasuredHeight).ToArray();
-        foreach (var star in visible.Objects)
+        foreach (var star in visible.Objects.Where(static item => item.Kind == CelestialObjectKind.Star))
         {
             for (var index = 0; index < samples.Length; index++)
             {
@@ -299,7 +309,7 @@ public sealed partial class ArtifactIngestTests
             ProjectedSceneImageTransformV1.Identity(MeasuredWidth, MeasuredHeight),
             new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId, raw.IdempotencyKey),
             "calibration-v1", visible.Request.ProjectionVersion);
-        scene.Objects.Should().HaveCount(2).And.OnlyContain(item =>
+        scene.Objects.Where(static item => item.Kind == CelestialObjectKind.Star).Should().HaveCount(2).And.OnlyContain(item =>
             item.Pixel.X > 8 && item.Pixel.X < MeasuredWidth - 8 && item.Pixel.Y > 8 && item.Pixel.Y < MeasuredHeight - 8);
         var full = new SceneProvenance(new string('D', 64), rig.ProfileVersion, scene.Catalog.Name,
             scene.Catalog.Version, scene.Catalog.ChecksumSha256, "Perspective", scene.Projection.AlgorithmVersion,
@@ -308,8 +318,9 @@ public sealed partial class ArtifactIngestTests
                 item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
             Segments: [], ConstellationIds: [], RigProfileHashSha256: CameraRigProfileIdentity.ComputeSha256(rig),
             ProjectionCalibrationVersion: "calibration-v1", SceneUtc: utc,
+            EphemerisModelVersion: scene.EphemerisModelVersion,
             ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('E', 64));
-        raw = raw with { Scene = full.WithoutProjectedGeometry() };
+        raw = raw with { Scene = full.WithoutProjectedGeometry() with { ProjectedSceneSchemaVersion = scene.SchemaVersion } };
 
         var sceneBytes = ProjectedSceneJson.Serialize(scene);
         var recipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene, "1.0.0", "integration-v1",
