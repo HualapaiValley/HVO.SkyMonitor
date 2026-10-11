@@ -28,18 +28,25 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
             throw new ArgumentOutOfRangeException(nameof(snapshot), "The catalog row count is not bounded.");
         }
 
-        var data = new ReadOnlyDictionary<string, object>(new Dictionary<string, object>(StringComparer.Ordinal)
+        var values = new Dictionary<string, object>(StringComparer.Ordinal)
         {
             ["Kind"] = snapshot.PackageKind.ToString(),
             ["CatalogId"] = snapshot.CatalogId,
             ["PackageVersion"] = snapshot.SnapshotVersion,
-            ["CatalogIdentitySource"] = "explicit-manifest-v2",
+            ["CatalogIdentitySource"] = snapshot.CatalogIdentitySource,
             ["CatalogVersion"] = snapshot.CatalogVersion,
             ["SchemaVersion"] = snapshot.SchemaVersion,
             ["PreprocessingVersion"] = snapshot.PreprocessingVersion,
             ["DatabaseSha256"] = snapshot.DatabaseSha256,
             ["RowCount"] = snapshot.RowCount
-        });
+        };
+        // RowCount stays the star count. A composed catalog adds its deep-sky counts alongside it.
+        if (snapshot.DeepSkyCounts is { } deepSky)
+        {
+            values.Add("DeepSkyObjectCount", deepSky.ObjectCount);
+            values.Add("DeepSkyOutlineObjectCount", deepSky.OutlineObjectCount);
+        }
+        var data = new ReadOnlyDictionary<string, object>(values);
         _result = snapshot.PackageKind switch
         {
             CatalogSnapshotPackageKind.Production => HealthCheckResult.Healthy(

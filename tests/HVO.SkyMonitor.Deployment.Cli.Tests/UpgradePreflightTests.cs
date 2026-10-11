@@ -96,6 +96,30 @@ public sealed class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(2, true)]
+    [DataRow(3, false)]
+    public void Evaluate_UndeclaredImageManifestVersionKeepsTheStarsOnlyBoundary(int manifestVersion, bool compatible)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture, CurrentRequirements with { CatalogManifestVersion = null });
+
+        Assert.AreEqual(compatible, report.Compatible, CameraAgentStatePreflight.Render(report));
+        if (!compatible)
+        {
+            var finding = report.Findings.Single(static item => item.Code == "catalog-manifest-version");
+            Assert.AreEqual("3", finding.Observed);
+            Assert.AreEqual("2", finding.Expected);
+            Assert.IsTrue(finding.Blocking);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_FreshInstanceWithoutPersistedDatabases_IsCompatible()
     {
         using var fixture = new PreflightFixture();

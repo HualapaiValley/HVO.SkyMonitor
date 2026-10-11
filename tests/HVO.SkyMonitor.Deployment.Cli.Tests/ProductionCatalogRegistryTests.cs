@@ -62,10 +62,27 @@ public sealed class ProductionCatalogRegistryTests
     }
 
     [TestMethod]
-    public void ImageContract_RegistryV1CatalogIdsEqualTheEmbeddedRegistry()
+    public void ImageContract_RegistryV1CatalogIdsEqualTheStarsOnlyEmbeddedLineages()
         => CollectionAssert.AreEquivalent(
-            ProductionCatalog.Specifications.All.Select(static item => item.CatalogId).ToArray(),
+            ProductionCatalog.Specifications.All.Where(static item => item.ManifestVersion == 2)
+                .Select(static item => item.CatalogId).ToArray(),
             CameraAgentImageContract.RegistryV1CatalogIds.ToArray());
+
+    [TestMethod]
+    public void Registry_ComposedFactsDoNotEnableCurrentImageInstallation()
+    {
+        const string composedCatalogId = "hyg-v44-openngc-production";
+        var composed = ProductionCatalog.Get(composedCatalogId);
+        var defaultCatalog = ProductionCatalog.Get(ProductionCatalog.DefaultCatalogId);
+
+        Assert.AreEqual(3, composed.ManifestVersion);
+        Assert.AreEqual("hyg-v4.4-openngc-v20260501-p5-s4-r", composed.PackageVersionPrefix);
+        Assert.AreEqual(HygV42.CatalogId, defaultCatalog.CatalogId);
+        Assert.IsTrue(CameraAgentImageContract.SupportsCatalog("hvo-approved-catalogs-v1", defaultCatalog.CatalogId));
+        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.CatalogContract, composedCatalogId));
+        Assert.IsFalse(CameraAgentImageContract.SupportsCatalog(CameraAgentImageContract.LegacyCatalogContract, composedCatalogId));
+        Assert.IsFalse(CameraAgentImageContract.IsKnownCatalogContract("hvo-approved-catalogs-v2"));
+    }
 
     [TestMethod]
     [DataRow("hvo-approved-catalogs-v1", "hyg-v42-production", true)]
@@ -115,13 +132,14 @@ public sealed class ProductionCatalogRegistryTests
         var root = Path.Combine(Path.GetTempPath(), $"hvo-registry-{Guid.NewGuid():N}");
         var hygV42 = InstallationPaths.Create(root, instanceId, HygV42.CatalogId);
         var hygV44 = hygV42.WithCatalog(HygV44CatalogId);
+        var composed = hygV42.WithCatalog("hyg-v44-openngc-production");
 
         Assert.AreEqual(Path.Combine(hygV42.ProductRoot, "catalogs", HygV44CatalogId), hygV44.CatalogRoot);
         Assert.AreEqual(Path.Combine(hygV42.OperationsRoot, "catalog-references", HygV44CatalogId), hygV44.CatalogReferencesRoot);
         Assert.AreEqual(hygV42.InstanceRoot, hygV44.InstanceRoot);
         Assert.AreEqual(hygV42, hygV44.WithCatalog(HygV42.CatalogId));
         CollectionAssert.AreEquivalent(
-            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot },
+            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot, composed.CatalogRoot },
             hygV42.ForEveryApprovedCatalog().Select(static item => item.CatalogRoot).ToArray());
     }
 

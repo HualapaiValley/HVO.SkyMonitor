@@ -43,7 +43,8 @@ public sealed record ApprovedCatalogTopology(
 
 /// <summary>
 /// One reviewed, source-controlled catalog specification. A package manifest is accepted only when it matches
-/// the specification its catalog ID names; a manifest can never approve itself.
+/// the specification its catalog ID names; a manifest can never approve itself. A manifest-version-3 specification
+/// also names its <see cref="Composition"/>; earlier versions have none.
 /// </summary>
 public sealed record ApprovedCatalogSpecification(
     string CatalogId,
@@ -59,7 +60,8 @@ public sealed record ApprovedCatalogSpecification(
     string SerializerVersion,
     ApprovedCatalogDatabase Database,
     ApprovedCatalogLicense License,
-    ApprovedCatalogTopology Topology)
+    ApprovedCatalogTopology Topology,
+    ApprovedCatalogComposition? Composition = null)
 {
     /// <summary>Gets the exact file names a production snapshot of this specification retains.</summary>
     public IReadOnlyList<string> RetainedFileNames =>
@@ -94,6 +96,12 @@ public sealed record ApprovedCatalogSpecification(
 /// </summary>
 public static class ApprovedCatalogSpecifications
 {
+    /// <summary>
+    /// The embedded registry version. Version 2 (issue #525) adds composed manifest-v3 specifications to the
+    /// version-1 set; a CameraAgent image declares it as <c>hvo-approved-catalogs-v2</c>.
+    /// </summary>
+    public const int RegistryVersion = 2;
+
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private static readonly Lazy<IReadOnlyDictionary<string, ApprovedCatalogSpecification>> Registry =
         new(LoadEmbedded, LazyThreadSafetyMode.ExecutionAndPublication);
@@ -137,7 +145,7 @@ public static class ApprovedCatalogSpecifications
         CatalogSnapshotResolver.RejectDuplicateProperties(document.RootElement);
         var root = CatalogSnapshotResolver.RequireObject(document.RootElement, "registry");
         CatalogSnapshotResolver.RequireExactProperties(root, "registry", "registryVersion", "specifications");
-        if (CatalogSnapshotResolver.RequireInt32(root, "registryVersion") != 1)
+        if (CatalogSnapshotResolver.RequireInt32(root, "registryVersion") != RegistryVersion)
         {
             throw new InvalidDataException("Approved catalog registry version is unsupported.");
         }
@@ -160,7 +168,34 @@ public static class ApprovedCatalogSpecifications
                     $"Approved catalog registry repeats catalog '{specification.CatalogId}' or overlaps its lineage or versions.");
             }
         }
+        foreach (var specification in result.Values)
+        {
+            ValidateStarsComponent(specification, result);
+        }
         return result;
+    }
+
+    /// <summary>
+    /// Requires a composed specification's stars component to be an approved, uncomposed package of this registry,
+    /// carried byte for byte: its database evidence and upstream source are that package's.
+    /// </summary>
+    private static void ValidateStarsComponent(
+        ApprovedCatalogSpecification specification,
+        Dictionary<string, ApprovedCatalogSpecification> registry)
+    {
+        if (specification.Composition is not { Stars: var stars })
+        {
+            return;
+        }
+        if (!registry.TryGetValue(stars.CatalogId, out var component) || component.Composition is not null ||
+            !component.IsPackageVersion(stars.PackageVersion) ||
+            stars.Database != new ApprovedCatalogComponentDatabase(
+                component.Database.Sha256, component.Database.Length, component.Database.RowCount) ||
+            specification.Source != component.Source)
+        {
+            throw new InvalidDataException(
+                $"Approved catalog specification '{specification.CatalogId}' names a stars component that is not an approved package of this registry.");
+        }
     }
 
     private static IReadOnlyDictionary<string, ApprovedCatalogSpecification> LoadEmbedded()
@@ -173,14 +208,20 @@ public static class ApprovedCatalogSpecifications
     private static ApprovedCatalogSpecification ReadSpecification(JsonElement element)
     {
         var value = CatalogSnapshotResolver.RequireObject(element, "specification");
-        CatalogSnapshotResolver.RequireExactProperties(value, "specification",
+        var manifestVersion = CatalogSnapshotResolver.RequireInt32(value, "manifestVersion");
+        var composed = manifestVersion == CatalogSnapshotResolver.ComposedManifestVersion;
+        string[] specificationProperties =
+        [
             "catalogId", "packageLineage", "packageVersionPrefix", "manifestVersion", "catalog", "source",
-            "schemaVersion", "preprocessingVersion", "serializer", "database", "license", "topology");
+            "schemaVersion", "preprocessingVersion", "serializer", "database", "license", "topology"
+        ];
+        string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount", "solCount", "requiredColumn"];
+        CatalogSnapshotResolver.RequireExactProperties(value, "specification",
+            composed ? [.. specificationProperties, "components", "transformations"] : specificationProperties);
         var catalog = Object(value, "catalog", "name", "version");
         var source = Object(value, "source", "projectUrl", "downloadUrl", "oid", "compressed", "decompressed");
         var serializer = Object(value, "serializer", "name", "version");
-        var database = Object(value, "database", "relativePath", "sha256", "length", "rowCount", "solCount",
-            "requiredColumn");
+        var database = Object(value, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
         var license = Object(value, "license", "identifier", "url", "file", "attribution");
         var topology = Object(value, "topology", "identity", "sha256", "constellationCount", "segmentCount",
             "unresolvedEndpoints");
@@ -200,7 +241,7 @@ public static class ApprovedCatalogSpecifications
             catalogId,
             String(value, "packageLineage"),
             String(value, "packageVersionPrefix"),
-            CatalogSnapshotResolver.RequireInt32(value, "manifestVersion"),
+            manifestVersion,
             String(catalog, "name"),
             String(catalog, "version"),
             new ApprovedCatalogSource(
@@ -231,9 +272,16 @@ public static class ApprovedCatalogSpecifications
                 Positive(topology, "constellationCount"),
                 Positive(topology, "segmentCount"),
                 endpoints.EnumerateArray().Select(static item => item.GetString()!)
-                    .Order(StringComparer.Ordinal).ToArray()));
-        if (specification.ManifestVersion != CatalogSnapshotResolver.SupportedManifestVersion ||
-            specification.SchemaVersion is not ("2" or "3") ||
+                    .Order(StringComparer.Ordinal).ToArray()),
+            composed ? ApprovedCatalogComposition.Read(value, database) : null);
+        var supportedLayout = specification.ManifestVersion switch
+        {
+            CatalogSnapshotResolver.MinimumSupportedManifestVersion => specification.SchemaVersion is "2" or "3",
+            CatalogSnapshotResolver.ComposedManifestVersion => specification.SchemaVersion is "4" &&
+                specification.Composition?.Stars.Database.RowCount == specification.Database.RowCount,
+            _ => false
+        };
+        if (!supportedLayout ||
             specification.Database.SolCount != 0 ||
             !specification.PackageVersionPrefix.EndsWith("-r", StringComparison.Ordinal) ||
             specification.RetainedFileNames.Distinct(StringComparer.Ordinal).Count() != 4)
