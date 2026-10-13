@@ -25,7 +25,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     // The plan-level contract names the projected-scene family root, so existing plan identities are unchanged.
-    // A product carries its own schema: projected-scene-v2 exactly when the scene has resolved footprints.
+    // A product carries its own schema: projected-scene-v3 exactly when the scene has a deep-sky collection, otherwise
+    // projected-scene-v2 exactly when it has resolved footprints.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.ProjectedSceneMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -229,9 +230,12 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public IReadOnlyList<SolarSystemBody> SolarSystemBodies { get; init; } = [];
     public bool IncludeConstellationEndpointStars { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
         if (ConstellationIds.Count > 128 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);
         if (SolarSystemBodies.Count > Enum.GetValues<SolarSystemBody>().Length || SolarSystemBodies.Any(static value => !Enum.IsDefined(value)))

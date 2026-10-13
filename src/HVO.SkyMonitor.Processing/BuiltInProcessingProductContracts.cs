@@ -412,6 +412,12 @@ internal static class BuiltInProcessingProductContracts
         algorithms.Add(new("annotation-renderer", request.Annotation is { } annotation
             ? AnnotationRenderer.AlgorithmVersionFor(annotation.Objects, annotation.ProjectionOverlay)
             : AnnotationRenderer.AlgorithmVersion));
+        var curatedSources = (request.AuxiliaryInputs ?? [])
+            .Where(static value => value.Kind == ProcessingAuxiliaryInputKind.Artifact)
+            .Select(value => request.Inputs.SingleOrDefault(source => source.ArtifactId == value.ArtifactId));
+        var curatedScene = CuratedDeepSkyAnnotation.FindScene(primary, curatedSources);
+        if (curatedScene is not null)
+            algorithms.InsertRange(algorithms.Count - 1, CuratedDeepSkyAnnotation.Algorithms(curatedScene));
         var packed = string.Equals(options.OutputEncoding, "Packed", StringComparison.Ordinal);
         if (!packed)
         {

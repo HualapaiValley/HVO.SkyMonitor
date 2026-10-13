@@ -517,7 +517,9 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage(bool curated)
     {
         var root = CreateRoot();
         try
@@ -532,7 +534,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
-                        new ProjectedSceneCaptureProcessingStepOptions()), DependsOn: ["$raw"])
+                        new ProjectedSceneCaptureProcessingStepOptions { CuratedAnnotations = curated ? new(Enabled: true) : null }), DependsOn: ["$raw"])
                 ])
             };
             var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
@@ -541,6 +543,17 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var catalog = new MetadataCatalog([
                 new CelestialCatalogObject("zenith", "Zenith", rightAscensionHours, 0, 0)
             ]);
+            if (curated)
+            {
+                var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                    new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                    "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+                var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G", rightAscensionHours, 0, "And",
+                    null, null, null, null, null, null, null, 31, null, null, null);
+                catalog.DeepSky = new DeepSkyCatalog(semantics, [item],
+                    [new("NGC 224", item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []);
+            }
             var layout = ReconstructableCaptureContractTests.CreateManifest(
                 CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor.Layout;
             var captureFrame = new CameraFrame(
@@ -624,7 +637,15 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                     CaptureProcessingContext.CreateArtifactId(sceneProduct.OutputIdentitySha256)
                 },
                 annotationProduct.SourceArtifactIds.ToArray());
-            Assert.IsTrue(annotationProduct.Payload.Span.Contains((byte)144));
+            if (curated)
+            {
+                Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, sceneProduct.SchemaVersion);
+                var retained = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene!;
+                Assert.HasCount(1, retained.DeepSky!.Objects);
+                Assert.AreEqual(midpoint, retained.EffectiveUtc);
+                Assert.IsTrue(annotationProduct.Algorithms.Any(static value => value.Name == "curated-dso-overlay"));
+            }
+            else Assert.IsTrue(annotationProduct.Payload.Span.Contains((byte)144));
         }
         finally
         {
@@ -926,9 +947,10 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         => FileSystemTestPaths.CreatePhysicalTemporaryDirectory("skymonitor-tests");
 
     private sealed class MetadataCatalog(IEnumerable<CelestialCatalogObject> objects) :
-        ICelestialCatalog, ICelestialCatalogMetadataSource
+        ICelestialCatalog, ICelestialCatalogMetadataSource, IDeepSkyCatalogSource
     {
         private readonly InMemoryCelestialCatalog _inner = new(objects);
+        public IDeepSkyCatalog? DeepSky { get; set; }
 
         public CatalogMetadata Metadata { get; } = new(
             "test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1");

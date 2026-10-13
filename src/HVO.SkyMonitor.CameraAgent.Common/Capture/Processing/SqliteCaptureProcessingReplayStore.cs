@@ -531,7 +531,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             FROM processing_outputs output
             JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
             WHERE output.capture_id = $capture AND output.node_id = $node AND output.role = 'Metadata'
-              AND output.product_schema_version IN ($schema, $schema_resolved) AND output.availability_state = 'Available'
+              AND output.product_schema_version IN ($schema, $schema_resolved, $schema_deep_sky) AND output.availability_state = 'Available'
               AND source.source_artifact_id = $raw
               AND EXISTS (
                   SELECT 1
@@ -546,6 +546,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$node", nodeId);
         command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
         command.Parameters.AddWithValue("$schema_resolved", ProjectedSceneV1.ResolvedFootprintSchemaVersion);
+        command.Parameters.AddWithValue("$schema_deep_sky", ProjectedSceneV1.DeepSkySchemaVersion);
         command.Parameters.AddWithValue("$raw", rawArtifactId.ToString("N"));
         var candidates = new List<ProcessingFrozenOutputInput>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -587,7 +588,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             FROM processing_outputs output
             JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
             WHERE output.capture_id = $capture AND output.node_id <> $node AND output.role = 'Metadata'
-              AND output.product_schema_version IN ($schema, $schema_resolved) AND output.availability_state = 'Available'
+              AND output.product_schema_version IN ($schema, $schema_resolved, $schema_deep_sky) AND output.availability_state = 'Available'
               AND source.source_artifact_id = $raw
               AND EXISTS (
                   SELECT 1
@@ -602,6 +603,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$node", nodeId);
         command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
         command.Parameters.AddWithValue("$schema_resolved", ProjectedSceneV1.ResolvedFootprintSchemaVersion);
+        command.Parameters.AddWithValue("$schema_deep_sky", ProjectedSceneV1.DeepSkySchemaVersion);
         command.Parameters.AddWithValue("$raw", rawArtifactId.ToString("N"));
         var nodeIds = new List<string>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

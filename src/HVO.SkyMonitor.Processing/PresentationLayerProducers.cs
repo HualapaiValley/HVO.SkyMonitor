@@ -182,7 +182,7 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var footprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene).ToDictionary(static item => item.Id, StringComparer.Ordinal);
         // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
         // the same anchor the raster annotation uses.
         var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
@@ -330,9 +330,13 @@ public static class PresentationLayerProducers
                 occupied.Add(bounds);
             }
         }
+        var curated = scene.DeepSky is null ? null : PresentationDeepSkyLayerProducer.Create(scene,
+            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels ? 24 : 0)).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, markers, footprintSegments, textBlocks: starTexts),
+                scene.ImageTransform.OutputHeightPixels, markers,
+                curated is null ? footprintSegments : footprintSegments.Concat(curated.Segments).ToArray(),
+                textBlocks: curated is null ? starTexts : starTexts.Concat(curated.TextBlocks).ToArray()),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
