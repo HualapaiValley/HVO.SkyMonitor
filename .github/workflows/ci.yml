@@ -70,7 +70,7 @@ jobs:
           tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
           ./scripts/ci:artifact-provenance hyg-v42-contracts catalog-contracts "$RUNNER_TEMP/hyg-v42-contract-provenance"
       - name: Upload exact production catalog contracts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: hyg-v42-contracts
           path: |
@@ -154,7 +154,7 @@ jobs:
           ./scripts/ci:artifact-provenance package-audit quality TestResults/package-audit
       - name: Upload package audit
         if: always() && needs.changes.outputs.mode == 'full'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: package-audit
           path: TestResults/package-audit/*.json
@@ -234,7 +234,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance deployment-contract-logs deployment-contracts TestResults/deployment-contracts
       - name: Upload deployment contract logs
         if: always() && needs.changes.outputs.deployment_shards == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: deployment-contract-logs
           path: TestResults/deployment-contracts/
@@ -330,7 +330,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance unit-test-evidence unit TestResults/unit
       - name: Upload Unit evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unit-test-evidence
           path: TestResults/unit/
@@ -398,7 +398,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance integration-test-evidence integration TestResults/integration
       - name: Upload Integration evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: integration-test-evidence
           path: TestResults/integration/
@@ -494,7 +494,7 @@ jobs:
           ./scripts/ci:artifact-provenance publish-evidence architecture TestResults/publish
       - name: Upload architecture unit evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: architecture-unit-evidence
           path: TestResults/architecture-unit/
@@ -502,7 +502,7 @@ jobs:
           retention-days: 30
       - name: Upload architecture coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: architecture-test-evidence
           path: TestResults/architecture/
@@ -510,7 +510,7 @@ jobs:
           retention-days: 30
       - name: Upload publish evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: publish-evidence
           path: |
@@ -636,7 +636,7 @@ jobs:
         run: ./scripts/coverage:component shared
       - name: Upload shared component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shared-component-evidence
           path: |
@@ -686,7 +686,7 @@ jobs:
         run: ./scripts/coverage:component cameraagent
       - name: Upload CameraAgent component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cameraagent-component-evidence
           path: |
@@ -733,7 +733,7 @@ jobs:
         run: ./scripts/coverage:component logichost
       - name: Upload LogicHost component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: logichost-component-evidence
           path: |
@@ -778,7 +778,7 @@ jobs:
         run: ./scripts/coverage:component combined
       - name: Upload combined component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: combined-component-evidence
           path: |
@@ -840,7 +840,7 @@ jobs:
         run: ./scripts/coverage:component delivery
       - name: Upload delivery component evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: delivery-component-evidence
           path: |
@@ -937,7 +937,7 @@ jobs:
         run: ./scripts/ci:artifact-provenance coverage-report coverage coverage-report
       - name: Upload merged coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-report
           path: coverage-report/

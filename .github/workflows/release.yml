@@ -168,7 +168,7 @@ jobs:
           fi
           tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/unsigned-candidate.tar.gz" candidate
       - name: Upload unsigned candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unsigned-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/unsigned-candidate.tar.gz
@@ -302,7 +302,7 @@ jobs:
           fi
           tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/signed-candidate.tar.gz" candidate index
       - name: Upload signed candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: signed-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/signed-candidate.tar.gz
