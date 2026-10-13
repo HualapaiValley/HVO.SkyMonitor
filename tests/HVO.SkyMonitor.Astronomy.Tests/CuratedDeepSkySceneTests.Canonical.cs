@@ -21,6 +21,7 @@ public sealed partial class CuratedDeepSkySceneTests
         Assert.HasCount(500, scene.Objects);
         if (schema >= 2)
         {
+            Assert.IsNotNull(scene.ResolvedFootprints);
             Assert.HasCount(2, scene.ResolvedFootprints);
             CollectionAssert.AreEquivalent(new[] { ResolvedFootprintShape.Circle, ResolvedFootprintShape.Ellipse },
                 scene.ResolvedFootprints!.Select(static item => item.Extent.Shape).ToArray());
