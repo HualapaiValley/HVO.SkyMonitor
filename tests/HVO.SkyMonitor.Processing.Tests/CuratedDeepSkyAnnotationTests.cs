@@ -30,6 +30,21 @@ public sealed partial class ProjectedSceneAnnotationTests
     }
 
     [TestMethod]
+    public async Task LayerRevalidatesIdentityAfterNestedCallerMutation()
+    {
+        var scene = await SceneAsync().ConfigureAwait(false);
+        var objects = scene.DeepSky!.Objects.ToArray();
+        var borrowed = scene with { DeepSky = scene.DeepSky with { Objects = objects } };
+        var layer = PresentationDeepSkyLayerProducer.Create(borrowed).Payload;
+        objects[0] = objects[0] with { DisplayName = "Changed catalog label" };
+        Assert.ThrowsExactly<ArgumentException>(() => ProjectedSceneJson.Validate(borrowed));
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationDeepSkyLayerProducer.Create(borrowed));
+        var texts = layer.TextBlocks.ToArray();
+        texts[0] = texts[0] with { Lines = ["Changed presentation legend"] };
+        Assert.ThrowsExactly<ArgumentException>(() => PresentationLayerPayloadJson.Validate(layer with { TextBlocks = texts }));
+    }
+
+    [TestMethod]
     public async Task PreviewScaleMapsGeometryOnceAndRetainedReconstructionIsIdentical()
     {
         var scene = await SceneAsync().ConfigureAwait(false);

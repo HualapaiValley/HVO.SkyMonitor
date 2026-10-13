@@ -52,8 +52,14 @@ public static class CaptureContractJson
 
     public static string ComputeCanonicalJsonSha256(JsonElement value)
     {
-        var canonical = JsonSerializer.SerializeToUtf8Bytes(Canonicalize(value));
-        return Convert.ToHexString(SHA256.HashData(canonical));
+        // Hash the same canonical writer bytes directly. Parsing/cloning them and serializing the clone again
+        // duplicates the complete document for each integrity check, without changing its canonical content.
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            WriteCanonical(writer, value);
+        }
+        return Convert.ToHexString(SHA256.HashData(stream.GetBuffer().AsSpan(0, checked((int)stream.Length))));
     }
 
     public static string ComputeCanonicalJsonSha256<T>(T value)
