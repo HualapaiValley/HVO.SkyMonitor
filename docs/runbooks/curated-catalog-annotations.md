@@ -90,7 +90,18 @@ fractional-second encoding. A graph check rejects newly reachable dynamic JSON,
 dictionaries or non-scalar custom converters. These twelve cases are
 declared in the owned inventory; whole-solution discovery remains a separate gate.
 
-Warm millisecond performance is currently **unmeasured**. Before running a
+The Processing-private payload serializer also uses immutable ordinal property
+metadata, retaining the original strict parser, snapshots, structural validation
+and live identity checks. Its tile-mask base64 scalar keeps the old DOM string
+encoding, including escaped `+`; the complete payload no longer needs a DOM.
+Twelve added Unit cases compare the independent old pipeline's full bytes and
+hashes for all three schemas, primitives/styles, mask scalars, numeric/text
+encoding, array order and a 4096-segment payload. They also check mutation
+rejection, defensive copies, strict parsing and the closed typed graph. These
+are declared cases; actual execution results are bound to the tested head.
+
+Full-envelope warm cost acceptance remains **pending**. Failed attempts' partial
+measurements do not qualify the complete three-view envelope. Before running a
 focused measurement or the full candidate gate, the owner supplies the exact
 commands, source identity, bounded scene/preset/image envelope and acceptance
 criteria to the coordinator for allocation. Catalog first-open/load/index cost

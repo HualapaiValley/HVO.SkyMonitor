@@ -1,7 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using HVO.SkyMonitor.AgentCore;
+using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
@@ -18,6 +19,7 @@ public static class PresentationLayerPayloadJson
     public const string MediaType = "application/vnd.hvo.presentation-layer-payload+json";
     public const int MaximumPayloadBytes = 4 * 1024 * 1024;
     private static readonly JsonSerializerOptions Options = CreateOptions();
+    private static readonly JsonSerializerOptions CanonicalOptions = CreateCanonicalOptions();
 
     /// <summary>Snapshots bounded primitives, computes identity from that snapshot, and rejects canonical JSON over 4 MiB.</summary>
     public static PresentationLayerPayloadV1 Create(
@@ -101,8 +103,7 @@ public static class PresentationLayerPayloadJson
     }
 
     private static string ComputeIdentityCore(PresentationLayerPayloadV1 payload) =>
-        CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(
-            payload with { ContentIdentitySha256 = string.Empty }, Options));
+        Convert.ToHexString(SHA256.HashData(CanonicalBytes(payload with { ContentIdentitySha256 = string.Empty })));
 
     private static PresentationLayerPayloadV1 FreezePayload(PresentationLayerPayloadV1 value) => value with
     {
@@ -131,8 +132,8 @@ public static class PresentationLayerPayloadJson
         return new(values.ToArray());
     }
 
-    private static byte[] CanonicalBytes(PresentationLayerPayloadV1 value) => JsonSerializer.SerializeToUtf8Bytes(
-        CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(value, Options)));
+    private static byte[] CanonicalBytes(PresentationLayerPayloadV1 value) =>
+        JsonSerializer.SerializeToUtf8Bytes(value, CanonicalOptions);
 
     private static bool HasDuplicates(JsonElement value)
     {
@@ -161,5 +162,35 @@ public static class PresentationLayerPayloadJson
         };
         options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
         return options;
+    }
+
+    private static JsonSerializerOptions CreateCanonicalOptions()
+    {
+        // The payload graph is closed typed records and ordered lists, not arbitrary JSON or dictionaries.
+        // Cache only immutable ordinal JSON-name metadata; every call still snapshots, validates and hashes
+        // live content. Strict parsing continues to use the original options above.
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(static typeInfo =>
+        {
+            if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+            var order = 0;
+            foreach (var property in typeInfo.Properties.OrderBy(static property => property.Name, StringComparer.Ordinal))
+                property.Order = order++;
+        });
+        var options = new JsonSerializerOptions(Options) { TypeInfoResolver = resolver };
+        options.Converters.Insert(0, new CanonicalMaskBitsConverter());
+        options.MakeReadOnly();
+        return options;
+    }
+
+    private sealed class CanonicalMaskBitsConverter : JsonConverter<ReadOnlyMemory<byte>>
+    {
+        public override ReadOnlyMemory<byte> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            JsonSerializer.Deserialize<ReadOnlyMemory<byte>>(ref reader, Options);
+
+        public override void Write(Utf8JsonWriter writer, ReadOnlyMemory<byte> value, JsonSerializerOptions options) =>
+            // The direct base64 writer bypasses string escaping. Retain the old primitive DOM encoding,
+            // including '+' escaping, for this one bounded mask scalar rather than the complete payload.
+            JsonSerializer.SerializeToElement(value, Options).WriteTo(writer);
     }
 }
