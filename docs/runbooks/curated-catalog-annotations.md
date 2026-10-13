@@ -80,11 +80,14 @@ source fingerprints; no historical broad PR result is new-candidate evidence.
 
 The private Astronomy scene serializer orders immutable type metadata by ordinal
 JSON property name. It recomputes canonical content on every call; it does not
-cache scene hashes or trust caller-owned collections. Nine added Unit cases
+cache scene hashes or trust caller-owned collections. The UTC scalar retains the
+original primitive DOM formatting/escaping; the typed date writer alone bypasses
+string encoding and would change the offset's canonical bytes. Twelve added Unit cases
 compare the original DOM pipeline's bytes and identities for 500-star v1/v2/v3
 scenes, circle/ellipse/unknown extents, escaping, nullable/default/numeric fields
-and array order, and reject caller mutation. A graph check rejects newly reachable
-dynamic JSON, dictionaries or non-scalar custom converters. These nine cases are
+and array order, and reject caller mutation. Three cases cover UTC offset and
+fractional-second encoding. A graph check rejects newly reachable dynamic JSON,
+dictionaries or non-scalar custom converters. These twelve cases are
 declared in the owned inventory; whole-solution discovery remains a separate gate.
 
 Warm millisecond performance is currently **unmeasured**. Before running a

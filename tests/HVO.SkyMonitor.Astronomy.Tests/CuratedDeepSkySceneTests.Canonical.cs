@@ -67,6 +67,18 @@ public sealed partial class CuratedDeepSkySceneTests
     }
 
     [TestMethod]
+    [DataRow(0L)]
+    [DataRow(1L)]
+    [DataRow(1234500L)]
+    public async Task CanonicalUtcOffsetAndFractionKeepOriginalScalarEncoding(long ticks)
+    {
+        var scene = await CanonicalFixtureAsync(1).ConfigureAwait(false);
+        scene = scene with { EffectiveUtc = scene.EffectiveUtc.AddTicks(ticks) };
+        scene = scene with { SceneIdentitySha256 = OriginalSceneIdentity(scene) };
+        AssertOriginalCanonicalParity(scene);
+    }
+
+    [TestMethod]
     public async Task CanonicalIdentityPreservesArrayOrderAndRejectsCallerMutation()
     {
         var scene = await CanonicalFixtureAsync(3).ConfigureAwait(false);
@@ -180,10 +192,15 @@ public sealed partial class CuratedDeepSkySceneTests
 
     private static void AssertOriginalCanonicalParity(ProjectedSceneV1 scene)
     {
+        var expected = OriginalSceneBytes(scene);
+        var actual = ProjectedSceneJson.Serialize(scene);
+        using var expectedDocument = JsonDocument.Parse(expected);
+        using var actualDocument = JsonDocument.Parse(actual);
+        Assert.AreEqual(expectedDocument.RootElement.GetProperty("effectiveUtc").GetRawText(),
+            actualDocument.RootElement.GetProperty("effectiveUtc").GetRawText(), "Canonical UTC scalar bytes");
+        CollectionAssert.AreEqual(expected, actual);
         Assert.AreEqual(OriginalSceneIdentity(scene), scene.SceneIdentitySha256);
         Assert.AreEqual(OriginalSceneIdentity(scene), ProjectedSceneJson.ComputeIdentity(scene));
-        var expected = OriginalSceneBytes(scene);
-        CollectionAssert.AreEqual(expected, ProjectedSceneJson.Serialize(scene));
         var parsed = ProjectedSceneJson.Parse(expected);
         Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
         CollectionAssert.AreEqual(expected, ProjectedSceneJson.Serialize(parsed.Scene!));

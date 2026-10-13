@@ -1214,7 +1214,20 @@ public static class ProjectedSceneJson
                 property.Order = order++;
         });
         var options = new JsonSerializerOptions(SerializerOptions) { TypeInfoResolver = resolver };
+        options.Converters.Insert(0, new CanonicalSceneUtcConverter());
         options.MakeReadOnly();
         return options;
+    }
+
+    private sealed class CanonicalSceneUtcConverter : JsonConverter<DateTimeOffset>
+    {
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetDateTimeOffset();
+
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            // The typed date writer bypasses string escaping. The old DOM pipeline re-encoded its formatted
+            // string (including '+' in the offset). Preserve that exact scalar formatting and encoding;
+            // only this one UTC value uses the old primitive path, never the complete scene graph.
+            JsonSerializer.SerializeToElement(value, SerializerOptions).WriteTo(writer);
     }
 }
