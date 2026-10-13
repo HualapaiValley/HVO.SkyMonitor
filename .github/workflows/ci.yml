@@ -175,7 +175,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -280,7 +280,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -802,7 +802,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download exact production catalog contracts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contract-artifact
@@ -872,17 +872,17 @@ jobs:
       - name: Restore coverage tool
         run: dotnet tool restore
       - name: Download Unit evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: unit-test-evidence
           path: TestResults/unit
       - name: Download Integration evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: integration-test-evidence
           path: TestResults/integration
       - name: Download architecture evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: architecture-test-evidence
           path: TestResults/architecture

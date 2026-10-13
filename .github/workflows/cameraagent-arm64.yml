@@ -67,7 +67,7 @@ jobs:
           mkdir -p "$evidence"
           cp "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/workflow-start.json" "$evidence/"
       - name: Download exact production catalog contract
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: arm64-hyg-v42-contracts-${{ github.run_id }}
           path: ${{ runner.temp }}/hyg-v42-contract-artifact-${{ github.run_id }}-${{ github.run_attempt }}
