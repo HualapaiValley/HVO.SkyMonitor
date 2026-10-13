@@ -77,7 +77,9 @@ public sealed partial class CatalogPerformanceTests
         {
             var focal = view.Model == ProjectionModel.EquidistantFisheye ? view.Width * .98 / Math.PI : view.Width;
             var projection = new ProjectionContext(view.Model, view.Width / 2d, view.Height / 2d,
-                focal, focal, view.Width, view.Height, ProjectionAperture.Rectangular,
+                focal, focal, view.Width, view.Height,
+                view.Model == ProjectionModel.EquidistantFisheye ? ProjectionAperture.Circular : ProjectionAperture.Rectangular,
+                ImageCircleRadiusPixels: view.Model == ProjectionModel.EquidistantFisheye ? view.Width * .49 : null,
                 BoresightAltitudeDegrees: direction.AltitudeDegrees, BoresightAzimuthDegrees: direction.AzimuthDegrees);
             var visible = await new VisibleSceneBuilder(snapshot.Catalog).BuildAsync(new(utc, observer, projection,
                 new CatalogQuery(6.5, 500), snapshot.Catalog.Metadata, projectionVersion: "curated-focused-v1")).ConfigureAwait(false);
