@@ -16,6 +16,7 @@ public sealed partial class CatalogPerformanceTests
         var root = RequiredFoundationEnvironment("HVO_CATALOG_DSO_ROOT");
         var output = RequiredFoundationEnvironment("HVO_CURATED_ALLOCATION_OUTPUT");
         var revision = RequiredFoundationEnvironment("HVO_PERF_REVISION");
+        using var diagnosticProcess = Process.GetCurrentProcess();
         Assert.IsFalse(File.Exists(output), "Diagnostic output is create-only.");
         var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v44-openngc-production")
         {
@@ -66,7 +67,7 @@ public sealed partial class CatalogPerformanceTests
             scene.SceneIdentitySha256, layer.ContentIdentitySha256,
             sceneObjects = scene.Objects.Count, deepSkyObjects = scene.DeepSky!.Objects.Count,
             layerSegments = layer.Segments.Count, layerTextBlocks = layer.TextBlocks.Count,
-            warmups = 1, measuredCalls = 5, rows,
+            warmups = 1, measuredCalls = 5, rows, memory = ReadProcessMemory(diagnosticProcess),
             limits = "inclusive public-operation allocations; verification afterward; not full cost or qualifier"
         }, CuratedEvidenceJson);
         using var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None);
