@@ -2,6 +2,7 @@
   <ItemGroup>
     <PackageReference Include="MSTest" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Condition="'$(CatalogFoundationBaseline)' != 'true'" />
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
   <ItemGroup>
