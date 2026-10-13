@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -29,6 +30,7 @@ public sealed class VirtualSkyCameraModule(
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static readonly AstronomyEnginePlanetEphemeris SolarBackgroundEphemeris = new();
+    private static readonly JsonSerializerOptions SceneIdentitySerializerOptions = CreateSceneIdentitySerializerOptions();
     private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
@@ -1268,8 +1270,18 @@ public sealed class VirtualSkyCameraModule(
         SensorProfile sensor,
         string? ephemerisModelVersion,
         ConstellationTopologyMetadata? constellationTopologyMetadata)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SerializeSceneIdentity(
+            request, setpoint, options, sensor, ephemerisModelVersion, constellationTopologyMetadata))));
+
+    private static string SerializeSceneIdentity(
+        VisibleSceneRequest request,
+        CaptureSetpoint setpoint,
+        VirtualSkyCameraModuleOptions options,
+        SensorProfile sensor,
+        string? ephemerisModelVersion,
+        ConstellationTopologyMetadata? constellationTopologyMetadata)
     {
-        var value = JsonSerializer.Serialize(new
+        return JsonSerializer.Serialize(new
         {
             request.Utc,
             request.Observer,
@@ -1294,14 +1306,28 @@ public sealed class VirtualSkyCameraModule(
                     ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : ""),
             SolarBackgroundEphemerisModel = SolarBackgroundEphemeris.ModelVersion,
             Setpoint = setpoint,
-            Options = JsonSerializer.SerializeToElement(options).EnumerateObject()
-                .Where(static property => property.Name != nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations))
-                .ToDictionary(static property => property.Name, static property => property.Value),
+            Options = options,
             Sensor = sensor,
             EphemerisModelVersion = ephemerisModelVersion,
             ConstellationTopology = constellationTopologyMetadata
+        }, SceneIdentitySerializerOptions);
+    }
+
+    private static JsonSerializerOptions CreateSceneIdentitySerializerOptions()
+    {
+        // Raw noise identity keeps the original default typed order and scalar writers. Only immutable
+        // metadata is cached; annotation settings are bound separately after the raw identity is computed.
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(static typeInfo =>
+        {
+            if (typeInfo.Type != typeof(VirtualSkyCameraModuleOptions)) return;
+            var annotation = typeInfo.Properties.Single(static property =>
+                property.Name == nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations));
+            typeInfo.Properties.Remove(annotation);
         });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+        var options = new JsonSerializerOptions { TypeInfoResolver = resolver };
+        options.MakeReadOnly();
+        return options;
     }
 
     private static long CreateDeterministicCaptureSequence(string sceneId)

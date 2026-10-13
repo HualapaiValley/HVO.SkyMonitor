@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -68,7 +69,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2",
+            "EFBD0878A83C8CA8182FC577BA43AB716A78340DA1C192A6AD07AD44BDC8BDFE",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -99,6 +100,7 @@ public sealed class StandaloneW6ProfileTests
         try
         {
             var shared = graph.SharedPlan!;
+            AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(configuration, graph, preview);
             var scene = shared.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
             Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, scene.StepVersion);
             Assert.IsTrue(scene.Outputs.All(static output =>
@@ -378,6 +380,86 @@ public sealed class StandaloneW6ProfileTests
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
             factory.CreateGraph(WithSecondaryPolicy(queueForUpload: true)));
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
+    }
+
+    private static void AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(
+        CameraModuleConfig configuration, CaptureProcessingGraph graph, CaptureProcessingPlanPreview preview)
+    {
+        string[] accepted = ["projected-scene-v1", "projected-scene-v2", "projected-scene-v3"];
+        foreach (var id in new[] { "scene-presentation", "environment-presentation" })
+        {
+            var node = graph.Nodes.Single(item => item.Id == id);
+            var requirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements;
+            var scene = requirements.Single(static item => item.RecipeNames?.Contains(BuiltInProcessingRecipes.ProjectedScene) == true);
+            CollectionAssert.AreEqual(accepted, scene.SchemaVersions!.Order(StringComparer.Ordinal).ToArray());
+            CollectionAssert.AreEqual(new[] { FrameArtifactRole.Metadata }, scene.Roles.ToArray());
+            Assert.IsTrue(scene.Required);
+            CollectionAssert.AreEqual(new[] { BuiltInProcessingRecipes.ProjectedScene }, scene.RecipeNames!.ToArray());
+            CollectionAssert.AreEqual(id == "scene-presentation" ? new[] { "projected-scene" } :
+                new[] { "projected-scene", "combined-preview" }, node.DeclaredDependencies!.ToArray());
+            var sharedInput = graph.SharedPlan!.Nodes.Single(item => item.Definition.Id == id).Definition.Inputs
+                .Single(static input => input.RecipeNames.Contains(BuiltInProcessingRecipes.ProjectedScene));
+            CollectionAssert.AreEqual(accepted, sharedInput.SchemaVersions.Order(StringComparer.Ordinal).ToArray());
+            Assert.IsTrue(sharedInput.Required);
+            Assert.AreEqual(node.PlanSha256, ReconstructSceneConsumerHash(node, removeV3: false));
+        }
+        var producer = (ICaptureProcessingGraphStep)graph.Nodes.Single(static node => node.Id == "projected-scene").Step;
+        Assert.AreEqual("projected-scene-v1", producer.OutputSchemaVersion);
+        var cloud = ((IRequiredCaptureProcessingDependencies)graph.Nodes.Single(static node => node.Id == "cloud-presentation").Step)
+            .DependencyRequirements.Single();
+        CollectionAssert.AreEqual(new[] { "cloud-assessment-v1" }, cloud.SchemaVersions!.ToArray());
+
+        string Aggregate(bool removeV3) => CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+        {
+            SchemaVersion = configuration.Pipeline.SchemaVersion,
+            configuration.Pipeline.DependencyPolicy,
+            Nodes = graph.Nodes.Select(node => removeV3 && (node.Id is "scene-presentation" or "environment-presentation")
+                ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
+        }));
+        Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
+        Assert.AreEqual("9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2", Aggregate(removeV3: true),
+            "Only removal of v3 from these two consumer requirements must recover the historical effective graph.");
+    }
+
+    // Reconstruct only the two published consumer preimages, independently of the factory's private hasher.
+    private static string ReconstructSceneConsumerHash(CaptureProcessingGraphNode node, bool removeV3)
+    {
+        Assert.IsNotNull(node.Publication);
+        var step = (ICaptureProcessingGraphStep)node.Step;
+        var outputs = ((IMultiOutputCaptureProcessingGraphStep)node.Step).Outputs.Select(static output => new
+        {
+            output.Role,
+            output.Variant,
+            output.RecipeName,
+            output.SchemaVersion
+        }).ToArray();
+        var dependencyRequirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements.Select(requirement => new
+        {
+            Roles = requirement.Roles.Order().ToArray(),
+            RecipeNames = requirement.RecipeNames?.Order(StringComparer.Ordinal).ToArray(),
+            SchemaVersions = requirement.SchemaVersions?.Where(schema => !removeV3 || schema != "projected-scene-v3")
+                .Order(StringComparer.Ordinal).ToArray(),
+            requirement.Variant,
+            requirement.Required
+        }).ToArray();
+        var preimage = CaptureContractJson.SerializeToElement(new
+        {
+            Type = node.Alias,
+            id = node.Step.Name,
+            order = node.Step.Order,
+            dependencies = node.DeclaredDependencies ?? node.Dependencies,
+            node.Required,
+            Options = node.EffectiveOptions,
+            recipe = step.RecipeName,
+            recipeIdentitySchema = ProcessingIdentity.BoundInputSchemaVersion,
+            outputRole = step.OutputRole,
+            outputVariant = step.OutputVariant,
+            outputSchemaVersion = step.OutputSchemaVersion,
+            outputs,
+            dependencyRequirements,
+            node.Publication
+        });
+        return CaptureContractJson.ComputeCanonicalJsonSha256(preimage);
     }
 
     private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)

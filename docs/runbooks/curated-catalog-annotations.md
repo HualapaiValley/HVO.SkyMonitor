@@ -108,6 +108,38 @@ criteria to the coordinator for allocation. Catalog first-open/load/index cost
 and composition/encoding cost are reported separately from warm projection.
 First-open is not a claim of cold OS storage caches. Full F7 stays on #1188.
 
+## Raw identity and executable graph compatibility
+
+VirtualSky raw scene identity uses the original default typed JSON serialization,
+excluding only `CuratedAnnotations` through private immutable serializer metadata.
+It does not roundtrip options through a JSON DOM: typed UTC offsets, nested
+transient/cloud parameters, enum converters, property order and scalar escaping
+remain part of the original byte/hash contract. Three bounded parity cases use
+an independent default-typed oracle with annotation settings null, disabled and
+enabled. Existing raw exposure checksum goldens are unchanged.
+
+The W6 desired graph, rig, processing, schedule and local profile stay pinned.
+Its effective executable identity deliberately advances from `9C37FFDB...` to
+`EFBD0878...`: scene-presentation and environment-presentation now explicitly
+admit projected-scene v1/v2/v3. The producer declaration remains the v1 family
+root and cloud-presentation retains its cloud-assessment contract. The Unit test
+reconstructs only those two node preimages and requires removal of only v3 to
+recover the complete historical effective hash, leaving all twelve other nodes
+unchanged. The matching current Manual pin advances without running a Manual
+workload. Historical graph/evidence records retain their original hashes.
+
+Expanded reader capability can supersede an old frozen/named executable graph
+revision. Existing replay still rejects mismatched frozen runtime identities;
+neither a current configuration nor schema-family compatibility rewrites a
+retained revision. Old scene bytes remain supported by the strict readers.
+
+The retained 55bd complete Unit TRXs contain 6540 cases, including 23 explicit
+NotExecuted results even though the raw summary counter reports notExecuted=0.
+Both records stay unchanged. They reconcile Astronomy515, LogicHost685 and
+CameraAgent3431; the three new raw-identity parity rows declare CameraAgent3434
+and total Unit6543. These declarations combine retained actual discovery with
+new source counts; subsequent affected execution is separate evidence.
+
 The focused cost entrypoint is the Manual-only
 `CatalogPerformanceTests.CuratedAnnotationsWarmProjectionEvidenceAsync`.
 It uses the approved HYG 4.4/OpenNGC package, pins all 117 canonical preset IDs
