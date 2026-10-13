@@ -42,7 +42,7 @@ public sealed partial class PresentationLayerPayloadTests
         var json = Encoding.UTF8.GetString(PresentationLayerPayloadJson.Serialize(payload));
         var base64 = Convert.ToBase64String(new byte[] { (byte)maskByte });
         StringAssert.Contains(json, base64.Replace("+", "\\u002B", StringComparison.Ordinal), StringComparison.Ordinal);
-        if (base64.Contains('+'))
+        if (base64.Contains('+', StringComparison.Ordinal))
             Assert.IsFalse(PresentationLayerPayloadJson.Parse(Encoding.UTF8.GetBytes(
                 json.Replace("\\u002B", "+", StringComparison.Ordinal))).IsValid, "Unescaped base64 is not the retained canonical spelling.");
     }
