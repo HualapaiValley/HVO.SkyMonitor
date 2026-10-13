@@ -14,7 +14,7 @@
     ],
     "deprecationReasons": ["Legacy"],
     "alternativePackage": "Microsoft.Extensions.Http.Resilience|>= 0.0.0",
-    "expiresOn": "2026-10-13",
-    "reason": "Legacy package accepted only as a transitive dependency of Microsoft.Extensions.Http.Polly 10.0.11; migrate when that package removes the dependency."
+    "expiresOn": "2026-10-20",
+    "reason": "Operator-approved seven-day extension through 2026-10-20 UTC for legacy Polly.Extensions.Http 3.0.0, introduced by OpenIddict 7.7.1 through Microsoft.Extensions.Http.Polly 10.0.12. Permanent dependency cleanup is tracked in #1208 and deferred from #525. Exact package/project/deprecation matching and vulnerable-package rejection are unchanged; no automatic renewal."
   }
 ]
