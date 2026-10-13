@@ -63,11 +63,19 @@ public sealed partial class CatalogPerformanceTests
             static value => PayloadChecksum.ComputeSha256(value));
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schema = "curated-allocation-diagnostic-v1", revision, snapshot.DatabaseSha256,
-            scene.SceneIdentitySha256, layer.ContentIdentitySha256,
-            sceneObjects = scene.Objects.Count, deepSkyObjects = scene.DeepSky!.Objects.Count,
-            layerSegments = layer.Segments.Count, layerTextBlocks = layer.TextBlocks.Count,
-            warmups = 1, measuredCalls = 5, rows, memory = ReadProcessMemory(diagnosticProcess),
+            schema = "curated-allocation-diagnostic-v1",
+            revision,
+            snapshot.DatabaseSha256,
+            scene.SceneIdentitySha256,
+            layer.ContentIdentitySha256,
+            sceneObjects = scene.Objects.Count,
+            deepSkyObjects = scene.DeepSky!.Objects.Count,
+            layerSegments = layer.Segments.Count,
+            layerTextBlocks = layer.TextBlocks.Count,
+            warmups = 1,
+            measuredCalls = 5,
+            rows,
+            memory = ReadProcessMemory(diagnosticProcess),
             limits = "inclusive public-operation allocations; verification afterward; not full cost or qualifier"
         }, CuratedEvidenceJson);
         using var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None);

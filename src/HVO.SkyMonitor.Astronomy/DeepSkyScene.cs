@@ -139,8 +139,8 @@ public sealed record ProjectedDeepSkyObject(
 }
 
 /// <summary>
-    /// Reserved wire shape for source contours. Curated producers emit an empty collection and readers reject
-    /// populated contours; expanded contour presentation belongs to a separate delivery.
+/// Reserved wire shape for source contours. Curated producers emit an empty collection and readers reject
+/// populated contours; expanded contour presentation belongs to a separate delivery.
 /// </summary>
 public sealed record ProjectedDeepSkyOutline(
     [property: JsonRequired] string Id,
