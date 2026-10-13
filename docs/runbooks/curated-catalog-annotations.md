@@ -78,6 +78,15 @@ the actual source-bound annotation recipe. Existing frozen scene, staging,
 replay and host tests remain applicable. Runtime results belong to their exact
 source fingerprints; no historical broad PR result is new-candidate evidence.
 
+The private Astronomy scene serializer orders immutable type metadata by ordinal
+JSON property name. It recomputes canonical content on every call; it does not
+cache scene hashes or trust caller-owned collections. Nine added Unit cases
+compare the original DOM pipeline's bytes and identities for 500-star v1/v2/v3
+scenes, circle/ellipse/unknown extents, escaping, nullable/default/numeric fields
+and array order, and reject caller mutation. A graph check rejects newly reachable
+dynamic JSON, dictionaries or non-scalar custom converters. These nine cases are
+declared in the owned inventory; whole-solution discovery remains a separate gate.
+
 Warm millisecond performance is currently **unmeasured**. Before running a
 focused measurement or the full candidate gate, the owner supplies the exact
 commands, source identity, bounded scene/preset/image envelope and acceptance

@@ -4,7 +4,7 @@ namespace HVO.SkyMonitor.Astronomy.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CuratedDeepSkySceneTests
+public sealed partial class CuratedDeepSkySceneTests
 {
     private static readonly DateTimeOffset Utc = new(2000, 1, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly DeepSkySemantics Semantics = new(

@@ -1,6 +1,8 @@
+using System.Collections.ObjectModel;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Collections.ObjectModel;
+using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
@@ -180,6 +182,7 @@ public static class ProjectedSceneJson
     /// <summary>Recommendation for durable storage; identity always covers uncompressed canonical JSON.</summary>
     public const string PersistenceRecommendation = "canonical-json-utf8-compress-at-rest-v1";
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
+    private static readonly JsonSerializerOptions CanonicalSerializerOptions = CreateCanonicalSerializerOptions();
 
     /// <summary>Snapshots a visible scene with separately identified calibration and projection algorithm facts.</summary>
     public static ProjectedSceneV1 Create(
@@ -373,8 +376,7 @@ public static class ProjectedSceneJson
     {
         ArgumentNullException.ThrowIfNull(scene);
         var identityDocument = scene with { SceneIdentitySha256 = string.Empty };
-        return CaptureContractJson.ComputeCanonicalJsonSha256(
-            JsonSerializer.SerializeToElement(identityDocument, SerializerOptions));
+        return Convert.ToHexString(SHA256.HashData(SerializeCanonical(identityDocument)));
     }
 
     public static void Validate(ProjectedSceneV1 scene)
@@ -755,8 +757,7 @@ public static class ProjectedSceneJson
     }
 
     private static byte[] SerializeCanonical(ProjectedSceneV1 scene) =>
-        JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(
-            JsonSerializer.SerializeToElement(scene, SerializerOptions)));
+        JsonSerializer.SerializeToUtf8Bytes(scene, CanonicalSerializerOptions);
 
     private static void ValidateProjection(ProjectedSceneProjection value)
     {
@@ -1195,6 +1196,25 @@ public static class ProjectedSceneJson
             RespectRequiredConstructorParameters = true
         };
         options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
+        return options;
+    }
+
+    private static JsonSerializerOptions CreateCanonicalSerializerOptions()
+    {
+        // This closed scene graph contains sealed records, scalar converters and ordered lists, with no
+        // arbitrary JSON or dictionaries. Cache only immutable property metadata, never scene content.
+        // Ordering the existing JSON names produces the original DOM pipeline's bytes without its copies
+        // and per-instance object sorting. Parsing still uses the original strict options above.
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(static typeInfo =>
+        {
+            if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+            var order = 0;
+            foreach (var property in typeInfo.Properties.OrderBy(static property => property.Name, StringComparer.Ordinal))
+                property.Order = order++;
+        });
+        var options = new JsonSerializerOptions(SerializerOptions) { TypeInfoResolver = resolver };
+        options.MakeReadOnly();
         return options;
     }
 }
