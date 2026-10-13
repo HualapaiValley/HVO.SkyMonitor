@@ -7,10 +7,12 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" Condition="'$(CatalogFoundationBaseline)' != 'true'" />
   </ItemGroup>
   <ItemGroup>
     <!-- The common HYG leaf also builds against the pre-foundation source; it has no DSO type dependency. -->
     <Compile Remove="CatalogPerformanceTests.FoundationDso.cs" Condition="'$(CatalogFoundationBaseline)' == 'true'" />
+    <Compile Remove="CatalogPerformanceTests.CuratedAnnotations.cs" Condition="'$(CatalogFoundationBaseline)' == 'true'" />
     <None Update="issue-525-query-pins.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

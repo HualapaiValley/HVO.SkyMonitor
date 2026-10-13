@@ -611,7 +611,7 @@ public static class ProjectedSceneJson
         if (section.SourceUrl is null || !section.SourceUrl.IsAbsoluteUri)
             throw new ArgumentException("Deep-sky source URL must be absolute.", nameof(scene));
         if (section.OmittedCandidateCount < 0 ||
-            section.Objects is null || section.Objects.Count == 0 || section.Objects.Count > selection.MaximumObjects ||
+            section.Objects is null || section.Objects.Count > selection.MaximumObjects ||
             section.Objects.Any(static item => item is null) ||
             section.Outlines is null || section.Outlines.Count > selection.MaximumOutlines ||
             section.Outlines.Any(static item => item is null))
@@ -1099,7 +1099,7 @@ public static class ProjectedSceneJson
                 continue;
             objects.Add(item);
         }
-        if (objects.Count == 0) return null;
+        // A crop may remove every admitted object. Preserve the opt-in selection/schema without inventing geometry.
         return value with
         {
             Objects = Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)),

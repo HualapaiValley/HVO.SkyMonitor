@@ -654,9 +654,10 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging(bool compact)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging(bool compact, bool curated)
     {
         var root = CreateRoot();
         try
@@ -666,12 +667,27 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var provenance = CreateStageProvenance(new string('5', 64), new string('E', 64));
             if (compact) provenance = provenance with
             {
-                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                ProjectedSceneSchemaVersion = curated ? SceneProvenance.DeepSkyProjectedSceneSchemaVersion :
+                    SceneProvenance.RetainedProjectedSceneSchemaVersion,
                 SceneUtc = DateTimeOffset.UnixEpoch,
                 RigProfileHashSha256 = new string('A', 64)
             };
             var fixture = CreateContext(root, provenance, CreateReplayExecution());
-            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
+            var visible = await CreateSceneAsync().ConfigureAwait(false);
+            if (curated)
+            {
+                var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                    new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                    "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+                var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+                    AstronomyTime.LocalMeanSiderealDegrees(DateTimeOffset.UnixEpoch, 0) / 15, 0, "And",
+                    null, null, null, null, null, null, null, 31, null, null, null);
+                visible = visible.WithCuratedDeepSky(new DeepSkyCatalog(semantics, [item],
+                    [new("NGC 224", item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []), ProjectedSceneDeepSkySelection.Default);
+            }
+            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, visible);
+            if (curated) Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, frozen.Scene.SchemaVersion);
             fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
             fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact]);
             var step = CreateStep(staging, stagingReader: reader);

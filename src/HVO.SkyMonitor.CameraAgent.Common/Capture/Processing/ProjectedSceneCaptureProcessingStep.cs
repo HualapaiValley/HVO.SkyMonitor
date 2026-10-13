@@ -26,7 +26,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     public string OutputVariant => Options.OutputVariant;
     // The plan-level contract names the projected-scene family root, so existing plan identities are unchanged.
     // A product carries its own schema: projected-scene-v3 exactly when the scene has a deep-sky collection, otherwise
-    // projected-scene-v2 exactly when it has resolved footprints.
+    // v2 for solar footprints, or v3 for an explicitly curated section; the registry keeps its v1 family root.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.ProjectedSceneMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };

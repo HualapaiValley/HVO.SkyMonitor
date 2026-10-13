@@ -16,12 +16,13 @@ public sealed record PresentationDeepSkyStyleV1(
     int LabelScale = 1,
     bool LabelCatalogObjects = true,
     int MinimumGlyphRadius = 7,
-    PresentationColor? Color = null);
+    PresentationColor? Color = null,
+    int LegendBaselinePixels = 4);
 
 /// <summary>What the deep-sky layer drew for one object.</summary>
 public enum PresentationDeepSkyDrawing
 {
-    /// <summary>The object's sourced catalog outline.</summary>
+    /// <summary>Reserved value; the curated delivery does not draw source contours.</summary>
     Outline,
 
     /// <summary>The object's catalog ellipse footprint.</summary>
@@ -70,7 +71,7 @@ public static class PresentationDeepSkyLayerProducer
     /// </summary>
     public const long MaximumWork = PresentationLayerCompositor.MaximumGeometryWork / 8;
 
-    /// <summary>The largest glyph radius in output pixels. A wider object is drawn as its outline or footprint.</summary>
+    /// <summary>The largest symbolic glyph radius; a supported known extent uses a footprint instead.</summary>
     public const int MaximumGlyphRadius = 512;
 
     private const int Thickness = 2;
@@ -79,19 +80,21 @@ public static class PresentationDeepSkyLayerProducer
     private static readonly PresentationStrokeV2 UnknownExtentStroke = new(2, 3, 900_000);
 
     /// <summary>
-    /// Creates the layer. Objects are taken in the scene's priority order. Each draws its outline or footprint, falls
+    /// Creates the layer. Objects are taken in the scene's priority order. Each draws its basic footprint, falls
     /// back to its class glyph when that geometry would exceed the layer budget, and is omitted only when neither fits;
     /// labels then follow in the same order within their own reserved budget.
     /// </summary>
     public static PresentationDeepSkyLayerV1 Create(ProjectedSceneV1 scene, PresentationDeepSkyStyleV1? style = null,
-        PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null)
+        PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null,
+        IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
         style ??= new PresentationDeepSkyStyleV1();
         if (style.MaximumLabels is < 0 or > 24 ||
             style.MaximumLabelCharacters is < 0 or > PresentationLayerPayloadV1.MaximumLineCharacters ||
-            style.LabelScale is < 1 or > 8 || style.MinimumGlyphRadius is < 2 or > 32)
+            style.LabelScale is < 1 or > 8 || style.MinimumGlyphRadius is < 2 or > 32 ||
+            style.LegendBaselinePixels is < 0 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(style));
         var width = outputWidth ?? scene.ImageTransform.OutputWidthPixels;
         var height = outputHeight ?? scene.ImageTransform.OutputHeightPixels;
@@ -114,19 +117,19 @@ public static class PresentationDeepSkyLayerProducer
         var geometryPrimitives = MaximumPrimitives - labels;
         var geometryWork = MaximumWork - labelWork;
 
-                var footprints = (scene.ResolvedFootprints ?? [])
-            .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
-            .Select(item => item with
-            {
-                CenterPixel = item.CenterPixel is { } center ? transform.Apply(center) : null,
-                Parts = item.Parts.Select(part => part with
-                {
-                    Points = part.Points.Select(transform.Apply).ToArray()
-                }).ToArray(),
-                Bounds = new ResolvedFootprintBounds(
-                    item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
-                    item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
-            }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var footprints = (scene.ResolvedFootprints ?? [])
+    .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
+    .Select(item => item with
+    {
+        CenterPixel = item.CenterPixel is { } center ? transform.Apply(center) : null,
+        Parts = item.Parts.Select(part => part with
+        {
+            Points = part.Points.Select(transform.Apply).ToArray()
+        }).ToArray(),
+        Bounds = new ResolvedFootprintBounds(
+            item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
+            item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
+    }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
         var ordered = deepSky.Objects.Select(item => item with
         {
             Pixel = item.Pixel is { } pixel ? transform.Apply(pixel) : null,
@@ -170,7 +173,8 @@ public static class PresentationDeepSkyLayerProducer
 
         var texts = new List<PresentationTextBlockV1>();
         // The distinction is visible in an exported image, not merely in manifest metadata.
-        texts.Add(new(PresentationTextAnchor.TopLeft, new PixelPoint(0, 0), [Legend, "APPROXIMATE EXTENTS / SYMBOLS FOR UNKNOWN SHAPE"], 1, 4, 2, color));
+        texts.Add(new(PresentationTextAnchor.Point, new PixelPoint(4, style.LegendBaselinePixels),
+            [Legend, "APPROXIMATE EXTENTS / SYMBOLS FOR UNKNOWN SHAPE"], 1, 0, 2, color));
         var labelled = new Dictionary<string, string>(StringComparer.Ordinal);
         if (labels > 0)
         {
@@ -180,6 +184,18 @@ public static class PresentationDeepSkyLayerProducer
                 labelSize, labelSize / 25, color, new(3, 8, 14), 950_000, 5_000));
             using var font = PresentationFont.Create(appearance.Body);
             var reserved = ReservedCorners(width, height);
+            using var legendFont = PresentationFont.Create(1);
+            reserved.Add(PresentationFont.BackplateBounds(texts[0], width, height, legendFont));
+            if (reservedLabelBounds is { } supplied)
+            {
+                if (supplied.Count > ProjectedSceneJson.MaximumObjectCount + 4 || supplied.Any(static bounds =>
+                    !double.IsFinite(bounds.MinX) || !double.IsFinite(bounds.MinY) ||
+                    !double.IsFinite(bounds.MaxX) || !double.IsFinite(bounds.MaxY) ||
+                    bounds.MinX > bounds.MaxX || bounds.MinY > bounds.MaxY))
+                    throw new ArgumentException("Reserved label bounds must be finite and bounded.", nameof(reservedLabelBounds));
+                reserved.AddRange(supplied.Select(static bounds =>
+                    new SKRect((float)bounds.MinX, (float)bounds.MinY, (float)bounds.MaxX, (float)bounds.MaxY)));
+            }
             var occupied = new List<SKRect>();
             var textWork = 0L;
             foreach (var (item, drawing, anchor, clearance) in drawings)

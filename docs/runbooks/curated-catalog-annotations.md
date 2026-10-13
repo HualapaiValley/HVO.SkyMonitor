@@ -62,6 +62,13 @@ processing manifests, archived replay selection and central readers accept v3
 together. Ordinary star/Sun/Moon annotation excludes v3's curated footprints,
 which are rendered once with dashed expected-position styling and a visible
 `CATALOG POSITIONS - NOT DETECTIONS` legend.
+The actual annotation recipe places that caption after existing top-left
+metadata and reserves the legacy star-label rectangles. Shared presentation
+groups keep the same 64-text-block ceiling, reserving a caption block and
+spending only the remaining label budget on curated objects.
+If an emitted-image crop removes every admitted object, v3 retains an empty
+curated selection. It does not invent a center, magnitude or extent to keep the
+schema alive. A view with no curated admission in the first place keeps v1/v2.
 
 ## Validation and cost
 
@@ -77,6 +84,17 @@ commands, source identity, bounded scene/preset/image envelope and acceptance
 criteria to the coordinator for allocation. Catalog first-open/load/index cost
 and composition/encoding cost are reported separately from warm projection.
 First-open is not a claim of cold OS storage caches. Full F7 stays on #1188.
+
+The focused cost entrypoint is the Manual-only
+`CatalogPerformanceTests.CuratedAnnotationsWarmProjectionEvidenceAsync`.
+It uses the approved HYG 4.4/OpenNGC package, pins all 117 canonical preset IDs
+(M102 remains disputed), and interleaves disabled/enabled component operations
+with five warmups and 100 measurements. The proposed measured envelope is
+484×304 and 1920×1080 perspective, plus 3552×3552 equidistant, at the default
+128-object/32-footprint/24-label ceiling. Projection, layer construction and
+Mono8/RGB24 composition have separate timings, allocations, CPU and hashes;
+verification CPU is outside the operation interval. This is an annotation
+cost check, not a full capture benchmark or native qualification.
 
 ## Source attribution
 

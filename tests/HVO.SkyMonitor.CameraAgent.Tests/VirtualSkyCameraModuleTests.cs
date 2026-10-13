@@ -22,7 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class VirtualSkyCameraModuleTests
+public sealed partial class VirtualSkyCameraModuleTests
 {
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 

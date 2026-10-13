@@ -730,8 +730,10 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         if (curatedScene is not null)
         {
             var layer = PresentationDeepSkyLayerProducer.Create(curatedScene,
-                new PresentationDeepSkyStyleV1(MaximumLabels: options.DrawLabels ? 24 : 0),
-                request.Annotation.Transform, display.Width, display.Height);
+                new PresentationDeepSkyStyleV1(MaximumLabels: options.DrawLabels ? 24 : 0,
+                    LegendBaselinePixels: CuratedDeepSkyAnnotation.LegendBaseline(request.Annotation.MetadataOverlay)),
+                request.Annotation.Transform, display.Width, display.Height,
+                CuratedDeepSkyAnnotation.ReservedLabels(request.Annotation.Objects, request.Annotation.Transform, annotationOptions));
             annotatedPixels = PresentationLayerCompositor.Composite(
                 new ImageLayout(display.Width, display.Height, format, packedStride), annotatedPixels,
                 [new(layer.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellationToken);

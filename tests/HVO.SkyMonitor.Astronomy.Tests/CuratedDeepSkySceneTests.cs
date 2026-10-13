@@ -103,10 +103,67 @@ public sealed class CuratedDeepSkySceneTests
             ProjectedSceneV1.ResolvedFootprintSchemaVersion]).Scene);
     }
 
+    [TestMethod]
+    public void OffImageCenterRetainsVisibleCircleLimbAgainstIndependentTangent()
+    {
+        var item = Object("NGC0224", 31, 60, 60, null) with { DeclinationDegrees = 32.3 };
+        var scene = Scene(focalPixels: 4000).WithCuratedDeepSky(
+            Catalog([item], [new("M31", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var footprint = scene.ResolvedFootprints.Single();
+        Assert.IsNull(scene.DeepSky!.Objects.Single().Pixel);
+        Assert.IsTrue(footprint.Clipped);
+        // Along the meridian the near limb is 1.8 degrees from the zenith boresight.
+        Assert.AreEqual(152 - 4000 * Math.Tan(1.8 * Math.PI / 180), footprint.Bounds.MaxY, 0.05);
+        Assert.IsTrue(footprint.Parts.SelectMany(static part => part.Points).All(static point =>
+            point.X >= -1e-8 && point.X <= 484 + 1e-8 && point.Y >= -1e-8 && point.Y <= 304 + 1e-8));
+    }
+
+    [TestMethod]
+    public void CuratedCenterAndFootprintFollowCropBinMirrorAndRotationOnce()
+    {
+        var item = Object("NGC0224", 31, 120, 60, 90);
+        var scene = Scene().WithCuratedDeepSky(
+            Catalog([item], [new("M31", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var transform = new ProjectedSceneImageTransformV1(ProjectedSceneImageTransformV1.CurrentSchemaVersion,
+            484, 304, 100, 60, 280, 180, 2, 3, true, false, ProjectedSceneQuarterRotation.Degrees90, 60, 140);
+        var geometry = ProjectedSceneImageTransform.CreateGeometrySnapshot(scene, transform);
+        var center = geometry.DeepSky!.Objects.Single().Pixel!.Value;
+        Assert.AreEqual(60 - (152 - 60) / 3d, center.X, 1e-8);
+        Assert.AreEqual(140 - (242 - 100) / 2d, center.Y, 1e-8);
+        var source = scene.ResolvedFootprints.Single().Parts.Single().Points;
+        var target = geometry.ResolvedFootprints!.Single().Parts.Single().Points;
+        Assert.AreEqual(source.Count, target.Count);
+        for (var index = 0; index < source.Count; index++)
+        {
+            Assert.AreEqual(60 - (source[index].Y - 60) / 3d, target[index].X, 1e-8);
+            Assert.AreEqual(140 - (source[index].X - 100) / 2d, target[index].Y, 1e-8);
+        }
+        Assert.AreEqual(scene.DeepSky!.Objects.Single().J2000Equatorial,
+            geometry.DeepSky.Objects.Single().J2000Equatorial);
+    }
+
     private static ProjectedSceneDeepSkySelection Selection() => new(128, 32, 0, 1, 0.1);
 
-    private static VisibleScene Scene() => new(new VisibleSceneRequest(Utc, new ObserverLocation(30, 0, 0),
-        new ProjectionContext(ProjectionModel.Perspective, 242, 152, 100, 100, 484, 304,
+    [TestMethod]
+    public void CropRemovingAllCuratedObjectsKeepsAnHonestEmptyV3Selection()
+    {
+        var item = Object("NGC0224", 31, 120, 60, 90);
+        var visible = Scene().WithCuratedDeepSky(
+            Catalog([item], [new("M31", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var transform = new ProjectedSceneImageTransformV1(ProjectedSceneImageTransformV1.CurrentSchemaVersion,
+            484, 304, 0, 0, 100, 60, 1, 1, false, false, ProjectedSceneQuarterRotation.Degrees0, 100, 60);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible, transform,
+            new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('B', 64)), new string('C', 64), "cal-v1");
+        Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, scene.SchemaVersion);
+        Assert.IsEmpty(scene.DeepSky!.Objects);
+        Assert.IsNull(scene.ResolvedFootprints);
+        var parsed = ProjectedSceneJson.Parse(ProjectedSceneJson.Serialize(scene));
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        Assert.IsEmpty(parsed.Scene!.DeepSky!.Objects);
+    }
+
+    private static VisibleScene Scene(double focalPixels = 100) => new(new VisibleSceneRequest(Utc, new ObserverLocation(30, 0, 0),
+        new ProjectionContext(ProjectionModel.Perspective, 242, 152, focalPixels, focalPixels, 484, 304,
             ProjectionAperture.Rectangular), new CatalogQuery(6, 100),
         new CatalogMetadata("HYG+OpenNGC", "test", new Uri("https://example.test/catalog"), new string('A', 64), "CC BY-SA 4.0", "4"),
         projectionVersion: "cal-v1"), []);

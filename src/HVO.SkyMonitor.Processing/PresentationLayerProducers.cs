@@ -310,7 +310,8 @@ public static class PresentationLayerProducers
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
-                if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
+                // A curated group reserves one block for its mandatory expected-position caption.
+                if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks - (scene.DeepSky is null ? 0 : 1)) break;
                 var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
                 var clearance = footprints.TryGetValue(item.Id, out var footprint)
                     ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
@@ -331,7 +332,14 @@ public static class PresentationLayerProducers
             }
         }
         var curated = scene.DeepSky is null ? null : PresentationDeepSkyLayerProducer.Create(scene,
-            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels ? 24 : 0)).Payload;
+            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
+                ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:
+                starTexts.Select(block =>
+                {
+                    using var font = PresentationFont.Create(block, 0);
+                    var bounds = PresentationFont.BackplateBounds(block, width, height, font);
+                    return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+                }).ToArray()).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,

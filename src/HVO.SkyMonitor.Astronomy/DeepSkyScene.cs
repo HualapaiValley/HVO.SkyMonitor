@@ -139,8 +139,8 @@ public sealed record ProjectedDeepSkyObject(
 }
 
 /// <summary>
-/// The projected sourced outline of one deep-sky object at one contour level. Each ring is sampled through the
-/// resolved-footprint projector; the outline is unclipped only when every ring survives as one closed part.
+    /// Reserved wire shape for source contours. Curated producers emit an empty collection and readers reject
+    /// populated contours; expanded contour presentation belongs to a separate delivery.
 /// </summary>
 public sealed record ProjectedDeepSkyOutline(
     [property: JsonRequired] string Id,
@@ -185,8 +185,8 @@ public sealed record ProjectedDeepSky(
     public const string CurrentContractVersion = "projected-deep-sky-curated-v1";
 
     /// <summary>
-    /// Candidates are ordered featured first, then by projected major axis (unknown last), then by visual or blue
-    /// magnitude (unknown last), then by ordinal ID; representations are assigned in that order.
+    /// The canonical preset and object cap are chosen before geometry, in Messier-number/ID order.
+    /// Presentation later ranks only the projected subset by featured status, size, known magnitude and ID.
     /// </summary>
     public const string CurrentAlgorithmVersion = "curated-messier-bright-ngc-preselect-v1";
 
