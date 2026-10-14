@@ -145,6 +145,69 @@ public sealed partial class CuratedDeepSkySceneTests
     private static ProjectedSceneDeepSkySelection Selection() => new(128, 32, 0, 1, 0.1);
 
     [TestMethod]
+    public void RetainedM45EquidistantAntipodeBreaksInsteadOfDrawingAnInteriorChord()
+    {
+        var item = Object("M045", 45, 150, 150, null);
+        var center = CoordinateTransforms.EquatorialToHorizontal(
+            EquatorialPrecession.PrecessJ2000(new(item.RightAscensionHours, item.DeclinationDegrees), Utc), Utc, 30, 0);
+        Assert.IsTrue(center.AltitudeDegrees > 0);
+        var frame = ResolvedSourceFrame.Create(center, 30);
+        var radius = 1.25 * Math.PI / 180;
+        var q = frame.DirectionFromCelestial(radius * Math.Cos(1), radius * Math.Sin(1));
+        var boresight = CameraBasis.ToHorizontal(q * -1);
+        var focal = 500 / (179.5 * Math.PI / 180);
+        var visible = new VisibleScene(new VisibleSceneRequest(Utc, new(30, 0, 0),
+            new ProjectionContext(ProjectionModel.EquidistantFisheye, 512, 512, focal, focal, 1024, 1024,
+                ProjectionAperture.Circular, 500, boresight.AltitudeDegrees, boresight.AzimuthDegrees),
+            new CatalogQuery(6, 100), Scene().Request.CatalogMetadata), []).WithCuratedDeepSky(
+                Catalog([item], [new("M45", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var retained = ProjectedSceneJson.Parse(ProjectedSceneJson.Serialize(ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, visible, ProjectedSceneImageTransformV1.Identity(1024, 1024),
+            new(Guid.NewGuid(), Guid.NewGuid(), new string('B', 64)), new string('C', 64), "antipode-v1"))).Scene;
+        Assert.IsNotNull(retained);
+        Assert.HasCount(1, retained.ResolvedFootprints!);
+        var footprint = retained.ResolvedFootprints!.Single();
+        Assert.IsTrue(footprint.Clipped);
+        Assert.IsTrue(footprint.Parts.All(static part => !part.Closed));
+        foreach (var part in footprint.Parts)
+        {
+            for (var index = 1; index < part.Points.Count; index++)
+            {
+                var from = part.Points[index - 1];
+                var to = part.Points[index];
+                var dx = to.X - from.X;
+                var dy = to.Y - from.Y;
+                var t = Math.Clamp(-((from.X - 512) * dx + (from.Y - 512) * dy) / (dx * dx + dy * dy), 0, 1);
+                var x = from.X + t * dx - 512;
+                var y = from.Y + t * dy - 512;
+                Assert.IsTrue(Math.Sqrt(x * x + y * y) > 490, "The true M45 limb stays near radii 494–501, not the interior.");
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow(ProjectionModel.Perspective)]
+    [DataRow(ProjectionModel.EquidistantFisheye)]
+    public void OrdinaryCenteredCircleRemainsClosedAndMatchesItsProjectionRadius(ProjectionModel model)
+    {
+        var item = Object("M045", 45, 150, 150, null);
+        var request = Scene().Request;
+        var projection = new ProjectionContext(model, 242, 152, 100, 100, 484, 304,
+            model == ProjectionModel.Perspective ? ProjectionAperture.Rectangular : ProjectionAperture.Circular,
+            model == ProjectionModel.Perspective ? null : 140);
+        var visible = new VisibleScene(new VisibleSceneRequest(Utc, request.Observer, projection,
+            request.CatalogQuery, request.CatalogMetadata), []).WithCuratedDeepSky(
+                Catalog([item], [new("M45", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var footprint = visible.ResolvedFootprints.Single();
+        Assert.IsFalse(footprint.Clipped);
+        Assert.IsTrue(footprint.Parts.Single().Closed);
+        var angularRadius = 1.25 * Math.PI / 180;
+        var expected = 100 * (model == ProjectionModel.Perspective ? Math.Tan(angularRadius) : angularRadius);
+        Assert.AreEqual(2 * expected, footprint.Bounds.MaxX - footprint.Bounds.MinX, 0.02);
+        Assert.AreEqual(2 * expected, footprint.Bounds.MaxY - footprint.Bounds.MinY, 0.02);
+    }
+
+    [TestMethod]
     public void CropRemovingAllCuratedObjectsKeepsAnHonestEmptyV3Selection()
     {
         var item = Object("NGC0224", 31, 120, 60, 90);

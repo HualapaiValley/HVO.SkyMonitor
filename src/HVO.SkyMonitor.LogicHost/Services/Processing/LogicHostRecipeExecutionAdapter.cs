@@ -148,7 +148,8 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Artifact.SourceArtifactIds,
             observation.StartedUtc,
             observation.EndedUtc,
-            CreateConditions(descriptor));
+            CreateConditions(descriptor))
+        { CaptureId = descriptor.Capture.CaptureId };
     }
 
     private static ProcessingCaptureConditions CreateConditions(ReconstructionDescriptor descriptor)

@@ -679,6 +679,8 @@ internal sealed partial class CentralProcessingGraphScheduler(
                         CreateSelector(binding, plan, jobs),
                         ArtifactId: ResolveBindingArtifactId(binding, sourceRows, projectedArtifacts)))
                     .Concat(CreateExternalAuxiliaries(node, environmentalInputs))
+                    .Concat(node.Definition.StepAlias == BuiltInProcessingRecipes.Annotation &&
+                        projectedScene?.PayloadInput is { } scenePayload ? [scenePayload] : [])
                     .ToArray();
                 var expectedIdentity = CreateExpectedRecipeIdentity(
                     handler.Kind,

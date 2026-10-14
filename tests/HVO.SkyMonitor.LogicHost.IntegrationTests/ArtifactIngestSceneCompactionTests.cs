@@ -527,15 +527,19 @@ public sealed partial class ArtifactIngestTests
 
     private static async Task<SceneIngestCase> CreateSceneIngestCaseAsync(
         bool graph, FrameArtifactRole derivativeRole = FrameArtifactRole.Preview,
-        IReadOnlyList<string>? constellationIds = null)
+        IReadOnlyList<string>? constellationIds = null, bool curated = false)
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
         var rig = CreateRig($"compact-scene-{Guid.NewGuid():N}");
+        var width = curated ? 484 : 2;
+        var height = curated ? 304 : 2;
+        if (curated) rig = rig with { Sensor = rig.Sensor with { WidthPixels = width, HeightPixels = height } };
         await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
         if (graph) await AssignCompactSceneAnnotationGraphAsync(registrationId, derivativeRole).ConfigureAwait(false);
         var utc = DateTimeOffset.UnixEpoch;
-        var pixels = new byte[] { 1, 32, 128, 255 };
+        var pixels = curated ? new byte[width * height] : new byte[] { 1, 32, 128, 255 };
         var raw = CreateManifestV2(deviceId, rig, pixels, 1055);
+        if (curated) raw = Resize(raw);
         // A selection needs topology provenance; the scene needs no segments to record the selection.
         var topology = constellationIds is null ? null : new InMemoryConstellationTopology([],
             new ConstellationTopologyMetadata("fixture", "1", new Uri("https://example.test/constellations"),
@@ -543,13 +547,26 @@ public sealed partial class ArtifactIngestTests
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
             new CelestialCatalogObject("zenith", "Zenith", AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, 1)
         ]), topology).BuildAsync(new VisibleSceneRequest(utc, new ObserverLocation(0, 0, 0),
-            new ProjectionContext(ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2,
+            new ProjectionContext(ProjectionModel.Perspective, width / 2d, height / 2d, curated ? 100 : 1, curated ? 100 : 1, width, height,
                 ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90),
             new CatalogQuery(6, 10), new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"),
                 new string('C', 64), "test", "v1"), projectionVersion: "perspective-v1",
             constellationIds: constellationIds)).ConfigureAwait(false);
+        if (curated)
+        {
+            var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+                AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15, 0, "And",
+                null, null, null, null, null, null, null, 31, null, null, null);
+            var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+            visible = visible.WithCuratedDeepSky(new DeepSkyCatalog(semantics, [item],
+                [new(item.Designation, item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []),
+                ProjectedSceneDeepSkySelection.Default);
+        }
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
-            ProjectedSceneImageTransformV1.Identity(2, 2),
+            ProjectedSceneImageTransformV1.Identity(width, height),
             new ProjectedSceneSource(raw.Descriptor.Capture.CaptureId, raw.Descriptor.Artifact.ArtifactId,
                 raw.IdempotencyKey), "calibration-v1", visible.Request.ProjectionVersion);
         var full = new SceneProvenance(new string('D', 64), rig.ProfileVersion, scene.Catalog.Name,
@@ -565,11 +582,12 @@ public sealed partial class ArtifactIngestTests
             ConstellationIds: constellationIds ?? [], RigProfileHashSha256: CameraRigProfileIdentity.ComputeSha256(rig),
             ProjectionCalibrationVersion: "calibration-v1", SceneUtc: utc,
             ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('E', 64));
-        raw = raw with { Scene = full.WithoutProjectedGeometry() };
+        raw = raw with { Scene = full.WithoutProjectedGeometry() with { ProjectedSceneSchemaVersion = scene.SchemaVersion } };
         var derivative = CreateManifestV2(deviceId, rig, pixels, 1055, role: derivativeRole,
             sourceArtifactIds: [raw.Descriptor.Artifact.ArtifactId], captureId: raw.Descriptor.Capture.CaptureId)
             with
         { Scene = raw.Scene };
+        if (curated) derivative = Resize(derivative);
         var sceneBytes = ProjectedSceneJson.Serialize(scene);
         var recipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene, "1.0.0", "integration-v1",
             JsonSerializer.SerializeToElement(new { }));
@@ -585,6 +603,15 @@ public sealed partial class ArtifactIngestTests
                 raw.Descriptor.Controls.EffectiveExposure.Ticks, sceneBytes.Length, ProcessingProductKind.Metadata,
                 scene.SchemaVersion, scene.SceneIdentitySha256), "derived/projected-scene.json", "projected-scene-step");
         return new(raw, derivative, full, pixels, sceneManifest, sceneBytes, registrationId);
+
+        ArtifactManifestV2 Resize(ArtifactManifestV2 manifest) => manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Layout = manifest.Descriptor.Layout with
+                { Width = width, Height = height, StrideBytes = width, ByteLength = pixels.LongLength }
+            }
+        };
     }
 
     private static async Task<Guid> AssignCompactSceneAnnotationGraphAsync(

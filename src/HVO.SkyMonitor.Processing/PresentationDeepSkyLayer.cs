@@ -65,6 +65,9 @@ public static class PresentationDeepSkyLayerProducer
     /// <summary>The largest number of primitives one layer may carry, the compositor's per-layer budget.</summary>
     public const int MaximumPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives;
 
+    /// <summary>The mandatory expected-position caption has two independently counted text lines.</summary>
+    public const int CaptionPrimitives = 2;
+
     /// <summary>
     /// The compositor work one layer may spend, an eighth of the composition budget, so enabling the layer cannot
     /// exhaust the work the existing layers need.
@@ -86,7 +89,8 @@ public static class PresentationDeepSkyLayerProducer
     /// </summary>
     public static PresentationDeepSkyLayerV1 Create(ProjectedSceneV1 scene, PresentationDeepSkyStyleV1? style = null,
         PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null,
-        IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null)
+        IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null,
+        int maximumPrimitives = MaximumPrimitives)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -94,7 +98,8 @@ public static class PresentationDeepSkyLayerProducer
         if (style.MaximumLabels is < 0 or > 24 ||
             style.MaximumLabelCharacters is < 0 or > PresentationLayerPayloadV1.MaximumLineCharacters ||
             style.LabelScale is < 1 or > 8 || style.MinimumGlyphRadius is < 2 or > 32 ||
-            style.LegendBaselinePixels is < 0 or > 4096)
+            style.LegendBaselinePixels is < 0 or > 4096 ||
+            maximumPrimitives is < CaptionPrimitives or > MaximumPrimitives)
             throw new ArgumentOutOfRangeException(nameof(style));
         var width = outputWidth ?? scene.ImageTransform.OutputWidthPixels;
         var height = outputHeight ?? scene.ImageTransform.OutputHeightPixels;
@@ -111,10 +116,11 @@ public static class PresentationDeepSkyLayerProducer
 
         var color = style.Color ?? DefaultColor;
         var scale = PresentationFont.StarFrameScale(width, height, style.LabelScale);
-        var labels = style.MaximumLabelCharacters == 0 ? 0 : style.MaximumLabels;
+        var labels = style.MaximumLabelCharacters == 0 ? 0 :
+            Math.Min(style.MaximumLabels, maximumPrimitives - CaptionPrimitives);
         // Labels keep their own share, so a field crowded with geometry still names its featured objects.
         var labelWork = Math.Min(MaximumWork / 2, (long)labels * style.MaximumLabelCharacters * 49 * scale * scale);
-        var geometryPrimitives = MaximumPrimitives - labels;
+        var geometryPrimitives = maximumPrimitives - labels - CaptionPrimitives;
         var geometryWork = MaximumWork - labelWork;
 
         var footprints = (scene.ResolvedFootprints ?? [])

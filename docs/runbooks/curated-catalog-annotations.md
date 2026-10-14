@@ -66,6 +66,18 @@ The actual annotation recipe places that caption after existing top-left
 metadata and reserves the legacy star-label rectangles. Shared presentation
 groups keep the same 64-text-block ceiling, reserving a caption block and
 spending only the remaining label budget on curated objects.
+The caption's two lines, stellar markers, solar footprints and curated primitives
+share the final layer's 4096-primitive ceiling. Geometry falls back to a glyph or
+is omitted in deterministic priority order when its complete outline cannot fit.
+The bounded footprint sampler breaks unresolved projection discontinuities;
+it never substitutes a chord through the fisheye image interior.
+
+Central v3 annotation jobs retain the scene as an authenticated auxiliary
+artifact, including its capture identity and frozen recipe/source lineage.
+Local execution and remote-runner preparation use the same inputs. Released
+v1/v2 selectors keep their legacy annotation mapping and JSON shape. A pre-fix
+v3 selector missing the payload schema binding is rejected by the strict scene
+resolver; schema compatibility does not silently upgrade a frozen job.
 If an emitted-image crop removes every admitted object, v3 retains an empty
 curated selection. It does not invent a center, magnitude or extent to keep the
 schema alive. A view with no curated admission in the first place keeps v1/v2.
@@ -139,6 +151,12 @@ Both records stay unchanged. They reconcile Astronomy515, LogicHost685 and
 CameraAgent3431; the three new raw-identity parity rows declare CameraAgent3434
 and total Unit6543. These declarations combine retained actual discovery with
 new source counts; subsequent affected execution is separate evidence.
+The initial-review correction adds three Astronomy cases and two Processing
+primitive-budget cases, declaring Unit6548. Three actual-central-job cases
+(legacy, graph and remote-runner paths) declare Integration753. The normal
+performance project has seven Manual methods, and the repository aggregate is
+Manual217. These new declarations require the separately allocated execution
+and focused normal-project Manual discovery; source inspection is not a pass.
 
 The focused cost entrypoint is the Manual-only
 `CatalogPerformanceTests.CuratedAnnotationsWarmProjectionEvidenceAsync`.

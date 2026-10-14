@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
@@ -16,12 +17,20 @@ internal sealed record CentralProjectedSceneReference(
     string ContentIdentitySha256,
     ProjectedSceneSource Source,
     string SceneId,
-    string AnnotationIdentitySha256);
+    string AnnotationIdentitySha256)
+{
+    // Released v1/v2 selectors retain their original bytes and legacy annotation mapping.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayloadSchemaVersion { get; init; }
+}
 
 internal sealed record CentralProjectedSceneSelection(
     CentralArtifact Artifact,
     CentralProjectedSceneReference Reference,
-    ProcessingAnnotationInput Annotation);
+    ProcessingAnnotationInput Annotation)
+{
+    public ProcessingAuxiliaryInput? PayloadInput { get; init; }
+}
 
 /// <summary>Resolves geometry without copying it into capture or job persistence.</summary>
 internal sealed class CentralProjectedSceneResolver(
@@ -80,8 +89,19 @@ internal sealed class CentralProjectedSceneResolver(
             throw new CentralArtifactIntegrityException("projected-scene.raw-source-mismatch");
         ValidateSource(artifact, scene, frame.FrameId, provenance);
         var annotation = CreateAnnotation(scene, provenance.SceneId);
+        var curated = scene.SchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion;
+        var descriptor = curated
+            ? StructuredProcessingProductManifestJson.ParseDescriptor(artifact.StructuredProduct!.DescriptorJson) : null;
         return new(artifact, new(artifact.Id, artifact.ArtifactId, frame.FrameId, artifact.ChecksumSha256,
-            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256), annotation);
+            scene.SceneIdentitySha256, scene.Source, provenance.SceneId, annotation.ProvenanceSha256)
+        { PayloadSchemaVersion = curated ? scene.SchemaVersion : null }, annotation)
+        {
+            PayloadInput = descriptor is null ? null : new ProcessingAuxiliaryInput(BindingName,
+                ProcessingAuxiliaryInputKind.Artifact, ProcessingInputSelector.RecipeResult(
+                    descriptor.Artifact.Role, descriptor.Artifact.Variant,
+                    ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256),
+                ArtifactId: descriptor.Artifact.ArtifactId)
+        };
     }
 
     internal async Task ValidateInlineGeometryAsync(
@@ -146,6 +166,9 @@ internal sealed class CentralProjectedSceneResolver(
         // The frozen descriptor hash authenticates the source after raw retention. Geometry execution
         // needs the held scene artifact; it does not reread or acquire an undeclared raw pixel input.
         ValidateSource(artifact, scene, reference.CaptureId);
+        if (reference.PayloadSchemaVersion != (scene.SchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion
+                ? scene.SchemaVersion : null))
+            throw new CentralDerivativeJobStateException("The frozen projected-scene payload schema is not bound to this execution.");
         if (scene.Source != reference.Source || scene.SceneIdentitySha256 != reference.ContentIdentitySha256)
             throw new CentralArtifactIntegrityException("projected-scene.identity-mismatch");
         var annotation = CreateAnnotation(scene, reference.SceneId);
@@ -298,7 +321,8 @@ internal sealed class CentralProjectedSceneResolver(
     }
 
     internal static IEnumerable<CentralDerivativeJobLeaseInput> RecipeInputs(CentralDerivativeJobLease lease)
-        => (lease.Inputs ?? []).Where(input => lease.ProjectedScene is null || input.BindingName != BindingName);
+        => (lease.Inputs ?? []).Where(input => lease.ProjectedScene is null ||
+            lease.ProjectedScene.PayloadSchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion || input.BindingName != BindingName);
 
     internal static CentralDerivativeJobInput? MaterializeReference(CentralDerivativeJob job, DateTimeOffset now)
     {

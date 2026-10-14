@@ -195,7 +195,7 @@ public static class PresentationLayerProducers
             .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
             .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
-                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))).ToArray() : [];
         var segments = new List<PresentationSegmentV1>();
         PixelPoint? previousEnd = null;
         var dashOffset = 0d;
@@ -331,7 +331,10 @@ public static class PresentationLayerProducers
                 occupied.Add(bounds);
             }
         }
-        var curated = scene.DeepSky is null ? null : PresentationDeepSkyLayerProducer.Create(scene,
+        var remainingPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives -
+            markers.Length - footprintSegments.Count - starTexts.Sum(static block => block.Lines.Count);
+        var curated = scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
+            ? null : PresentationDeepSkyLayerProducer.Create(scene,
             new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
                 ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:
                 starTexts.Select(block =>
@@ -339,7 +342,7 @@ public static class PresentationLayerProducers
                     using var font = PresentationFont.Create(block, 0);
                     var bounds = PresentationFont.BackplateBounds(block, width, height, font);
                     return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
-                }).ToArray()).Payload;
+                }).ToArray(), maximumPrimitives: remainingPrimitives).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,

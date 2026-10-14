@@ -130,6 +130,20 @@ public sealed class CentralProjectedSceneResolverTests
         await db.SaveChangesAsync().ConfigureAwait(false);
         var selected = await resolver.SelectAsync(frame, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(selected);
+        if (schema == 3)
+        {
+            Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, selected.Reference.PayloadSchemaVersion);
+            Assert.IsNotNull(selected.PayloadInput);
+            Assert.AreEqual(artifactDescriptor.ArtifactId, selected.PayloadInput.ArtifactId);
+            await Assert.ThrowsExactlyAsync<CentralDerivativeJobStateException>(() => resolver.ResolveAsync(
+                selected.Reference with { PayloadSchemaVersion = null }, CancellationToken.None)).ConfigureAwait(false);
+        }
+        else
+        {
+            Assert.IsNull(selected.PayloadInput);
+            Assert.IsFalse(JsonSerializer.Serialize(selected.Reference, JsonSerializerOptions.Web)
+                .Contains("payloadSchemaVersion", StringComparison.Ordinal), "Released legacy selectors keep the old JSON shape.");
+        }
         var retention = new CentralArtifactRetentionReferences(db);
         Assert.IsTrue(await retention.IsHeldAsync(artifact.Id, CancellationToken.None).ConfigureAwait(false),
             "compact image consumers hold geometry independently of job lifetime");
