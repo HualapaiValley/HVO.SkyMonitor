@@ -26,6 +26,8 @@ public sealed partial class ArtifactIngestTests
     {
         var data = await CreateSceneIngestCaseAsync(graph, graph ? FrameArtifactRole.Calibrated : FrameArtifactRole.Preview,
             curated: true).ConfigureAwait(false);
+        var primary = graph ? data.Derivative : data.Raw;
+        primary.Descriptor.Artifact.Role.Should().Be(graph ? FrameArtifactRole.Calibrated : FrameArtifactRole.Raw);
         var scene = ProjectedSceneJson.Parse(data.SceneBytes).Scene!;
         scene.SchemaVersion.Should().Be(ProjectedSceneV1.DeepSkySchemaVersion);
         using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
@@ -47,7 +49,7 @@ public sealed partial class ArtifactIngestTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var captureId = data.Raw.Descriptor.Capture.CaptureId;
         var job = await db.CentralDerivativeJobs.Include(item => item.InputRequirements).Include(item => item.Inputs)
-            .SingleAsync(item => item.SourceArtifact!.ArtifactId == data.Derivative.Descriptor.Artifact.ArtifactId &&
+            .SingleAsync(item => item.SourceArtifact!.ArtifactId == primary.Descriptor.Artifact.ArtifactId &&
                 item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
         var frozen = CentralProjectedSceneResolver.ReadReference(job)!;
         frozen.PayloadSchemaVersion.Should().Be(ProjectedSceneV1.DeepSkySchemaVersion);
@@ -93,7 +95,7 @@ public sealed partial class ArtifactIngestTests
                 retained.CaptureId.Should().Be(captureId);
                 retained.ContentIdentitySha256.Should().Be(scene.SceneIdentitySha256);
                 retained.PayloadSha256.Should().Be(frozen.ChecksumSha256);
-                claim.Inputs.Single(item => item.ArtifactId == data.Derivative.Descriptor.Artifact.ArtifactId).CaptureId.Should().Be(captureId);
+                claim.Inputs.Single(item => item.ArtifactId == primary.Descriptor.Artifact.ArtifactId).CaptureId.Should().Be(captureId);
                 claim.AuxiliaryInputs!.Single(item => item.Name == CentralProjectedSceneResolver.BindingName)
                     .ArtifactId.Should().Be(retained.ArtifactId);
                 var execution = await RunnerJobExecution.ExecuteAsync(runner, new ProcessingRecipeExecutor(), claim,
@@ -109,8 +111,12 @@ public sealed partial class ArtifactIngestTests
             }
             finally
             {
+                var retiredAt = DateTimeOffset.UtcNow;
                 await db.CentralProcessingRunners.Where(item => item.RunnerId == runnerId)
-                    .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Status, CentralProcessingRunnerStatus.Retired))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.Status, CentralProcessingRunnerStatus.Retired)
+                        .SetProperty(item => item.RetiredAtUtc, retiredAt)
+                        .SetProperty(item => item.UpdatedAtUtc, retiredAt))
                     .ConfigureAwait(false);
             }
         }
@@ -135,7 +141,7 @@ public sealed partial class ArtifactIngestTests
         JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(evidence.AlgorithmsJson, JsonSerializerOptions.Web)!
             .Should().Contain(item => item.Name == "curated-dso-overlay");
         output.Sources.OrderBy(static item => item.Ordinal).Select(static item => item.SourceArtifactId).Should().Equal(
-            data.Derivative.Descriptor.Artifact.ArtifactId, data.SceneManifest.Descriptor.Artifact.ArtifactId);
+            primary.Descriptor.Artifact.ArtifactId, data.SceneManifest.Descriptor.Artifact.ArtifactId);
         var expectedIdentity = ProcessingIdentity.CreateOutputIdentity(output.Role, output.Variant!,
             job.ExpectedRecipeIdentitySha256, output.Sources.OrderBy(static item => item.Ordinal).Select(static item => item.SourceArtifactId).ToArray());
         output.ArtifactId.Should().Be(ProcessingIdentity.CreateArtifactId(expectedIdentity));
@@ -143,7 +149,7 @@ public sealed partial class ArtifactIngestTests
         var pixels = await ReadDerivativeAsync(owner, output.DevicePublicId, outputId).ConfigureAwait(false);
         pixels.Should().NotEqual(data.Pixels, "the actual central product must draw the retained curated layer");
         var baseline = await scope.ServiceProvider.GetRequiredService<HVO.SkyMonitor.LogicHost.Services.Processing.LogicHostRecipeExecutionAdapter>()
-            .ExecuteAsync(data.Derivative.Descriptor, data.Pixels, BuiltInProcessingRecipes.Annotation,
+            .ExecuteAsync(primary.Descriptor, data.Pixels, BuiltInProcessingRecipes.Annotation,
                 JsonSerializer.Deserialize<JsonElement>(job.RecipeOptionsJson),
                 JsonSerializer.Deserialize<ProcessingInputSelector>(job.InputSelectorJson, SceneSelectorOptions)!, job.TargetVariant,
                 CentralProjectedSceneResolver.CreateAnnotation(scene, frozen.SceneId)).ConfigureAwait(false);
