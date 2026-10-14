@@ -101,33 +101,33 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static object LegacyIdentityDocument(VisibleSceneRequest request, CaptureSetpoint setpoint,
         VirtualSkyCameraModuleOptions options, SensorProfile sensor, string ephemerisModelVersion,
         ConstellationTopologyMetadata constellationTopologyMetadata) => new
-    {
-        request.Utc,
-        request.Observer,
-        request.Projection,
-        request.CatalogQuery,
-        request.CatalogMetadata,
-        request.Refraction,
-        request.HorizonPolicy,
-        request.ProjectionVersion,
-        request.AlgorithmVersion,
-        request.ConstellationIds,
-        request.SolarSystemBodies,
-        StellarMotionModel = StellarExposureGeometry.AlgorithmVersion,
-        StellarRasterModel = TemporalPointSpreadRaster.AlgorithmVersion,
-        StellarVisibilityModel = HVO.SkyMonitor.Imaging.StellarVisibilityModel.AlgorithmVersion,
-        StellarRenderModel = StellarExposureRenderPlan.AlgorithmVersion,
-        StellarSkyModel = options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
+        {
+            request.Utc,
+            request.Observer,
+            request.Projection,
+            request.CatalogQuery,
+            request.CatalogMetadata,
+            request.Refraction,
+            request.HorizonPolicy,
+            request.ProjectionVersion,
+            request.AlgorithmVersion,
+            request.ConstellationIds,
+            request.SolarSystemBodies,
+            StellarMotionModel = StellarExposureGeometry.AlgorithmVersion,
+            StellarRasterModel = TemporalPointSpreadRaster.AlgorithmVersion,
+            StellarVisibilityModel = HVO.SkyMonitor.Imaging.StellarVisibilityModel.AlgorithmVersion,
+            StellarRenderModel = StellarExposureRenderPlan.AlgorithmVersion,
+            StellarSkyModel = options.IlluminationMode == VirtualSkyIlluminationMode.SolarDriven &&
             !options.BackgroundElectronsPerSecond.HasValue
             ? SolarSkyIllumination.AlgorithmVersion + (options.RenderSolarSystemDisks
                 ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : "")
             : StellarSkyBackgroundModel.AlgorithmVersion + (options.RenderSolarSystemDisks
                 ? "+" + SolarDiskEphemeris.AlgorithmVersion + "+" + SolarDiskRenderPlan.AlgorithmVersion : ""),
-        SolarBackgroundEphemerisModel = new AstronomyEnginePlanetEphemeris().ModelVersion,
-        Setpoint = setpoint,
-        Options = options,
-        Sensor = sensor,
-        EphemerisModelVersion = ephemerisModelVersion,
-        ConstellationTopology = constellationTopologyMetadata
-    };
+            SolarBackgroundEphemerisModel = new AstronomyEnginePlanetEphemeris().ModelVersion,
+            Setpoint = setpoint,
+            Options = options,
+            Sensor = sensor,
+            EphemerisModelVersion = ephemerisModelVersion,
+            ConstellationTopology = constellationTopologyMetadata
+        };
 }
