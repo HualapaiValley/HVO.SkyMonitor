@@ -42,6 +42,51 @@ public sealed partial class CuratedDeepSkySceneTests
     }
 
     [TestMethod]
+    public void AttachingCuratedDeepSkyTwiceRejectsWithoutReplacingRetainedGeometry()
+    {
+        var item = Object("NGC0224", 31, 120, 60, 90);
+        var catalog = Catalog([item], [new("M31", item.Id, DeepSkyAliasKinds.Messier)]);
+        var scene = Scene().WithCuratedDeepSky(catalog, Selection());
+        var deepSky = scene.DeepSky;
+        var footprint = scene.ResolvedFootprints.Single();
+        Assert.IsNotNull(deepSky);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => scene.WithCuratedDeepSky(catalog, Selection()));
+
+        Assert.AreSame(deepSky, scene.DeepSky);
+        Assert.AreSame(footprint, scene.ResolvedFootprints.Single());
+
+        var glyph = Object("NGC1976", 42, null, null, null);
+        var glyphCatalog = Catalog([glyph], [new("M42", glyph.Id, DeepSkyAliasKinds.Messier)]);
+        var glyphScene = Scene().WithCuratedDeepSky(glyphCatalog, Selection());
+        var glyphSection = glyphScene.DeepSky;
+        Assert.IsNotNull(glyphSection);
+        Assert.AreEqual(DeepSkyRepresentation.UnknownExtentGlyph, glyphSection.Objects.Single().Representation);
+        Assert.IsEmpty(glyphScene.ResolvedFootprints);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => glyphScene.WithCuratedDeepSky(glyphCatalog, Selection()));
+
+        Assert.AreSame(glyphSection, glyphScene.DeepSky);
+        Assert.IsEmpty(glyphScene.ResolvedFootprints);
+    }
+
+    [TestMethod]
+    public void AttachingSolarSystemBodiesAfterCuratedDeepSkyRejectsWithoutReplacingRetainedGeometry()
+    {
+        var item = Object("NGC0224", 31, 120, 60, 90);
+        var scene = Scene().WithCuratedDeepSky(
+            Catalog([item], [new("M31", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
+        var deepSky = scene.DeepSky;
+        var footprint = scene.ResolvedFootprints.Single();
+        Assert.IsNotNull(deepSky);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => scene.WithResolvedBodies([]));
+
+        Assert.AreSame(deepSky, scene.DeepSky);
+        Assert.AreSame(footprint, scene.ResolvedFootprints.Single());
+    }
+
+    [TestMethod]
     public void MissingOrientationRemainsNullableAndUsesSymbolicSize()
     {
         var item = Object("NGC1976", 42, 90, 60, null);
