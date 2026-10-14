@@ -10,7 +10,12 @@
     <main id="mainContent" class="app-main" tabindex="-1" @ref="_mainContent">
         <ArchiveNavigation />
         <div class="content-container">
-            @Body
+            <AppErrorBoundary @ref="_pageErrorBoundary">
+                <ChildContent>@Body</ChildContent>
+                <ErrorContent>
+                    <ErrorDisplay OnDismiss="RecoverFromError" />
+                </ErrorContent>
+            </AppErrorBoundary>
         </div>
     </main>
 
