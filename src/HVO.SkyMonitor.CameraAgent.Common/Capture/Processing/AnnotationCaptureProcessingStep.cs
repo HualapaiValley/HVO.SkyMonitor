@@ -91,6 +91,14 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         if (projectedScene is null && provenance is null && Options.DrawConstellationLines && Options.ConstellationIds.Count > 0)
         {
+            if (context.IsReplayExecution)
+            {
+                // Archived replay never builds a scene from whichever catalog is mounted when it runs, which a catalog
+                // selection or rollback can change after submission. A retained node without a projected-scene
+                // dependency has no frozen scene to consume, so it fails closed like an unavailable frozen scene.
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MissingProjectedScene));
+                return;
+            }
             generatedScene = await annotationSceneProvider.BuildAsync(
                 context.Config, context.ReconstructionDescriptor, artifacts.Raw.Frame,
                 Options.ConstellationIds, cancellationToken).ConfigureAwait(false);
