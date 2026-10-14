@@ -216,6 +216,23 @@ Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
 ### Edge work persisted across an upgrade
 
+Node `PlanSha256` includes two explicit code version inputs as well as the step
+configuration: `ICaptureProcessingStep.ImplementationVersion` (initially `"1"`)
+and the resolved shared step version. The latter uses `SharedStepVersion` when
+provided, otherwise the built-in recipe's `ImplementationVersion`, otherwise
+`cameraagent-window-v2:<alias>` or `cameraagent-step-v2:<alias>`. Step authors must
+bump the step's `ImplementationVersion` for incompatible execution behaviour
+changes, including dependency handling and side effects; shared recipe/algorithm
+changes must bump their shared version. Neither version comes from operator
+options or the assembly/package version. Unchanged configuration and versions
+produce the same hash.
+
+Introducing these version inputs changes every earlier node hash once, even
+when the pipeline configuration is identical. All saved revisions compiled
+before this upgrade become superseded; there is no processing SQLite schema
+change (schema version 8). This one-time transition intentionally uses the
+standard-work abandon path described below. Raw evidence is retained.
+
 Captures accepted by the previous version keep their raw evidence and their
 frozen processing plan. When the new version builds a different node plan for
 the same pipeline, standard processing of that earlier work cannot run:
@@ -263,11 +280,25 @@ An exact retry of an already acknowledged command still returns its recorded
 result; it does not schedule new work or reapply the selection. Replay checks use
 the retained capture configuration, rather than the current camera settings.
 
-Annotation work for captures without resolved footprints (`projected-scene-v1`)
-keeps its released identity and algorithm version. A retry after the upgrade
-therefore reproduces the same output under the same key and the same manifest
-bytes. A later change to the Annotation recipe definition, which issue #526
-owns, abandons earlier annotation work in the same way.
+For a saved revision that was Validated before this upgrade, selecting it for
+activation, rollback or a new archived replay now returns the compatibility
+rejection above. On the Named graphs page, create a new revision from the same
+pipeline definition, validate it with the installed version, then activate it
+(or choose another revision compiled by this version). Re-validating an already
+Validated revision does not replace its immutable saved plans. Configured-basic
+is an immediate alternative while preparing the replacement revision.
+
+Already-accepted archived replay retains its frozen hashes. At execution, an
+old hash fails the existing comparison with `ProcessingPlanSupersededException`;
+it cannot execute using this version's step implementation. This hash change
+does not change replay retry/terminal classification. Submit a new replay against
+a compatible revision after handling the old job through the supported replay
+operations. Raw evidence is never deleted to bypass the mismatch.
+
+The version inputs do not change recipe output keys or manifest bytes by
+themselves. They prevent an earlier frozen plan from running even when its
+recipe identity is unchanged. Later implementation version bumps use the same
+supersession and recovery paths.
 
 Rollback continues to use the retained previous image identity and never
 consults a release train.

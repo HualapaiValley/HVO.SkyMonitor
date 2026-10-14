@@ -490,6 +490,13 @@ public interface ICaptureProcessingStep
 
     int Order { get; }
 
+    /// <summary>
+    /// Explicit version of this step's execution behaviour, independent of operator configuration.
+    /// Bump it whenever a code change makes execution of a retained plan incompatible, including
+    /// changes to dependency handling, side effects, or algorithms not covered by a shared recipe version.
+    /// </summary>
+    string ImplementationVersion => "1";
+
     ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken);
 }
 
