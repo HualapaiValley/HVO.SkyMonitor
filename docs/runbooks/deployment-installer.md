@@ -295,10 +295,20 @@ The pause-and-drain boundary deliberately does not wait for archived replay:
   replay limited to one attempt therefore still has that attempt after the
   restart. Replay that loses its lease while the host keeps running is still a
   retryable failure.
-- Catalog selection and rollback refuse only uncommitted live processing.
-  Replay can be requested for any retained capture at any time, including
-  after a catalog switch, so replay pending at the boundary does not refuse the
-  transition.
+
+Catalog selection and rollback do refuse while archived replay is queued,
+running or awaiting retry at the drained boundary, just as they refuse
+uncommitted live processing. An accepted replay freezes its raw inputs and any
+committed projected scene. A retained annotation node without a projected-scene
+dependency is different: it builds its scene from whichever catalog is mounted
+when the node runs. Without the refusal, a replay accepted under one catalog
+could be annotated under another. The refusal message gives the replay count.
+Let the replay finish, or cancel it, and then retry the transition. To cancel,
+use **Request cancellation** on the replay execution page
+(`/operations/pipeline/replays/{executionId}`) or send `POST
+/api/v1/operations/processing-graphs/executions/{executionId}/cancel`. The check runs once, at the drained boundary. A replay submitted
+while the transition is still running is not refused. Its annotation node uses
+whichever catalog is mounted when the node runs.
 
 If a transition times out while it waits for the drain, the error message
 reports any replay pending or leased and states that the drain does not wait

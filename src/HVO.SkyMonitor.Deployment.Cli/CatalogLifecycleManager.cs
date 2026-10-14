@@ -343,13 +343,25 @@ internal static class CatalogLifecycleManager
             // catalog is mounted when it retries. Under another package that derivative gets a different scene
             // identity, so central would refuse it as a second derivative of the capture. Refuse the switch until
             // processing drains, including work awaiting retry; raw captures and queued uploads are untouched.
+            var verb = request.Operation == LifecycleOperationKind.CatalogRollback ? "rollback" : "selection";
             if (continuity.ProcessingPending > 0)
             {
-                var verb = request.Operation == LifecycleOperationKind.CatalogRollback ? "rollback" : "selection";
                 processingRefusal = $"Catalog {verb} refused: CameraAgent still has " +
                     continuity.ProcessingPending.ToString(CultureInfo.InvariantCulture) +
                     " capture-processing item(s) pending or awaiting retry, which would be re-annotated under a different " +
                     "catalog package. Retry after capture processing drains; no capture was discarded.";
+                throw new InstallerException(processingRefusal);
+            }
+            // Accepted archived replay freezes its raw inputs and any committed projected scene, but a retained
+            // annotation node without a projected-scene dependency builds its scene from whichever catalog is mounted
+            // when it runs. The drain does not wait for replay, so refuse the switch while replay is queued, running
+            // or awaiting retry; the operator can let it finish or cancel it.
+            if (continuity.ReplayPending > 0)
+            {
+                processingRefusal = $"Catalog {verb} refused: CameraAgent still has " +
+                    continuity.ReplayPending.ToString(CultureInfo.InvariantCulture) +
+                    " archived replay item(s) queued, running or awaiting retry, which could be re-annotated under a " +
+                    "different catalog package. Retry after archived replay completes or is cancelled; no capture was discarded.";
                 throw new InstallerException(processingRefusal);
             }
             operation = await CameraAgentLifecycleManager.RecordAsync(paths, operation with

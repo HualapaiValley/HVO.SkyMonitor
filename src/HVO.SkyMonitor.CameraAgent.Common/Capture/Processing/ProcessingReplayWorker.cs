@@ -202,8 +202,8 @@ internal sealed class ProcessingReplayWorker(
             TimeSpan.FromSeconds(_options.ReplayRecoveryPollSeconds), timeProvider, cancellationToken);
 
     // Neither live priority nor a host stop is a replay failure, so both return the execution to its queue without
-    // consuming a replay attempt. The lifecycle drain does not wait for archived replay, so an upgrade, catalog switch
-    // or restart that stops the host must not spend, or exhaust, an operator-requested replay. A lost lease while the
+    // consuming a replay attempt. The lifecycle drain does not wait for archived replay, so an upgrade or restart that
+    // stops the host must not spend, or exhaust, an operator-requested replay. A lost lease while the
     // host keeps running is still a retryable failure.
     private static CaptureLaneHandlerResult ReplayCancellationResult(
         CancellationToken livePreemptionToken,

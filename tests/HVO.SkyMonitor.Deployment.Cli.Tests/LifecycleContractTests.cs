@@ -692,19 +692,45 @@ public sealed class LifecycleContractTests
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
 
-        // An operator may request archived replay of any retained capture at any time, including after a switch, so
-        // replay pending or leased at the boundary does not refuse the selection the way uncommitted live work does.
+        // The drain does not wait for archived replay, and a retained annotation node can build its scene from the
+        // mounted catalog when replay runs, so replay queued or running at the drained boundary refuses the switch.
+        var selectRequest = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion };
+        var secretsRoot = Path.Combine(fixture.Paths.ConfigRoot, "secrets");
+        var replaySelection = new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 };
+        var selectionRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            selectRequest, fixture.Runner, _ => replaySelection, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.StartsWith(selectionRefusal.Message,
+            "Catalog selection refused: CameraAgent still has 2 archived replay item(s) queued, running or awaiting retry",
+            StringComparison.Ordinal);
+        StringAssert.EndsWith(selectionRefusal.Message, "The prior exact selection was restored.", StringComparison.Ordinal);
+        Assert.AreEqual(1, replaySelection.ResumeCount);
+        // The only recreate is the restore of the prior selection, a host stop that defers in-flight replay.
+        Assert.AreEqual(1, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(previous.PackageVersion,
+            await File.ReadAllTextAsync(Path.Combine(secretsRoot, "Catalog__RequiredPackageVersion")));
+
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
-            fixture.Runner, _ => new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 },
+            selectRequest, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
+
+        var replayRollback = new FakeLifecycleClient { DrainedReplayPending = 1 };
+        var rollbackRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
+            _ => replayRollback, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.StartsWith(rollbackRefusal.Message,
+            "Catalog rollback refused: CameraAgent still has 1 archived replay item(s) queued, running or awaiting retry",
+            StringComparison.Ordinal);
+        Assert.AreEqual(1, replayRollback.ResumeCount);
+        Assert.AreEqual(selected.PackageVersion,
+            await File.ReadAllTextAsync(Path.Combine(secretsRoot, "Catalog__RequiredPackageVersion")));
 
         var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(previous.PackageVersion, rollbackResult.Catalog!.PackageVersion);
-        Assert.AreEqual(2, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(4, fixture.Runner.ComposeUpCount);
         Assert.AreEqual(2, fixture.Runner.ComposeRestartCount);
     }
 

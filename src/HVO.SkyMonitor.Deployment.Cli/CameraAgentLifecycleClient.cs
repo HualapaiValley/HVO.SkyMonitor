@@ -269,9 +269,9 @@ internal sealed class CameraAgentLifecycleClient(
                         $"CameraAgent reported capture control '{state.CaptureState}' instead of the durable lifecycle pause.");
                 }
                 // Archived replay is deliberately absent: a capture pause keeps processing accepted work, so an
-                // operator-requested replay backlog could hold the boundary far past its deadline. Replay pins its
-                // inputs at submission, and a host stop returns in-flight replay to its queue without consuming an
-                // attempt.
+                // operator-requested replay backlog could hold the boundary far past its deadline. A host stop returns
+                // in-flight replay to its queue without consuming an attempt, and catalog transitions refuse while
+                // replay remains.
                 if (state.CaptureState == "Paused" && state.CaptureInitialized && state.RawLeased == 0 && state.LaneLeased == 0 &&
                     state.ProcessingLeased == 0 && state.OutboxLeased == 0)
                 {
