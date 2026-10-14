@@ -87,10 +87,11 @@ public sealed class GeneratedTimeLapsePagesTests
                 date.AddDays(-index), 1210, 760, index == 0)).ToArray()
         };
         context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
-        var cut = context.Render<TimeLapseLibraryView>();
+        var cut = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "produced"));
         cut.WaitForAssertion(() => Assert.HasCount(31, cut.FindAll("li")));
         Assert.AreEqual(TimeLapseLinks.Detail(service.VideoSummaries[0].ProductId), cut.Find("li a").GetAttribute("href"));
-        Assert.AreEqual("/archive/products?videoBefore=2026-09-05", cut.Find("a[href*='videoBefore']").GetAttribute("href"));
+        Assert.AreEqual("/archive/products?type=time-lapse&status=produced&videoBefore=2026-09-05", cut.Find("a[href*='videoBefore']").GetAttribute("href"));
         StringAssert.Contains(cut.Markup, "Final with capture gaps", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll("video"));
     }

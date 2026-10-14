@@ -25,7 +25,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     // The prototype's choices, with the ones CameraAgent cannot answer truthfully kept visible but disabled.
     internal static readonly FilterOption[] TypeOptions =
     [
-        new("time-lapse", "Timelapses", false),
+        new("time-lapse", "Timelapses", true),
         new(NightlyProductContract.StarTrailTarget, "Star trails", true),
         new(NightlyProductContract.KeogramTarget, "Keograms", true),
         new("daily-summary", "Daily summaries", false)
@@ -61,6 +61,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     [Parameter] public string? Status { get; set; }
     [Parameter] public string? Day { get; set; }
     [Parameter] public string? Before { get; set; }
+    [Parameter] public DateOnly? VideoBefore { get; set; }
 
     /// <summary>
     /// The library query of the URL filters, or a notice explaining why nothing can be listed for them: an unrecorded
@@ -71,13 +72,17 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         NightlyProductKind? kind = null;
         if (!string.IsNullOrEmpty(type))
         {
-            if (!NightlyProductContract.TryParseTarget(type, out var parsedKind))
+            if (string.Equals(type, "time-lapse", StringComparison.Ordinal))
+            {
+                // Daily videos have their own bounded store and presentation on this same page.
+            }
+            else if (!NightlyProductContract.TryParseTarget(type, out var parsedKind))
             {
                 return (null, Array.Find(TypeOptions, option => string.Equals(option.Value, type, StringComparison.Ordinal)) is { } known
                     ? $"{known.Label} are not yet generated, so none are listed and nothing is substituted for them."
                     : "The product type filter is not a product type CameraAgent generates.");
             }
-            kind = parsedKind;
+            else kind = parsedKind;
         }
         NightlyProductLibraryState? state = null;
         if (!string.IsNullOrEmpty(status))
@@ -144,7 +149,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         _errorKind = PageStateNotice.PageStateKind.Error;
         _failedPreviews.Clear();
         (_query, _notice) = Resolve(Type, Status, Day, Before);
-        if (_query is null)
+        if (_query is null || string.Equals(Type, "time-lapse", StringComparison.Ordinal))
         {
             _isLoading = false;
             return;
@@ -188,18 +193,19 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     private bool IsFiltered => _query is { Kind: not null } or { State: not null } or { ObservingDate: not null };
 
     /// <summary>The library URL of a filter set; changing a filter always returns to the newest page.</summary>
-    internal string FilterUrl(string? type, string? status, string? day, DateOnly? before = null)
+    internal string FilterUrl(string? type, string? status, string? day, DateOnly? before = null, bool preserveVideoPosition = false)
         => NavigationManager.GetUriWithQueryParameters(LibraryPath, new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["type"] = EmptyToNull(type),
             ["status"] = EmptyToNull(status),
             ["day"] = EmptyToNull(day),
-            ["before"] = before?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            ["before"] = before?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["videoBefore"] = preserveVideoPosition ? VideoBefore?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null
         });
 
-    private string NewestUrl => FilterUrl(Type, Status, null);
+    private string NewestUrl => FilterUrl(Type, Status, null, preserveVideoPosition: true);
 
-    private string OlderUrl(DateOnly before) => FilterUrl(Type, Status, null, before);
+    private string OlderUrl(DateOnly before) => FilterUrl(Type, Status, null, before, preserveVideoPosition: true);
 
     private void ApplyType() => NavigationManager.NavigateTo(FilterUrl(_draftType, Status, Day));
 
