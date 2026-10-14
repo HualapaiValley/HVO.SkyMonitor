@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class OutboxOperationsEndpointTests
 {
     [TestMethod]
-    public async Task ArtifactRetryEndpoint_ListsAgeAttemptsReasonAndOnlyAbandonAction()
+    public async Task ArtifactRetryEndpointListsAgeAttemptsReasonAndOnlyAbandonAction()
     {
         var outbox = new OperationalArtifactOutbox(ArtifactOutboxStatus.Retry);
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
