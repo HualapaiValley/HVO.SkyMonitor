@@ -252,7 +252,7 @@ public sealed class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PurgeAsync_InterruptedTombstoneResumesDeletionWithoutRepublishing()
     {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled, catalogId: "hyg-v44-production");
         var request = fixture.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = fixture.InstanceId };
         var operation = await CameraAgentLifecycleManager.BeginAsync(
             request, fixture.Paths, LifecycleOperationKind.Purge, fixture.Manifest, CancellationToken.None);
@@ -281,6 +281,7 @@ public sealed class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         Assert.IsFalse(Directory.Exists(fixture.Paths.InstanceRoot));
         Assert.IsFalse(Directory.EnumerateDirectories(parent, ".purge-*", SearchOption.TopDirectoryOnly).Any());
+        Assert.Contains(fixture.Paths.CatalogRoot, result.PreservedPaths);
     }
 
     [TestMethod]

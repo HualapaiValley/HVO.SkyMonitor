@@ -1519,6 +1519,7 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("The purge deletion evidence does not own the retained operation paths and identities.");
         }
+        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         EnsureDaemon(manifest.DockerDaemon, daemon);
         await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
