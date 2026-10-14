@@ -163,7 +163,7 @@ public sealed partial class CuratedDeepSkySceneTests
                 Catalog([item], [new("M45", item.Id, DeepSkyAliasKinds.Messier)]), Selection());
         var retained = ProjectedSceneJson.Parse(ProjectedSceneJson.Serialize(ProjectedSceneJson.Create(
             ProjectedSceneKind.Predicted, visible, ProjectedSceneImageTransformV1.Identity(1024, 1024),
-            new(Guid.NewGuid(), Guid.NewGuid(), new string('B', 64)), new string('C', 64), "antipode-v1"))).Scene;
+            new(Guid.NewGuid(), Guid.NewGuid(), new string('B', 64)), new string('C', 64), visible.Request.ProjectionVersion))).Scene;
         Assert.IsNotNull(retained);
         Assert.HasCount(1, retained.ResolvedFootprints!);
         var footprint = retained.ResolvedFootprints!.Single();
