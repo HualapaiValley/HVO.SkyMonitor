@@ -55,8 +55,7 @@ public sealed class HvoServiceExceptionHandler : IExceptionHandler
         var problemDetails = _problemDetailsFactory.CreateProblemDetails(
             httpContext,
             statusCode: StatusCodes.Status500InternalServerError,
-            title: "An unexpected error occurred while processing the request.",
-            detail: exception.Message);
+            title: "An unexpected error occurred while processing the request.");
 
         if (!string.IsNullOrWhiteSpace(correlationId))
         {
@@ -74,8 +73,11 @@ public sealed class HvoServiceExceptionHandler : IExceptionHandler
         });
 
         httpContext.Response.StatusCode = problemDetails.Status ?? StatusCodes.Status500InternalServerError;
-        httpContext.Response.ContentType = "application/problem+json";
-        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await httpContext.Response.WriteAsJsonAsync(
+            problemDetails,
+            options: null,
+            contentType: "application/problem+json",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return true;
     }
