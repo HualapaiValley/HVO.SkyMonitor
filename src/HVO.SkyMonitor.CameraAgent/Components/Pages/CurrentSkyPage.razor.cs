@@ -614,7 +614,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerDescription(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "expected / projected catalog, not measured associations (#526)",
+        "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
         "scene-constellations" or "constellations" => "expected / HYG topology",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
         "scene-image-circle" or "image-circle" => "native sensor coordinates",
@@ -883,7 +883,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerLabel(string kind) => kind switch
     {
-        "scene-annotation" or "star-annotations" => "Catalog stars",
+        "scene-annotation" or "star-annotations" => "Sky annotations",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",
         "scene-constellations" or "constellations" => "Constellation lines",
