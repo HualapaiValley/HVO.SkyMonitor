@@ -725,6 +725,20 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 request.Annotation.ProjectionOverlay, request.Annotation.MetadataOverlay, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var packedStride = checked(display.Width * ImageLayout.BytesPerPixel(format));
+        ReadOnlyMemory<byte> annotatedPixels = annotation.Pixels;
+        var curatedScene = CuratedDeepSkyAnnotation.FindScene(input, auxiliarySources);
+        if (curatedScene is not null)
+        {
+            var layer = PresentationDeepSkyLayerProducer.Create(curatedScene,
+                new PresentationDeepSkyStyleV1(MaximumLabels: options.DrawLabels ? 24 : 0,
+                    LegendBaselinePixels: CuratedDeepSkyAnnotation.LegendBaseline(request.Annotation.MetadataOverlay)),
+                request.Annotation.Transform, display.Width, display.Height,
+                CuratedDeepSkyAnnotation.ReservedLabels(request.Annotation.Objects, request.Annotation.Transform, annotationOptions));
+            annotatedPixels = PresentationLayerCompositor.Composite(
+                new ImageLayout(display.Width, display.Height, format, packedStride), annotatedPixels,
+                [new(layer.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)], cancellationToken);
+            algorithms.AddRange(CuratedDeepSkyAnnotation.Algorithms(curatedScene));
+        }
         algorithms.Add(new("annotation-renderer", AnnotationRenderer.AlgorithmVersionFor(
             request.Annotation.Objects, request.Annotation.ProjectionOverlay)));
         ReadOnlyMemory<byte> output;
@@ -732,7 +746,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         FrameLayoutDescriptor? outputLayout;
         if (options.OutputEncoding == "Packed")
         {
-            output = annotation.Pixels;
+            output = annotatedPixels;
             mediaType = "application/x-hvo-packed-image";
             outputLayout = ProcessingRecipeSupport.CreatePackedLayout(display.Width, display.Height, format);
         }
@@ -740,7 +754,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         {
             output = JpegImageCodec.EncodeToJpeg(
                 new ImageLayout(display.Width, display.Height, format, packedStride),
-                annotation.Pixels,
+                annotatedPixels,
                 options.JpegQuality,
                 cancellationToken);
             mediaType = JpegImageCodec.MediaType;

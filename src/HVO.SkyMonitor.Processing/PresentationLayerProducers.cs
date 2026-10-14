@@ -182,7 +182,7 @@ public static class PresentationLayerProducers
         var reserved = new List<SKRect>();
         // Cardinal anchors are known independently of the star ordering; reserve them before decluttering stars.
         var cardinalPoints = new List<(string Label, PixelPoint Point)>();
-        var footprints = (scene.ResolvedFootprints ?? []).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var footprints = ProjectedSceneAnnotation.SolarSystemFootprints(scene).ToDictionary(static item => item.Id, StringComparer.Ordinal);
         // A body whose centre is below the horizon or outside the crop is still drawn and named through its limb, at
         // the same anchor the raster annotation uses.
         var objectIds = scene.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
@@ -195,7 +195,7 @@ public static class PresentationLayerProducers
             .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
             .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
-                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))) : [];
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))).ToArray() : [];
         var segments = new List<PresentationSegmentV1>();
         PixelPoint? previousEnd = null;
         var dashOffset = 0d;
@@ -310,7 +310,8 @@ public static class PresentationLayerProducers
                 .ThenBy(static item => item.DisplayName, StringComparer.Ordinal)
                 .ThenBy(static item => item.Pixel.X).ThenBy(static item => item.Pixel.Y))
             {
-                if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks) break;
+                // A curated group reserves one block for its mandatory expected-position caption.
+                if (starTexts.Count == PresentationLayerPayloadV1.MaximumTextBlocks - (scene.DeepSky is null ? 0 : 1)) break;
                 var name = item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)];
                 var clearance = footprints.TryGetValue(item.Id, out var footprint)
                     ? Math.Max(style.MarkerRadius, footprint.Bounds.MaxX + ResolvedFootprintPaddingPixels - item.Pixel.X)
@@ -330,9 +331,23 @@ public static class PresentationLayerProducers
                 occupied.Add(bounds);
             }
         }
+        var remainingPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives -
+            markers.Length - footprintSegments.Count - starTexts.Sum(static block => block.Lines.Count);
+        var curated = scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
+            ? null : PresentationDeepSkyLayerProducer.Create(scene,
+            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
+                ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:
+                starTexts.Select(block =>
+                {
+                    using var font = PresentationFont.Create(block, 0);
+                    var bounds = PresentationFont.BackplateBounds(block, width, height, font);
+                    return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+                }).ToArray(), maximumPrimitives: remainingPrimitives).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, markers, footprintSegments, textBlocks: starTexts),
+                scene.ImageTransform.OutputHeightPixels, markers,
+                curated is null ? footprintSegments : footprintSegments.Concat(curated.Segments).ToArray(),
+                textBlocks: curated is null ? starTexts : starTexts.Concat(curated.TextBlocks).ToArray()),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,

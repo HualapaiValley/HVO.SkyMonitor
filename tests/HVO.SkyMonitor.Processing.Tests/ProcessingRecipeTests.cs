@@ -304,16 +304,19 @@ public sealed class ProcessingRecipeTests
             ProjectedSceneKind.Predicted, captureId, sourceId, descriptorIdentity).ConfigureAwait(false);
         var v1AsV2 = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
             source, plain, schemaVersion: ProjectedSceneV1.ResolvedFootprintSchemaVersion)).ConfigureAwait(false);
+        var v2AsV3 = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
+            source, scene, schemaVersion: ProjectedSceneV1.DeepSkySchemaVersion)).ConfigureAwait(false);
         var unknown = await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(
-            source, scene, schemaVersion: "projected-scene-v3")).ConfigureAwait(false);
+            source, scene, schemaVersion: "projected-scene-v4")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, v2AsV1.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, v1AsV2.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, v2AsV3.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, unknown.ReasonCode);
     }
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void ProjectedSceneFamilyRootDeclarationAcceptsV2AndNothingElseWidens()
+    public void ProjectedSceneFamilyRootDeclarationAcceptsSupportedSceneVersionsOnly()
     {
         Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(
             StructuredProcessingProductContracts.ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion));
@@ -328,8 +331,16 @@ public sealed class ProcessingRecipeTests
             ProjectedSceneV1.ResolvedFootprintSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion));
         Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
             ProjectedSceneV1.CurrentSchemaVersion, null));
+        Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(
+            StructuredProcessingProductContracts.ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion));
+        Assert.IsTrue(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion));
         Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
-            ProjectedSceneV1.CurrentSchemaVersion, "projected-scene-v3"));
+            ProjectedSceneV1.ResolvedFootprintSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion));
+        Assert.IsFalse(StructuredProcessingProductContracts.IsSupported(
+            StructuredProcessingProductContracts.ProjectedSceneMediaType, "projected-scene-v4"));
+        Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
+            ProjectedSceneV1.CurrentSchemaVersion, "projected-scene-v4"));
         Assert.IsFalse(StructuredProcessingProductContracts.SatisfiesDeclaredSchema(
             PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion));
     }

@@ -114,6 +114,30 @@ and #1171 keep their own hardware and scheduling gates. Software acceptance does
 not wait for them, and #520 may close with #1166 open. Virtual acceptance does not
 imply physical accuracy.
 
+On 2026-10-13 the operator adopted the
+[scope and merge audit](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520#issuecomment-6141500980)
+and [reduced the active delivery](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520#issuecomment-6148994671)
+to [#525](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/525): a curated
+NGC/Messier selection, expected-position labels and basic approximate outlines
+in annotated images, with measured millisecond-scale projection work. The merged
+catalog/projection foundations and their safety contracts remain. New work starts
+from `development/v1` and includes only the source identity, transforms, readers
+and presentation needed by this delivery; the broad unfinished branches are not
+its integration stack.
+
+This decision supersedes the broader automatic queue and #520 closure criteria
+above. Expanded catalog presentation and sourced contours remain in
+[#1192](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1192) and #1191;
+measured associations/publication (#526/#1187), calculators (#523), raw DSO pixels
+(#524), full F7 (#1188), whole-pipeline/native/ARM work (#1170), deeper astrometry
+(#1167), registered stacking (#1169) and uncertainty follow-up (#1179) remain
+separate open RM-001 outcomes. They do not block the reduced #525/#520 delivery.
+Their own technical dependencies and unresolved findings still apply when they
+ship. In particular, #526 precedes #523 and #1191 remains a geometry dependency
+of #524. Small annotation correctness and focused cost evidence are still
+required; this split supplies no runtime qualification or completion credit for
+the deferred features. Physical qualification remains separate.
+
 ## Future
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |

@@ -846,7 +846,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             SELECT DISTINCT capture_id
             FROM processing_outputs INDEXED BY ix_processing_outputs_product
             WHERE capture_id IN ({placeholders})
-              AND product_schema_version IN ('projected-scene-v1', 'projected-scene-v2')
+              AND product_schema_version IN ('projected-scene-v1', 'projected-scene-v2', 'projected-scene-v3')
               AND product_kind = 'Metadata'
               AND content_identity_sha256 IS NOT NULL
               AND availability_state = 'Available'

@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class ProjectedSceneAnnotationTests
+public sealed partial class ProjectedSceneAnnotationTests
 {
     private static readonly DateTimeOffset Utc = new(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
 

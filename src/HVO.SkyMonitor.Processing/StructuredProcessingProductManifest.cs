@@ -114,6 +114,7 @@ public static class StructuredProcessingProductContracts
         {
             (ProjectedSceneMediaType, ProjectedSceneV1.CurrentSchemaVersion) => true,
             (ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion) => true,
+            (ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion) => true,
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SemanticSchemaVersion) => true,
@@ -127,12 +128,14 @@ public static class StructuredProcessingProductContracts
     /// <summary>
     /// Returns whether a product schema satisfies a node's declared output schema. A projected-scene node declares
     /// the family root <c>projected-scene-v1</c> and emits <c>projected-scene-v2</c> only for a scene with resolved
-    /// footprints, which v2 adds without changing any v1 member. Every other schema must match exactly.
+    /// footprints and <c>projected-scene-v3</c> only for a scene with a deep-sky collection; each adds members without
+    /// changing any v1 member. Every other schema must match exactly.
     /// </summary>
     public static bool SatisfiesDeclaredSchema(string? declaredSchemaVersion, string? productSchemaVersion)
         => string.Equals(declaredSchemaVersion, productSchemaVersion, StringComparison.Ordinal) ||
             string.Equals(declaredSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
-            string.Equals(productSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal);
+            (string.Equals(productSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal) ||
+                string.Equals(productSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion, StringComparison.Ordinal));
 
     public static bool IsSupportedMediaType(string mediaType)
         => mediaType is ProjectedSceneMediaType or CloudAssessmentMediaType or
