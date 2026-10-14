@@ -246,13 +246,23 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
 
     private string? SourceCurrent(string kind) => SourceClass(kind) == "active" ? "page" : null;
 
-    private string ListTitle => _page?.Kind == "Environmental"
+    private string ListTitle => _page?.Kind == "RawEvidence"
+        ? "Raw evidence quarantine and audited releases"
+        : _page?.Kind == "Environmental"
         ? "Environmental quarantine and terminal records"
         : _page?.Kind == "TransientRuntime"
             ? "Transient runtime quarantine"
             : $"Artifact quarantine / {_page?.StorageAlias ?? "no configured storage"}";
 
-    private string ConfirmationDescription => _pending?.Item.Kind == "TransientRuntime"
+    private string ActionLabel => _pending?.Item.Kind == "RawEvidence"
+        ? _pending.Action == OutboxOperationAction.Abandon ? "Write off" : "Revalidate"
+        : _pending?.Action.ToString() ?? string.Empty;
+
+    private string ConfirmationDescription => _pending?.Item.Kind == "RawEvidence"
+        ? _pending.Action == OutboxOperationAction.Abandon
+            ? "Write-off records an audited terminal loss decision and stops pending capture lanes. All raw files remain preserved; capture identity cannot be reused."
+            : "Revalidation checks recovered raw files against the original committed manifest and checksum. It records the release without deleting or rewriting raw evidence."
+        : _pending?.Item.Kind == "TransientRuntime"
         ? "Abandonment records an audited loss decision for this exact immutable source identity before recomputing its retention hold. Other required holds remain unchanged."
         : _pending?.Action == OutboxOperationAction.Abandon
             ? "Abandonment releases the durable delivery hold and stops delivery by this outbox."
@@ -294,7 +304,11 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
     ];
 
     private IReadOnlyList<(string Code, string Label)> ReasonCodes =>
-        _pending?.Action == OutboxOperationAction.Abandon ? AbandonReasons : ReplayReasons;
+        _pending?.Item.Kind == "RawEvidence"
+            ? _pending.Action == OutboxOperationAction.Replay
+                ? [("evidence-restored", "Evidence restored")]
+                : [("irrecoverable-evidence", "Irrecoverable evidence"), ("operator-approved-loss", "Operator-approved loss")]
+            : _pending?.Action == OutboxOperationAction.Abandon ? AbandonReasons : ReplayReasons;
 
     public async ValueTask DisposeAsync()
     {

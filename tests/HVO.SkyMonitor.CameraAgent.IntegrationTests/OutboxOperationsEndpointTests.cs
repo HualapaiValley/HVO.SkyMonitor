@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 [TestClass]
 [TestCategory("Integration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class OutboxOperationsEndpointTests
+public sealed partial class OutboxOperationsEndpointTests
 {
     [TestMethod]
     public async Task EndpointsEnforceOwnerAntiforgeryOpaqueTokensAndGenericMutationResults()

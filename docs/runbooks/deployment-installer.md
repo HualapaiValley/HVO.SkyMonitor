@@ -231,7 +231,40 @@ the same pipeline, standard processing of that earlier work cannot run:
   earlier version quarantined for `processing-expired` is converted to
   abandoned, so it stops blocking ingress.
 - Genuinely corrupt or missing raw evidence still quarantines and refuses new
-  captures. That is unchanged and needs the evidence recovery path.
+  captures until an authorized operator releases each affected capture.
+
+Open **Quarantine → Raw evidence quarantine and releases**
+(`/operations/quarantine?kind=RawEvidence`). Review the capture identity and
+failure, then choose one of these audited actions:
+
+- **Revalidate:** recover the exact original payload and sidecar at their
+  committed paths from trusted recovery evidence. Preserve the quarantined
+  copies. The action verifies the complete manifest, capture identity, payload
+  length and SHA-256, synchronizes the recovered files, and durably records
+  actor, `evidence-restored`, and UTC time before releasing the failure. Merely
+  putting files back or restarting no longer releases an existing failure.
+- **Write off:** explicitly acknowledge irrecoverable evidence or approved loss.
+  This records a terminal disposition with actor, controlled reason and UTC
+  time, abandons that capture's pending lanes, and preserves its original
+  identity and all remaining raw files. Written-off evidence stays protected
+  from retention and cannot be reaccepted or automatically recovered on restart.
+  This action does not reclaim disk space. A capture with a leased lane must
+  settle that lease before either action can apply.
+
+The owner-authenticated operations API exposes the same bounded history through
+`GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token
+in `POST /api/v1/operations/raw-evidence/revalidate` or
+`POST /api/v1/operations/raw-evidence/write-off`, with JSON
+`{ "actionToken": "<token>", "reasonCode": "<controlled reason>" }`, an
+`Idempotency-Key` header, and the ordinary antiforgery token. Write-off reasons
+are `irrecoverable-evidence` and `operator-approved-loss`. A duplicate request
+returns the original audit receipt; reusing its key for another command
+conflicts. Paths are not returned by this API. Releases persist in the raw
+journal's reserved `raw-evidence-release.*` capture events, and write-off also
+records `raw-evidence-written-off` as its terminal disposition.
+
+The next admission attempt reinitializes ingress; other unresolved evidence
+failures continue to refuse captures. No release deletes or rewrites raw data.
 
 A Named active revision compiled by the earlier version cannot run any live work.
 In that case:

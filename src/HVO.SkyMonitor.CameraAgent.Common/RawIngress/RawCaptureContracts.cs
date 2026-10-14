@@ -89,7 +89,8 @@ internal sealed record RawIngressJournalEntry(
     DateTimeOffset DurableIngressUtc,
     string State = "committed",
     bool RetentionHold = true,
-    GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown);
+    GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown,
+    bool EvidenceWrittenOff = false);
 
 internal sealed record RawIngressReconciliationSummary(
     int Inspected,

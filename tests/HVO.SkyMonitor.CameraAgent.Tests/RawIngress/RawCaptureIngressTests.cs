@@ -1496,6 +1496,9 @@ public sealed partial class RawCaptureIngressTests
                 connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
             await connection.CloseAsync().ConfigureAwait(false);
             await File.WriteAllBytesAsync(payloadPath, [6, 6, 6, 6]).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => restarted.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            var target = (await restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single().Target;
+            await restarted.ReleaseEvidenceAsync(target, RawEvidenceReleaseAction.Revalidate, "recovered-missing", "operator", "evidence-restored", CancellationToken.None).ConfigureAwait(false);
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
             using var repaired = await OpenJournalAsync(root).ConfigureAwait(false);

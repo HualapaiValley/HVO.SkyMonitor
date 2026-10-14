@@ -21,11 +21,11 @@
                     <div class="actions">
                         @if (item.ReplayToken is not null)
                         {
-                            <button id="@replayId" type="button" class="btn btn-outline-primary" @onclick="() => Start(item, OutboxOperationAction.Replay, replayId)">Review replay</button>
+                            <button id="@replayId" type="button" class="btn btn-outline-primary" @onclick="() => Start(item, OutboxOperationAction.Replay, replayId)">@(item.Kind == "RawEvidence" ? "Review revalidation" : "Review replay")</button>
                         }
                         @if (item.AbandonToken is not null)
                         {
-                            <button id="@abandonId" type="button" class="btn btn-outline-danger" @onclick="() => Start(item, OutboxOperationAction.Abandon, abandonId)">Review abandon</button>
+                            <button id="@abandonId" type="button" class="btn btn-outline-danger" @onclick="() => Start(item, OutboxOperationAction.Abandon, abandonId)">@(item.Kind == "RawEvidence" ? "Review write-off" : "Review abandon")</button>
                         }
                     </div>
                 </li>

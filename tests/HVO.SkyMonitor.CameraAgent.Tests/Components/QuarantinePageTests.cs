@@ -11,6 +11,27 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class QuarantinePageTests
 {
     [TestMethod]
+    public void RawEvidenceSource_ExplainsRevalidationAndTerminalWriteOff()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
+            OperatorUiResult<OperatorOutboxPage>.Success(new("RawEvidence", [], null,
+                [new OperatorOutboxItem("RawEvidence", "missing_evidence", null, "Raw evidence", 0, 4,
+                    OperatorUiTestData.Now, "required-file-missing", "restore-token", "loss-token")], null)));
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().NavigateTo("/operations/quarantine?kind=RawEvidence");
+        var cut = context.Render<QuarantinePage>();
+        cut.WaitForElement("button[id$='-replay']").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "original committed manifest and checksum", StringComparison.Ordinal));
+        Assert.AreEqual(1, cut.FindAll("#quarantine-reason option").Count);
+        cut.Find("dialog").TriggerEvent("oncancel", EventArgs.Empty);
+        cut.WaitForElement("button[id$='-abandon']").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find("dialog").TextContent, "All raw files remain preserved", StringComparison.Ordinal));
+        Assert.AreEqual(2, cut.FindAll("#quarantine-reason option").Count);
+    }
+
+    [TestMethod]
     public void CursorPages_ExposeRecordsBeyondFiftyWithoutPaths()
     {
         using var context = new BunitContext();
