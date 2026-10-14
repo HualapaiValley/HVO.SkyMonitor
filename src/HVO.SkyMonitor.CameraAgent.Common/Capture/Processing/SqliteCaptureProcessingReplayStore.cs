@@ -109,7 +109,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         byte[] configurationJson,
         string idempotencyKey,
         string actor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? ensureCompatible = null)
     {
         ArgumentNullException.ThrowIfNull(submission);
         ArgumentNullException.ThrowIfNull(source);
@@ -135,6 +136,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 return new(replayed, true);
             }
         }
+        // Do not revalidate an acknowledged command, but refuse a new one before input preparation or pins.
+        ensureCompatible?.Invoke();
         var preparedInputs = await PrepareReplayInputsAsync(source, revision, cancellationToken).ConfigureAwait(false);
         var storageGate = StorageLifecycleLock.ForRoot(_root);
         await storageGate.WaitAsync(cancellationToken).ConfigureAwait(false);

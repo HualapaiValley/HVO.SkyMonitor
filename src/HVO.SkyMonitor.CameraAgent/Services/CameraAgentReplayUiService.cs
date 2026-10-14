@@ -364,6 +364,10 @@ internal sealed class CameraAgentReplayUiService(
         {
             return Unavailable<T>(CapacityMessage);
         }
+        catch (ProcessingGraphRevisionSupersededException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ConflictMessage);

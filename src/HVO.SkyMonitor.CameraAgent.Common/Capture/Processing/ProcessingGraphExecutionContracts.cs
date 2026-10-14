@@ -331,6 +331,24 @@ public interface IProcessingGraphOperations
         CancellationToken cancellationToken);
 }
 
+/// <summary>A new operator command selected a revision whose saved plans this build cannot execute.</summary>
+public sealed class ProcessingGraphRevisionSupersededException : InvalidOperationException
+{
+    public const string SafeMessage = "This revision uses a processing plan that the installed version no longer supports. Create or select a compatible revision.";
+
+    public ProcessingGraphRevisionSupersededException() : base(SafeMessage)
+    {
+    }
+
+    public ProcessingGraphRevisionSupersededException(string message) : base(message)
+    {
+    }
+
+    public ProcessingGraphRevisionSupersededException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
 public sealed class ProcessingGraphStoreConflictException : InvalidOperationException
 {
     public ProcessingGraphStoreConflictException()

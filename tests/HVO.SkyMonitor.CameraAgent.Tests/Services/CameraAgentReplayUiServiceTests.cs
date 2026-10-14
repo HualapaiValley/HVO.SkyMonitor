@@ -124,6 +124,23 @@ public sealed class CameraAgentReplayUiServiceTests
     }
 
     [TestMethod]
+    public async Task SubmitReplayAsync_WhenRevisionIsSuperseded_ReturnsSafeRemedyAsync()
+    {
+        var operations = new StubProcessingGraphOperations
+        {
+            SubmitFailure = () => new ProcessingGraphRevisionSupersededException("private-plan-sentinel")
+        };
+        var service = CreateService(operations, new StubGallery(), succeeded: true);
+
+        var result = await service.SubmitReplayAsync(CaptureId, "revision-old", "key-1", null, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind);
+        Assert.AreEqual(ProcessingGraphRevisionSupersededException.SafeMessage, result.Message);
+        Assert.IsFalse(result.Message!.Contains("private-plan-sentinel", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task SubmitReplayAsync_WhenDurableStateConflicts_ReturnsTheFixedConflictMessageAsync()
     {
         var operations = new StubProcessingGraphOperations

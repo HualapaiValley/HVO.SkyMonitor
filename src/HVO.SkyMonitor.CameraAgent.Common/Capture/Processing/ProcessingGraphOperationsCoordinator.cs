@@ -276,7 +276,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         try
         {
             var state = await _store.ActivateRevisionAsync(
-                revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+                revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
+                EnsureCurrentRevisionPlans).ConfigureAwait(false);
             await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
@@ -303,7 +304,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         try
         {
             var state = await _store.RollbackRevisionAsync(
-                revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+                revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
+                EnsureCurrentRevisionPlans).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -600,9 +602,36 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             CanonicalBytes(configuration),
             idempotencyKey,
             actor,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            () => EnsureCompatibleRevisionPlans(revision, configuration)).ConfigureAwait(false);
         _replayWakeup.Signal();
         return result;
+    }
+
+    private void EnsureCurrentRevisionPlans(ProcessingGraphRevisionSnapshot revision)
+        => EnsureCompatibleRevisionPlans(revision, Volatile.Read(ref _baseConfiguration)
+            ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision."));
+
+    private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)
+    {
+        CaptureProcessingGraph compiled;
+        try
+        {
+            compiled = _pipelineFactory.CreateRetainedGraph(configuration with { Pipeline = revision.Pipeline });
+        }
+        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception) || exception is InvalidOperationException)
+        {
+            throw new ProcessingGraphRevisionSupersededException(ProcessingGraphRevisionSupersededException.SafeMessage, exception);
+        }
+        using var graph = new DisposableProcessingGraph(compiled);
+        var stored = revision.Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        // Match the worker's node-plan comparison, also refusing a changed node set before queueing any work.
+        if (stored.Count != graph.Value.Nodes.Count || graph.Value.Nodes.Any(node =>
+                !stored.TryGetValue(node.Id, out var saved) ||
+                !string.Equals(saved.PlanSha256, node.PlanSha256, StringComparison.Ordinal)))
+        {
+            throw new ProcessingGraphRevisionSupersededException();
+        }
     }
 
     private ProcessingGraphRevisionSnapshot CreateRevisionSnapshot(
