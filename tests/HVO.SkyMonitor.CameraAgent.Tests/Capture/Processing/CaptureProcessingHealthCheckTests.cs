@@ -30,7 +30,7 @@ public sealed class CaptureProcessingHealthCheckTests
     public async Task DurableTerminalState_IsNotClearedByLaterSuccessfulGraph()
     {
         var state = new CaptureProcessingState();
-        state.SetDurable(2, 1, 1, DateTimeOffset.UtcNow.AddMinutes(-1));
+        state.SetDurable(2, 0, 1, 1, DateTimeOffset.UtcNow.AddMinutes(-1));
         state.GraphStarted();
         state.GraphCompleted("completed");
         var check = new CaptureProcessingHealthCheck(state);
@@ -47,7 +47,7 @@ public sealed class CaptureProcessingHealthCheckTests
     public async Task IndependentOverlaysComposeAndClearingQuarantinePreservesFailures()
     {
         var state = new CaptureProcessingState();
-        state.SetDurable(0, 1, 0, null);
+        state.SetDurable(0, 0, 1, 0, null);
         state.SetProcessingEvidence(2, 3);
         state.SetReconciliationFailure(true);
 

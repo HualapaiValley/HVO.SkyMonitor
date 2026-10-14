@@ -174,6 +174,7 @@ internal sealed record DurableRawProcessingInput(
 
 internal sealed record CaptureProcessingOperationalState(
     long PendingCount,
+    long LeasedCount,
     long RetryCount,
     long TerminalCount,
     DateTimeOffset? OldestPendingUtc,
@@ -2389,7 +2390,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'retry_wait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'quarantined' THEN 1 ELSE 0 END),
-                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END)
+                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
+                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
@@ -2402,6 +2404,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var oldest = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
             ? (DateTimeOffset?)null
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
+        var leased = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(4);
         await reader.DisposeAsync().ConfigureAwait(false);
         using var replay = connection.CreateCommand();
         replay.CommandText = """
@@ -2426,7 +2429,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ? 0
             : replayReader.GetInt64(4);
         return new CaptureProcessingOperationalState(
-            pending, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
+            pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
             replayPendingBytes);
     }
 

@@ -27,6 +27,7 @@ internal sealed class CaptureProcessingStateRefreshService(
         var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
         state.SetDurable(
             durable.PendingCount,
+            durable.LeasedCount,
             durable.RetryCount,
             durable.TerminalCount,
             durable.OldestPendingUtc);

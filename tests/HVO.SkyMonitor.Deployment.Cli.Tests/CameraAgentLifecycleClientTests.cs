@@ -85,6 +85,38 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    public async Task ConfirmDrained_WaitsWhileCaptureProcessingIsLeased()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => Task.FromResult(sequence switch
+        {
+            1 or 2 => State("Paused", 2, processingLeased: 1),
+            _ => State("Paused", 2, captureSequence: 5)
+        }));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(0, continuity.ProcessingLeased);
+        Assert.AreEqual(5, continuity.CaptureSequence);
+        Assert.AreEqual(3, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_ReportsLeasedCaptureProcessingWhenTheDeadlineExpires()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, processingLeased: 2)));
+        var client = new CameraAgentLifecycleClient(
+            BaseAddress, handler, FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(200) });
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "leased raw/lane/processing/outbox 0/0/2/0", StringComparison.Ordinal);
+        Assert.IsTrue(handler.RequestCount > 1, $"expected repeated reads before the deadline, saw {handler.RequestCount} requests");
+    }
+
+    [TestMethod]
     public async Task ConfirmDrained_RetriesTransientReadFailuresUntilTheBoundaryAppears()
     {
         using var handler = new ScriptedHandler((_, sequence, _) => sequence switch
@@ -584,14 +616,15 @@ public sealed class CameraAgentLifecycleClientTests
         long version,
         long captureSequence = 0,
         long rawLeased = 0,
-        bool initialized = true)
+        bool initialized = true,
+        long processingLeased = 0)
     {
         var json = $$"""
             {
               "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "captureProcessing": { "value": { "pendingCount": 0, "leasedCount": 0 } },
+              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
               "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },
               "captureSequence": {{captureSequence}}
             }

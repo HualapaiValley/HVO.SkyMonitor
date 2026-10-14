@@ -53,7 +53,7 @@ public sealed class CameraAgentOperationsSummaryTests
                 PendingCaptures: [new("agent-operations", 3), new("agent-operations", 4)])
         ]);
         var processing = new CaptureProcessingState();
-        processing.SetDurable(5, 2, 1, now.AddMinutes(-3));
+        processing.SetDurable(5, 3, 2, 1, now.AddMinutes(-3));
         var artifactOutbox = new ArtifactOutboxState();
         artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
         var storage = new StoragePressureState();
@@ -130,6 +130,7 @@ public sealed class CameraAgentOperationsSummaryTests
             new long[] { 3, 4 },
             summary.CaptureLanes.Value.Lanes[1].PendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
         Assert.AreEqual(1L, summary.CaptureProcessing.Value.TerminalCount);
+        Assert.AreEqual(3L, summary.CaptureProcessing.Value.LeasedCount, "Leased capture processing is reported, not hard-coded to zero.");
         Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
         Assert.IsFalse(summary.Storage.Value[0].ProbeSucceeded);
