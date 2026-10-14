@@ -38,7 +38,7 @@ public sealed partial class ProjectedSceneAnnotationTests
         Assert.IsTrue(visible.ResolvedFootprints.All(static footprint => footprint.Parts.Single().Closed &&
             footprint.Parts.Single().Points.Count == 128), "Exercise the reviewer's exact 128-segment circles.");
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
-            ProjectedSceneImageTransformV1.Identity(Size, Size), new(CaptureId, Guid.NewGuid(), new string('D', 64)), "rig-v1", "cal-v1");
+            ProjectedSceneImageTransformV1.Identity(Size, Size), new(CaptureId, Guid.NewGuid(), new string('D', 64)), "rig-v1", visible.Request.ProjectionVersion);
         var standalone = PresentationDeepSkyLayerProducer.Create(scene, new(MaximumLabels: 0));
         Assert.IsTrue(standalone.Objects.Any(static item => item.Drawing != PresentationDeepSkyDrawing.Footprint) || stars > 0,
             "The standalone 32-circle case must fall back or omit geometry to reserve its caption.");
