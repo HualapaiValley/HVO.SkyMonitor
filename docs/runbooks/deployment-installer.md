@@ -228,9 +228,10 @@ options or the assembly/package version. Unchanged configuration and versions
 produce the same hash.
 
 Introducing these version inputs changes every earlier node hash once, even
-when the pipeline configuration is identical. All saved revisions compiled
-before this upgrade become superseded; there is no processing SQLite schema
-change (schema version 8). This one-time transition intentionally uses the
+when the pipeline configuration is identical. Saved revisions containing
+processing nodes compiled before this upgrade become superseded; a graph with
+no enabled steps has no implementation plan to invalidate. There is no
+processing SQLite schema change (schema version 8). This one-time transition intentionally uses the
 standard-work abandon path described below. Raw evidence is retained.
 
 Captures accepted by the previous version keep their raw evidence and their
