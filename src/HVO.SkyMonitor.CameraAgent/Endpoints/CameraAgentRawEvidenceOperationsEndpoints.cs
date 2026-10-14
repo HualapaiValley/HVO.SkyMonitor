@@ -25,6 +25,7 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
             .WithName(name).RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance);
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operator reads must not expose durable storage details.")]
     private static async Task<IResult> ReadAsync(
         [FromQuery] int? pageSize, [FromQuery] string? cursor, [FromServices] IRawEvidenceOperations operations,
         [FromServices] OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
@@ -33,19 +34,27 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
         long? position = null;
         if (size is < 1 or > 100 || cursor is not null && !tokens.TryReadRawEvidenceCursor(cursor, out position))
             return Results.BadRequest();
-        var page = await operations.ReadEvidencePageAsync(size, position, cancellationToken).ConfigureAwait(false);
-        return Results.Ok(new
+        try
         {
-            Items = page.Items.Select(item => new
+            var page = await operations.ReadEvidencePageAsync(size, position, cancellationToken).ConfigureAwait(false);
+            return Results.Ok(new
             {
-                item.AgentId, item.CaptureSequence, CaptureId = item.Target.CaptureId, item.ArtifactId,
-                item.PayloadBytes, item.CreatedUtc, item.WrittenOff, item.LatestAudit,
-                State = item.Target.State, ReasonCode = item.Target.FailureReason,
-                RevalidateToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
-                WriteOffToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target)
-            }),
-            NextCursor = page.NextCursor is null ? null : tokens.ProtectRawEvidenceCursor(page.NextCursor.Value)
-        });
+                Items = page.Items.Select(item => new
+                {
+                    item.AgentId, item.CaptureSequence, CaptureId = item.Target.CaptureId, item.ArtifactId,
+                    item.PayloadBytes, item.CreatedUtc, item.WrittenOff, item.LatestAudit,
+                    State = item.Target.State, ReasonCode = item.Target.FailureReason,
+                    RevalidateToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
+                    WriteOffToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target)
+                }).ToArray(),
+                NextCursor = page.NextCursor is null ? null : tokens.ProtectRawEvidenceCursor(page.NextCursor.Value)
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception)
+        {
+            return Results.Problem(statusCode: 500, title: "The raw evidence query could not be completed.");
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operator responses must not expose durable storage details.")]

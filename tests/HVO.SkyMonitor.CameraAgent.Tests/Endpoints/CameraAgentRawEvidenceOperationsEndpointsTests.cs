@@ -23,6 +23,19 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
 {
     [TestMethod]
+    public async Task RawEvidenceReadFailureDoesNotExposeStoragePaths()
+    {
+        using var app = CreateApp(new RecordingOperations { FailRead = true });
+        var context = new DefaultHttpContext { RequestServices = app.Services };
+        context.Request.Method = HttpMethods.Get;
+        using var response = new MemoryStream();
+        context.Response.Body = response;
+        await FindEndpoint(app, "ReadCameraAgentRawEvidence").RequestDelegate!(context).ConfigureAwait(false);
+        Assert.AreEqual(500, context.Response.StatusCode);
+        Assert.IsFalse(Encoding.UTF8.GetString(response.ToArray()).Contains("secret", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void RawEvidenceEndpoints_RequireOwnerPoliciesAndAntiforgery()
     {
         using var app = CreateApp(new RecordingOperations());
@@ -126,8 +139,10 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
         internal RawEvidenceTarget? ReceivedTarget { get; private set; }
         internal int Calls { get; private set; }
         internal bool Fail { get; set; }
+        internal bool FailRead { get; set; }
         public ValueTask<RawEvidencePage> ReadEvidencePageAsync(int pageSize, long? beforeRowId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new RawEvidencePage([], null));
+            => FailRead ? ValueTask.FromException<RawEvidencePage>(new IOException("/secret/raw-ingress-root"))
+                : ValueTask.FromResult(new RawEvidencePage([], null));
         public ValueTask<RawEvidenceReleaseReceipt> ReleaseEvidenceAsync(RawEvidenceTarget target, RawEvidenceReleaseAction action,
             string idempotencyKey, string actor, string reason, CancellationToken cancellationToken)
         {
