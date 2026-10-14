@@ -20,7 +20,8 @@ public sealed record CaptureProcessingSnapshot(
     DateTimeOffset? OldestReplayPendingUtc = null,
     long ReplayPendingBytes = 0,
     string? SupersededActiveRevisionId = null,
-    long LeasedCount = 0);
+    long LeasedCount = 0,
+    long ReplayLeasedCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -49,6 +50,7 @@ public sealed class CaptureProcessingState
     private bool _reconciliationFailed;
     private bool _hasDurableSnapshot;
     private long _replayPending;
+    private long _replayLeased;
     private long _replayRetry;
     private long _replayTerminal;
     private long _replayPendingBytes;
@@ -94,6 +96,7 @@ public sealed class CaptureProcessingState
     internal void SetRefreshFailure() { lock (_gate) _durableUnavailable = true; }
     internal void SetReplayDurable(
         long pending,
+        long leased,
         long retry,
         long terminal,
         DateTimeOffset? oldestPendingUtc,
@@ -102,6 +105,7 @@ public sealed class CaptureProcessingState
         lock (_gate)
         {
             _replayPending = pending;
+            _replayLeased = leased;
             _replayRetry = retry;
             _replayTerminal = terminal;
             _oldestReplay = oldestPendingUtc;
@@ -139,6 +143,6 @@ public sealed class CaptureProcessingState
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
             _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
-            _supersededActiveRevision, _leased);
+            _supersededActiveRevision, _leased, _replayLeased);
     }
 }

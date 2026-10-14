@@ -44,6 +44,7 @@ internal static class CameraAgentLifecycleEndpoints
             summary.CaptureLanes,
             summary.CaptureProcessing,
             summary.ArtifactOutbox,
+            summary.ArchivedReplay,
             captureSequence));
     }
 
@@ -116,5 +117,6 @@ internal static class CameraAgentLifecycleEndpoints
         OperationsSection<OperationsCaptureLanesState> CaptureLanes,
         OperationsSection<OperationsQueueState> CaptureProcessing,
         OperationsSection<OperationsQueueState> ArtifactOutbox,
+        OperationsSection<OperationsQueueState> ArchivedReplay,
         long CaptureSequence);
 }

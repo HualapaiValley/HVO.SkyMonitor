@@ -123,12 +123,12 @@ internal sealed class ProcessingReplayWorker(
                 _options.ReplayMaximumAttempts,
                 timeProvider,
                 durableAttempt: lease.ClaimCount,
-                cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken))
+                cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken, stoppingToken))
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (processingCancellation.IsCancellationRequested)
         {
-            result = ReplayCancellationResult(livePreemptionToken);
+            result = ReplayCancellationResult(livePreemptionToken, stoppingToken);
         }
         catch (Exception exception)
         {
@@ -201,10 +201,18 @@ internal sealed class ProcessingReplayWorker(
         => wakeup.WaitAsync(
             TimeSpan.FromSeconds(_options.ReplayRecoveryPollSeconds), timeProvider, cancellationToken);
 
-    private static CaptureLaneHandlerResult ReplayCancellationResult(CancellationToken livePreemptionToken)
+    // Neither live priority nor a host stop is a replay failure, so both return the execution to its queue without
+    // consuming a replay attempt. The lifecycle drain does not wait for archived replay, so an upgrade, catalog switch
+    // or restart that stops the host must not spend, or exhaust, an operator-requested replay. A lost lease while the
+    // host keeps running is still a retryable failure.
+    private static CaptureLaneHandlerResult ReplayCancellationResult(
+        CancellationToken livePreemptionToken,
+        CancellationToken stoppingToken)
         => livePreemptionToken.IsCancellationRequested
             ? CaptureLaneHandlerResult.Wait("processing.replay-live-priority")
-            : CaptureLaneHandlerResult.Retry("processing.replay-interrupted");
+            : stoppingToken.IsCancellationRequested
+                ? CaptureLaneHandlerResult.Wait("processing.replay-host-stopping")
+                : CaptureLaneHandlerResult.Retry("processing.replay-interrupted");
 
     private static void VerifyFrozenPlan(
         CaptureProcessingGraph graph,

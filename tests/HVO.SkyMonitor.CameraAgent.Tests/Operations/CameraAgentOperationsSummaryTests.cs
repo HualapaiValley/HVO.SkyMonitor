@@ -54,6 +54,7 @@ public sealed class CameraAgentOperationsSummaryTests
         ]);
         var processing = new CaptureProcessingState();
         processing.SetDurable(5, 3, 2, 1, now.AddMinutes(-3));
+        processing.SetReplayDurable(6, 2, 1, 4, now.AddMinutes(-7), 600);
         var artifactOutbox = new ArtifactOutboxState();
         artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
         var storage = new StoragePressureState();
@@ -131,6 +132,14 @@ public sealed class CameraAgentOperationsSummaryTests
             summary.CaptureLanes.Value.Lanes[1].PendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
         Assert.AreEqual(1L, summary.CaptureProcessing.Value.TerminalCount);
         Assert.AreEqual(3L, summary.CaptureProcessing.Value.LeasedCount, "Leased capture processing is reported, not hard-coded to zero.");
+        Assert.AreEqual(5L, summary.CaptureProcessing.Value.PendingCount, "Archived replay is not folded into live processing.");
+        Assert.AreEqual("durable-processing-refresh", summary.ArchivedReplay.Source);
+        Assert.AreEqual(6L, summary.ArchivedReplay.Value.PendingCount);
+        Assert.AreEqual(600L, summary.ArchivedReplay.Value.PendingBytes);
+        Assert.AreEqual(2L, summary.ArchivedReplay.Value.LeasedCount, "Leased archived replay is reported for the lifecycle boundary.");
+        Assert.AreEqual(1L, summary.ArchivedReplay.Value.RetryCount);
+        Assert.AreEqual(4L, summary.ArchivedReplay.Value.TerminalCount);
+        Assert.AreEqual(now.AddMinutes(-7), summary.ArchivedReplay.Value.OldestPendingUtc);
         Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
         Assert.IsFalse(summary.Storage.Value[0].ProbeSucceeded);

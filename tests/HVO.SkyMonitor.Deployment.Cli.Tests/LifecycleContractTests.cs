@@ -692,10 +692,12 @@ public sealed class LifecycleContractTests
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
 
+        // An operator may request archived replay of any retained capture at any time, including after a switch, so
+        // replay pending or leased at the boundary does not refuse the selection the way uncommitted live work does.
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 },
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
 
         var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -922,7 +924,7 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('8', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
+        var lifecycle = new FakeLifecycleClient { RejectNextResume = true, DrainedReplayPending = 4, DrainedReplayLeased = 1 };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -940,6 +942,9 @@ public sealed class LifecycleContractTests
         Assert.IsTrue(retained.MutationStarted);
         Assert.IsNotNull(retained.PreMutationContinuity);
         Assert.IsNotNull(retained.PostMutationContinuity);
+        // The drain does not wait for archived replay, so the boundary records what it left behind.
+        Assert.AreEqual(4, retained.PreMutationContinuity.ReplayPending);
+        Assert.AreEqual(1, retained.PreMutationContinuity.ReplayLeased);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
@@ -2243,6 +2248,7 @@ public sealed class LifecycleContractTests
     [DataRow("post-sequence")]
     [DataRow("negative-count")]
     [DataRow("negative-pre")]
+    [DataRow("negative-replay")]
     [DataRow("uninitialized")]
     [DataRow("receipt-missing")]
     [DataRow("receipt-version")]
@@ -2264,6 +2270,7 @@ public sealed class LifecycleContractTests
             "post-sequence" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureSequence = 1811 } },
             "negative-count" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { OutboxLeased = -1 } },
             "negative-pre" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { CaptureVersion = -1 } },
+            "negative-replay" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { ReplayLeased = -1 } },
             "uninitialized" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureInitialized = false } },
             "receipt-missing" => operation with { RestoreResumeReceipt = null },
             "receipt-version" => operation with { RestoreResumeReceipt = operation.RestoreResumeReceipt! with { Version = 5 } },
@@ -3048,6 +3055,8 @@ public sealed class LifecycleContractTests
     {
         public bool RejectNextResume { get; set; }
         public long DrainedProcessingPending { get; set; }
+        public long DrainedReplayPending { get; set; }
+        public long DrainedReplayLeased { get; set; }
         public int ResumeCount { get; private set; }
         public int PauseCount { get; private set; }
         public int ConfirmCount { get; private set; }
@@ -3092,14 +3101,16 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             ConfirmCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)

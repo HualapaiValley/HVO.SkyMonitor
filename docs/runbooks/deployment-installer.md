@@ -272,6 +272,38 @@ owns, abandons earlier annotation work in the same way.
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
+### Archived replay across a lifecycle transition
+
+Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
+replay in its own `archivedReplay` section, separate from live
+`captureProcessing`. The section contains pending, leased, retry and terminal
+counts, pending bytes and the oldest pending time. Each recorded continuity
+boundary keeps the replay counts as `ReplayPending` and `ReplayLeased`. A
+lifecycle CLI reading an image that predates the section records zero.
+
+The pause-and-drain boundary deliberately does not wait for archived replay:
+
+- A capture pause stops new exposures, but accepted work keeps processing, and
+  that includes operator-requested replay. The replay queue can hold
+  `ReplayMaximumPendingCount` executions (1000 by default), each with a deadline
+  of `ReplayDeadlineSeconds` (one hour by default). Waiting for that queue could
+  hold any upgrade, rollback or catalog transition well past the two-minute
+  drain deadline.
+- When the host stops, in-flight replay is returned to its queue as deferred
+  work. Its node attempt is recorded as `Interrupted` with reason
+  `processing.replay-host-stopping`, and no replay attempt is consumed. A
+  replay limited to one attempt therefore still has that attempt after the
+  restart. Replay that loses its lease while the host keeps running is still a
+  retryable failure.
+- Catalog selection and rollback refuse only uncommitted live processing.
+  Replay can be requested for any retained capture at any time, including
+  after a catalog switch, so replay pending at the boundary does not refuse the
+  transition.
+
+If a transition times out while it waits for the drain, the error message
+reports any replay pending or leased and states that the drain does not wait
+for it.
+
 ### Proving the signed lifecycle in the installer campaign
 
 `scripts/test:deployment-installer` proves the signed lifecycle against real
