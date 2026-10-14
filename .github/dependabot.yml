@@ -7,6 +7,19 @@ updates:
       day: "monday"
     open-pull-requests-limit: 10
     groups:
+      dotnet-servicing:
+        patterns:
+          - "Microsoft.AspNetCore.*"
+          - "Microsoft.EntityFrameworkCore*"
+          - "Microsoft.Extensions.*"
+          - "Microsoft.Data.Sqlite"
+        update-types:
+          - "patch"
+      aws-sdk:
+        patterns:
+          - "AWSSDK.*"
+        update-types:
+          - "patch"
       opentelemetry:
         patterns:
           - "OpenTelemetry*"
