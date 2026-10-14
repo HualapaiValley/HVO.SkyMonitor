@@ -19,6 +19,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class StandaloneW6ProfileTests
 {
+    private static readonly string[] ScenePresentationDependencies = ["projected-scene"];
+    private static readonly string[] EnvironmentPresentationDependencies = ["projected-scene", "combined-preview"];
+    private static readonly string[] CloudPresentationSchemas = ["cloud-assessment-v1"];
     private static readonly ObservatoryLocation Location = new(
         35.5599378,
         -113.9119818,
@@ -395,8 +398,8 @@ public sealed class StandaloneW6ProfileTests
             CollectionAssert.AreEqual(new[] { FrameArtifactRole.Metadata }, scene.Roles.ToArray());
             Assert.IsTrue(scene.Required);
             CollectionAssert.AreEqual(new[] { BuiltInProcessingRecipes.ProjectedScene }, scene.RecipeNames!.ToArray());
-            CollectionAssert.AreEqual(id == "scene-presentation" ? new[] { "projected-scene" } :
-                new[] { "projected-scene", "combined-preview" }, node.DeclaredDependencies!.ToArray());
+            CollectionAssert.AreEqual(id == "scene-presentation" ? ScenePresentationDependencies :
+                EnvironmentPresentationDependencies, node.DeclaredDependencies!.ToArray());
             var sharedInput = graph.SharedPlan!.Nodes.Single(item => item.Definition.Id == id).Definition.Inputs
                 .Single(static input => input.RecipeNames.Contains(BuiltInProcessingRecipes.ProjectedScene));
             CollectionAssert.AreEqual(accepted, sharedInput.SchemaVersions.Order(StringComparer.Ordinal).ToArray());
@@ -407,7 +410,7 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual("projected-scene-v1", producer.OutputSchemaVersion);
         var cloud = ((IRequiredCaptureProcessingDependencies)graph.Nodes.Single(static node => node.Id == "cloud-presentation").Step)
             .DependencyRequirements.Single();
-        CollectionAssert.AreEqual(new[] { "cloud-assessment-v1" }, cloud.SchemaVersions!.ToArray());
+        CollectionAssert.AreEqual(CloudPresentationSchemas, cloud.SchemaVersions!.ToArray());
 
         string Aggregate(bool removeV3) => CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
         {
