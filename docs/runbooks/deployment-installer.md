@@ -253,6 +253,16 @@ to do one of the following:
 Health clears within one refresh, and an Information entry (event 2098) records
 it. No restart is needed. Configured-basic is never reported as superseded.
 
+New activation, rollback selection and archived replay commands reject a saved
+revision whose node plans no longer match the installed compiler, including a
+changed node set or a pipeline the compiler can no longer build. The API returns
+HTTP 409 and the operator UI directs you to create or select a compatible
+revision. Refreshing the page alone does not repair an obsolete revision.
+Rejection leaves the registry, revision, replay queue and raw evidence unchanged.
+An exact retry of an already acknowledged command still returns its recorded
+result; it does not schedule new work or reapply the selection. Replay checks use
+the retained capture configuration, rather than the current camera settings.
+
 Annotation work for captures without resolved footprints (`projected-scene-v1`)
 keeps its released identity and algorithm version. A retry after the upgrade
 therefore reproduces the same output under the same key and the same manifest

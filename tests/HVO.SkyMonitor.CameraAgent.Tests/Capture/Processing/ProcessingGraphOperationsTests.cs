@@ -786,6 +786,139 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    [DataRow("activate", "hash", false)]
+    [DataRow("rollback", "hash", false)]
+    [DataRow("replay", "hash", false)]
+    [DataRow("activate", "missing", false)]
+    [DataRow("rollback", "missing", false)]
+    [DataRow("replay", "missing", false)]
+    [DataRow("activate", "different", false)]
+    [DataRow("rollback", "different", false)]
+    [DataRow("replay", "different", false)]
+    [DataRow("activate", "unsupported", false)]
+    [DataRow("rollback", "unsupported", false)]
+    [DataRow("replay", "unsupported", false)]
+    [DataRow("activate", "hash", true)]
+    [DataRow("rollback", "hash", true)]
+    [DataRow("replay", "hash", true)]
+    [DataRow("activate", "unsupported", true)]
+    [DataRow("rollback", "unsupported", true)]
+    [DataRow("replay", "unsupported", true)]
+    public async Task SupersededRevisionRejectsNewCommandsButPreservesAcknowledgedCommands(
+        string action, string mismatch, bool acknowledged)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-obsolete-selection");
+        try
+        {
+            var configuration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            string revisionId;
+            RawCaptureReceipt receipt;
+            long expectedVersion;
+            string? acceptedResult = null;
+            using (var provider = CreateProvider(root))
+            {
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var basic = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                receipt = await ingress.AcceptAsync(configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false)
+                    ?? throw new AssertFailedException("The fixture must retain its raw capture.");
+                var named = await operations.CreateRevisionAsync("nightly", "old", configuration.Pipeline,
+                    "create-old", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+                revisionId = named.RevisionId;
+                _ = await operations.ValidateRevisionAsync(revisionId, "validate-old", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+                var active = await operations.ActivateRevisionAsync(revisionId, basic.StateVersion,
+                    "initial-activation", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+                var restored = await operations.RollbackRevisionAsync(basic.ConfiguredBasicRevisionId, active.StateVersion,
+                    "initial-rollback", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
+                expectedVersion = restored.StateVersion;
+                if (acknowledged) acceptedResult = await SelectAsync(operations, reason: null).ConfigureAwait(false);
+
+                var snapshot = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+                using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                switch (mismatch)
+                {
+                    case "missing":
+                        command.CommandText = "UPDATE processing_graph_revisions SET nodes_json = CAST(json_remove(CAST(nodes_json AS TEXT), '$[0]') AS BLOB) WHERE revision_id = $revision;";
+                        break;
+                    case "unsupported":
+                        command.CommandText = "UPDATE processing_graph_revisions SET pipeline_json = CAST(replace(CAST(pipeline_json AS TEXT), 'Preview', 'RemovedPreview') AS BLOB) WHERE revision_id = $revision;";
+                        break;
+                    default:
+                        command.CommandText = "UPDATE processing_graph_revisions SET nodes_json = CAST(replace(CAST(nodes_json AS TEXT), $current, $old) AS BLOB) WHERE revision_id = $revision;";
+                        break;
+                }
+                command.Parameters.AddWithValue("$revision", revisionId);
+                if (mismatch is not ("missing" or "unsupported"))
+                {
+                    command.Parameters.AddWithValue("$current", mismatch == "hash" ? snapshot.Nodes[0].PlanSha256 : "\"preview\"");
+                    command.Parameters.AddWithValue("$old", mismatch == "hash" ? new string('f', 64) : "\"previous-preview\"");
+                }
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+
+            // Reopen persisted revisions with the current compiler, as after an upgrade.
+            using (var provider = CreateProvider(root))
+            {
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var before = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                var revisionBefore = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+                var rawHash = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+                var tables = new[] { "processing_graph_commands", "replay_executions", "processing_replay_work", "processing_execution_input_pins" };
+                var counts = tables.Select(table => CountRows(root, table)).ToArray();
+                if (acknowledged)
+                {
+                    Assert.AreEqual(acceptedResult, await SelectAsync(operations, reason: null).ConfigureAwait(false));
+                    await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                        await SelectAsync(operations, "different command").ConfigureAwait(false)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Assert.ThrowsExactlyAsync<ProcessingGraphRevisionSupersededException>(async () =>
+                        await SelectAsync(operations, reason: null).ConfigureAwait(false)).ConfigureAwait(false);
+                }
+                var after = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(before.StateVersion, after.StateVersion);
+                Assert.AreEqual(before.ActiveRevisionId, after.ActiveRevisionId);
+                Assert.AreEqual(before.Mode, after.Mode);
+                var revisionAfter = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(JsonSerializer.Serialize(revisionBefore), JsonSerializer.Serialize(revisionAfter));
+                CollectionAssert.AreEqual(counts, tables.Select(table => CountRows(root, table)).ToArray());
+                Assert.AreEqual(rawHash, Sha256OfFile(receipt.StoredFrame.AbsolutePath));
+            }
+
+            async Task<string> SelectAsync(ProcessingGraphOperationsCoordinator operations, string? reason)
+            {
+                if (action == "replay")
+                {
+                    var result = await operations.SubmitReplayAsync(new ProcessingReplaySubmission(
+                        receipt.Manifest.Descriptor.Capture.CaptureId, revisionId,
+                        receipt.Manifest.Descriptor.Artifact.ArtifactId, Reason: reason),
+                        "selection-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+                    return result.Execution.ExecutionId.ToString("N");
+                }
+                var selected = action == "activate"
+                    ? await operations.ActivateRevisionAsync(revisionId, expectedVersion, "selection-key", "owner-test", reason, CancellationToken.None).ConfigureAwait(false)
+                    : await operations.RollbackRevisionAsync(revisionId, expectedVersion, "selection-key", "owner-test", reason, CancellationToken.None).ConfigureAwait(false);
+                return $"{selected.ActiveRevisionId}:{selected.StateVersion}";
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task NamedRevisionLifecycleUsesOptimisticVersionAndIdempotency()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-registry");
@@ -3242,6 +3375,12 @@ public sealed class ProcessingGraphOperationsTests
         using var command = connection.CreateCommand();
         switch (table)
         {
+            case "processing_graph_commands":
+                command.CommandText = "SELECT COUNT(*) FROM processing_graph_commands;";
+                break;
+            case "processing_execution_input_pins":
+                command.CommandText = "SELECT COUNT(*) FROM processing_execution_input_pins;";
+                break;
             case "replay_executions":
                 command.CommandText = "SELECT COUNT(*) FROM processing_executions WHERE execution_class = 'Replay';";
                 break;
