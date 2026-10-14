@@ -55,6 +55,19 @@ public sealed partial class CuratedDeepSkySceneTests
 
         Assert.AreSame(deepSky, scene.DeepSky);
         Assert.AreSame(footprint, scene.ResolvedFootprints.Single());
+
+        var glyph = Object("NGC1976", 42, null, null, null);
+        var glyphCatalog = Catalog([glyph], [new("M42", glyph.Id, DeepSkyAliasKinds.Messier)]);
+        var glyphScene = Scene().WithCuratedDeepSky(glyphCatalog, Selection());
+        var glyphSection = glyphScene.DeepSky;
+        Assert.IsNotNull(glyphSection);
+        Assert.AreEqual(DeepSkyRepresentation.UnknownExtentGlyph, glyphSection.Objects.Single().Representation);
+        Assert.IsEmpty(glyphScene.ResolvedFootprints);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => glyphScene.WithCuratedDeepSky(glyphCatalog, Selection()));
+
+        Assert.AreSame(glyphSection, glyphScene.DeepSky);
+        Assert.IsEmpty(glyphScene.ResolvedFootprints);
     }
 
     [TestMethod]
