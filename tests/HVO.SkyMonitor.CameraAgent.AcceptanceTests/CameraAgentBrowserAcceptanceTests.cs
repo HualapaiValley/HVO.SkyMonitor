@@ -34,6 +34,91 @@ public sealed class CameraAgentBrowserAcceptanceTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ErrorPagePreservesDiagnosticsAndOffersWorkingNavigationAsync(bool javaScriptEnabled)
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            JavaScriptEnabled = javaScriptEnabled
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+
+        await page.GotoAsync("/Error?correlationId=browser-recovery-1223").ConfigureAwait(false);
+
+        await page.Locator(".error-page").WaitForAsync().ConfigureAwait(false);
+        Assert.Contains("browser-recovery-1223", await page.Locator(".error-page__meta").InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
+        Assert.AreEqual("false", await page.Locator(".app-frame").GetAttributeAsync("data-interactive").ConfigureAwait(false));
+        Assert.AreEqual(0, await page.Locator(".error-page button").CountAsync().ConfigureAwait(false));
+        await page.GetByRole(AriaRole.Link, new() { Name = "Return home", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath != "/Error").ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator(".error-page").CountAsync().ConfigureAwait(false));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task InteractivePageFailureCanRetryAndNavigateAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
+            services.AddScoped<IComponentActivator>(provider => new RecoveryTestComponentActivator(provider))).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
+        var trigger = page.GetByRole(AriaRole.Button, new() { Name = "Trigger test page failure", Exact = true });
+
+        await trigger.ClickAsync().ConfigureAwait(false);
+        await page.Locator(".error-display").WaitForAsync().ConfigureAwait(false);
+        Assert.IsFalse((await page.Locator(".error-display").InnerTextAsync().ConfigureAwait(false))
+            .Contains("private-error-sentinel", StringComparison.Ordinal));
+        await page.GetByRole(AriaRole.Button, new() { Name = "Try again", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await trigger.WaitForAsync().ConfigureAwait(false);
+        await trigger.ClickAsync().ConfigureAwait(false);
+        await page.Locator(".error-display").WaitForAsync().ConfigureAwait(false);
+        await page.Locator(".app-frame nav a[href='/operations']").First.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync("**/operations").ConfigureAwait(false);
+        await page.Locator(".operations-layout").WaitForAsync().ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator(".error-display").CountAsync().ConfigureAwait(false));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    // Replace only the existing home-page component inside this disposable fixture. The actual
+    // router, render-mode boundary, layout, authentication and navigation all remain in use.
+    private sealed class RecoveryTestComponentActivator(IServiceProvider services) : IComponentActivator
+    {
+        public IComponent CreateInstance(Type componentType) =>
+            componentType == typeof(HVO.SkyMonitor.CameraAgent.Components.Pages.CurrentSkyPage)
+                ? new RecoveryTestPage()
+                : (IComponent)ActivatorUtilities.CreateInstance(services, componentType);
+    }
+
+    private sealed class RecoveryTestPage : ComponentBase
+    {
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
+        {
+            builder.OpenElement(0, "button");
+            builder.AddAttribute(1, "onclick", EventCallback.Factory.Create(this, Fail));
+            builder.AddContent(2, "Trigger test page failure");
+            builder.CloseElement();
+        }
+
+        private static void Fail() => throw new InvalidOperationException("private-error-sentinel");
+    }
+
+    [TestMethod]
     public async Task SiteTimeInputsAndFooterIgnoreBrowserZoneAsync()
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);

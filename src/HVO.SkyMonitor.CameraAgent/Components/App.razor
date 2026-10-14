@@ -19,14 +19,7 @@
 
 <body data-theme="hvo-dark">
     <CascadingAuthenticationState>
-        <AppErrorBoundary @ref="_appErrorBoundary">
-            <ChildContent>
-                <Routes @rendermode="PageRenderMode" />
-            </ChildContent>
-            <ErrorContent>
-                <ErrorDisplay OnDismiss="RecoverFromError" />
-            </ErrorContent>
-        </AppErrorBoundary>
+        <Routes @rendermode="PageRenderMode" />
     </CascadingAuthenticationState>
     <ReconnectModal />
 
