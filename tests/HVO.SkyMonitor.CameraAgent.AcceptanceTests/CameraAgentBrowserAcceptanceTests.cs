@@ -56,8 +56,16 @@ public sealed class CameraAgentBrowserAcceptanceTests
         Assert.Contains("browser-recovery-1223", await page.Locator(".error-page__meta").InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         Assert.AreEqual("false", await page.Locator(".app-frame").GetAttributeAsync("data-interactive").ConfigureAwait(false));
         Assert.AreEqual(0, await page.Locator(".error-page button").CountAsync().ConfigureAwait(false));
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth <= innerWidth + 1").ConfigureAwait(false),
+                $"Error page overflows horizontally at {width}px.");
+        }
         await page.GetByRole(AriaRole.Link, new() { Name = "Return home", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath != "/Error").ConfigureAwait(false);
+        await page.Locator(".error-page").WaitForAsync(new() { State = WaitForSelectorState.Detached }).ConfigureAwait(false);
         Assert.AreEqual(0, await page.Locator(".error-page").CountAsync().ConfigureAwait(false));
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
@@ -84,6 +92,14 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.Locator(".error-display").WaitForAsync().ConfigureAwait(false);
         Assert.IsFalse((await page.Locator(".error-display").InnerTextAsync().ConfigureAwait(false))
             .Contains("private-error-sentinel", StringComparison.Ordinal));
+        foreach (var width in new[] { 1440, 390, 320 })
+        {
+            await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            Assert.IsTrue(await page.EvaluateAsync<bool>(
+                "() => document.documentElement.scrollWidth <= innerWidth + 1").ConfigureAwait(false),
+                $"Error recovery overflows horizontally at {width}px.");
+        }
+        await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Try again", Exact = true }).ClickAsync().ConfigureAwait(false);
         await trigger.WaitForAsync().ConfigureAwait(false);
         await trigger.ClickAsync().ConfigureAwait(false);
