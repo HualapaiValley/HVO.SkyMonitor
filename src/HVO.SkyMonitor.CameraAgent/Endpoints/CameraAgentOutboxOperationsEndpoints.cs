@@ -239,6 +239,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         CameraAgentStorageResolver storageResolver,
         IArtifactOutbox outbox,
         OutboxOperationsTokenService tokens,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         var size = pageSize ?? 50;
@@ -258,7 +259,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         }
         var page = await outbox.ReadOperationsPageAsync(location.Root, size, position, cancellationToken).ConfigureAwait(false);
         return Results.Ok(new OutboxPage<ArtifactOutboxItem>(
-            page.Items.Select(item => ToArtifactItem(location.Alias, item, tokens)).ToArray(),
+            page.Items.Select(item => ToArtifactItem(location.Alias, item, tokens, timeProvider.GetUtcNow())).ToArray(),
             page.NextCursor is null ? null : tokens.ProtectArtifactCursor(location.Alias, page.NextCursor)));
     }
 
@@ -267,6 +268,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         CameraAgentStorageResolver storageResolver,
         IArtifactOutbox outbox,
         OutboxOperationsTokenService tokens,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         if (!tokens.TryReadArtifactReference(reference, out var alias, out var recordKey))
@@ -279,7 +281,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
             return Results.NotFound();
         }
         var detail = await outbox.ReadOperationsDetailAsync(location.Root, recordKey, cancellationToken).ConfigureAwait(false);
-        return detail is null ? Results.NotFound() : Results.Ok(ToArtifactItem(alias, detail, tokens));
+        return detail is null ? Results.NotFound() : Results.Ok(ToArtifactItem(alias, detail, tokens, timeProvider.GetUtcNow()));
     }
 
     private static async Task<IResult> ReadArtifactAuditAsync(
@@ -477,7 +479,8 @@ internal static class CameraAgentOutboxOperationsEndpoints
     private static ArtifactOutboxItem ToArtifactItem(
         string alias,
         ArtifactOutboxOperationsRecord item,
-        OutboxOperationsTokenService tokens)
+        OutboxOperationsTokenService tokens,
+        DateTimeOffset now)
         => new(
             tokens.ProtectArtifactReference(alias, item.RecordKey),
             alias,
@@ -487,6 +490,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
             item.MediaType,
             item.Role?.ToString(),
             item.CreatedUtc,
+            Math.Max(0, (now - item.CreatedUtc).TotalSeconds),
             item.UpdatedUtc,
             item.NextAttemptUtc,
             item.ReasonCode is null ? null : OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
@@ -553,6 +557,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
         string? MediaType,
         string? Role,
         DateTimeOffset CreatedUtc,
+        double AgeSeconds,
         DateTimeOffset UpdatedUtc,
         DateTimeOffset NextAttemptUtc,
         string? ReasonCode,

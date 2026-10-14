@@ -128,13 +128,23 @@ OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.
 
-To resolve quarantined work, authenticate as the configured local site owner and
-list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
+To inspect artifact retries or resolve quarantined work, authenticate as the
+configured local site owner and list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
 time-limited action token returned by that owner-only API when posting a bounded
 reason code to `/api/v1/operations/outboxes/artifacts/replay` or
 `/api/v1/operations/outboxes/artifacts/abandon`; do not expose a storage root,
 SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
-for valid deliverable evidence. Abandonment releases the delivery hold only
+for quarantined records with valid deliverable evidence. Retry records are also
+listed in the Quarantine and retry browser (`/operations/quarantine`) with their
+age since enqueue, attempt count, next attempt and last reason. All retries are
+visible, so a persistent failure needs no arbitrary age threshold to become
+operable. Automatic retry and its backoff remain unchanged; retry records do not
+have a replay action.
+
+The owner may abandon either a quarantined or retry record. The terminal update
+requires that status at commit: a record already leased or acknowledged rejects
+the action without an abandonment receipt. Refresh after an active delivery
+finishes before retrying the decision. Abandonment releases the delivery hold only
 after the actor, UTC time, and reason commit to the audit table. Preserve or
 export the payload, sidecar, journal, and conflict evidence before abandonment.
 

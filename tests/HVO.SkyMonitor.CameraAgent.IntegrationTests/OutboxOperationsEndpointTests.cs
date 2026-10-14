@@ -26,6 +26,67 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class OutboxOperationsEndpointTests
 {
     [TestMethod]
+    public async Task ArtifactRetryEndpoint_ListsAgeAttemptsReasonAndOnlyAbandonAction()
+    {
+        var outbox = new OperationalArtifactOutbox(ArtifactOutboxStatus.Retry);
+        using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
+        {
+            services.RemoveAll<IArtifactOutbox>();
+            services.AddSingleton<IArtifactOutbox>(outbox);
+            services.RemoveAll<CameraAgentStorageResolver>();
+            services.AddSingleton(provider => new CameraAgentStorageResolver(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = AssemblyHooks.Fixture.StorageRoot,
+                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled },
+                    CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
+                })));
+        });
+        string ownerId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var accessor = scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationAccessor>();
+            if (!accessor.IsConfigured)
+            {
+                accessor.SetConfiguration(await scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
+                    .LoadAsync(CancellationToken.None).ConfigureAwait(false));
+            }
+            var owner = await scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>()
+                .FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+            Assert.IsNotNull(owner);
+            ownerId = owner.Id;
+        }
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var response = await client.GetAsync(new Uri(
+            "/api/v1/operations/outboxes/artifacts?storage=raw-ingress", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        AssertNonDisclosure(json);
+        using var page = JsonDocument.Parse(json);
+        var item = page.RootElement.GetProperty("items")[0];
+        Assert.AreEqual("Retry", item.GetProperty("status").GetString());
+        Assert.AreEqual(3, item.GetProperty("attemptCount").GetInt32());
+        Assert.IsTrue(item.GetProperty("ageSeconds").GetDouble() > 0);
+        Assert.AreEqual("upstream-rejected", item.GetProperty("reasonCode").GetString());
+        Assert.AreEqual(JsonValueKind.Null, item.GetProperty("allowedActions").GetProperty("replayToken").ValueKind);
+        var abandon = item.GetProperty("allowedActions").GetProperty("abandonToken").GetString();
+        Assert.IsNotNull(abandon);
+        var reference = item.GetProperty("reference").GetString();
+        using var detail = await client.GetAsync(new Uri(
+            $"/api/v1/operations/outboxes/artifacts/{Uri.EscapeDataString(reference!)}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, detail.StatusCode);
+        var antiforgery = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
+        using var replay = await SendMutationAsync(client, "/api/v1/operations/outboxes/artifacts/replay",
+            "retry-wrong-action", abandon, "upstream-recovered", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, replay.StatusCode);
+        using var applied = await SendMutationAsync(client, "/api/v1/operations/outboxes/artifacts/abandon",
+            "retry-endpoint-abandon", abandon, "operator-approved-loss", antiforgery).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NoContent, applied.StatusCode);
+    }
+
+    [TestMethod]
     public async Task EndpointsEnforceOwnerAntiforgeryOpaqueTokensAndGenericMutationResults()
     {
         var artifactOutbox = new OperationalArtifactOutbox();
@@ -422,14 +483,14 @@ public sealed class OutboxOperationsEndpointTests
             => throw new NotSupportedException();
     }
 
-    private sealed class OperationalArtifactOutbox : IArtifactOutbox
+    private sealed class OperationalArtifactOutbox(ArtifactOutboxStatus status = ArtifactOutboxStatus.Quarantined) : IArtifactOutbox
     {
         internal const string RecordKey = "private-artifact-idempotency-key";
         private readonly Dictionary<string, OperationRequest> _operations = new(StringComparer.Ordinal);
-        private static readonly ArtifactOutboxOperationsRecord Record = new(
+        private readonly ArtifactOutboxOperationsRecord Record = new(
             RecordKey,
             ArtifactOutboxManifestKind.ManifestV2,
-            ArtifactOutboxStatus.Quarantined,
+            status,
             3,
             4096,
             "image/fits",
@@ -438,7 +499,7 @@ public sealed class OutboxOperationsEndpointTests
             DateTimeOffset.Parse("2026-07-20T01:05:00Z", System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse("2026-07-20T01:06:00Z", System.Globalization.CultureInfo.InvariantCulture),
             "upstream-rejected",
-            CanReplay: true,
+            CanReplay: status == ArtifactOutboxStatus.Quarantined,
             CanAbandon: true,
             new ArtifactOutboxOperationsCursor(1));
 

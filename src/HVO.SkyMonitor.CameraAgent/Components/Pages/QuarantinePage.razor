@@ -11,12 +11,12 @@
 
 <div class="quarantine-page">
     <header class="page-heading">
-        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact, environmental, and transient-runtime records. Results remain bounded and storage paths are never disclosed.</p></div>
+        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine and retry browser</h1><p>Artifact retries continue automatically. Review their age, attempts and last reason here, alongside quarantined work.</p></div>
         @if (_page is not null) { <span class="result-count">@_page.Items.Count record@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
     </header>
 
     <nav class="source-nav" aria-label="Quarantine source">
-        <a class="@SourceClass("Artifact")" aria-current="@SourceCurrent("Artifact")" href="/operations/quarantine">Artifact quarantine</a>
+        <a class="@SourceClass("Artifact")" aria-current="@SourceCurrent("Artifact")" href="/operations/quarantine">Artifact quarantine and retry</a>
         <a class="@SourceClass("Environmental")" aria-current="@SourceCurrent("Environmental")" href="/operations/quarantine?kind=Environmental">Environmental quarantine and terminal</a>
         <a class="@SourceClass("TransientRuntime")" aria-current="@SourceCurrent("TransientRuntime")" href="/operations/quarantine?kind=TransientRuntime">Transient runtime quarantine</a>
     </nav>

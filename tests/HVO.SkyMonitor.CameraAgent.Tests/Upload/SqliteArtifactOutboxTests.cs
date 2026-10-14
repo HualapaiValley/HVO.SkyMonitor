@@ -335,6 +335,214 @@ public sealed class SqliteArtifactOutboxTests
     }
 
     [TestMethod]
+    public async Task RetryOperations_ListAgeAttemptsReasonAndPageWithQuarantineWithoutChangingRetry()
+    {
+        using var root = new TemporaryRoot();
+        var clock = new MutableTimeProvider(StartUtc);
+        using var outbox = new SqliteArtifactOutbox(clock);
+        var retry = CreateManifest(root.Path, "frames/retry.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, retry, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        var deadline = StartUtc.AddDays(3);
+        await outbox.RetryAsync(root.Path, lease, deadline, "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        var quarantine = CreateManifest(root.Path, "frames/quarantine.bin", StartUtc, 2);
+        await outbox.EnqueueAsync(root.Path, quarantine, CancellationToken.None).ConfigureAwait(false);
+        var quarantinedLease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(quarantinedLease);
+        await outbox.QuarantineAsync(root.Path, quarantinedLease, "upstream-rejected", CancellationToken.None).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromDays(2));
+
+        var first = await outbox.ReadOperationsPageAsync(root.Path, 1, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, first.Items);
+        Assert.AreEqual(ArtifactOutboxStatus.Quarantined, first.Items[0].Status);
+        Assert.IsNotNull(first.NextCursor);
+        var second = await outbox.ReadOperationsPageAsync(root.Path, 1, first.NextCursor, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, second.Items);
+        Assert.IsNull(second.NextCursor);
+        var item = second.Items[0];
+        Assert.AreEqual(retry.IdempotencyKey, item.RecordKey);
+        Assert.AreEqual(ArtifactOutboxStatus.Retry, item.Status);
+        Assert.AreEqual(TimeSpan.FromDays(2), clock.GetUtcNow() - item.CreatedUtc);
+        Assert.AreEqual(1, item.AttemptCount);
+        Assert.AreEqual("upstream-unavailable", item.ReasonCode);
+        Assert.AreEqual(deadline, item.NextAttemptUtc);
+        Assert.IsFalse(item.CanReplay);
+        Assert.IsTrue(item.CanAbandon);
+        Assert.AreEqual(item, await outbox.ReadOperationsDetailAsync(root.Path, retry.IdempotencyKey, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNull(await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false));
+        clock.Advance(TimeSpan.FromDays(1));
+        var automaticRetry = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(automaticRetry);
+        Assert.AreEqual(retry.IdempotencyKey, automaticRetry.Record.IdempotencyKey);
+        Assert.AreEqual(2, automaticRetry.Record.AttemptCount);
+    }
+
+    [TestMethod]
+    public async Task RetryOperations_AbandonCommitsTerminalAuditReceiptAndReleasesOnlyDeliveryHoldAcrossRestart()
+    {
+        using var root = new TemporaryRoot();
+        var clock = new MutableTimeProvider(StartUtc);
+        using var outbox = new SqliteArtifactOutbox(clock);
+        var manifest = CreateManifest(root.Path, "frames/retry-abandon.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await outbox.RetryAsync(root.Path, lease, StartUtc.AddDays(3), "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
+        var before = Directory.EnumerateFiles(Path.Combine(root.Path, "frames"))
+            .Order(StringComparer.Ordinal)
+            .ToDictionary(static path => path, static path => File.ReadAllBytes(path), StringComparer.Ordinal);
+        clock.Advance(TimeSpan.FromDays(2));
+        Assert.AreEqual(OutboxOperationDisposition.Applied, await outbox.ResolveOperationsAsync(
+            root.Path, manifest.IdempotencyKey, OutboxOperationAction.Abandon, "retry-abandon-operation",
+            "owner", "operator-approved-loss", CancellationToken.None).ConfigureAwait(false));
+        CollectionAssert.AreEquivalent(before.Keys.ToArray(), Directory.GetFiles(Path.Combine(root.Path, "frames")));
+        foreach (var evidence in before)
+        {
+            CollectionAssert.AreEqual(evidence.Value, await File.ReadAllBytesAsync(evidence.Key).ConfigureAwait(false));
+        }
+        using var restarted = new SqliteArtifactOutbox(clock);
+        Assert.AreEqual(OutboxOperationDisposition.Duplicate, await restarted.ResolveOperationsAsync(
+            root.Path, manifest.IdempotencyKey, OutboxOperationAction.Abandon, "retry-abandon-operation",
+            "owner", "operator-approved-loss", CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(async () =>
+            await restarted.ResolveOperationsAsync(root.Path, manifest.IdempotencyKey, OutboxOperationAction.Abandon,
+                "retry-abandon-operation", "owner", "retention-policy", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.IsEmpty(await restarted.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual(ArtifactOutboxStatus.Abandoned,
+            (await restarted.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false))!.Status);
+        var audit = await restarted.ReadOperationsAuditAsync(root.Path, manifest.IdempotencyKey, 10, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, audit.Items);
+        Assert.AreEqual("abandon", audit.Items[0].Action);
+        Assert.AreEqual("owner", audit.Items[0].ActorKind);
+        Assert.AreEqual("operator-approved-loss", audit.Items[0].ReasonCode);
+        Assert.AreEqual(clock.GetUtcNow(), audit.Items[0].OccurredUtc);
+        using var connection = OpenDatabase(root.Path);
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT terminal_actor, terminal_reason, terminal_unix_ms, acknowledgement FROM artifact_outbox_records;";
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        Assert.AreEqual("owner", reader.GetString(0));
+        Assert.AreEqual("operator-approved-loss", reader.GetString(1));
+        Assert.AreEqual(clock.GetUtcNow().ToUnixTimeMilliseconds(), reader.GetInt64(2));
+        Assert.IsTrue(reader.IsDBNull(3));
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task RetryOperations_WorkerWinsAbandonSqlPredicateRejectsLeaseAndAcknowledgement(bool legacy, bool delivered)
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        var manifest = CreateManifest(root.Path, "frames/worker-wins.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var first = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(first);
+        await outbox.RetryAsync(root.Path, first, StartUtc, "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        // The operator read is stale when another connection leases or delivers the record.
+        var stale = await outbox.ReadOperationsDetailAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(stale);
+        Assert.IsTrue(stale.CanAbandon);
+        using var worker = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        var second = await worker.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(second);
+        if (delivered)
+        {
+            await worker.AcknowledgeAsync(root.Path, second, CreateAcknowledgement(manifest), CancellationToken.None).ConfigureAwait(false);
+        }
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await AbandonRetryAsync(outbox, root.Path, manifest.IdempotencyKey, legacy).ConfigureAwait(false)).ConfigureAwait(false);
+        using var connection = OpenDatabase(root.Path);
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT status, terminal_actor, terminal_reason, terminal_unix_ms, acknowledgement, (SELECT COUNT(*) FROM artifact_outbox_operations), (SELECT COUNT(*) FROM artifact_outbox_audit WHERE action = 'abandon') FROM artifact_outbox_records;";
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        Assert.AreEqual(delivered ? "acknowledged" : "leased", reader.GetString(0));
+        Assert.IsTrue(reader.IsDBNull(1));
+        Assert.IsTrue(reader.IsDBNull(2));
+        Assert.IsTrue(reader.IsDBNull(3));
+        Assert.AreEqual(!delivered, reader.IsDBNull(4));
+        Assert.AreEqual(0, reader.GetInt32(5));
+        Assert.AreEqual(0, reader.GetInt32(6));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetryOperations_AbandonWinsWorkerCannotLeaseOrAcknowledge(bool legacy)
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        var manifest = CreateManifest(root.Path, "frames/abandon-wins.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await outbox.RetryAsync(root.Path, lease, StartUtc, "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        await AbandonRetryAsync(outbox, root.Path, manifest.IdempotencyKey, legacy).ConfigureAwait(false);
+        using var worker = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        Assert.IsNull(await worker.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<ArtifactOutboxLeaseLostException>(async () =>
+            await worker.AcknowledgeAsync(root.Path, lease, CreateAcknowledgement(manifest), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(ArtifactOutboxStatus.Abandoned,
+            (await worker.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false))!.Status);
+        Assert.IsEmpty(await worker.GetAcknowledgedArtifactIdsAsync(root.Path,
+            new HashSet<Guid> { manifest.Descriptor.Artifact.ArtifactId }, CancellationToken.None).ConfigureAwait(false));
+        CollectionAssert.AreEqual(Payload, await File.ReadAllBytesAsync(Path.Combine(root.Path, manifest.RelativeArtifactPath)).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetryOperations_ReplayCannotResetAutomaticRetry(bool legacy)
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        var manifest = CreateManifest(root.Path, "frames/no-replay.bin", StartUtc, 1);
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        var deadline = StartUtc.AddMinutes(5);
+        await outbox.RetryAsync(root.Path, lease, deadline, "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+        {
+            if (legacy)
+            {
+                await outbox.ReplayAsync(root.Path, manifest.IdempotencyKey, "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                await outbox.ResolveOperationsAsync(root.Path, manifest.IdempotencyKey, OutboxOperationAction.Replay,
+                    "retry-replay", "owner", "upstream-recovered", CancellationToken.None).ConfigureAwait(false);
+            }
+        }).ConfigureAwait(false);
+        var record = await outbox.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(record);
+        Assert.AreEqual(ArtifactOutboxStatus.Retry, record.Status);
+        Assert.AreEqual(deadline, record.NextAttemptUtc);
+        Assert.AreEqual(1, record.AttemptCount);
+        Assert.IsEmpty(await outbox.ReadAuditAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    private static async ValueTask AbandonRetryAsync(SqliteArtifactOutbox outbox, string root, string key, bool legacy)
+    {
+        if (legacy)
+        {
+            await outbox.AbandonAsync(root, key, "owner", "operator-approved-loss", CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            await outbox.ResolveOperationsAsync(root, key, OutboxOperationAction.Abandon, "retry-race-operation",
+                "owner", "operator-approved-loss", CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     public async Task OperationsProjection_UsesBoundedKeysetQueriesWithoutReadingEvidenceBlobs()
     {
         using var root = new TemporaryRoot();

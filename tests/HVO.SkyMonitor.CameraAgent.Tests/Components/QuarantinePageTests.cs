@@ -11,6 +11,42 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class QuarantinePageTests
 {
     [TestMethod]
+    public void RetryRecord_ShowsAgeAttemptsReasonAndOnlyAuditedAbandonment()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
+            OperatorUiResult<OperatorOutboxPage>.Success(new(
+                "Artifact", ["raw-ingress"], "raw-ingress",
+                [CreateItem(7) with { Status = "Retry", ReplayToken = null,
+                    CreatedUtc = DateTimeOffset.UtcNow.AddDays(-3), ReasonCode = "upstream-unavailable" }], null)));
+        service.OutboxHandler = (kind, action, token, reason, operation, _) =>
+        {
+            Assert.AreEqual("Artifact", kind);
+            Assert.AreEqual(OutboxOperationAction.Abandon, action);
+            Assert.AreEqual("abandon-7", token);
+            Assert.AreEqual("operator-approved-loss", reason);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(operation));
+            return ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                "Abandon", "Applied", "Abandoned", null, OperatorUiTestData.Now)));
+        };
+        var cut = context.Render<QuarantinePage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Artifact quarantine and retry", StringComparison.Ordinal);
+            Assert.AreEqual("3 d", cut.FindAll(".quarantine-list dl div").Single(static element => element.QuerySelector("dt")?.TextContent == "Age").QuerySelector("dd")?.TextContent);
+            Assert.AreEqual("7", cut.FindAll(".quarantine-list dl div").Single(static element => element.QuerySelector("dt")?.TextContent == "Attempts").QuerySelector("dd")?.TextContent);
+            StringAssert.Contains(cut.Markup, "Upstream unavailable", StringComparison.OrdinalIgnoreCase);
+            Assert.IsEmpty(cut.FindAll("button[id$='-replay']"));
+        });
+        cut.Find("button[id$='-abandon']").Click();
+        cut.Find("#quarantine-reason").Change("operator-approved-loss");
+        cut.Find(".confirmation-actions .btn-danger").Click();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Current state: Abandoned", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void CursorPages_ExposeRecordsBeyondFiftyWithoutPaths()
     {
         using var context = new BunitContext();
