@@ -132,7 +132,7 @@ public sealed partial class ArtifactIngestTests
         var evidence = await db.CentralArtifactProcessingEvidence.AsNoTracking()
             .SingleAsync(item => item.CentralArtifactId == output.Id).ConfigureAwait(false);
         evidence.RecipeIdentitySha256.Should().Be(job.ExpectedRecipeIdentitySha256);
-        JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(evidence.AlgorithmsJson)!
+        JsonSerializer.Deserialize<ProcessingAlgorithmIdentity[]>(evidence.AlgorithmsJson, JsonSerializerOptions.Web)!
             .Should().Contain(item => item.Name == "curated-dso-overlay");
         output.Sources.OrderBy(static item => item.Ordinal).Select(static item => item.SourceArtifactId).Should().Equal(
             data.Derivative.Descriptor.Artifact.ArtifactId, data.SceneManifest.Descriptor.Artifact.ArtifactId);
